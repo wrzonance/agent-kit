@@ -1251,8 +1251,8 @@ assert_eq no "$( [[ -e $gate_run/state/launch-attempted ]] && printf yes || prin
 assert_eq "$gate_consent_before" "$(cat -- "$gate_run/state/cross-provider-consent")" \
     'the oversized payload leaves the consent record untouched -- no check was ever run against it'
 gate_payload_size=$(cat -- "$gate_run/adversarial.payload-size")
-assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10$ ]] && printf yes || printf no )" \
-    'adversarial.payload-size names the too-large verdict, a positive estimate, and the limit'
+assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10\ diff=[0-9]+\ overhead=202$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size names the too-large verdict, a positive estimate (diff + helper overhead), and the limit'
 assert_eq blocked "$(jq -r '.status' -- "$gate_run/adversarial.result.json")" \
     'the blocked result status is blocked'
 assert_eq payload-too-large "$(jq -r '.blockedReason' -- "$gate_run/adversarial.result.json")" \
@@ -1271,8 +1271,33 @@ assert_eq 0 "$gate_ok_rc" 'without a token-limit override the same run completes
 assert_eq yes "$( [[ -e $tmp/gate-ok-codex.called ]] && printf yes || printf no )" \
     'an in-budget payload still launches the provider helper'
 gate_ok_payload_size=$(cat -- "$gate_ok_run/adversarial.payload-size")
-assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000$ ]] && printf yes || printf no )" \
-    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap)'
+assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000\ diff=[0-9]+\ overhead=202$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap), estimate includes diff + helper overhead'
+
+# --- issue #609 fix round 3: the size gate must count the Codex helper's own
+# fixed prompt overhead (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS), not just the
+# diff bytes -- a diff that is comfortably under the limit by itself must
+# still be refused once that overhead pushes the real payload over it. The
+# limit is derived from the diff's own estimate plus a 100-token margin
+# (< the 202-token overhead), so the diff alone would pass but the combined
+# estimate cannot.
+overhead_diff_bytes=$(wc -c <"$diff_gate")
+overhead_diff_estimate=$(( overhead_diff_bytes * 2 / 7 ))
+overhead_limit=$(( overhead_diff_estimate + 100 ))
+overhead_run="$tmp/overhead-run"
+grant "$overhead_run" openai "$diff_gate"
+overhead_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="$overhead_limit" FAKE_CODEX_CALLED="$tmp/overhead-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$overhead_run") \
+    >"$tmp/overhead.out" 2>"$tmp/overhead.err" || overhead_rc=$?
+assert_eq 1 "$overhead_rc" \
+    'a diff that fits the limit alone is still refused once the helper overhead pushes the real payload over it'
+assert_eq no "$( [[ -e $tmp/overhead-codex.called ]] && printf yes || printf no )" \
+    'the overhead-driven refusal never invokes the provider helper'
+overhead_payload_size=$(cat -- "$overhead_run/adversarial.payload-size")
+assert_eq yes "$( [[ $overhead_payload_size =~ ^payload=too-large\ estimate=[0-9]+\ limit=$overhead_limit\ diff=$overhead_diff_estimate\ overhead=202$ ]] && printf yes || printf no )" \
+    'the receipt shows the diff-only estimate under the limit and the combined estimate over it'
 
 # --- issue #609 fix round 1: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT flows
 # unvalidated into an arithmetic context (payload_size_gate's
@@ -1309,8 +1334,11 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 
 # 2026-09-09 issue #609 fix round 1: +16 (payload-paths wiring in
 # compute_payload/verify_consent, plus the token-limit validation). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 911 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 911 lines'
+# 2026-09-09 issue #609 fix round 3: +14 (ADVERSARIAL_PROMPT_OVERHEAD_TOKENS
+# constant plus payload_size_gate now accounting for the Codex helper's fixed
+# prompt overhead, not just the diff bytes). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 925 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 925 lines'
 # --- roster form, bare fallback CLI name: AGENT_ADVERSARIAL_REVIEWER_FALLBACK
 # names a bare CLI (claude|codex) rather than a <model-id>-<effort> compound.
 # reviewer_roster_parse only splits the compound form, so the fallback must be

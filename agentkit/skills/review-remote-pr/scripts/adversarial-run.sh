@@ -35,6 +35,15 @@ readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-4000
     { printf '%s: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT must be a positive integer: %s\n' \
         "${0##*/}" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" >&2; exit 1; }
 
+# The Codex helper (codex-adversarial-review.sh's write_review_input) prepends
+# fixed instructional prompt text before the diff bytes it sends; a payload
+# measured from the diff alone can pass the gate and still overflow the
+# provider once that preamble is added (issue #609 P1, round 3). Measured
+# once from the helper's actual review-mode preamble via
+# canonical_diff_token_estimate's own bytes*2/7 formula (710 bytes); update
+# alongside that preamble if its wording changes.
+readonly ADVERSARIAL_PROMPT_OVERHEAD_TOKENS=202
+
 # Loaded lazily from repo-config.sh's own accepted set (its single source of
 # truth) the first time a roster compound needs splitting, so this parser's
 # effort list can never silently drift from the validator that already
@@ -510,14 +519,19 @@ resolve_base_declared_config() {
 
 # issue #609: refuse to spend on a payload the provider cannot hold; the
 # one-line reason names the remedy instead of a launch with no verdict.
+# estimate is the diff plus the Codex helper's own fixed prompt overhead
+# (round 3), not just the diff bytes -- the receipt records both terms.
 payload_size_gate() {
-    local estimate verdict=ok
-    estimate=$(canonical_diff_token_estimate "$RUN_DIR/adversarial.diff") || die 'could not measure the adversarial diff'
+    local diff_estimate estimate verdict=ok
+    diff_estimate=$(canonical_diff_token_estimate "$RUN_DIR/adversarial.diff") || die 'could not measure the adversarial diff'
+    estimate=$((diff_estimate + ADVERSARIAL_PROMPT_OVERHEAD_TOKENS))
     ((estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT)) || verdict=too-large
     prepare_owned_artifact "$RUN_DIR/adversarial.payload-size"
-    (umask 077; printf 'payload=%s estimate=%s limit=%s\n' "$verdict" "$estimate" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" >"$RUN_DIR/adversarial.payload-size")
+    (umask 077; printf 'payload=%s estimate=%s limit=%s diff=%s overhead=%s\n' \
+        "$verdict" "$estimate" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" "$diff_estimate" \
+        "$ADVERSARIAL_PROMPT_OVERHEAD_TOKENS" >"$RUN_DIR/adversarial.payload-size")
     [[ $verdict == ok ]] && return 0
-    write_blocked_result payload-too-large "estimated $estimate tokens exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
+    write_blocked_result payload-too-large "estimated $estimate tokens (diff $diff_estimate + helper overhead $ADVERSARIAL_PROMPT_OVERHEAD_TOKENS) exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
     receipt_line
     return 1
 }

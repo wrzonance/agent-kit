@@ -392,14 +392,22 @@ mode000_state="$state_dir/subset-mode000-record"
 mode000_paths="$subset_dir/paths-mode000"
 cp -- "$paths_a" "$mode000_paths"
 chmod 000 -- "$mode000_paths"
-mode000_rc=0
-mode000_error=$(/bin/bash "$script" check --state "$mode000_state" --provider openai \
-    --payload "$subset_payload_a" --paths-file "$mode000_paths" 2>&1) || mode000_rc=$?
+if [[ -r $mode000_paths ]]; then
+    # root bypasses the mode bits and can still read the file, so `sort`
+    # would succeed and the subset check would (correctly, for what it can
+    # see) authorize the payload -- the assertion below would then pass for
+    # the wrong reason instead of proving the fail-closed path.
+    printf '  skip mode-000 --paths-file check: file still readable (running as root?)\n'
+else
+    mode000_rc=0
+    mode000_error=$(/bin/bash "$script" check --state "$mode000_state" --provider openai \
+        --payload "$subset_payload_a" --paths-file "$mode000_paths" 2>&1) || mode000_rc=$?
+    assert_eq 10 "$mode000_rc" \
+        'an unreadable (mode 000) --paths-file fails closed instead of being treated as touching nothing extra'
+    assert_contains "$mode000_error" 'could not sort' \
+        'the mode-000 rejection names the sort failure, not a generic or silent one'
+fi
 chmod 600 -- "$mode000_paths"
-assert_eq 10 "$mode000_rc" \
-    'an unreadable (mode 000) --paths-file fails closed instead of being treated as touching nothing extra'
-assert_contains "$mode000_error" 'could not sort' \
-    'the mode-000 rejection names the sort failure, not a generic or silent one'
 
 # issue #609 P2 (fix round 2): canonical-diff.sh must resolve its sibling
 # repo-config.sh from where the library file itself lives, cached at source
@@ -687,5 +695,65 @@ both_flags_error=$(
 assert_eq 2 "$both_flags_rc" 'passing both --base-ref and --base-sha is a usage error'
 assert_contains "$both_flags_error" 'mutually exclusive' \
     'the rejection names the flags as mutually exclusive'
+
+# --- issue #609 P2 (round 3): sort/comm collation must be pinned to LC_ALL=C
+# so a grant recorded under one locale and a check run under another still
+# agree. File1/file2/File3 sort differently under the C and en_US.utf8
+# collations (byte-value order vs. case-insensitive-then-case order), so this
+# combination would misorder the persisted granted-paths file against the
+# check-time payload sort without the pin -- comm(1) then either refuses with
+# "not in sorted order" or, worse, silently miscompares. Skipped when
+# en_US.utf8 is not installed on this machine (nothing to contrast against).
+if locale -a 2>/dev/null | grep -qx 'en_US.utf8'; then
+    locale_dir="$tmp/locale"
+    mkdir -p -- "$locale_dir"
+    locale_diff_ab="$locale_dir/diff-ab.diff"
+    cat >"$locale_diff_ab" <<'EOF'
+--- a/File1
++++ b/File1
+@@ -1 +1 @@
+-old
++new
+--- a/file2
++++ b/file2
+@@ -1 +1 @@
+-old
++new
+--- a/File3
++++ b/File3
+@@ -1 +1 @@
+-old
++new
+EOF
+    locale_diff_a="$locale_dir/diff-a.diff"
+    cat >"$locale_diff_a" <<'EOF'
+--- a/File1
++++ b/File1
+@@ -1 +1 @@
+-old
++new
+--- a/File3
++++ b/File3
+@@ -1 +1 @@
+-old
++new
+EOF
+    locale_paths_ab="$locale_dir/paths-ab"
+    locale_paths_a="$locale_dir/paths-a"
+    locale_payload_ab=$(LC_ALL=en_US.utf8 /bin/bash "$script" payload --repo acme/widget --pr 77 \
+        --diff "$locale_diff_ab" --emit-paths "$locale_paths_ab")
+    locale_payload_a=$(LC_ALL=C /bin/bash "$script" payload --repo acme/widget --pr 77 \
+        --diff "$locale_diff_a" --emit-paths "$locale_paths_a")
+    locale_state="$state_dir/locale-record"
+    LC_ALL=en_US.utf8 /bin/bash "$script" grant --state "$locale_state" --provider openai \
+        --payload "$locale_payload_ab" --source auto-review-flag --paths-file "$locale_paths_ab" >/dev/null
+    locale_check_rc=0
+    LC_ALL=C /bin/bash "$script" check --state "$locale_state" --provider openai \
+        --payload "$locale_payload_a" --paths-file "$locale_paths_a" >/dev/null 2>&1 || locale_check_rc=$?
+    assert_eq 0 "$locale_check_rc" \
+        'a grant made under en_US.utf8 and a check made under C still agree that a true subset is covered'
+else
+    printf '  skip locale-collation check: en_US.utf8 is not installed on this machine\n'
+fi
 
 finish

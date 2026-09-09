@@ -113,6 +113,17 @@ diff_touched_paths_from_range() {
     done
     diff_git_count=$(grep -c -E '^diff --git ' -- "$diff_file" 2>/dev/null) || diff_git_count=0
     (( records == diff_git_count )) || return 1
+    # `-z` never quotes a path, so a literal newline byte inside a path
+    # survives into $out verbatim (issue #609 P1, round 3): joining $out with
+    # `\n` below would then split that single path across two output lines
+    # and silently defeat the subset gate. Every consumer of this set (the
+    # persisted paths file, its hash, and the comm(1) comparison in
+    # consent-record.sh) is itself newline-delimited, so there is no safe way
+    # to emit such a path here -- fail closed instead of corrupting the set.
+    local p
+    for p in "${out[@]}"; do
+        [[ $p != *$'\n'* ]] || return 1
+    done
     printf '%s\n' "${out[@]}" | sort -u
 }
 
@@ -137,7 +148,12 @@ diff_touched_paths() {
     grep -qE '^(---|\+\+\+) "' -- "$file" 2>/dev/null && return 1
     diff_git_count=$(grep -c -E '^diff --git ' -- "$file" 2>/dev/null) || diff_git_count=0
     if (( diff_git_count > 0 )); then
-        pair_count=$(grep -c -E '^\+\+\+ (a|b)/' -- "$file" 2>/dev/null) || pair_count=0
+        # A deleted file renders `+++ /dev/null` (an added file `--- /dev/null`
+        # with a normal `+++ b/`), so counting only `(a|b)/`-prefixed `+++`
+        # lines under-counts every deletion and wrongly refuses an otherwise
+        # well-formed diff (issue #609 P2, round 3); accept `/dev/null` on
+        # the `+++` side as an equally complete record.
+        pair_count=$(grep -c -E '^\+\+\+ ((a|b)/|/dev/null)' -- "$file" 2>/dev/null) || pair_count=0
         (( pair_count == diff_git_count )) || return 1
     fi
     grep -E '^(---|\+\+\+) (a|b)/' -- "$file" 2>/dev/null |

@@ -109,6 +109,30 @@ check_mismatch() {
 assert_rc 1 'diff_touched_paths_from_range refuses when the file record count does not match the range (undeterminable set)' -- \
     check_mismatch
 
+# --- Unit coverage (issue #609 P1, round 3): a path containing a literal
+# newline byte would split across two output lines if the set were joined
+# naively -- that silently defeats the subset gate downstream, so the
+# function must refuse rather than emit the split.
+newline_repo="$tmp/newline-repo"
+git init --quiet --initial-branch=main "$newline_repo"
+git -C "$newline_repo" config user.email test@example.invalid
+git -C "$newline_repo" config user.name test
+printf 'base\n' >"$newline_repo/plain.txt"
+git -C "$newline_repo" add plain.txt
+git -C "$newline_repo" commit --quiet -m base
+git -C "$newline_repo" switch --quiet -c feature
+printf 'secret\n' >"$newline_repo/evil"$'\n'"file.txt"
+git -C "$newline_repo" add -- "evil"$'\n'"file.txt"
+git -C "$newline_repo" commit --quiet -m 'add newline path'
+newline_diff="$tmp/newline.diff"
+git -C "$newline_repo" --no-pager diff --find-renames --unified=25 main...feature -- ':/' >"$newline_diff"
+check_newline_path() {
+    cd -- "$newline_repo" || return
+    diff_touched_paths_from_range 'main...feature' main "$newline_diff" >/dev/null
+}
+assert_rc 1 'diff_touched_paths_from_range refuses a path containing an embedded newline rather than letting it split across output lines' -- \
+    check_newline_path
+
 empty_git_diff="$tmp/empty-git-diff"
 : >"$empty_git_diff"
 check_zero_records() {
@@ -158,6 +182,48 @@ index 0000000..1111111 100644
 EOF
 assert_rc 1 'diff_touched_paths refuses when a diff --git record (mode-only, no hunk) has no matching header pair' -- \
     diff_touched_paths "$mode_only_fallback_diff"
+
+# --- Unit coverage (issue #609 P2, round 3): a deleted file renders
+# `+++ /dev/null`, which does not match the `(a|b)/`-prefixed pair-count
+# regex -- the count mismatch used to make this refuse a perfectly
+# well-formed diff that includes a deletion. Exercise a modification, a
+# deletion, an addition, and a rename together.
+mixed_ops_diff="$tmp/mixed-ops.diff"
+cat >"$mixed_ops_diff" <<'EOF'
+diff --git a/fileA b/fileA
+index 0000000..1111111 100644
+--- a/fileA
++++ b/fileA
+@@ -1 +1 @@
+-old
++new
+diff --git a/fileD b/fileD
+deleted file mode 100644
+index 2222222..0000000 100644
+--- a/fileD
++++ /dev/null
+@@ -1 +0,0 @@
+-gone
+diff --git a/fileE b/fileE
+new file mode 100644
+index 0000000..3333333 100644
+--- /dev/null
++++ b/fileE
+@@ -0,0 +1 @@
++new
+diff --git a/fileF b/fileG
+similarity index 90%
+rename from fileF
+rename to fileG
+index 4444444..5555555 100644
+--- a/fileF
++++ b/fileG
+@@ -1 +1 @@
+-old
++new
+EOF
+assert_eq $'fileA\nfileD\nfileE\nfileF\nfileG' "$(diff_touched_paths "$mixed_ops_diff")" \
+    'diff_touched_paths recovers every path across a modification, a deletion, an addition, and a rename in one diff'
 
 well_formed_diff="$tmp/well-formed.diff"
 cat >"$well_formed_diff" <<'EOF'

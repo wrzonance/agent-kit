@@ -397,7 +397,11 @@ record_granted_paths() {
     parent=$(state_parent) || return 1
     dest=$(granted_paths_path)
     tmp=$(mktemp "$parent/.consent-paths.XXXXXX") || return 1
-    if ! sort -u -- "$src" >"$tmp" || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
+    # LC_ALL=C pins collation so this sort order -- and the hash taken over it
+    # below -- never depends on the ambient locale a later `check` runs under
+    # (issue #609 P2, round 3); see check_reduced_auto_review_payload's
+    # matching pin on the payload-side sort.
+    if ! LC_ALL=C sort -u -- "$src" >"$tmp" || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
         rm -f -- "$tmp"
         return 1
     fi
@@ -557,13 +561,18 @@ check_reduced_auto_review_payload() {
             "$PROGNAME" >&2
         return 10
     }
-    if ! sort -u -- "$PATHS_FILE" >"$sorted_payload_paths" 2>/dev/null; then
+    # LC_ALL=C pins collation on both the sort here and the comm(1) comparison
+    # below to whatever record_granted_paths used to write $granted_paths
+    # (issue #609 P2, round 3): sort/comm under differing locales can order
+    # the same path set differently, so a grant made under one locale and a
+    # check made under another must not silently disagree.
+    if ! LC_ALL=C sort -u -- "$PATHS_FILE" >"$sorted_payload_paths" 2>/dev/null; then
         rm -f -- "$sorted_payload_paths"
         printf '%s: check failed: could not sort the payload paths file: %s\n' \
             "$PROGNAME" "$PATHS_FILE" >&2
         return 10
     fi
-    extra=$(comm -23 -- "$sorted_payload_paths" "$granted_paths" 2>/dev/null) || comm_rc=$?
+    extra=$(LC_ALL=C comm -23 -- "$sorted_payload_paths" "$granted_paths" 2>/dev/null) || comm_rc=$?
     rm -f -- "$sorted_payload_paths"
     if (( comm_rc != 0 )); then
         printf '%s: check failed: could not compare payload paths against the granted set: %s\n' \
