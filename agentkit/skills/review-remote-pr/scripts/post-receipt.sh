@@ -32,49 +32,26 @@ Usage: $PROGNAME precheck --issue-comments FILE [--diff-payload ID]
                  --agent-identity S [--require-pushed] \\
                  [--head-sha SHA [--diff-payload ID] [--harness codex|claude]]
 
---head-sha additionally renders "- Reviewed head: SHA" (and, with
---diff-payload, "- Diff payload: ID") into the receipt body, and appends a
-best-effort entry to this PR's review-ledger.sh record (see review-ledger.sh)
-so a later run can tell this exact review apart from one covering different
-code. A failed ledger append never fails an already-posted, byte-verified
-receipt -- it only warns.
+--head-sha renders "- Reviewed head: SHA" (and, with --diff-payload, "- Diff payload: ID")
+into the receipt and appends a best-effort entry to the PR's review-ledger.sh record; a
+failed ledger append only warns, never fails an already-posted, byte-verified receipt.
 
-precheck: reports whether the PR's fetched issue-comment artifact already carries
-the stable adversarial-review spent marker for the requested diff payload. If
---diff-payload is omitted, it retains the legacy conservative PR-wide check.
-  stdout 'spent'     and exit 0   marker found
-  stdout 'not-spent' and exit 10  marker provably absent
-  exit 1 (stderr only, fails closed) missing jq, unreadable FILE, invalid JSON
+precheck: is the stable adversarial-review spent marker for --diff-payload already in the
+fetched issue-comment artifact (omitted: the legacy PR-wide check)?
+  stdout 'spent' exit 0 | stdout 'not-spent' exit 10 | exit 1 (fails closed): missing jq, unreadable FILE, invalid JSON
+status: classifies the final-sweep artifact: exactly one spent marker prints receipt=adversarial
+or receipt=verified-skip (exit 0); none prints receipt=none (exit 10); duplicates or invalid
+evidence exit 1. A valid supersedes=<comment-id> chain is classified by its latest receipt.
+publish: validates the NDJSON findings ledger, renders the one-spend receipt, posts it via
+gh-comment.sh's byte-verified transport; refuses (exit 11) when the marker is already present.
+--require-pushed additionally requires a clean tree whose HEAD is reachable from origin/*.
 
-status: classifies the final-sweep issue-comment artifact. Exactly one spent marker
-prints receipt=adversarial or receipt=verified-skip and exits 0. No marker
-prints receipt=none and exits 10. Duplicate markers or invalid evidence fail
-closed with exit 1. A changed diff may leave a superseded receipt alongside
-the replacement; a valid supersedes=<comment-id> chain is classified by its
-latest receipt.
-
-publish: validates the NDJSON findings ledger, renders the one-spend receipt,
-and posts it via gh-comment.sh's byte-verified transport. Runs the same
-precheck against --issue-comments first and refuses (exit 11) when the marker is
-already present. --require-pushed additionally requires a clean tree whose HEAD
-is reachable from an origin/* remote-tracking ref.
-
-The findings ledger is found the same way finding-ledger.sh finds it: via the
-RUN_DIR environment variable (an owned, non-symlink, mode-0700 directory),
-deriving \$RUN_DIR/findings.ndjson. Pass --findings-file for an explicit
-override; one of RUN_DIR or --findings-file is required.
-
-Capability probes are not receipts: probe invocations send only a synthetic
-snippet, no PR diff, and never count against the one-review-per-PR budget.
-Probe mode is rejected before any receipt transport.
-
-The findings file is one JSON record per line. A fixed record has title,
-verdict=fixed, and sha; a declined record has title, verdict=declined, and
-rationale. Use an empty file for a clean review. --skip-rationale and --oracle
-are optional and must be given together, for a verified trivial-diff skip. A
-verified skip does not require a prior adversarial-run.sh call: publish writes
-its own status:"skipped" result artifact beside the findings file instead of
-requiring the completed one only the runner produces.
+The findings ledger is \$RUN_DIR/findings.ndjson (RUN_DIR: owned, non-symlink, mode 0700, as
+finding-ledger.sh requires) or --findings-file; one is required. One JSON record per line:
+{title, verdict=fixed, sha} or {title, verdict=declined, rationale}; an empty file is a clean
+review. --skip-rationale and --oracle go together for a verified trivial-diff skip, which needs
+no prior adversarial-run.sh call (publish writes its own status:"skipped" result artifact).
+Probes are not receipts: probe mode is rejected before any transport.
 
 Exit status:
   0   success (precheck: spent; publish: comment posted and verified)
