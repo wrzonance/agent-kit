@@ -263,6 +263,7 @@ new_canonical_diff_tmp() {
 payload_command() {
     validate_payload_inputs
     local digest canonical_digest supplied_digest base_display resolved_sha
+    local diff_range='' diff_rev=''
     if [[ -n $BASE_SHA || -n $BASE_REF ]]; then
         if [[ -n $BASE_SHA ]]; then
             # A frozen chain-base SHA is diffed directly via canonical_diff_range,
@@ -270,14 +271,18 @@ payload_command() {
             resolved_sha=$(resolve_local_base_sha "$BASE_SHA") ||
                 die "--base-sha no longer resolves locally: $BASE_SHA"
             base_display=$BASE_SHA
+            diff_range="$resolved_sha...HEAD"
+            diff_rev=$resolved_sha
             new_canonical_diff_tmp
-            (cd -- "$WORKTREE" && canonical_diff_range "$resolved_sha...HEAD" "$resolved_sha") \
+            (cd -- "$WORKTREE" && canonical_diff_range "$diff_range" "$diff_rev") \
                 >"$CANONICAL_DIFF_TMP" ||
                 die "could not render canonical diff from $base_display"
         else
             git -C "$WORKTREE" fetch --quiet origin "$BASE_REF" ||
                 die "could not refresh origin/$BASE_REF before rendering canonical diff"
             base_display="origin/$BASE_REF"
+            diff_range="origin/$BASE_REF...HEAD"
+            diff_rev="origin/$BASE_REF"
             new_canonical_diff_tmp
             (cd -- "$WORKTREE" && canonical_diff "$BASE_REF") >"$CANONICAL_DIFF_TMP" ||
                 die "could not render canonical diff from origin/$BASE_REF"
@@ -307,24 +312,38 @@ payload_command() {
     [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || die 'sha256sum returned an invalid digest'
     if [[ -n $EMIT_PATHS ]]; then
         local source_diff=${CANONICAL_DIFF_TMP:-$DIFF_PATH}
-        emit_paths_file "$source_diff" "$EMIT_PATHS"
+        emit_paths_file "$source_diff" "$EMIT_PATHS" "$WORKTREE" "$diff_range" "$diff_rev"
     fi
     printf '%s:%s:%s\n' "$REPO" "$PR_NUMBER" "$digest"
 }
 
-# emit_paths_file DIFF_FILE DEST -- writes DIFF_FILE's sorted, unique touched
-# paths (diff_touched_paths) to DEST at mode 0600, atomically. Shared by
-# `payload --emit-paths` and grant's own --paths-file consumer so both derive
-# "the paths this payload touches" the same way.
+# emit_paths_file DIFF_FILE DEST [WORKTREE RANGE REV] -- writes DIFF_FILE's
+# sorted, unique touched paths to DEST at mode 0600, atomically. When RANGE
+# and REV are given (a canonical --base-ref/--base-sha rendering), the paths
+# are re-derived from git itself via diff_touched_paths_from_range (issue
+# #609 P1 -- immune to quoted paths, and covers renames/mode-only/binary
+# records a text parse can miss); otherwise falls back to diff_touched_paths,
+# which parses DIFF_FILE's own headers. Shared by `payload --emit-paths` and
+# grant's own --paths-file consumer so both derive "the paths this payload
+# touches" the same way.
 emit_paths_file() {
-    local diff_file=$1 dest=$2 tmp
+    local diff_file=$1 dest=$2 worktree=${3:-} range=${4:-} rev=${5:-} tmp derive_rc=0
     [[ ! -L $dest ]] || die "refusing to use a paths-file symlink: $dest"
     tmp=$(mktemp "$(dirname -- "$dest")/.emit-paths.XXXXXX") ||
         die "could not create a temporary file for: $dest"
-    if ! diff_touched_paths "$diff_file" >"$tmp" || ! chmod 600 -- "$tmp" ||
-        ! mv -f -- "$tmp" "$dest"; then
+    if [[ -n $range && -n $rev ]]; then
+        if [[ -n $worktree ]]; then
+            (cd -- "$worktree" && diff_touched_paths_from_range "$range" "$rev" "$diff_file") \
+                >"$tmp" || derive_rc=$?
+        else
+            diff_touched_paths_from_range "$range" "$rev" "$diff_file" >"$tmp" || derive_rc=$?
+        fi
+    else
+        diff_touched_paths "$diff_file" >"$tmp" || derive_rc=$?
+    fi
+    if (( derive_rc != 0 )) || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
         rm -f -- "$tmp"
-        die "could not write the touched-paths file: $dest"
+        die "could not determine the touched-path set for: $dest"
     fi
 }
 
@@ -532,7 +551,25 @@ check_reduced_auto_review_payload() {
             "$PROGNAME" "$PATHS_FILE" >&2
         return 10
     }
-    extra=$(comm -23 <(sort -u -- "$PATHS_FILE") "$granted_paths" 2>/dev/null) || true
+    local sorted_payload_paths comm_rc=0
+    sorted_payload_paths=$(mktemp) || {
+        printf '%s: check failed: could not create a temporary file to compare payload paths\n' \
+            "$PROGNAME" >&2
+        return 10
+    }
+    if ! sort -u -- "$PATHS_FILE" >"$sorted_payload_paths" 2>/dev/null; then
+        rm -f -- "$sorted_payload_paths"
+        printf '%s: check failed: could not sort the payload paths file: %s\n' \
+            "$PROGNAME" "$PATHS_FILE" >&2
+        return 10
+    fi
+    extra=$(comm -23 -- "$sorted_payload_paths" "$granted_paths" 2>/dev/null) || comm_rc=$?
+    rm -f -- "$sorted_payload_paths"
+    if (( comm_rc != 0 )); then
+        printf '%s: check failed: could not compare payload paths against the granted set: %s\n' \
+            "$PROGNAME" "$PATHS_FILE" >&2
+        return 10
+    fi
     if [[ -n $extra ]]; then
         printf '%s: check failed: payload includes paths outside the granted set: %s\n' \
             "$PROGNAME" "$(paste -sd, - <<<"$extra")" >&2

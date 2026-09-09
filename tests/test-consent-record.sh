@@ -382,6 +382,73 @@ assert_rc 10 'a granted-paths file that no longer matches its recorded hash fail
     /bin/bash "$script" check --state "$tamper_state" --provider openai \
     --payload "$subset_payload_a" --paths-file "$paths_a"
 
+# issue #609 P2 (fix round 2): an owned but unreadable (mode 000)
+# --paths-file passes the ownership/symlink checks but makes `sort` fail; the
+# comparison must fail closed, never treat the unreadable file as "touches
+# nothing extra" and silently authorize the payload.
+mode000_state="$state_dir/subset-mode000-record"
+/bin/bash "$script" grant --state "$mode000_state" --provider openai \
+    --payload "$subset_payload_ab" --source auto-review-flag --paths-file "$paths_ab" >/dev/null
+mode000_paths="$subset_dir/paths-mode000"
+cp -- "$paths_a" "$mode000_paths"
+chmod 000 -- "$mode000_paths"
+mode000_rc=0
+mode000_error=$(/bin/bash "$script" check --state "$mode000_state" --provider openai \
+    --payload "$subset_payload_a" --paths-file "$mode000_paths" 2>&1) || mode000_rc=$?
+chmod 600 -- "$mode000_paths"
+assert_eq 10 "$mode000_rc" \
+    'an unreadable (mode 000) --paths-file fails closed instead of being treated as touching nothing extra'
+assert_contains "$mode000_error" 'could not sort' \
+    'the mode-000 rejection names the sort failure, not a generic or silent one'
+
+# issue #609 P2 (fix round 2): canonical-diff.sh must resolve its sibling
+# repo-config.sh from where the library file itself lives, cached at source
+# time -- not lazily via BASH_SOURCE re-interpreted against whatever the
+# caller's cwd happens to be after payload_command's own `(cd -- "$WORKTREE"
+# && ...)` subshell. Invoking consent-record.sh via a relative path from a
+# cwd at a different nesting depth than --worktree, with a declared
+# AGENT_GENERATED_PATHS exclusion, must still exclude that path and derive
+# the exact same payload an absolute-path invocation would; under the bug the
+# resolver silently goes missing once cwd changes, the exclusion is dropped,
+# and the two invocations' payloads diverge.
+relpath_origin="$tmp/relpath-origin.git"
+relpath_repo="$tmp/relpath-fixture/deeper/nested/repo"
+mkdir -p -- "$relpath_repo"
+git init --bare --quiet "$relpath_origin"
+git init --quiet --initial-branch=main "$relpath_repo"
+git -C "$relpath_repo" config user.email test@example.invalid
+git -C "$relpath_repo" config user.name test
+git -C "$relpath_repo" remote add origin "$relpath_origin"
+mkdir -- "$relpath_repo/generated"
+printf 'base\n' >"$relpath_repo/generated/artifact.txt"
+printf 'base\n' >"$relpath_repo/normal.txt"
+mkdir -- "$relpath_repo/.agent"
+printf 'AGENT_GENERATED_PATHS=generated\n' >"$relpath_repo/.agent/config.env"
+git -C "$relpath_repo" add generated normal.txt .agent
+git -C "$relpath_repo" commit --quiet -m base
+git -C "$relpath_repo" push --quiet -u origin main
+git -C "$relpath_repo" switch --quiet -c feature
+printf 'changed\n' >"$relpath_repo/generated/artifact.txt"
+printf 'changed\n' >"$relpath_repo/normal.txt"
+git -C "$relpath_repo" commit --quiet -am change
+
+absolute_relpath_payload=$(
+    cd -- "$relpath_repo" || exit
+    /bin/bash "$script" payload --worktree "$relpath_repo" --repo acme/widget --pr 70 --base-ref main
+)
+assert_contains "$absolute_relpath_payload" ':' \
+    'the absolute-path invocation derives a payload against the declared-exclusion fixture'
+
+relpath_cwd="$tmp/relpath-fixture/cwd"
+mkdir -p -- "$relpath_cwd"
+relative_script=$(realpath --relative-to="$relpath_cwd" -- "$script")
+relative_payload=$(
+    cd -- "$relpath_cwd" || exit
+    /bin/bash "$relative_script" payload --worktree "$relpath_repo" --repo acme/widget --pr 70 --base-ref main
+)
+assert_eq "$absolute_relpath_payload" "$relative_payload" \
+    'a relative-path invocation from a cwd at a different depth than --worktree still derives the same payload (declared exclusions still applied)'
+
 assert_rc 2 'grant with source auto-review-flag requires --paths-file' -- \
     /bin/bash "$script" grant --state "$state_dir/no-paths-record" --provider openai \
     --payload "$subset_payload_ab" --source auto-review-flag
