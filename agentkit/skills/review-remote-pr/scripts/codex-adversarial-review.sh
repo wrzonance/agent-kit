@@ -1,41 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
 #
-# codex-adversarial-review.sh — one-shot, tool-isolated adversarial diff review
-# driven through the Codex CLI's non-interactive `codex exec` interface.
-#
-# The Codex-side twin of claude-adversarial-review.sh. Same contract, same exit
-# codes, same stdout/stderr split, so the calling skill can treat either harness
-# identically and only the binary changes.
-#
-# The run is isolated: read-only sandbox, no user config (so no user MCP servers,
-# no custom settings), no rules/AGENTS.md discovery (this is what makes the review
-# genuinely blind), no session persistence, and a throwaway working directory that
-# is not a git repository. The verdict is schema-constrained and every invariant is
-# asserted before a result is printed.
-#
-# Modes:
-#   probe   — reviews a fixed minimal diff carrying a deliberate P1 defect and
-#             fails unless the model reports it. Use it to smoke-test the harness.
-#   review  — reviews the diff at --diff.
-#
-# Output:
-#   stdout  — the final result object (JSON), and nothing else.
-#   stderr  — progress records while running, then any human-readable failure.
-#
-# Exit status:
-#   0  completed and every invariant held
-#   1  usage error, or a real invariant/verdict failure
-#   3  ENVIRONMENT-BLOCKED: Codex cannot run here (binary missing, exec denied,
-#      no network, unauthenticated, or the CLI no longer offers the isolation
-#      contract). stdout carries a blocked JSON object. Callers take the other
-#      harness's reviewer immediately and never report this as a failed review.
-#
-# COST NOTE: `codex exec` exposes no provider spend-ceiling flag. This helper
-# applies an observed token ceiling to the one-shot stream and a duration ceiling
-# around the process; both are hard safety failures rather than verdicts.
-#
-# Requires: bash >= 4.2, codex CLI, jq, GNU coreutils.
+# codex-adversarial-review.sh -- one-shot, tool-isolated adversarial diff review
+# through `codex exec`: read-only sandbox, no user config, no AGENTS.md discovery, no
+# session persistence, throwaway non-git cwd; schema-constrained verdict. The Codex
+# twin of claude-adversarial-review.sh (same contract, exit codes 0/1/3). `codex exec`
+# has no spend cap: token and duration ceilings are hard safety failures. See --help.
 
 set -euo pipefail
 umask 077

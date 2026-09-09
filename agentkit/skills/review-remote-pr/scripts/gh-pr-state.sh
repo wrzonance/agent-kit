@@ -1,77 +1,10 @@
 #!/usr/bin/env bash
 #
-# gh-pr-state.sh — one dense command reporting everything the PR-review loop
-# needs to know about a pull request.
-#
-# It replaces the repeated poll cluster of PR metadata plus checks calls
-# which was run over and over. That cluster dumped a full commits array (author
-# emails, node ids, message bodies) that nothing consumed, and cost two separate
-# command approvals per poll. This makes one pass and prints a fixed-shape
-# digest — never raw JSON. --wait-ci ignores the review bot's own check when
-# deciding settledness: it can sit pending under a rate limit and never settle.
-# --wait-ci also treats zero registered checks (ci=0/0) as pending, not
-# settled, for a short grace window right after a push: GitHub has not always
-# registered the head's first check run yet, and a caller that trusted an
-# immediate 0/0 as "done" would proceed on no evidence (agent-kit#396). If the
-# window elapses with still no checks, the digest reports that explicitly as
-# ci=0/0 none-configured rather than silently reusing the "no CI here at all"
-# 'none' word.
-#
-# --wait-ci also refuses to settle on a check count that is still growing: a
-# repository whose checks register one push-triggered workflow at a time can
-# have its FIRST-registered check pass before the other three have even been
-# created, and a settle-the-instant-nothing-is-pending rule would report
-# ci=1/4 as done (agent-kit#578). Settling instead requires the registered
-# check count to be identical across two consecutive rounds AND the head's
-# check-runs to carry no queued/in_progress entry that round. An optional
-# --expect-checks N additionally refuses to settle below N before the
-# --rounds budget is exhausted, even once the count has gone stable; while a
-# floor is set, a zero-checks round never short-circuits to none-configured
-# either -- it keeps polling until checks appear or the round budget runs out
-# (agent-kit#578 F1). There is no inferred default for the floor: a base
-# branch's own check-run count is not a reliable proxy for a PR's per-push
-# matrix (a push-only workflow like `deploy` inflates it and can strand
-# settlement forever), so --expect-checks stays unset unless the caller
-# passes it, and settling then depends only on the stable-rounds rule above
-# (agent-kit#578 F2). Every settle prints 'settled checks=N stable-rounds=2
-# expected=N' (or expected=none) so the caller can see why it stopped waiting.
-#
-# A base advance whose new commits touch ONLY the repository-declared
-# AGENT_GENERATED_PATHS prefixes (e.g. a post-merge results-recording workflow
-# like record-tier0.yml) is not reported stale: without this, every such
-# commit forces a merge-down plus a full CI re-run on the next queued PR
-# (agent-kit#394). The exemption is resolved from <repo-root>/.agent/config.env
-# via repo-config.sh (--repo-root DIR, default: git toplevel) and fails closed --
-# an undeclared list, an unreadable comparison, a possibly-truncated compare
-# response (see COMPARE_FILES_PAGE_CAP), a rename whose old or new path is
-# undeclared, or any file outside the declared prefixes leaves the advance
-# staling exactly as before.
-#
-# Digest lines (a line is omitted only when it does not apply):
-#   pr=42 draft=true mergeable=MERGEABLE head=feat/issue-NNN sha=abc1234def5678901234567890123456789ab01
-#   base: ref=main behind=1 stale=yes
-#   ci=3/3 green pending=0 failing=0
-#   ci=1/3 failing pending=1 failing=1 failing-checks=lint
-#   provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z
-#   threads: coderabbit=0 unresolved  code-quality=0 open  human=0  generic=0
-#   classification: known-provider=0 type=Bot=0 login-suffix=0 human=0
-#   nitpicks: 0 unhandled
-#   agent-docs: 0 eligible
-#   issue-comment-findings: 0 open
-#   next: human=2 -> per-item confirmation gate (Step 1a)
-#   alerts: code-scanning open=0
-#   saved: DIR/pr_42_{reviews,comments,issue_comments,threads,code_quality_comments}.json
-# A stale base makes passing checks report 'stale', never 'green'.
-#
-# 'provider', 'agent-docs' and 'next' print in every mode (--digest, --full,
-# --wait-ci): the queries they read (issue comments, review threads) already
-# run before any digest is printed, so nothing about them costs an extra API
-# call in --digest mode. Only 'saved' is --full-only, because writing the
-# artifact files themselves is the thing --digest skips.
-#
-# Exit status: 0 = digest printed; 1 = usage error or API failure.
-#
-# Requires: bash >= 4.2, gh (authenticated), jq >= 1.6, GNU coreutils.
+# gh-pr-state.sh -- one dense digest of everything the PR-review loop needs about a
+# pull request (draft/mergeable, base staleness, CI, provider review, threads,
+# nitpicks, issue-comment findings, code-scanning alerts); never raw JSON.
+# --wait-ci settles only on a stable check count with nothing queued (#396, #578);
+# a base advance touching only AGENT_GENERATED_PATHS is not stale (#394). See --help.
 
 set -euo pipefail
 umask 077
@@ -229,6 +162,8 @@ Options:
                          can leave the file group- or world-writable, which
                          merge-gate.sh refuses outright.
   -h, --help             Show this help.
+
+Exit status: 0 digest printed; 1 usage error or API failure (a rate-limited read exits EXIT_RATE_LIMITED, see die_on_gh_failure).
 
 Counting rules:
   base        behind>0 stales unless every file the base gained since divergence
