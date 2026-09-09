@@ -52,6 +52,52 @@ reject_writable_by_others() {
     (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
+# issue #607 fix round 2 F2: a persisted proof outlives a later retarget -- if
+# a PR returns to the same base/head after another base change, a cached
+# proof would otherwise authorize a boundary its own CI never actually proved
+# fresh against. live_boundary_epoch reads the same timeline events
+# chain-advance.sh's boundary_for accepts (every page, last match) so the
+# caller can require the proof's boundaryEpoch= to equal the live one.
+iso_to_epoch() {
+    local value=$1 epoch
+    [[ -n $value && $value != null ]] || return 1
+    epoch=$(date -u -d "$value" +%s 2>/dev/null) || return 1
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$epoch"
+}
+
+live_boundary_epoch() {
+    local pr=$1 base=$2 timeline event_time
+    timeline=$("$GH_BIN" api "repos/$repo/issues/$pr/timeline" --paginate --slurp --jq 'add' 2>/dev/null) || return 1
+    event_time=$(jq -r --arg base "$base" '
+        def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
+        [ .[]?
+          | select((.event // "") == "base_ref_changed" or (.event // "") == "automatic_base_change_succeeded")
+          | ([.base_ref, .baseRefName, .base_ref_name] | first_nonempty) as $event_base
+          | select($event_base == "" or $event_base == $base)
+          | ([.created_at, .createdAt] | first_nonempty) | select(length > 0)
+        ] | last // empty
+    ' <<<"$timeline") || return 1
+    [[ -n $event_time ]] || return 1
+    iso_to_epoch "$event_time"
+}
+
+# issue #607: chain-advance.sh --retarget persists its proof line under the
+# repository's Git common dir; without an explicit --retarget-proof for this
+# PR, that file is the proof. Same ownership and mode checks as the explicit
+# one. The filename is repo-scoped (review finding): the Git common dir is
+# shared by every checkout on this machine regardless of remote, so a bare
+# pr/base filename would let a proof persisted for another repository's PR be
+# auto-discovered here. `$repo` is already validated OWNER/REPO by this point.
+default_retarget_proof() {
+    local pr=$1 base=$2 common file
+    common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    file="$common/chain-advance-evidence/chain-advance-${repo//\//-}-pr-$pr-base-${base//\//-}.proof"
+    [[ -f $file && ! -L $file && -O $file ]] || return 1
+    reject_writable_by_others "$file" 'persisted retarget proof'
+    printf '%s\n' "$file"
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
@@ -71,11 +117,12 @@ exactly still authorize, but only per confirmed PR and only for a
 deterministic advance proven from live forge state: a same-base head change
 (a merge-down) with an identical diff-shape fingerprint and a verified
 ancestor relationship to the previously authorized head, a base change (a
-retarget) with a matching --retarget-proof PR:FILE naming a
-chain-advance.sh --retarget proof for that exact PR/base/head, or a
-confirmed PR's disappearance from the live queue independently verified as
-merged. Repository, provider decisions, and any PR the live queue adds are
-never covered by this and always require redisplay and reconfirmation.
+retarget) proven by the chain-advance.sh --retarget proof persisted under
+the repository Git metadata, or by a matching --retarget-proof PR:FILE
+naming that exact PR/base/head line, or a confirmed PR's disappearance from
+the live queue independently verified as merged. Repository, provider
+decisions, and any PR the live queue adds are never covered by this and
+always require redisplay and reconfirmation.
 EOF
     exit "${1:-2}"
 }
@@ -544,8 +591,9 @@ if ((full_match_ok == 0)); then
             retarget)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 proof_file=${retarget_proof_file[$recon_pr]-}
+                [[ -n $proof_file ]] || proof_file=$(default_retarget_proof "$recon_pr" "$recon_live_base") || proof_file=''
                 [[ -n $proof_file ]] ||
-                    die "pr $recon_pr changed base with no --retarget-proof supplied; redisplay and reconfirm before authorization"
+                    die "pr $recon_pr changed base with no --retarget-proof supplied and no persisted chain-advance.sh proof under Git metadata; redisplay and reconfirm before authorization"
                 # Every required token must be present on the SAME candidate
                 # line, never satisfied piecemeal across different lines --
                 # a proof file that accumulated several PRs' chain-advance.sh
@@ -561,19 +609,47 @@ if ((full_match_ok == 0)); then
                 # therefore checked for a well-formed value, never required
                 # to be `current:post-retarget` -- ancestry, post-retarget
                 # CI, and closing linkage stay the mandatory mechanical proof.
+                # The `repo=` token (review finding) is required on the same
+                # line and must equal --repo: the filename alone is not
+                # trusted, since an explicit --retarget-proof file can be
+                # handed in from anywhere, and the auto-discovered file's name
+                # is merely a candidate path, not authenticated content.
+                # persist_proof_line (chain-advance.sh) appends -- it never
+                # truncates -- so a PR retargeted more than once accumulates
+                # several matching lines in this file. The newest one is the
+                # only one that can still be current; keep scanning past the
+                # first match instead of breaking on it (CodeRabbit #683).
                 proof_ok=0
-                while IFS= read -r proof_line; do
-                    if [[ $proof_line == *" sha=$recon_live_sha "* &&
-                          $proof_line == *'ancestry=verified'* &&
-                          $proof_line == *'green:post-retarget'* &&
-                          $proof_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
-                          $proof_line =~ closing-issues=[1-9][0-9]*$ ]]; then
+                proof_line=''
+                while IFS= read -r candidate_line; do
+                    if [[ $candidate_line == *" sha=$recon_live_sha "* &&
+                          $candidate_line == *" repo=$repo "* &&
+                          $candidate_line == *'ancestry=verified'* &&
+                          $candidate_line == *'green:post-retarget'* &&
+                          $candidate_line =~ approval=(current:post-retarget|residue:stale|none|unknown)( |$) &&
+                          $candidate_line =~ boundaryEpoch=[1-9][0-9]*( |$) &&
+                          $candidate_line =~ closing-issues=[1-9][0-9]*$ ]]; then
                         proof_ok=1
-                        break
+                        proof_line=$candidate_line
                     fi
                 done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
                 ((proof_ok)) ||
-                    die "pr $recon_pr: the supplied retarget proof does not match the live base and head; redisplay and reconfirm before authorization"
+                    die "pr $recon_pr: the supplied retarget proof does not match the live base and head, or does not name repository $repo; redisplay and reconfirm before authorization"
+                # F2 (issue #607 fix round 2): a proof outlives a later
+                # retarget -- if the PR returns to this same base/head after
+                # another base change, the cached proof's own CI predates
+                # that later retarget and must not authorize it. The proof's
+                # boundaryEpoch= is trusted only when it equals the live
+                # timeline's own latest matching event, read fresh here
+                # (never from the proof file), for both an auto-discovered
+                # and an explicit --retarget-proof file alike.
+                [[ $proof_line =~ boundaryEpoch=([1-9][0-9]*) ]] ||
+                    die "pr $recon_pr: the retarget proof has no boundaryEpoch token; rerun chain-advance.sh --retarget to regenerate it, then redisplay and reconfirm"
+                proof_boundary_epoch=${BASH_REMATCH[1]}
+                live_epoch=$(live_boundary_epoch "$recon_pr" "$recon_live_base") ||
+                    die "pr $recon_pr: the live retarget timeline could not be read to verify the persisted proof; redisplay and reconfirm before authorization"
+                [[ $live_epoch == "$proof_boundary_epoch" ]] ||
+                    die "pr $recon_pr: the retarget proof predates a later retarget (proof boundaryEpoch=$proof_boundary_epoch, live=$live_epoch); rerun chain-advance.sh --retarget to refresh the proof, then redisplay and reconfirm"
                 ;;
             *)
                 mismatch_detail=$(snapshot_mismatch 2>/dev/null || true)

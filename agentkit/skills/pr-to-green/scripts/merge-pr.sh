@@ -140,6 +140,48 @@ recover_closed_dependent() {
     fi
 }
 
+# issue #607: a repository with delete_branch_on_merge deletes the merged head
+# regardless of the run's keep-branch choice. Read the setting from the
+# repos/ metadata already fetched, wait briefly for the deletion, and recreate
+# the ref at the merged head -- restoration is this helper's job, never the
+# model's. Fork heads are never touched (same rule as the delete path).
+keep_branch_after_merge() {
+    local attempt poll=${MERGE_PR_RESTORE_POLL_SECONDS:-2} lookup='' lookup_rc=0
+    if [[ $(jq -r '.delete_branch_on_merge // false' "$work_dir/repo.json") != true ||
+          $head_repo_full != "$repo" || ! $head_ref =~ $BRANCH_RE ]]; then
+        printf 'branch_delete=skipped ref=%s\n' "$head_ref"
+        return 0
+    fi
+    # Every nonzero `gh api` result used to be read as "the ref is gone" --
+    # including auth, permission, rate-limit, and transport failures, none of
+    # which mean the branch was actually deleted. Restore only on a confirmed
+    # HTTP 404; any other failure is reported as unknown and never creates a
+    # ref without evidence GitHub deleted it (CodeRabbit #683).
+    for attempt in 1 2 3; do
+        if lookup=$("$GH_BIN" api "repos/$repo/git/ref/heads/$head_ref" 2>&1); then
+            lookup_rc=0
+        else
+            lookup_rc=$?
+            break
+        fi
+        ((attempt < 3)) && sleep "$poll"
+    done
+    if ((lookup_rc == 0)); then
+        printf 'branch_delete=skipped ref=%s note=repo-delete-branch-on-merge-pending\n' "$head_ref"
+        return 0
+    fi
+    if [[ $lookup != *'HTTP 404'* ]]; then
+        printf 'branch_delete=unknown ref=%s reason=%s\n' "$head_ref" "$(head -n 1 <<<"$lookup")"
+        return 0
+    fi
+    if "$GH_BIN" api -X POST "repos/$repo/git/refs" -f "ref=refs/heads/$head_ref" -f "sha=$head_sha" \
+        >"$work_dir/restore.out" 2>"$work_dir/restore.err"; then
+        printf 'branch_delete=restored ref=%s reason=repo-delete-branch-on-merge\n' "$head_ref"
+    else
+        printf 'branch_delete=repo-setting ref=%s reason=%s\n' "$head_ref" "$(head -n 1 "$work_dir/restore.err")"
+    fi
+}
+
 usage() {
     cat >&2 <<EOF
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
@@ -330,5 +372,5 @@ if ((delete_branch)); then
         printf 'branch_delete=failed reason=%s\n' "$(head -n 1 "$work_dir/delete.err")"
     fi
 else
-    printf 'branch_delete=skipped ref=%s\n' "$head_ref"
+    keep_branch_after_merge
 fi

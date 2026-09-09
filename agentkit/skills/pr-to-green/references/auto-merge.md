@@ -91,10 +91,15 @@ evidence into exactly one bucket:
 - **root merge-down** — prior state `RUNNABLE`, same base, head changed, same diff fingerprint,
   and the authorized head proven an ancestor of the new head by a live `compare` read.
 - **stacked retarget** — prior state `WAITING_FOR_MERGE`/`RETARGET_REQUIRED`, base changed, the
-  same fingerprint and ancestry proof, plus `--retarget-proof PR:FILE` naming the exact line
-  `../parallel-issues/scripts/chain-advance.sh --retarget` printed for this PR (matching base and
-  head, `ancestry=verified`, `green:post-retarget`, an `approval=` token, a positive
-  `closing-issues=`; `behind=`/`generated-only=`/`provider-check=` tokens may precede it).
+  same fingerprint and ancestry proof, and either the proof line
+  `chain-advance.sh --retarget` persisted under the repository Git metadata (found automatically)
+  or `--retarget-proof PR:FILE` naming that exact line (matching base and head,
+  `ancestry=verified`, `green:post-retarget`, an `approval=` token, a `boundaryEpoch=` token, a
+  positive `closing-issues=`; `behind=`/`generated-only=`/`boundaryEvent=`/`provider-check=` tokens
+  may precede it). The proof's `boundaryEpoch=` must equal the PR's live timeline's own latest
+  matching retarget event, read fresh at authorization time (never trusted from the file alone) —
+  a proof that outlived a later retarget is refused, naming `chain-advance.sh --retarget` as the
+  fix, rather than authorizing a boundary its own CI never actually proved fresh against.
 - **verified merge** — a confirmed PR absent from the live queue and independently read as
   `merged:true`.
 
@@ -279,7 +284,10 @@ repository — a fork PR's `feat/x` lives in the fork, and deleting
 `owner/repo:feat/x` by name could remove an unrelated same-named branch in
 the target repository instead — and it re-reads the branch ref immediately
 before deleting, skipping if the tip no longer matches the merged head (new
-work may have landed on it since the merge completed).
+work may have landed on it since the merge completed). With
+`delete_branch_on_merge` enabled the head is deleted by the repository
+regardless; `merge-pr.sh` restores it (`branch_delete=restored`) when the run
+chose keep-branch.
 
 ### Dependents check before delete (issue #564)
 
