@@ -458,7 +458,11 @@ value_suggestion() {
             for item in "${items[@]}"; do
                 suggestion=$(model_id_suggestion "$item"); [[ -n $suggestion ]] && changed=1
                 out+="${out:+,}${suggestion:-$item}"
-            done ;;
+            done
+            # A partially-correctable roster (one item fixed, another still
+            # unknown) is still not a valid declaration -- only offer the
+            # correction once the whole corrected roster would actually pass.
+            worker_models_roster_valid "$out" || changed=0 ;;
         AGENT_ADVERSARIAL_REVIEWER | AGENT_ADVERSARIAL_REVIEWER_FALLBACK)
             for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
                 [[ $value == *-"$effort" ]] || continue
