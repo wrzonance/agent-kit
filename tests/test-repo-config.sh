@@ -571,8 +571,8 @@ done
 
 # --- harness-neutral adversarial reviewer roster compound (issue #487) -----
 # AGENT_ADVERSARIAL_REVIEWER keeps its historical bare-CLI-name form (above)
-# AND now also accepts a `<model-id>-<effort>` compound; the new
-# _FALLBACK counterpart accepts only the compound form.
+# AND now also accepts a `<model-id>-<effort>` compound; both accept the bare
+# CLI name and the compound form (issue #606).
 printf 'AGENT_ADVERSARIAL_REVIEWER=gpt-5.6-sol-xhigh\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high\n' \
     > "$repo/.agent/config.env"
 out=$("$rc_sh" --repo-root "$repo" --list 2>&1)
@@ -616,8 +616,30 @@ root_config=$(<"$root/.agent/config.env")
 assert_contains "$root_config" 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %s' \
     'agent-kit declares its supported focused test selector'
 
+# --- issue #606: the three hand-authored values that passed silently ------
+printf 'AGENT_WORKER_MODELS=codex-gpt-6-astra,claude-opus-5\nAGENT_ADVERSARIAL_REVIEW_MODEL=claude-fable-5.1\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=codex\n' \
+    > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate exits non-zero when any declaration is invalid'
+assert_contains "$validate_out" 'invalid value for AGENT_WORKER_MODELS on line 1, ignoring -- did you mean gpt-6-astra,claude-opus-5' \
+    'a harness-prefixed roster entry is refused with the corrected roster'
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODEL on line 2, ignoring -- did you mean claude-fable-5-1' \
+    'a dotted Claude model id is refused with the hyphenated form'
+assert_not_contains "$validate_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK' \
+    'a bare CLI name is valid for the fallback reviewer exactly as for the primary'
+printf 'AGENT_WORKER_MODELS=gpt-6-astra,claude-opus-5\nAGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh\n' > "$repo/.agent/config.env"
+assert_rc 0 '--validate exits zero on a gpt-6-* roster and reviewer' -- "$rc_sh" --repo-root "$repo" --validate
+assert_eq codex "$("$rc_sh" --model-family gpt-6-astra)" '--model-family names the codex family for a gpt-6-* id'
+assert_eq claude "$("$rc_sh" --model-family claude-opus-5)" '--model-family names the claude family'
+assert_eq opencode "$("$rc_sh" --model-family wrzcluster/qwen3-coder)" '--model-family names opencode for provider/model'
+assert_rc 1 '--model-family fails for an unknown family' -- "$rc_sh" --model-family codex-gpt-6-astra
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1048 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1048 lines'
+# 2026-09-09 issue #606: the model-family predicate and corrected-form
+# suggestions now live here and only here (adversarial-run.sh -3,
+# spawn-contract.md -7). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1108 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1108 lines'
 
 finish

@@ -133,6 +133,8 @@ assert_contains "$out" 'CI verifier: verify.sh --full' \
     'preflight includes the CI verifier before command proposals'
 assert_contains "$out" 'CI entry point/defaults: inspect verify.sh --help' \
     'preflight requires entry-point defaults to be confirmed'
+assert_contains "$out" 'config-validate= ok' \
+    'preflight reports a clean config as valid (issue #606)'
 
 # The report carries the one-line drift summary so a caller does not need a
 # second probe to discover that onboarding facts are stale.

@@ -37,15 +37,7 @@ roster_entry_for_family() {
     [ -n "$csv" ] || return 1
     IFS=, read -ra roster_items <<< "$csv"
     for item in "${roster_items[@]}"; do
-        case "$family:$item" in
-            claude:claude-*) printf '%s\n' "$item"; return 0 ;;
-            codex:gpt-5.6-*) printf '%s\n' "$item"; return 0 ;;
-        esac
-        # OpenCode ids are provider/model-id: "exactly one slash" needs =~, not a case glob.
-        if [ "$family" = opencode ] && [[ $item =~ ^[^/]+/[^/]+$ ]]; then
-            printf '%s\n' "$item"
-            return 0
-        fi
+        [ "$(model_family "$item")" = "$family" ] && { printf '%s\n' "$item"; return 0; }
     done
     return 1
 }
@@ -97,15 +89,8 @@ model_in_sanctioned_set() {
         *) return 1 ;;
     esac
 }
-model_family() {
-    case $1 in
-        gpt-5.6-*) printf codex ;;
-        claude-*) printf claude ;;
-        # gpt-5.6-*/claude-* never contain '/', so ordering here is cosmetic.
-        */*) printf opencode ;;
-        *) printf unknown ;;
-    esac
-}
+# Single home: repo-config.sh's model_family (issue #606).
+model_family() { "$agentkit/.shared/scripts/repo-config.sh" --model-family "$1" 2> /dev/null || printf unknown; }
 # Provider namespace OpenCode addresses a foreign harness's sanctioned model under when pivoting into OpenCode.
 model_home_provider() {
     case $1 in
@@ -127,8 +112,12 @@ resolve_worker_slot() {
             pivot_note=''
             return
         fi
-        printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
-        exit 1
+        if [ "${yolo_invocation:-false}" = true ]; then
+            printf '%s\n' "yolo: declared roster $roster_key='$roster_csv' has no entry for running harness '$running_harness'; falling back to the singular key or built-in default $native_default" >&2
+        else
+            printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
+            exit 1
+        fi
     fi
     value=$(worker_config_value "$base" "$native_default")
     if model_in_sanctioned_set "$running_harness" "$value"; then
@@ -183,6 +172,8 @@ One comma-separated candidate per harness family (e.g. `claude-sonnet-5,gpt-5.6-
 (`--get harness.name`), never the value's shape. A declared roster entry is sanctioned by
 declaration, wins over the singular keys, and is authoritative once valid: no entry for the running
 harness is a configuration error naming the roster and the running harness, never a silent fallback.
+Under `--yolo` the same case falls through to the singular key or built-in default with one stderr
+line instead: a malformed declaration in an authorized run is a warning, not a stop.
 
 ### Harness-aware pivot
 

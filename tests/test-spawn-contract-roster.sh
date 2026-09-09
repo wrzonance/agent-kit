@@ -29,6 +29,11 @@ mkdir -p "$tmp/agentkit/.shared/scripts"
 cat > "$tmp/agentkit/.shared/scripts/repo-config.sh" <<'HELPER'
 #!/usr/bin/env bash
 # Stub: --get KEY against $STUB_CONFIG_FILE (K=V lines), exit 1 if absent/empty.
+# --model-family delegates to the REAL script (issue #606): this suite pins
+# the real predicate, not a copy.
+case $1 in
+    --model-family) exec "$REAL_REPO_CONFIG" --model-family "$2" ;;
+esac
 while (($#)); do
     case $1 in
         --get) shift; key=$1 ;;
@@ -53,7 +58,7 @@ HELPER
 chmod +x "$tmp/agentkit/.shared/scripts/contract-read.sh"
 
 run_resolver() {
-    local config=$1 harness=$2
+    local config=$1 harness=$2 yolo=${3:-}
     (
         set -e
         export agentkit="$tmp/agentkit"
@@ -61,6 +66,8 @@ run_resolver() {
         export repository_root="$tmp"
         export STUB_CONFIG_FILE="$config"
         export STUB_HARNESS="$harness"
+        export REAL_REPO_CONFIG="$root/agentkit/skills/.shared/scripts/repo-config.sh"
+        [[ -n $yolo ]] && export yolo_invocation="$yolo"
         # shellcheck source=/dev/null
         source "$tmp/resolver.sh"
         # shellcheck disable=SC2154  # worker_model/_fallback/model_pivot_note are set by the sourced resolver block
@@ -119,6 +126,22 @@ assert_contains "$err" "running harness 'codex'" \
     'the configuration error names the running harness'
 assert_contains "$err" 'never falls back to AGENT_WORKER_MODEL' \
     'the configuration error explains the roster is authoritative once declared'
+
+# issue #606: a gpt-6-* roster entry resolves on Codex (the family glob no
+# longer stops at gpt-5.6-*), and under --yolo a roster with no entry for the
+# running harness falls through to the singular key or the built-in default
+# with one stderr line instead of ending the turn.
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5,gpt-6-astra\n' > "$tmp/gpt6.env"
+out=$(run_resolver "$tmp/gpt6.env" codex 2>/dev/null)
+assert_contains "$out" 'worker_model=gpt-6-astra' 'a declared gpt-6-* roster entry resolves on Codex'
+err=$(run_resolver "$tmp/incomplete-roster.env" codex true 2>&1 1>/dev/null); rc=$?
+assert_eq 0 "$rc" 'under --yolo an incomplete roster does not end the turn'
+assert_contains "$err" 'yolo: declared roster AGENT_WORKER_MODELS' 'the degrade is announced on stderr once'
+assert_contains "$(run_resolver "$tmp/incomplete-roster.env" codex true 2>/dev/null)" 'worker_model=gpt-5.6-terra' \
+    'and dispatch falls through to the declared singular key'
+printf 'AGENT_WORKER_MODELS=claude-sonnet-5\n' > "$tmp/roster-only-claude.env"
+assert_contains "$(run_resolver "$tmp/roster-only-claude.env" codex true 2>/dev/null)" 'worker_model=gpt-5.6-luna' \
+    'with no singular key declared the yolo degrade lands on the harness built-in default'
 
 # --- OpenCode roster coverage: provider/model-id form, exactly one slash ---
 # (CodeRabbit finding on PR #489: the resolver supports OpenCode in four

@@ -228,16 +228,13 @@ resolve_config_value() {
 # AGENT_ADVERSARIAL_* ('' = pinned defaults); never the candidate PR's own
 # checkout (a PR could edit .agent/config.env to steer its own review): main
 # resolves the BASE revision's copy, only when the diff does not touch it.
-# reviewer_roster_family MODEL-ID -- the family (codex|claude) a roster id
-# belongs to, mirroring spawn-contract.md's model_family without its
-# unknown/opencode fallthrough: this runner launches exactly two CLIs, so an
-# unrecognised family returns 1 (prints nothing) and the caller reports it.
+# reviewer_roster_family MODEL-ID -- codex|claude from repo-config.sh's single
+# model_family (issue #606); this runner launches exactly two CLIs, so
+# opencode or unknown returns 1 (prints nothing) and the caller reports it.
 reviewer_roster_family() {
-    case $1 in
-        claude-*) printf claude ;;
-        gpt-5.6-*) printf codex ;;
-        *) return 1 ;;
-    esac
+    local family
+    [[ -x $REPO_CONFIG_SH ]] && family=$("$REPO_CONFIG_SH" --model-family "$1" 2>/dev/null) || return 1
+    [[ $family == codex || $family == claude ]] && printf '%s' "$family"
 }
 
 # reviewer_roster_parse VALUE -- splits a `<model-id>-<effort>` roster
@@ -255,7 +252,7 @@ reviewer_roster_parse() {
         ROSTER_MODEL=${value%-"$effort"}
         ROSTER_EFFORT=$effort
         ROSTER_FAMILY=$(reviewer_roster_family "$ROSTER_MODEL") ||
-            die "unrecognized model family for adversarial reviewer roster entry '$value': '$ROSTER_MODEL' is neither a claude-* nor a gpt-5.6-* model id"
+            die "unrecognized model family for adversarial reviewer roster entry '$value': '$ROSTER_MODEL' is not a claude-* or gpt-5.6-*/gpt-6-* model id"
         return 0
     done
     return 1

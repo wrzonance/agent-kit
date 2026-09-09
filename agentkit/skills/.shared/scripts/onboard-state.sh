@@ -101,6 +101,12 @@ fi
 
 detector=$self_dir/detect-toolchains.sh
 printf 'environment-preflight repo-root=%s\n' "$repo_root"
+resolver=$self_dir/repo-config.sh
+config_validate_line='config-validate= ok'
+if [[ -x $resolver && -r $config ]] && ! validate_err=$("$resolver" --repo-root "$repo_root" --validate 2>&1); then
+    config_validate_line="config-validate= invalid: ${validate_err%%$'\n'*}"
+fi
+printf '%s\n' "$config_validate_line"
 ci_gap=$self_dir/ci-gap.sh
 if [[ -x $ci_gap ]]; then
     printf 'ci-alignment:\n'
