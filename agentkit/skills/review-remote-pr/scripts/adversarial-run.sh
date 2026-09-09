@@ -25,10 +25,15 @@ source "$SCRIPT_DIR/consent-record.sh"
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 
 # issue #609: the reviewed run sent 1,383,825 estimated tokens against the
-# 1,000,000 limit the Claude CLI reported; 800,000 leaves prompt and verdict
-# headroom. Env-overridable for tests; shared by both providers (the Codex
-# limit is not independently verified).
-readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-800000}
+# 1,000,000 limit the Claude CLI reported. The gate must never pass a payload
+# either helper's own launch would overflow, so the default is pinned to the
+# smaller of the two: run_provider's codex helper_args below caps Codex at
+# --max-tokens 400000; that is the binding limit (the Claude budget below is
+# USD-denominated, not token-denominated). Env-overridable for tests.
+readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-400000}
+[[ $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT =~ ^[1-9][0-9]*$ ]] ||
+    { printf '%s: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT must be a positive integer: %s\n' \
+        "${0##*/}" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" >&2; exit 1; }
 
 # Loaded lazily from repo-config.sh's own accepted set (its single source of
 # truth) the first time a roster compound needs splitting, so this parser's
@@ -53,6 +58,7 @@ RUN_DIR=''
 PEER_CLI_ABSENT=0
 PROVENANCE=''
 PAYLOAD=''
+PAYLOAD_PATHS_FILE=''
 EXCLUSION_SPECS=()
 EXCLUDED_SHA256=''
 REAFFIRM_IF_COVERED=0
@@ -518,10 +524,11 @@ payload_size_gate() {
 compute_payload() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
+    PAYLOAD_PATHS_FILE="$RUN_DIR/state/adversarial-payload-paths"
     PAYLOAD=$(
         "$consent_script" payload --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
             --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
-            --diff "$RUN_DIR/adversarial.diff"
+            --diff "$RUN_DIR/adversarial.diff" --emit-paths "$PAYLOAD_PATHS_FILE"
     ) || die 'cannot derive the exact consent payload; refusing to launch review'
 }
 
@@ -530,12 +537,21 @@ verify_consent() {
     local check_error
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     [[ -n $PAYLOAD ]] || compute_payload
+    # issue #609: PAYLOAD_PATHS_FILE (this run's touched paths, from the same
+    # compute_payload call that derived PAYLOAD) lets check prove a reduced
+    # auto-review-flag payload's paths are a subset of the granted set; a
+    # record with no paths= field, or with none granted this source, just
+    # ignores the flag and falls back to its existing exact-payload match.
+    local -a check_args=(
+        check --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR"
+        --provider "$PROVIDER" --payload "$PAYLOAD"
+    )
+    [[ -z $PAYLOAD_PATHS_FILE ]] || check_args+=(--paths-file "$PAYLOAD_PATHS_FILE")
     # Capture only stderr (order matters: dup fd2 to the substitution's pipe
     # before redirecting fd1 away) so a mismatch names the expected and
     # recorded provider tokens instead of a bare boolean refusal.
     check_error=$(
-        "$consent_script" check --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
-            --provider "$PROVIDER" --payload "$PAYLOAD" \
+        "$consent_script" "${check_args[@]}" \
             2>&1 1>/dev/null
     ) && return 0
     die "valid consent-record.sh check is required; refusing to launch review: ${check_error:-no consent record for provider $PROVIDER}"

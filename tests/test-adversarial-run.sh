@@ -1271,12 +1271,45 @@ assert_eq 0 "$gate_ok_rc" 'without a token-limit override the same run completes
 assert_eq yes "$( [[ -e $tmp/gate-ok-codex.called ]] && printf yes || printf no )" \
     'an in-budget payload still launches the provider helper'
 gate_ok_payload_size=$(cat -- "$gate_ok_run/adversarial.payload-size")
-assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=800000$ ]] && printf yes || printf no )" \
-    'adversarial.payload-size reports ok against the default 800000-token limit'
+assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=400000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size reports ok against the default 400000-token limit (the codex helper max-tokens cap)'
 
-# 2026-09-09 issue #609: +36, the payload size gate and exclusion receipt;
-# the renderers live in lib/canonical-diff.sh. Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 889 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 889 lines'
+# --- issue #609 fix round 1: ADVERSARIAL_PAYLOAD_TOKEN_LIMIT flows
+# unvalidated into an arithmetic context (payload_size_gate's
+# `(( estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT ))`). Bash expands an array
+# subscript's command substitution before the arithmetic evaluation itself,
+# so a value like `estimate[$(cmd)]` -- naming a variable already in scope at
+# that point -- executes `cmd` even under `set -u`. The limit must be
+# validated as a plain positive integer before that context is ever reached,
+# and the check runs at the top of the script, before any diff is built.
+# A fresh repo -- never the shared $repo, whose .agent became a tracked
+# symlink above (the "tracked environment-contract parent symlink" case) and
+# stays that way for the rest of this file.
+repo_inject=$(make_trust_repo '')
+write_contract_at "$repo_inject" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_inject" switch --quiet -c feature
+printf '%s\n' changed >"$repo_inject/example.txt"
+git -C "$repo_inject" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_inject" rev-parse HEAD)
+export FAKE_HEAD_OID
+inject_marker="$tmp/inject.marker"
+rm -f "$inject_marker"
+inject_rc=0
+(cd "$repo_inject" && PATH="$fake_bin:$PATH" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT="estimate[\$(touch $inject_marker)]" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/inject-run") \
+    >"$tmp/inject.out" 2>"$tmp/inject.err" || inject_rc=$?
+assert_eq 1 "$inject_rc" 'a non-numeric ADVERSARIAL_PAYLOAD_TOKEN_LIMIT dies immediately'
+assert_contains "$(cat -- "$tmp/inject.err")" 'positive integer' \
+    'the rejection names the positive-integer requirement'
+assert_eq no "$( [[ -e $inject_marker ]] && printf yes || printf no )" \
+    'the injected command substitution never executes'
+assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || printf no )" \
+    'the rejection happens before any diff is built'
+
+# 2026-09-09 issue #609 fix round 1: +16 (payload-paths wiring in
+# compute_payload/verify_consent, plus the token-limit validation). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 905 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 905 lines'
 
 finish

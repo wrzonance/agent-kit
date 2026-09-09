@@ -50,3 +50,16 @@ canonical_diff_token_estimate() {
     bytes=$(wc -c <"$1") || return 1
     printf '%s\n' $(( bytes * 2 / 7 ))
 }
+
+# diff_touched_paths FILE -- sorted, unique, repository-relative paths a
+# unified diff touches (issue #609 subset consent), read from its own
+# `--- a/`/`+++ b/` file headers so a payload's granted paths and a later
+# payload's paths are always derived the same way, whether FILE is a
+# canonical rendering or a caller-supplied diff. `/dev/null` create/delete
+# markers never match the `a/`/`b/` prefix, so they contribute nothing.
+diff_touched_paths() {
+    local file=$1
+    grep -E '^(---|\+\+\+) (a|b)/' -- "$file" 2>/dev/null |
+        sed -E 's#^(---|\+\+\+) (a|b)/##' |
+        sort -u
+}

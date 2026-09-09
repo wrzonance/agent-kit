@@ -127,6 +127,8 @@ The rest of the gate stands unchanged:
   leaving the machine.
 - **Still record.** Write the same record with the origin noted:
   `cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted;source=auto-review-flag`.
+  Grant with `--paths-file FILE` (`FILE` is `payload --emit-paths FILE`'s own output); the record
+  then also carries `;paths=<sha256>` -- see the subset rule below.
 - **Still scoped to this invocation.** It does not carry into a later session, a different
   provider, or a different repository.
 - **Still refuses a repository the user does not own.** `--auto-review` is the user consenting
@@ -145,7 +147,11 @@ third_party/, node_modules/ and the base revision's AGENT_GENERATED_PATHS (liste
 the receipt); a payload estimated above the launch limit is refused before consent with
 payload=too-large in the run dir. After confirmation, record
 `cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted` in the active session
-task state; reuse it only for a retry of the exact same payload to the same provider and scope. If the destination provider, PR, or diff changes, obtain confirmation again -- except that an auto-review-flag grant covers the PR, so a reduced payload of the same PR to the same provider never re-asks. If confirmation is missing,
+task state; reuse it only for a retry of the exact same payload to the same provider and scope. If the
+destination provider, PR, or diff changes, obtain confirmation again -- except that an auto-review-flag
+grant covers the PR: a reduced or identical same-PR payload never re-asks, but one touching any path
+outside the granted set does (`check` compares touched-path sets, not a bare repo:PR match). If
+confirmation is missing,
 declined, or cannot be recorded, **Do not send the diff**; report the gate as blocked and wait for user
 direction. Every launcher re-derives the payload from its own arguments and refuses to start without a
 successful `check` against that record; a missing, malformed, mismatched, or symlinked record fails closed.
@@ -169,6 +175,10 @@ scripts/consent-record.sh grant --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
 scripts/adversarial-run.sh --worktree "$WORKTREE" --pr "$PR" --repo "$REPO" \
     --run-dir "$RUN_DIR"
 ```
+
+For `--auto-review`, add `--emit-paths FILE` to the `payload` call and grant with
+`--source auto-review-flag --paths-file FILE` instead of `--source interactive`; the runner
+re-derives its own `--paths-file` the same way before every `check`.
 
 For a chained PR, pass the recorded `chain_base_sha` via `--base-sha` instead of `--base-ref`:
 `consent-record.sh payload --base-ref` takes a branch name only (diffed against its freshly

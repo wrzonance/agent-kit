@@ -32,6 +32,8 @@ BASE_REF=''
 BASE_SHA=''
 DESTINATION=''
 PURPOSE=''
+PATHS_FILE=''
+EMIT_PATHS=''
 # Global, not local to payload_command: an EXIT trap fires after the function
 # that set it has returned, so a deferred "$var" expansion in the trap needs
 # the variable to still be in scope at that point.
@@ -40,10 +42,10 @@ CANONICAL_DIFF_TMP=''
 usage() {
     cat <<EOF
 Usage:
-  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH | --base-sha SHA] [--diff PATH]
+  $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH | --base-sha SHA] [--diff PATH] [--emit-paths FILE]
   $PROGNAME disclose --worktree DIR --run-dir DIR --payload ID --destination TEXT --purpose TEXT
-  $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag
-  $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID
+  $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag [--paths-file FILE]
+  $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID [--paths-file FILE]
 
 --provider accepts either a peer CLI name (codex, claude) or its model-provider
 token (openai, anthropic); grant and check both normalize the CLI name to its
@@ -56,7 +58,19 @@ origin/ prefix -- for a frozen chain-base commit that may no longer be any
 branch's tip. --base-ref and --base-sha are mutually exclusive; payload
 requires exactly one of --base-ref, --base-sha, or --diff.
 
-check exits 0 only for an exact granted provider/payload record, and 10 otherwise.
+--emit-paths FILE writes the sorted, unique, repository-relative paths the
+rendered/supplied diff touches (its own \`--- a/\`/\`+++ b/\` headers) to FILE,
+mode 0600, alongside the usual stdout payload id.
+
+check exits 0 for an exact granted provider/payload record, and 10 otherwise
+-- except a same-repo/PR/provider payload granted with --source
+auto-review-flag also passes when --paths-file names a file whose paths are a
+subset of the paths granted at that source (issue #609): pass the CURRENT
+payload's --emit-paths output back to check as --paths-file so a diff that
+only shrinks or repeats never re-asks, while one that touches any path outside
+the granted set does. grant --source auto-review-flag requires --paths-file
+(the same --emit-paths output from the payload command); --source interactive
+stays exact-payload and rejects --paths-file.
 EOF
 }
 
@@ -106,6 +120,10 @@ parse_options() {
         --destination=*) DESTINATION=${1#*=}; shift ;;
         --purpose) require_value "$1" "${2:-}"; PURPOSE=$2; shift 2 ;;
         --purpose=*) PURPOSE=${1#*=}; shift ;;
+        --paths-file) require_value "$1" "${2:-}"; PATHS_FILE=$2; shift 2 ;;
+        --paths-file=*) PATHS_FILE=${1#*=}; shift ;;
+        --emit-paths) require_value "$1" "${2:-}"; EMIT_PATHS=$2; shift 2 ;;
+        --emit-paths=*) EMIT_PATHS=${1#*=}; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown option: $1" ;;
         esac
@@ -287,7 +305,27 @@ payload_command() {
             die "could not hash diff: $DIFF_PATH"
     fi
     [[ $digest =~ ^[[:xdigit:]]{64}$ ]] || die 'sha256sum returned an invalid digest'
+    if [[ -n $EMIT_PATHS ]]; then
+        local source_diff=${CANONICAL_DIFF_TMP:-$DIFF_PATH}
+        emit_paths_file "$source_diff" "$EMIT_PATHS"
+    fi
     printf '%s:%s:%s\n' "$REPO" "$PR_NUMBER" "$digest"
+}
+
+# emit_paths_file DIFF_FILE DEST -- writes DIFF_FILE's sorted, unique touched
+# paths (diff_touched_paths) to DEST at mode 0600, atomically. Shared by
+# `payload --emit-paths` and grant's own --paths-file consumer so both derive
+# "the paths this payload touches" the same way.
+emit_paths_file() {
+    local diff_file=$1 dest=$2 tmp
+    [[ ! -L $dest ]] || die "refusing to use a paths-file symlink: $dest"
+    tmp=$(mktemp "$(dirname -- "$dest")/.emit-paths.XXXXXX") ||
+        die "could not create a temporary file for: $dest"
+    if ! diff_touched_paths "$diff_file" >"$tmp" || ! chmod 600 -- "$tmp" ||
+        ! mv -f -- "$tmp" "$dest"; then
+        rm -f -- "$tmp"
+        die "could not write the touched-paths file: $dest"
+    fi
 }
 
 validate_record_fields() {
@@ -321,11 +359,40 @@ validate_state_for_write() {
     state_path_is_safe "$parent" || die "state path is not an owned mode-0600 regular file: $STATE_PATH"
 }
 
+# granted_paths_path -- the sorted-paths file a source=auto-review-flag grant
+# persists beside its own consent record. Suffixed onto STATE_PATH itself
+# (never a fixed name in the shared parent directory) because --state lets
+# multiple distinct records share one parent directory; a fixed sibling name
+# would let one grant's paths file clobber another's.
+granted_paths_path() {
+    printf '%s.consent-paths\n' "$STATE_PATH"
+}
+
+# record_granted_paths SRC -- copies SRC's sorted, de-duplicated lines to
+# granted_paths_path at mode 0600 and prints their sha256, so the consent
+# record can pin `paths=<hash>` against exactly the bytes on disk.
+record_granted_paths() {
+    local src=$1 parent dest tmp hash
+    [[ -f $src && ! -L $src && -O $src ]] ||
+        die "--paths-file must be an owned regular file, not a symlink: $src"
+    parent=$(state_parent) || return 1
+    dest=$(granted_paths_path)
+    tmp=$(mktemp "$parent/.consent-paths.XXXXXX") || return 1
+    if ! sort -u -- "$src" >"$tmp" || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    hash=$(sha256sum -- "$dest" | awk '{print $1}') || return 1
+    [[ $hash =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    printf '%s' "$hash"
+}
+
 write_record() {
-    local parent tmp record
+    local paths_hash=${1:-} parent tmp record
     parent=$(state_parent) || return 1
     state_path_is_safe "$parent" || return 1
     record="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=$SOURCE"
+    [[ -z $paths_hash ]] || record="$record;paths=$paths_hash"
     tmp=$(mktemp "$parent/.consent-record.XXXXXX") || return 1
     if ! printf '%s\n' "$record" >"$tmp" || ! chmod 600 -- "$tmp" ||
         ! mv -f -- "$tmp" "$STATE_PATH"; then
@@ -347,12 +414,20 @@ disclose_command() {
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag ]] ||
         die_usage '--source must be interactive or auto-review-flag'
+    if [[ $SOURCE == auto-review-flag ]]; then
+        [[ -n $PATHS_FILE ]] || die_usage '--source auto-review-flag requires --paths-file'
+    else
+        [[ -z $PATHS_FILE ]] || die_usage '--paths-file is only valid with --source auto-review-flag; interactive grants stay exact-payload'
+    fi
     PROVIDER=$(normalize_provider "$PROVIDER")
     [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
     validate_record_fields
     private_dir_ensure "$(dirname -- "$STATE_PATH")" 'consent state parent'
     validate_state_for_write
-    write_record || die "cannot persist consent state: $STATE_PATH"
+    local paths_hash=''
+    [[ -z $PATHS_FILE ]] || paths_hash=$(record_granted_paths "$PATHS_FILE") ||
+        die "cannot persist granted path list: $PATHS_FILE"
+    write_record "$paths_hash" || die "cannot persist consent state: $STATE_PATH"
 }
 
 check_command() {
@@ -395,15 +470,75 @@ check_command() {
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=interactive"
     [[ $record == "$expected" ]] && return 0
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=auto-review-flag"
-    [[ $record == "$expected" ]] && return 0
-    # issue #609: an auto-review-flag grant is scoped to the PR, so a reduced
-    # payload (same repo, PR, and provider; different digest) inherits it.
-    expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=${PAYLOAD%:*}:"
-    [[ $record == "$expected"*';status=granted;source=auto-review-flag' ]] && return 0
+    # An identical payload matches whether or not the grant recorded a
+    # paths=<hash> suffix (only auto-review-flag grants ever carry one).
+    [[ $record == "$expected" || $record == "$expected;paths="* ]] && return 0
+    local reduced_rc=0
+    check_reduced_auto_review_payload "$record" || reduced_rc=$?
+    case $reduced_rc in
+        0) return 0 ;;
+        10) return 10 ;;
+    esac
     recorded_provider=$(sed -n 's/^cross_provider_consent=\([^;]*\);.*/\1/p' <<<"$record")
     printf '%s: check failed: expected provider token %s, recorded %s\n' \
         "$PROGNAME" "$PROVIDER" "${recorded_provider:-<unparseable>}" >&2
     return 10
+}
+
+# check_reduced_auto_review_payload RECORD -- issue #609. An
+# auto-review-flag grant is scoped to the PR, so a payload for the same
+# repo/PR/provider inherits it ONLY when its touched paths are a subset of the
+# paths granted at that source (identical set included) -- the digest alone
+# cannot express that, so this compares path sets instead of trusting a
+# repo:pr: prefix match. Returns 0 when the current --paths-file is a subset
+# of the granted set, 10 when the record matches this source but the subset
+# proof fails (a message is already printed), and 1 when the record does not
+# even claim this source for this repo/PR/provider (not applicable here --
+# the caller falls through to its own generic failure message).
+check_reduced_auto_review_payload() {
+    local record=$1 prefix recorded_hash granted_paths actual_hash extra
+    prefix="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=${PAYLOAD%:*}:"
+    [[ $record == "$prefix"*';status=granted;source=auto-review-flag;paths='* ]] || return 1
+    recorded_hash=${record##*;paths=}
+    [[ $recorded_hash =~ ^[[:xdigit:]]{64}$ ]] || {
+        printf '%s: check failed: consent record has a malformed paths hash: %s\n' \
+            "$PROGNAME" "$STATE_PATH" >&2
+        return 10
+    }
+    granted_paths=$(granted_paths_path)
+    [[ -f $granted_paths && ! -L $granted_paths && -O $granted_paths &&
+        $(stat -c %a -- "$granted_paths" 2>/dev/null) == 600 ]] || {
+        printf '%s: check failed: granted path list is missing or unsafe: %s\n' \
+            "$PROGNAME" "$granted_paths" >&2
+        return 10
+    }
+    actual_hash=$(sha256sum -- "$granted_paths" | awk '{print $1}') || {
+        printf '%s: check failed: could not hash the granted path list: %s\n' \
+            "$PROGNAME" "$granted_paths" >&2
+        return 10
+    }
+    [[ $actual_hash == "$recorded_hash" ]] || {
+        printf '%s: check failed: granted path list does not match its recorded hash (tampered): %s\n' \
+            "$PROGNAME" "$granted_paths" >&2
+        return 10
+    }
+    [[ -n $PATHS_FILE ]] || {
+        printf '%s: check failed: --paths-file is required to verify a reduced auto-review-flag payload\n' \
+            "$PROGNAME" >&2
+        return 10
+    }
+    [[ -f $PATHS_FILE && ! -L $PATHS_FILE && -O $PATHS_FILE ]] || {
+        printf '%s: check failed: --paths-file must be an owned regular file, not a symlink: %s\n' \
+            "$PROGNAME" "$PATHS_FILE" >&2
+        return 10
+    }
+    extra=$(comm -23 <(sort -u -- "$PATHS_FILE") "$granted_paths" 2>/dev/null) || true
+    if [[ -n $extra ]]; then
+        printf '%s: check failed: payload includes paths outside the granted set: %s\n' \
+            "$PROGNAME" "$(paste -sd, - <<<"$extra")" >&2
+        return 10
+    fi
+    return 0
 }
 
 main() {
