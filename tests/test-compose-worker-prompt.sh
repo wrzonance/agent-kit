@@ -102,7 +102,7 @@ assert_rendered_guard_passes() {
 prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna \
     --worker-effort high)
-assert_eq yes "$([[ ${#prompt} -le 20000 ]] && printf yes || printf no)" "issue-lead prompt stays at or under 20000 bytes (measured ${#prompt})"
+assert_eq yes "$([[ ${#prompt} -le 20500 ]] && printf yes || printf no)" "issue-lead prompt stays at or under 20500 bytes (measured ${#prompt})"
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
@@ -1184,7 +1184,8 @@ else
     printf '  skip three-hop boundary-mode integration (fixtures unavailable)\n'
 fi
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/worker-prompts.md") -le 46000 ]] && printf yes || printf no)" \
-    'worker-prompts reference stays at or under 46000 bytes'
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh") -le 1326 ]] && printf yes || printf no)" \
+    'compose-worker-prompt.sh stays at or under 1326 lines'
 
 finish

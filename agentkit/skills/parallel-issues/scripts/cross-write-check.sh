@@ -636,15 +636,10 @@ collect_cmd() {
     done <"$current_status"
     rm -f -- "$current_status"
 
-    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch ----
-    # `git reset --soft`, `git checkout <branch>`, and `git branch -f` move
-    # refs without writing a single file, so the file-status loop above
-    # cannot see them. A plain baseline-vs-current comparison also misses a
-    # ref that moved and landed back on its baseline value (a `reset --soft`
-    # to the pre-dispatch commit is byte-identical to "untouched"), so every
-    # baseline-tracked ref is additionally checked for reflog growth since
-    # the snapshot -- see reflog_activity for why entry counts, not
-    # timestamps, are what detect that case reliably.
+    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch. reset
+    # --soft, checkout <branch>, and branch -f move refs without writing a file,
+    # and a ref that moved and landed back reads as untouched -- so each tracked
+    # ref is also checked for reflog growth (see reflog_activity).
     baseline_head_ref=$(snapshot_head_ref "$snapshot")
     baseline_head_sha=$(snapshot_head_sha "$snapshot")
     baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
@@ -682,15 +677,11 @@ collect_cmd() {
             "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
     fi
 
-    # A branch checked out by another worktree is out of scope for the ROOT
-    # ref fence -- that worktree owns its own commits and pushes (see
-    # list_worktree_branches). Ownership can change between snapshot and
-    # collect (a worker worktree can be added, or removed, mid-window), so a
-    # branch excluded at EITHER end is excluded at BOTH: union, not
-    # intersection. Filtering only the side where it happens to be owned
-    # would read the other side's absence as a fabricated branch-created or
-    # branch-deleted incident -- a worktree lifecycle event, not a root
-    # mutation.
+    # A branch checked out by another worktree is out of scope for the ROOT ref
+    # fence (that worktree owns its commits; see list_worktree_branches).
+    # Ownership can change between snapshot and collect, so a branch excluded at
+    # EITHER end is excluded at BOTH -- union, not intersection -- or a worktree
+    # lifecycle event reads as a fabricated branch incident.
     mapfile -t baseline_excluded < <(snapshot_excluded_branches "$snapshot")
     mapfile -t current_excluded < <(list_worktree_branches "$root")
     for excluded_branch in "${baseline_excluded[@]}" "${current_excluded[@]}"; do

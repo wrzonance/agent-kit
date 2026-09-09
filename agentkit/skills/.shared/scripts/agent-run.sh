@@ -257,13 +257,9 @@ select_caches() {
     export_cache_var UV_CACHE_DIR "$root/uv"
     export_cache_var NPM_CONFIG_CACHE "$root/npm"
     # ecosystem-allow: redirecting a package manager's cache is environment
-    # code, not a claim about which one this repository uses -- the same
-    # exemption the detection helpers carry. This one keeps a SQLite-backed
+    # code, not a claim about which one the repo uses. This one keeps a SQLite
     # content store OUTSIDE the npm cache, so redirecting NPM_CONFIG_CACHE alone
-    # left it writing where a sandbox denied it, surfacing as "[ERR_SQLITE_ERROR]
-    # unable to open database file" -- which names neither the store nor the
-    # sandbox. An agent lost several calls to it, then passed --store-dir by hand
-    # on every command for the rest of the session.
+    # surfaced as an opaque ERR_SQLITE_ERROR and cost an agent several calls.
     export_cache_var npm_config_store_dir "$root/pnpm-store"  # ecosystem-allow:
     export_cache_var PIP_CACHE_DIR "$root/pip"
 }
@@ -795,17 +791,10 @@ resolve_runner() {
 # Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
 resolve_named_command() {
     local name=$1 key declared kind_key declared_kind
-    # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is
-    # --cmd check-node-pin. Reading the contract and typing its key back is the
-    # obvious move, and it used to fail.
-    #
-    # Naming the correct spelling in the error was not enough: the next session
-    # made the same three mistakes and recovered from each, which is three
-    # wasted calls per session on every repository with multi-word command
-    # names. Both spellings fold to the same key with no ambiguity, so the
-    # strictness bought nothing that was worth a round trip. Accept either and
-    # canonicalise -- everything downstream, including the log label, sees the
-    # dashed form.
+    # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is --cmd
+    # check-node-pin. Both spellings fold to one key with no ambiguity, and
+    # naming the right spelling in the error still cost three calls a session --
+    # accept either and canonicalise to the dashed form.
     name=$(printf '%s' "$name" | tr '[:upper:]_' '[:lower:]-')
     [[ $name =~ ^[a-z][a-z0-9-]*$ ]] ||
         die "--cmd NAME must be letters, digits, dashes or underscores, got: $1"

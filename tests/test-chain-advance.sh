@@ -1362,4 +1362,8 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 2600 ]] && printf yes || printf no)" \
     'trust-and-fencing reference stays at or under 2600 bytes'
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1065 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1065 lines'
+
 finish
