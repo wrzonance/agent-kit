@@ -102,11 +102,12 @@ model_home_provider() {
 
 # Resolves one declaration slot for the running harness; sets $resolved_value/$pivot_note as globals and exits 1 on an unsanctioned model -- call as a plain statement, never inside $(...) (a subshell exit would not stop the script).
 resolve_worker_slot() {
-    local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value
+    local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value roster_get_rc=0
     # A declared roster is authoritative: no entry for the running harness is a configuration error, never a silent fallback to the singular key or built-in default.
-    if roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
-        --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) &&
-        [ -n "$roster_csv" ]; then
+    # --get exits 2, not the absent-key 1, when the roster line IS declared but rejected by validate() -- captured below so a malformed roster degrades on its own message, not as silently-unset (issue #606 round 3).
+    roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
+        --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) || roster_get_rc=$?
+    if [ -n "$roster_csv" ]; then
         if roster_value=$(roster_entry_for_family "$roster_csv" "$running_harness"); then
             resolved_value=$roster_value
             pivot_note=''
@@ -116,6 +117,13 @@ resolve_worker_slot() {
             printf '%s\n' "yolo: declared roster $roster_key='$roster_csv' has no entry for running harness '$running_harness'; falling back to the singular key or built-in default $native_default" >&2
         else
             printf '%s\n' "declared roster $roster_key='$roster_csv' has no entry for the running harness '$running_harness'; the roster is authoritative once declared and never falls back to $base or a built-in default -- add a $running_harness entry or remove the roster declaration" >&2
+            exit 1
+        fi
+    elif [ "$roster_get_rc" -eq 2 ]; then
+        if [ "${yolo_invocation:-false}" = true ]; then
+            printf '%s\n' "yolo: declared roster $roster_key is invalid; falling back to the singular key or built-in default $native_default" >&2
+        else
+            printf '%s\n' "declared roster $roster_key is invalid; never falls back silently -- fix or remove the declaration (see repo-config.sh --validate)" >&2
             exit 1
         fi
     fi
