@@ -6,7 +6,7 @@
 #
 # Usage:
 #   repo-config.sh --export          # `export K='V'` lines, safe to eval
-#   repo-config.sh --get KEY         # one effective value; exit 1 if absent
+#   repo-config.sh --get KEY         # one effective value; exit 1 if absent, exit 2 if declared but invalid
 #   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
 #   repo-config.sh --list            # K=V lines for accepted keys actually declared
 #   repo-config.sh --list-keys       # the accepted key set itself, one per line
@@ -468,9 +468,9 @@ value_suggestion() {
             for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
                 [[ $value == *-"$effort" ]] || continue
                 model=${value%-"$effort"}; suggestion=$(model_id_suggestion "$model")
-                [[ -n $suggestion ]] && { changed=1; out="$suggestion-$effort"; }
+                [[ -n $suggestion ]] && reviewer_roster_entry_valid "$suggestion-$effort" && { changed=1; out="$suggestion-$effort"; }
             done ;;
-        *) suggestion=$(model_id_suggestion "$value"); [[ -n $suggestion ]] && { changed=1; out=$suggestion; } ;;
+        *) suggestion=$(model_id_suggestion "$value"); [[ -n $suggestion ]] && model_id_valid "$suggestion" && { changed=1; out=$suggestion; } ;;
     esac
     ((changed)) && printf '%s' "$out"
 }
@@ -498,10 +498,14 @@ worker_models_roster_valid() {
 # AGENT_ADVERSARIAL_REVIEWER and AGENT_ADVERSARIAL_REVIEWER_FALLBACK both
 # accept a `<model-id>-<effort>` compound belonging to a known model family.
 reviewer_roster_entry_valid() {
-    local value=$1 effort
+    local value=$1 effort model
     for effort in "${ADVERSARIAL_REVIEW_EFFORT_ACCEPTED_NAMES[@]}"; do
         [[ $value == *-"$effort" ]] || continue
-        model_id_valid "${value%-"$effort"}" && model_family "${value%-"$effort"}" > /dev/null && return 0
+        model=${value%-"$effort"}
+        # adversarial-run.sh launches exactly codex or claude -- an opencode (or
+        # other) family model_family itself would accept is not a launchable
+        # reviewer, so it must not validate here either (CodeRabbit on #684).
+        model_id_valid "$model" && adversarial_reviewer_valid "$(model_family "$model")" && return 0
     done
     return 1
 }
@@ -888,6 +892,10 @@ parse_failed=0
 rundir_mismatch_requested=0
 lineno=0
 suggestion=''
+# Set when --get/--get-argv's own requested key was declared but rejected by
+# validate() -- distinguishes "invalid" from "never declared" (issue #606
+# round 3), since both otherwise parse to the same absent-from-out_keys state.
+want_key_invalid=0
 
 while IFS= read -r line || [[ -n $line ]]; do
     lineno=$((lineno + 1))
@@ -948,6 +956,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         fi
         [[ $mode == canonical || $mode == validate ||
             ( $mode == resolve && -n ${resolve_requested_keys[$key]+yes} ) ]] && parse_failed=1
+        [[ -n $value && ($mode == get || $mode == argv) && $key == "$want_key" ]] && want_key_invalid=1
         continue
     fi
 
@@ -1048,6 +1057,7 @@ case $mode in
                 exit 0
             fi
         done
+        ((want_key_invalid)) && exit 2
         exit 1
         ;;
     argv)

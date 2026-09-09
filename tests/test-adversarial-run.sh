@@ -1339,6 +1339,39 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # prompt overhead, not just the diff bytes). Measured.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 925 ]] && printf yes || printf no)" \
     'adversarial-run.sh stays at or under 925 lines'
+# --- roster form, OpenCode-family compound: repo-config.sh's model_family
+# classifies a well-formed provider/model-id as opencode (a real, recognized
+# family) rather than failing outright, so this needs its own case from the
+# "some-other-provider-high" one above -- reviewer_roster_entry_valid must
+# still refuse it, since adversarial-run.sh only ever launches codex or claude
+# (CodeRabbit on #684) ---------------------------------------------------
+repo_roster_opencode=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=claude-proxy/sonnet-high')
+write_contract_at "$repo_roster_opencode" codex claude "present path=$tmp/fake-claude"
+git -C "$repo_roster_opencode" switch --quiet -c feature
+printf '%s\n' changed >"$repo_roster_opencode/example.txt"
+git -C "$repo_roster_opencode" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_roster_opencode" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_roster_opencode="$tmp/repo-roster-opencode.diff"
+git -C "$repo_roster_opencode" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$diff_roster_opencode"
+roster_opencode_run="$tmp/roster-opencode-run"
+grant "$roster_opencode_run" anthropic "$diff_roster_opencode"
+roster_opencode_rc=0
+(cd "$repo_roster_opencode" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CODEX_CALLED="$tmp/roster-opencode-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$roster_opencode_run") \
+    >"$tmp/roster-opencode.out" 2>"$tmp/roster-opencode.err" || roster_opencode_rc=$?
+assert_eq 0 "$roster_opencode_rc" 'a roster OpenCode-family compound is dropped and the pinned defaults complete'
+roster_opencode_validate_rc=0
+roster_opencode_validate=$("$root/agentkit/skills/.shared/scripts/repo-config.sh" --repo-root "$repo_roster_opencode" --validate 2>&1) || roster_opencode_validate_rc=$?
+assert_eq 1 "$roster_opencode_validate_rc" 'repo-config.sh --validate refuses an OpenCode-family reviewer compound'
+assert_contains "$roster_opencode_validate" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 1, ignoring -- accepted:' \
+    'the refusal names the key and the accepted set, same as any other unlaunchable family'
+assert_contains "$(cat -- "$tmp/roster-opencode.out")" 'provider=anthropic model=claude-opus-5' \
+    'the run lands on the pinned cross-provider default, not on the OpenCode entry'
+assert_eq no "$( [[ -e $tmp/roster-opencode-codex.called ]] && printf yes || printf no )" \
+    'an OpenCode-family compound never silently launches codex'
+
 # --- roster form, bare fallback CLI name: AGENT_ADVERSARIAL_REVIEWER_FALLBACK
 # names a bare CLI (claude|codex) rather than a <model-id>-<effort> compound.
 # reviewer_roster_parse only splits the compound form, so the fallback must be

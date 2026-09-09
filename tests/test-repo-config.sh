@@ -675,6 +675,46 @@ assert_eq 1 "$validate_rc" '--validate exits non-zero on an unaccepted key'
 assert_contains "$validate_out" 'unknown key on line 2, ignoring: AGENT_NOT_A_KEY' \
     '--validate names the offending line for the unaccepted key'
 
+# --- fix round 3 (CodeRabbit on #684): a corrected suggestion is itself
+# validated before being reported -- model_id_suggestion's codex-/claude-
+# prefix-strip can produce a still-dotted claude id, which must never be
+# offered as a "did you mean" -----------------------------------------------
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=codex-claude-fable-5.1-high\n' \
+    > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEWER_FALLBACK on line 2, ignoring' \
+    'a reviewer compound whose only correction is itself invalid is still refused'
+assert_not_contains "$validate_out" 'did you mean' \
+    'and no suggestion is offered, since claude-fable-5.1-high is still a dotted Claude id'
+
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEW_MODEL=codex-claude-bad id\n' \
+    > "$repo/.agent/config.env"
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || true
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODEL on line 2, ignoring' \
+    'a bare model id whose only correction is itself invalid is still refused (default arm)'
+assert_not_contains "$validate_out" 'did you mean' \
+    'and no suggestion is offered, since the corrected id still carries the invalid character'
+
+# --- fix round 3 (CodeRabbit on #684): reviewer_roster_entry_valid must
+# refuse an OpenCode-family compound -- model_family recognizes it (a real,
+# well-formed provider/model-id), but adversarial-run.sh only ever launches
+# codex or claude, so it is not a launchable reviewer -----------------------
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER=claude-proxy/sonnet-high\n' \
+    > "$repo/.agent/config.env"
+validate_rc=0
+validate_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1) || validate_rc=$?
+assert_eq 1 "$validate_rc" '--validate refuses an OpenCode-family AGENT_ADVERSARIAL_REVIEWER compound'
+assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEWER on line 2, ignoring -- accepted: codex, claude' \
+    'the refusal names the accepted set, not the OpenCode family model_family itself recognizes'
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=wrzcluster/qwen3-coder-high\n' \
+    > "$repo/.agent/config.env"
+assert_rc 1 '--validate refuses the same OpenCode-family compound for the fallback key' \
+    -- "$rc_sh" --repo-root "$repo" --validate
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh\nAGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-high\n' \
+    > "$repo/.agent/config.env"
+assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds for both keys' \
+    -- "$rc_sh" --repo-root "$repo" --validate
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # 2026-09-09 issue #606: the model-family predicate and corrected-form
 # suggestions now live here and only here (adversarial-run.sh -3,
@@ -686,7 +726,14 @@ assert_contains "$validate_out" 'unknown key on line 2, ignoring: AGENT_NOT_A_KE
 # checks the exactly-one-slash form before the claude-/gpt- prefixes so an
 # OpenCode claude-proxy/sonnet entry no longer misclassifies as claude
 # (+1 line net). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1113 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1113 lines'
+# 2026-09-09 fix round 3: --get/--get-argv now exit 2 (not the absent-key 1)
+# when the requested key was declared but rejected by validate(), tracked via
+# want_key_invalid, so callers (spawn-contract.md's resolve_worker_slot) can
+# tell an invalid roster apart from an unset one (+6 lines); and
+# reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
+# model_family itself recognizes but adversarial-run.sh cannot launch (+4
+# lines). Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1123 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1123 lines'
 
 finish
