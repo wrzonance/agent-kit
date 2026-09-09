@@ -247,18 +247,13 @@ payload_command() {
     local digest canonical_digest supplied_digest base_display resolved_sha
     if [[ -n $BASE_SHA || -n $BASE_REF ]]; then
         if [[ -n $BASE_SHA ]]; then
-            # A frozen chain-base SHA is diffed directly, never via
-            # canonical_diff()'s "origin/<ref>" form: that form requires a
-            # branch name (check-ref-format rejects a bare SHA), and
-            # refreshing "origin/<sha>" is not meaningful -- the commit is
-            # already local by definition (see resolve_local_base_sha). The
-            # flags below mirror canonical_diff() exactly so a SHA-based
-            # render and an equivalent branch-based render hash identically.
+            # A frozen chain-base SHA is diffed directly via canonical_diff_range,
+            # mirroring canonical_diff() exactly (see resolve_local_base_sha).
             resolved_sha=$(resolve_local_base_sha "$BASE_SHA") ||
                 die "--base-sha no longer resolves locally: $BASE_SHA"
             base_display=$BASE_SHA
             new_canonical_diff_tmp
-            (cd -- "$WORKTREE" && git --no-pager diff --find-renames --unified=25 "$resolved_sha...HEAD") \
+            (cd -- "$WORKTREE" && canonical_diff_range "$resolved_sha...HEAD" "$resolved_sha") \
                 >"$CANONICAL_DIFF_TMP" ||
                 die "could not render canonical diff from $base_display"
         else
@@ -401,6 +396,10 @@ check_command() {
     [[ $record == "$expected" ]] && return 0
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=auto-review-flag"
     [[ $record == "$expected" ]] && return 0
+    # issue #609: an auto-review-flag grant is scoped to the PR, so a reduced
+    # payload (same repo, PR, and provider; different digest) inherits it.
+    expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=${PAYLOAD%:*}:"
+    [[ $record == "$expected"*';status=granted;source=auto-review-flag' ]] && return 0
     recorded_provider=$(sed -n 's/^cross_provider_consent=\([^;]*\);.*/\1/p' <<<"$record")
     printf '%s: check failed: expected provider token %s, recorded %s\n' \
         "$PROGNAME" "$PROVIDER" "${recorded_provider:-<unparseable>}" >&2

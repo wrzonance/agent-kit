@@ -585,7 +585,9 @@ assert_contains "$adversarial_text" 'scripts/review-liveness.sh --run-dir "$RUN_
 assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, or Blocked' \
     'the reference pins the three liveness states'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 19600 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 19600 bytes'
+# 2026-09-09 issue #609: +375 B, two new facts (exclusions, size gate) and
+# the PR-scoped auto-review grant; measured.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 19779 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 19779 bytes'
 
 finish

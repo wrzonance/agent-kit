@@ -281,6 +281,17 @@ assert_rc 0 'check accepts the explicitly granted replacement payload' -- \
 assert_rc 10 'the prior payload is not reusable after replacement' -- \
     /bin/bash "$script" check --state "$state" --provider anthropic --payload "$payload_one"
 
+# issue #609: an auto-review-flag grant is scoped to the PR -- a reduced
+# payload of the same repo/PR/provider inherits it; another PR does not.
+assert_rc 0 'an auto-review grant covers a different payload digest for the same PR and provider' -- \
+    /bin/bash "$script" check --state "$state" --provider openai --payload "$payload_one"
+other_pr_payload="${payload_one%:*}"; other_pr_payload="${other_pr_payload%:*}:43:${payload_one##*:}"
+assert_rc 10 'an auto-review grant never covers another PR' -- \
+    /bin/bash "$script" check --state "$state" --provider openai --payload "$other_pr_payload"
+grant=$(/bin/bash "$script" grant --state "$state" --provider openai --payload "$payload_two" --source interactive)
+assert_rc 10 'an interactive grant stays exact-payload' -- \
+    /bin/bash "$script" check --state "$state" --provider openai --payload "$payload_one"
+
 # `peer-cli=` names a CLI (codex, claude); adversarial-run.sh checks the
 # consent record against the model-provider token that CLI runs on (openai,
 # anthropic). A grant recorded under either spelling must satisfy the same

@@ -24,6 +24,12 @@ source "$SCRIPT_DIR/consent-record.sh"
 
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 
+# issue #609: the reviewed run sent 1,383,825 estimated tokens against the
+# 1,000,000 limit the Claude CLI reported; 800,000 leaves prompt and verdict
+# headroom. Env-overridable for tests; shared by both providers (the Codex
+# limit is not independently verified).
+readonly ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=${ADVERSARIAL_PAYLOAD_TOKEN_LIMIT:-800000}
+
 # Loaded lazily from repo-config.sh's own accepted set (its single source of
 # truth) the first time a roster compound needs splitting, so this parser's
 # effort list can never silently drift from the validator that already
@@ -47,6 +53,8 @@ RUN_DIR=''
 PEER_CLI_ABSENT=0
 PROVENANCE=''
 PAYLOAD=''
+EXCLUSION_SPECS=()
+EXCLUDED_SHA256=''
 REAFFIRM_IF_COVERED=0
 LEDGER_COMMENTS=''
 HARNESS_NAME=''
@@ -441,6 +449,16 @@ build_diff() {
     mv -f -- "$tmp" "$diff_path" || die "could not publish the adversarial diff: $diff_path"
     [[ -s $diff_path ]] || die 'the adversarial diff is empty; review is blocked'
     grep -q '[^[:space:]]' -- "$diff_path" || die 'the adversarial diff is empty; review is blocked'
+
+    # issue #609: record the exclusion evidence (which pathspecs, and what
+    # they removed) beside the reviewed payload -- the receipt names the
+    # count and a checksum of what was left out, never a heuristic guess.
+    mapfile -t EXCLUSION_SPECS < <(canonical_diff_exclusions "origin/$BASE_REF")
+    prepare_owned_artifact "$RUN_DIR/adversarial.exclusions"
+    (umask 077; printf '%s\n' "${EXCLUSION_SPECS[@]}" >"$RUN_DIR/adversarial.exclusions")
+    prepare_owned_artifact "$RUN_DIR/adversarial.excluded.diff"
+    (umask 077; git --no-pager diff --find-renames --unified=25 "origin/$BASE_REF...HEAD" -- "${EXCLUSION_SPECS[@]/#:(exclude,top)/:(top)}" >"$RUN_DIR/adversarial.excluded.diff")
+    EXCLUDED_SHA256=$(sha256sum -- "$RUN_DIR/adversarial.excluded.diff" | awk '{print $1}')
 }
 
 # Populates BASE_CONFIG_FILE with a private snapshot of the PR's BASE-revision
@@ -476,6 +494,20 @@ resolve_base_declared_config() {
     mv -f -- "$tmp" "$base_config" || die "could not publish the base-revision config snapshot: $base_config"
     BASE_CONFIG_FILE=$base_config
     return 0
+}
+
+# issue #609: refuse to spend on a payload the provider cannot hold; the
+# one-line reason names the remedy instead of a launch with no verdict.
+payload_size_gate() {
+    local estimate verdict=ok
+    estimate=$(canonical_diff_token_estimate "$RUN_DIR/adversarial.diff") || die 'could not measure the adversarial diff'
+    ((estimate <= ADVERSARIAL_PAYLOAD_TOKEN_LIMIT)) || verdict=too-large
+    prepare_owned_artifact "$RUN_DIR/adversarial.payload-size"
+    (umask 077; printf 'payload=%s estimate=%s limit=%s\n' "$verdict" "$estimate" "$ADVERSARIAL_PAYLOAD_TOKEN_LIMIT" >"$RUN_DIR/adversarial.payload-size")
+    [[ $verdict == ok ]] && return 0
+    write_blocked_result payload-too-large "estimated $estimate tokens exceeds the $ADVERSARIAL_PAYLOAD_TOKEN_LIMIT-token launch limit; declare vendored or generated trees in AGENT_GENERATED_PATHS on the base branch and re-run"
+    receipt_line
+    return 1
 }
 
 # Stashed in the global PAYLOAD (not a local) so write_launch_attempted,
@@ -658,8 +690,9 @@ receipt_line() {
     p1=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P1")] | length end' <"$path")
     p2=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P2")] | length end' <"$path")
     verdict=$(jq -r 'if .status == "blocked" then "blocked" else (.verdict | objects | .verdict) // "blocked" end' <"$path")
-    printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s\n' \
-        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict"
+    printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s exclusions=%s excluded_sha256=%s\n' \
+        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict" \
+        "${#EXCLUSION_SPECS[@]}" "${EXCLUDED_SHA256:-none}"
 }
 
 validate_finding_ledger_if_present() {
@@ -832,6 +865,9 @@ main() {
         select_reviewer "$BASE_CONFIG_FILE"
         require_helper_executable
     fi
+    # issue #609: after select_reviewer (a blocked result names PROVIDER/MODEL)
+    # and before compute_payload/consent/any launch marker.
+    payload_size_gate || return 1
     compute_payload
     # issue #477: the reaffirm short-circuit runs BEFORE
     # guard_prior_launch_attempt -- a stale local launch marker must never block

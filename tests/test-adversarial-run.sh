@@ -83,6 +83,7 @@ if [[ ${1:-} == exec && ${2:-} == --help ]]; then
     printf '%s\n' '--output-last-message --json'
     exit 0
 fi
+[[ -z ${FAKE_CODEX_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CODEX_CALLED"
 last_file=''
 while (($#)); do
     if [[ $1 == --output-last-message ]]; then last_file=$2; shift 2; else shift; fi
@@ -1138,8 +1139,144 @@ assert_contains "$(cat -- "$tmp/roster-unknown.out")" 'provider=anthropic model=
 assert_eq no "$( [[ -e $tmp/roster-unknown-codex.called ]] && printf yes || printf no )" \
     'an unrecognized family never silently launches codex'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 853 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 853 lines'
+# --- issue #609: exclusions are computed from base-declared
+# AGENT_GENERATED_PATHS plus the built-in vendored trees, and receipted with
+# a checksum of what was excluded. The fixture's grant must hash the same
+# bytes the script will render -- the excluded canonical render, with the
+# same four pathspecs build_diff uses -- or compute_payload's own consent
+# check refuses the supplied diff before any of the assertions below run.
+repo_excl=$(make_trust_repo 'AGENT_GENERATED_PATHS=generated')
+write_contract_at "$repo_excl" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_excl" switch --quiet -c feature
+mkdir -p -- "$repo_excl/generated" "$repo_excl/vendor"
+printf '%s\n' changed >"$repo_excl/example.txt"
+printf '%s\n' generated >"$repo_excl/generated/big.txt"
+printf '%s\n' vendored >"$repo_excl/vendor/lib.c"
+git -C "$repo_excl" add example.txt generated/big.txt vendor/lib.c
+git -C "$repo_excl" commit --quiet -m 'change with generated and vendored files'
+FAKE_HEAD_OID=$(git -C "$repo_excl" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_excl="$tmp/repo-excl.diff"
+git -C "$repo_excl" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' ':(exclude,top)generated' \
+    >"$diff_excl"
+excl_run="$tmp/excl-run"
+grant "$excl_run" openai "$diff_excl"
+excl_rc=0
+(cd "$repo_excl" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$excl_run") \
+    >"$tmp/excl.out" 2>"$tmp/excl.err" || excl_rc=$?
+assert_eq 0 "$excl_rc" 'a run with declared and built-in exclusions completes'
+assert_contains "$(cat -- "$tmp/excl.out")" 'exclusions=4' \
+    'the receipt counts 3 built-in exclusions plus 1 declared'
+excl_sha256=$(sed -n 's/.*excluded_sha256=\([0-9a-f]*\).*/\1/p' "$tmp/excl.out")
+assert_eq 64 "${#excl_sha256}" 'the receipt carries a 64-hex checksum of the excluded diff'
+assert_contains "$(cat -- "$excl_run/adversarial.diff")" 'example.txt' \
+    'the reviewed diff still contains the non-excluded file'
+assert_not_contains "$(cat -- "$excl_run/adversarial.diff")" 'generated/big.txt' \
+    'the reviewed diff excludes the declared generated path'
+assert_not_contains "$(cat -- "$excl_run/adversarial.diff")" 'vendor/lib.c' \
+    'the reviewed diff excludes the built-in vendored path'
+assert_eq "$(printf ':(exclude,top)vendor\n:(exclude,top)third_party\n:(exclude,top)node_modules\n:(exclude,top)generated')" \
+    "$(cat -- "$excl_run/adversarial.exclusions")" \
+    'adversarial.exclusions lists the built-ins and the declared path in order'
+assert_eq yes "$( [[ -f $excl_run/adversarial.excluded.diff ]] && printf yes || printf no )" \
+    'adversarial.excluded.diff is published'
+assert_eq 600 "$(stat -c %a -- "$excl_run/adversarial.excluded.diff")" \
+    'adversarial.excluded.diff is mode 0600'
+assert_contains "$(cat -- "$excl_run/adversarial.excluded.diff")" 'generated/big.txt' \
+    'the excluded diff documents the declared exclusion'
+assert_contains "$(cat -- "$excl_run/adversarial.excluded.diff")" 'vendor/lib.c' \
+    'the excluded diff documents the built-in exclusion'
+
+# --- tamper case: the reviewed diff itself edits .agent/config.env, trying to
+# widen AGENT_GENERATED_PATHS to hide example.txt. Exclusions are rendered from
+# the BASE revision only, so the tamper has no effect on what is excluded --
+# the diff still contains example.txt and the config edit itself.
+repo_tamper=$(make_trust_repo 'AGENT_GENERATED_PATHS=generated')
+write_contract_at "$repo_tamper" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_tamper" switch --quiet -c feature
+printf '%s\n' changed >"$repo_tamper/example.txt"
+printf 'AGENT_GENERATED_PATHS=example.txt\n' >"$repo_tamper/.agent/config.env"
+git -C "$repo_tamper" commit --quiet -am 'change including config.env'
+FAKE_HEAD_OID=$(git -C "$repo_tamper" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_tamper="$tmp/repo-tamper.diff"
+git -C "$repo_tamper" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' ':(exclude,top)generated' \
+    >"$diff_tamper"
+tamper_run="$tmp/tamper-run"
+grant "$tamper_run" openai "$diff_tamper"
+tamper_rc=0
+(cd "$repo_tamper" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$tamper_run") \
+    >"$tmp/tamper.out" 2>"$tmp/tamper.err" || tamper_rc=$?
+assert_eq 0 "$tamper_rc" 'a reviewed diff that edits config.env to widen exclusions still completes'
+tamper_err=$(cat -- "$tmp/tamper.err")
+assert_contains "$tamper_err" 'the reviewed diff changes .agent/config.env' \
+    'the tamper attempt is announced on stderr, same as the existing config-touch guard'
+assert_contains "$(cat -- "$tamper_run/adversarial.diff")" 'example.txt' \
+    'the base-revision exclusion list wins: example.txt is not hidden by the tampered declaration'
+assert_contains "$(cat -- "$tamper_run/adversarial.diff")" '.agent/config.env' \
+    'the config.env edit itself is visible in the reviewed diff'
+
+# --- issue #609: a payload estimated over the token limit is refused before
+# any consent check or provider launch -- fake-codex now records a call
+# marker (added above at :85) so "never launched" is provable, not assumed.
+repo_gate=$(make_trust_repo '')
+write_contract_at "$repo_gate" claude codex "present path=$tmp/fake-codex"
+git -C "$repo_gate" switch --quiet -c feature
+printf '%s\n' changed >"$repo_gate/example.txt"
+git -C "$repo_gate" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$repo_gate" rev-parse HEAD)
+export FAKE_HEAD_OID
+diff_gate="$tmp/repo-gate.diff"
+git -C "$repo_gate" --no-pager diff --find-renames --unified=25 origin/main...HEAD \
+    -- ':/' ':(exclude,top)vendor' ':(exclude,top)third_party' ':(exclude,top)node_modules' \
+    >"$diff_gate"
+
+gate_run="$tmp/gate-run"
+grant "$gate_run" openai "$diff_gate"
+gate_consent_before=$(cat -- "$gate_run/state/cross-provider-consent")
+gate_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    ADVERSARIAL_PAYLOAD_TOKEN_LIMIT=10 FAKE_CODEX_CALLED="$tmp/gate-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$gate_run") \
+    >"$tmp/gate.out" 2>"$tmp/gate.err" || gate_rc=$?
+assert_eq 1 "$gate_rc" 'a payload over the token limit blocks with a non-zero exit'
+assert_eq no "$( [[ -e $tmp/gate-codex.called ]] && printf yes || printf no )" \
+    'the oversized payload never invokes the provider helper'
+assert_eq no "$( [[ -e $gate_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'the oversized payload never writes the launch-attempted marker'
+assert_eq "$gate_consent_before" "$(cat -- "$gate_run/state/cross-provider-consent")" \
+    'the oversized payload leaves the consent record untouched -- no check was ever run against it'
+gate_payload_size=$(cat -- "$gate_run/adversarial.payload-size")
+assert_eq yes "$( [[ $gate_payload_size =~ ^payload=too-large\ estimate=[1-9][0-9]*\ limit=10$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size names the too-large verdict, a positive estimate, and the limit'
+assert_eq blocked "$(jq -r '.status' -- "$gate_run/adversarial.result.json")" \
+    'the blocked result status is blocked'
+assert_eq payload-too-large "$(jq -r '.blockedReason' -- "$gate_run/adversarial.result.json")" \
+    'the blocked result names the payload-too-large reason'
+assert_contains "$(cat -- "$tmp/gate.out")" 'verdict=blocked' \
+    'the receipt reports a blocked verdict'
+
+gate_ok_run="$tmp/gate-ok-run"
+grant "$gate_ok_run" openai "$diff_gate"
+gate_ok_rc=0
+(cd "$repo_gate" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_CALLED="$tmp/gate-ok-codex.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$gate_ok_run") \
+    >"$tmp/gate-ok.out" 2>"$tmp/gate-ok.err" || gate_ok_rc=$?
+assert_eq 0 "$gate_ok_rc" 'without a token-limit override the same run completes normally'
+assert_eq yes "$( [[ -e $tmp/gate-ok-codex.called ]] && printf yes || printf no )" \
+    'an in-budget payload still launches the provider helper'
+gate_ok_payload_size=$(cat -- "$gate_ok_run/adversarial.payload-size")
+assert_eq yes "$( [[ $gate_ok_payload_size =~ ^payload=ok\ estimate=[0-9]+\ limit=800000$ ]] && printf yes || printf no )" \
+    'adversarial.payload-size reports ok against the default 800000-token limit'
+
+# 2026-09-09 issue #609: +36, the payload size gate and exclusion receipt;
+# the renderers live in lib/canonical-diff.sh. Measured.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 889 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 889 lines'
 
 finish
