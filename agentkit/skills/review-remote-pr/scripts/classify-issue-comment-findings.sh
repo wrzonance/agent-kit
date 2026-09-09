@@ -45,6 +45,7 @@ count          exactly one line: "open=N answered=M total=T". Read-only.
 mark-answered  appends {"id","sha","fingerprint","answered_at"} to --answered (created 0600); idempotent on the
                (id, fingerprint) PAIR -- an already-present pair prints "already-answered" and exits 0.
 Exit status: 0 success; 1 evidence unavailable (missing tool, unreadable or malformed --comments/--answered); 2 usage error.
+Requires: bash >= 4.2, jq >= 1.6, sha256sum (or shasum -a 256).
 EOF
 }
 
