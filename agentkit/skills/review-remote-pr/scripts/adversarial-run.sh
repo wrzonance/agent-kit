@@ -224,26 +224,14 @@ resolve_config_value() {
     printf '%s' "$value"
 }
 
-# select_reviewer CONFIG_FILE -- CONFIG_FILE is the ONLY source ever consulted
-# for AGENT_ADVERSARIAL_* declarations; pass '' for the pinned-defaults-only
-# selection. The candidate PR's own working-tree checkout must never be that
-# source: a PR under review can edit .agent/config.env in its own diff, and a
-# reviewer that reads its declarations from the tree being reviewed lets the
-# candidate steer the very review meant to scrutinize it (the PR's effort=low
-# or a same-harness reviewer declaration would go unnoticed). The one caller
-# that may pass a real path (main, below) resolves it from the PR's BASE
-# revision instead, and only when the reviewed diff itself does not touch
-# that file.
-# reviewer_roster_family MODEL-ID -- self-detects the family a roster model
-# id belongs to, mirroring spawn-contract.md's model_family for workers.
-# Unlike that resolver (which also has an `unknown`/opencode fallthrough),
-# this runner launches exactly two CLIs -- codex or claude -- so a model id
-# in neither known family is a configuration error, not a default: silently
-# classifying it as codex would start the wrong CLI on an unrecognized model
-# id (e.g. a typo, or a well-formed but foreign `provider/model-id-high`
-# roster value) and fail with a confusing launch-time error attributed to
-# the wrong provider. Returns 1, printing nothing, for an unrecognized
-# family; the caller decides how to report it.
+# select_reviewer CONFIG_FILE -- the ONLY source consulted for
+# AGENT_ADVERSARIAL_* ('' = pinned defaults); never the candidate PR's own
+# checkout (a PR could edit .agent/config.env to steer its own review): main
+# resolves the BASE revision's copy, only when the diff does not touch it.
+# reviewer_roster_family MODEL-ID -- the family (codex|claude) a roster id
+# belongs to, mirroring spawn-contract.md's model_family without its
+# unknown/opencode fallthrough: this runner launches exactly two CLIs, so an
+# unrecognised family returns 1 (prints nothing) and the caller reports it.
 reviewer_roster_family() {
     case $1 in
         claude-*) printf claude ;;
@@ -277,14 +265,10 @@ select_reviewer() {
     local config_file=$1 reviewer_cli=$PEER_CLI_NAME declared_reviewer='' declared_value='' fell_back=0
     local roster_fallback='' primary_family='' fallback_family=''
 
-    # Roster form: AGENT_ADVERSARIAL_REVIEWER / AGENT_ADVERSARIAL_REVIEWER_FALLBACK
-    # each carry a `<model-id>-<effort>` compound naming one candidate; together
-    # they form the pool. Self-detect the running harness (never guess from a
-    # value's shape) and prefer the candidate belonging to a family that is NOT
-    # the running harness -- cross-harness by default, matching the existing
-    # adversarial-review contract. When the peer CLI is absent, fall back to
-    # the same-harness candidate if the pool carries one, else the documented
-    # blind same-harness fallback below (unchanged).
+    # Roster form: AGENT_ADVERSARIAL_REVIEWER[_FALLBACK] each name one
+    # <model-id>-<effort> candidate; self-detect the running harness and prefer
+    # the OTHER family (cross-harness by default); peer CLI absent ->
+    # same-harness candidate, else the documented blind fallback below.
     if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER "$config_file") &&
         reviewer_roster_parse "$declared_reviewer"; then
         primary_family=$ROSTER_FAMILY
@@ -336,15 +320,10 @@ select_reviewer() {
 
     if declared_reviewer=$(resolve_config_value AGENT_ADVERSARIAL_REVIEWER "$config_file"); then
         reviewer_cli=$declared_reviewer
-        # AGENT_ADVERSARIAL_REVIEWER only ever names codex or claude (the
-        # resolver refuses anything else), and HARNESS_NAME/PEER_CLI_NAME are
-        # always that same two-item set with HARNESS_NAME guaranteed present
-        # (it is literally running this script). So a declared reviewer is
-        # either the running harness -- always available, no check needed --
+        # A declared reviewer is either the running harness (always available)
         # or the peer, whose availability the contract already probed once
-        # and encoded as PEER_CLI_ABSENT; re-probing here would both duplicate
-        # that work and make this depend on whatever happens to be on PATH
-        # instead of the one already-established environment fact.
+        # (PEER_CLI_ABSENT); re-probing PATH here would duplicate that and drift
+        # from the established fact.
         if [[ $reviewer_cli == "$PEER_CLI_NAME" ]] && ((PEER_CLI_ABSENT)); then
             warn "declared adversarial reviewer '$declared_reviewer' (AGENT_ADVERSARIAL_REVIEWER) is not available on this machine; falling back to the running harness '$HARNESS_NAME'"
             reviewer_cli=$HARNESS_NAME
@@ -589,14 +568,10 @@ try_reaffirm_if_covered() {
         return 1
     }
 
-    # A failed append is deliberately non-fatal to the reaffirm decision
-    # itself: the ORIGINAL ledger entry (already read above) is what proves
-    # coverage, and that proof does not depend on this run successfully
-    # recording a second, audit-trail entry on top of it. Treating an append
-    # failure as "run the review anyway" would spend a full reviewer call to
-    # recover from what is usually a transient comment-transport hiccup, the
-    # exact over-spend this flag exists to avoid. A failed append only ever
-    # loses the audit trail, never the underlying coverage guarantee.
+    # A failed append is deliberately non-fatal: the ORIGINAL ledger entry
+    # already proves coverage, and spending a reviewer call to recover a
+    # transient comment-transport hiccup is the over-spend this flag exists to
+    # avoid. Only the audit trail is lost.
     if ! "$ledger_script" append --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
         --entry-file "$entry_file" --agent-identity "$HARNESS_NAME" \
         --repo-root "$CONTRACT_ROOT" >&2; then
@@ -608,24 +583,13 @@ try_reaffirm_if_covered() {
     return 0
 }
 
-# write_launch_attempted -- the pre-send marker (issue #473). Written inside
-# run_provider immediately before the external review helper is invoked --
-# but only after every local output-path preparation for this run has
-# already succeeded (#473 follow-up F2) -- so its presence answers "did we at
-# least try to send this?" independently of whether the send itself
-# succeeded, crashed, or lost its receipt, and a purely local abort (a
-# hostile pre-existing artifact target, a permissions failure) never leaves
-# behind a marker that falsely claims a possible send. Absence of this
-# marker after a launch attempt proves nothing was sent -- e.g. the exact
-# "leading comment" bug this issue fixes, where a shell comment silently
-# swallowed the launcher before it ever reached this script -- so a retry
-# needs no operator authorization. Presence of the marker with no
-# completed/blocked result is genuinely ambiguous (sent and lost the receipt
-# vs. crashed mid-send), so that case still requires the operator prompt
-# described in adversarial-review.md, and guard_prior_launch_attempt (below)
-# refuses to relaunch into it automatically. A reaffirmed-from-ledger run
-# (above) never reaches this function at all -- it returns out of main()
-# before guard_prior_launch_attempt or this marker are ever touched.
+# write_launch_attempted -- the pre-send marker (issue #473), written in
+# run_provider right before the external helper runs and only after every local
+# output path is prepared (F2), so its presence answers "did we at least try to
+# send?". Absence proves nothing was sent (the leading-comment bug): retry needs
+# no operator authorization; presence with no result is ambiguous and
+# guard_prior_launch_attempt refuses to relaunch (adversarial-review.md). A
+# reaffirmed run never reaches this.
 write_launch_attempted() {
     local marker=$RUN_DIR/state/launch-attempted tmp="$RUN_DIR/state/launch-attempted.tmp"
     local head_oid
@@ -872,15 +836,10 @@ main() {
         require_helper_executable
     fi
     compute_payload
-    # issue #477: the reaffirm short-circuit is checked BEFORE
-    # guard_prior_launch_attempt gets a chance to block. A stale, ambiguous
-    # local marker from an old crashed/interrupted attempt must never stop a
-    # run the durable ledger already proves is covered -- the ledger's
-    # coverage guarantee does not depend on, and must not be gated by, this
-    # RUN_DIR's own local launch history. A reaffirmed run returns here,
-    # before write_provenance_record, guard_prior_launch_attempt,
-    # write_launch_attempted, or the result artifact below are ever touched --
-    # it never records launch provenance because it never launches anything.
+    # issue #477: the reaffirm short-circuit runs BEFORE
+    # guard_prior_launch_attempt -- a stale local launch marker must never block
+    # a run the durable ledger proves covered. A reaffirmed run returns here and
+    # records no launch provenance because it launches nothing.
     if ((REAFFIRM_IF_COVERED)) && try_reaffirm_if_covered; then
         return 0
     fi

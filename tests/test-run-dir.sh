@@ -352,7 +352,7 @@ assert_eq 1 "$non_git_rc" 'omitting --repo-root outside any Git worktree fails c
 assert_contains "$non_git_err" '--repo-root' 'the non-Git-worktree failure names the escape hatch'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 210 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 210 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 199 lines'
 
 finish
