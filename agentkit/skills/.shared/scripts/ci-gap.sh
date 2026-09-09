@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
 #
-# ci-gap.sh -- what does green locally NOT tell you?
-#
-# A local gate cannot equal CI and should not try. CI has services, matrices,
-# other operating systems, and checks that are meaningless on a workstation --
-# a gate that matched it would be too slow to run at the end of every turn,
-# which is when the declared verify command runs.
-#
-# So the gap is structural, and the defect is not its existence but that nobody
-# knows its size. Observed: a repository whose declared verify passed while CI
-# failed a source-size limit no declared command covered. Nothing said so until
-# the push.
-#
-# This names the delta. It does not close it, and closing it is usually wrong.
-#
-# Reports, never fails: exit 0 with the delta, 3 when there is no CI definition
-# or no contract to compare against.
+# ci-gap.sh -- name the CI gates no declared command covers. A local gate cannot
+# equal CI and should not try; the defect is not the gap but nobody knowing its
+# size (observed: declared verify green, CI red on a size limit). See --help.
 set -uo pipefail
 
 PROGRAM=${0##*/}

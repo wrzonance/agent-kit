@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
-# stall-check.sh -- is a worker's worktree still moving, judged by mtime alone?
-#
-# Stall detection is a rule, not forensics. A live worker leaves filesystem
-# evidence: edits, .agent/logs/ writes, checkpoint updates. The newest mtime
-# under the worktree is therefore the liveness signal, and this helper is the
-# single place that reads it -- never `pgrep`, `stat` archaeology, or process
-# inspection improvised per incident (issue #224 WS4).
-#
-# Verdicts, one machine-readable line on stdout:
+# stall-check.sh -- is a worker's worktree still moving, judged by the newest mtime
+# alone (never pgrep or process archaeology; issue #224 WS4)? State lives in a
+# caller-named file per worker; the streak counts consecutive quiet checks.
+# Verdicts (one line on stdout):
 #   active   the newest mtime advanced since the previous check
 #   quiet    no change yet, but not past the threshold and streak
-#   stalled  no filesystem change for >= threshold minutes across two or more
-#            consecutive checks -- interrupt, re-dispatch once, then park
-#
-# State lives in a caller-named file (one worker each); the streak counts
-# consecutive quiet checks so one slow moment cannot read as a stall.
-#
-# EXIT CODES
-#   0  active or quiet
-#   3  stalled
-#   2  usage error or unreadable evidence
+#   stalled  no change for >= threshold minutes across two or more consecutive checks
+# Exit: 0 active or quiet, 3 stalled, 2 usage error or unreadable evidence.
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}

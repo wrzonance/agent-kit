@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
-# Generate <repo>/.agent/config.env and .agent/board.json from live discovery.
-#
-# Run this ONCE per repository, on a machine authenticated to that repository's
-# forge. It writes only whitelisted keys and never copies environment or token
-# material into its output.
-#
-# Both files are built in a staging directory, validated against repo-config.sh,
-# and only then moved into place. A discovery failure writes NOTHING: a
-# half-populated option map would produce silently wrong board moves, which is
-# worse than having no cache at all.
+# Generate <repo>/.agent/config.env and .agent/board.json from live discovery --
+# once per repository, on a machine authenticated to its forge; whitelisted keys
+# only, never token material; staged, validated against repo-config.sh, then moved
+# into place, so a discovery failure writes NOTHING.
 #
 # Usage:
 #   bootstrap-repo.sh [--repo-root DIR] [--project N] [--owner LOGIN]
 #                     [--dry-run] [--force] [--refresh] [--reset]
-#
 # Exit: 0 success, 1 discovery failed or would clobber, 2 bad usage,
 #       3 gh unavailable or unauthenticated (environment-blocked).
 set -euo pipefail

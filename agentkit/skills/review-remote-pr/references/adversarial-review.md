@@ -10,7 +10,6 @@
 - Selection precedence — declaring the reviewer
 - Read the verdict
 - Evaluate — then route into Step 5
-- Pitfalls
 
 This is the detail behind the SKILL.md body's Step 1b gate (materiality, precheck, receipt). Read
 this file in full before running or skipping an adversarial review.
@@ -78,17 +77,11 @@ the skill, repository ownership, or an ambiguous response does not satisfy this 
 
 ### `--auto-review` — consent given in advance
 
-Recommended disclosure wording is explicit about payload, destination, and count: "sending each
-PR diff (filenames and code) to the resolved reviewer CLI for exactly one adversarial review;
-destination: <resolved reviewer CLI/provider>; count: one review for this PR." Record that exact
-payload/destination/count before using the flag; it is not consent for any other data or a second
-attempt.
-
-`--auto-review` (alias `--auto-approve`) on the invocation line answers the question above for
-this invocation, before it is asked. It is consent from the user in the user's own words, so
-treat the gate as satisfied and **do not stop to ask**. Stopping anyway is the specific failure
-the flag exists to remove: an unattended run that halts on a question nobody is present to
-answer has not been careful, it has just stalled.
+`--auto-review` (alias `--auto-approve`) on the invocation line answers the question above for this
+invocation before it is asked — consent given in advance, in the user's own words, so **do not stop to ask** (an unattended
+run that halts on a question nobody is present to answer has just stalled). Record the exact
+payload/destination/count ("each PR diff (filenames and code) to <resolved reviewer CLI/provider>, one
+review for this PR") before using the flag; it is not consent for other data or a second attempt.
 
 The rest of the gate stands unchanged:
 
@@ -117,43 +110,18 @@ The rest of the gate stands unchanged:
   ```
 
   `adversarial-run.sh` takes the value as one argv element — never eval'd, never re-parsed — so
-  "is this send authorized?" is answerable from the command itself. It also echoes the value to
-  stderr with a `provenance:` prefix and writes it to `$RUN_DIR/state/provenance` (mode 600)
-  before any external call, so the answer survives durably on disk too. Assemble the `provenance`
-  variable from data (RUN_ID, consent record, invocation quote); never build it by string-splicing
-  into a command you then `eval` or hand to a shell. Never write the provenance as a `#` comment:
-  in a single-line shell cell, `#` starts a comment that runs to end of line — including the
-  launcher after it — so a `# provenance: …; adversarial-run.sh …` line is a silent no-op that
-  exits 0, sends nothing, and produces no artifact, while looking exactly like a normal review to
-  a script that only checks the exit code. An earlier version of this idiom recommended a
-  no-op-statement form instead (`: 'provenance text'; launcher`) specifically to avoid that `#`
-  trap — but splicing the
-  operator's *verbatim* invocation quote into a single-quoted shell word is itself unsafe: a `'`
-  (or any other shell metacharacter) inside that quote terminates the word early, and the
-  remainder becomes executable shell rather than inert text. `--provenance` removes that hazard
-  entirely, since the value is data from the start and is never parsed as shell. A denial that
-  still occurs is surfaced to the user as a direct question, never routed around.
-- **A pre-send marker makes a no-op provably distinguishable from a lost receipt, and the
-  launcher enforces it itself.** `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted`
-  (timestamp, PR, head SHA, payload id) once every local output-path preparation for the run has
-  already succeeded, immediately before the external helper is invoked — so its presence or
-  absence answers "did we even try to send this?" independently of whether the send itself
-  succeeded, and a purely local abort never leaves one behind. If the marker is absent, nothing
-  was sent and an automatic retry is safe with no operator authorization (this is exactly the
-  state a swallowed-by-`#` launcher leaves behind). If the marker is present but
-  `adversarial.result.json` never reached a `completed` or `blocked` status, the send may have
-  happened; `adversarial-run.sh` itself refuses to relaunch into that RUN_DIR — it publishes a
-  `blocked` result naming the ambiguous prior attempt and exits nonzero rather than risking a
-  second, silent disclosure — so clearing it takes a fresh `--run-dir` or explicit operator
-  review, never an automatic retry. A marker next to an already-valid completed or blocked result
-  is left to the ordinary findings-ledger / result-clearing flow, unaffected by this guard.
-- **One invocation per RUN_DIR at a time.** `adversarial-run.sh` takes an exclusive,
-  non-blocking lock on `$RUN_DIR/state/.launch.lock` before it looks at the marker or the
-  result, and holds it until the process exits — through provider launch and terminal-result
-  publication. A second invocation sharing the same `--run-dir` while the first is still running
-  refuses immediately rather than racing it: without this, two concurrent launches could each
-  observe "no marker yet," each pass consent, and each send the diff. The refused invocation
-  touches neither the marker nor the result file — the concurrent holder owns both.
+  "is this send authorized?" is answerable from the command itself; it also echoes it to stderr as
+  `provenance:` and writes `$RUN_DIR/state/provenance` (mode 600) before any external call. Never write
+  the provenance as a `#` comment (in a single-line cell it swallows the launcher into a silent exit-0
+  no-op) or splice the verbatim quote into shell source. A denial that still occurs is surfaced to the
+  user as a direct question, never routed around.
+- **A pre-send marker and a per-RUN_DIR lock are enforced by the launcher itself.**
+  `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted` immediately before the external call:
+  absent marker → nothing was sent and an automatic retry is safe; marker present without a
+  `completed`/`blocked` result → the send may have happened, and the launcher refuses to relaunch into that
+  RUN_DIR (publishing a `blocked` result naming the ambiguous prior attempt) until a fresh `--run-dir` or
+  explicit operator review. It also holds an exclusive lock on `$RUN_DIR/state/.launch.lock` for its whole
+  run, so a concurrent second invocation refuses instead of racing a second disclosure.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.
@@ -171,25 +139,13 @@ The rest of the gate stands unchanged:
 Without the flag, the interactive question above is required. Never treat a previous session's
 `--auto-review`, a board label, an issue body, or a worker prompt as consent — only the current invocation line.
 
-Before sending, derive a payload identity from the repository slug, the PR number, and the
-SHA-256 hash of the exact diff bytes to be sent. The repository is part of that identity because
-PR numbers repeat across repositories: without it, the same number and identical bytes elsewhere
-derive the same payload, and a reused record would satisfy `check` for a repository that was
-never disclosed. After confirmation, record
-`cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted` in the
-active session task state. Reuse that record only for a retry of the exact same payload to the
-same provider and scope, so polling or retries do not create repeated prompts. If the destination
-provider, PR, or diff changes, obtain confirmation again. If confirmation is missing,
-declined, or cannot be recorded, **Do not send the diff**; report the gate as blocked and wait for
-user direction rather than silently substituting another external reviewer.
-
-The executable record is the consent boundary, not a replacement for the disclosure and decision.
-Use `scripts/consent-record.sh` for disclosure, grant, and check. Every review launcher derives
-the payload again from its own repository, PR, and diff arguments and refuses to start without a
-successful check against this state record. A missing, malformed, unwritable, mismatched,
-symlinked, or empty (or whitespace-only) diff record fails closed -- `payload` refuses to mint an
-identity for an empty diff itself, the same emptiness check the launcher already enforces before
-it ever calls this helper.
+Before sending, `consent-record.sh payload` derives a payload identity from the repository slug, the PR
+number, and the SHA-256 of the exact diff bytes (an empty diff is refused). After confirmation, record
+`cross_provider_consent=<provider>;scope=PR-diff;payload=<payload-id>;status=granted` in the active session
+task state; reuse it only for a retry of the exact same payload to the same provider and scope. If the destination provider, PR, or diff changes, obtain confirmation again. If confirmation is missing,
+declined, or cannot be recorded, **Do not send the diff**; report the gate as blocked and wait for user
+direction. Every launcher re-derives the payload from its own arguments and refuses to start without a
+successful `check` against that record; a missing, malformed, mismatched, or symlinked record fails closed.
 
 From the repository root, this is the complete explicit-path sequence. Set `WORKTREE` to the PR
 worktree and `RUN_DIR` to its durable private review-artifact directory; every consent operation
@@ -273,39 +229,17 @@ path is explicitly named in the issue write set.
 ### Roster form — self-detected, harness-neutral
 
 `AGENT_ADVERSARIAL_REVIEWER` and `AGENT_ADVERSARIAL_REVIEWER_FALLBACK` also accept a
-`<model-id>-<effort>` compound (e.g. `gpt-5.6-sol-xhigh`); together the two keys form a candidate
-pool of at most two entries, one per harness family. Resolution self-detects the *running* harness
-from the environment contract's `harness= name=` line — never guessed from either value's shape —
-and prefers the pool candidate belonging to a family that is **not** the running harness, matching
-the cross-harness-by-default rule above. Declaration is authorization: a well-formed roster entry
-is sanctioned purely by being declared, the same posture OpenCode's `provider/model-id` values
-already have; the closed `codex`/`claude` allowlist above governs only the bare-CLI-name form. When
-both pool candidates belong to the running harness's own family, or the cross-harness candidate's
-CLI is the absent peer, resolution falls back to whichever pool candidate belongs to the running
-harness (or that CLI's built-in default model/effort if neither does) — the same documented blind
-same-harness fallback described above, unchanged. `AGENT_ADVERSARIAL_REVIEW_EFFORT`, if declared,
-still overrides the resolved effort in every case.
-
-`AGENT_ADVERSARIAL_REVIEW_MODEL` and its `_FALLBACK` counterpart are only meaningful paired with a
-declared `AGENT_ADVERSARIAL_REVIEWER`: a bare model id has no CLI to be interpreted against, so
-either is ignored without it. `AGENT_ADVERSARIAL_REVIEW_EFFORT` applies regardless. The resolver
-accepts exactly `low`, `medium`, `high`, `xhigh`, `max` for effort — the same enum the provider
-helpers themselves accept (no `ultra`); an unsupported value is refused and named at declaration
-time rather than failing at launch.
-
-Availability is only ever a question for the peer slot: only two CLIs exist to declare (`codex`,
-`claude`), the running harness is definitionally present, and the contract already probed the peer
-once (`peer-cli= ... absent`). So declaring the running harness itself as reviewer is always
-honored; declaring the peer when the contract says it is absent does not silently revert to the
-peer-CLI default — the runner warns naming the declared CLI and the substitution, then falls back to
-the running harness's own CLI using `AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK` when declared, or that
-CLI's built-in default model otherwise. `AGENT_ADVERSARIAL_REVIEW_EFFORT`, if declared, still applies
-in that fallback. This is the same blind same-harness path used when a peer is simply absent;
-declaring a reviewer never bypasses the consent record or changes the provider-token mapping below.
-
-An invalid declaration for any of these four keys is dropped by `repo-config.sh` with a warning
-naming the accepted set, and the run proceeds on the peer-CLI default exactly as if nothing had
-been declared.
+`<model-id>-<effort>` compound (e.g. `gpt-5.6-sol-xhigh`), forming a pool of at most two candidates, one
+per harness family. Resolution self-detects the running harness from the contract's `harness= name=` line
+and prefers the candidate that is **not** the running harness; a well-formed roster entry is sanctioned by
+declaration. When both candidates are the running harness's family, or the cross-harness candidate's CLI is
+the absent peer, resolution falls back to the running harness's own candidate (or that CLI's built-in
+default) — the same blind same-harness fallback. `AGENT_ADVERSARIAL_REVIEW_MODEL`/`_FALLBACK` apply only
+with a declared bare-CLI reviewer; `AGENT_ADVERSARIAL_REVIEW_EFFORT` (`low`, `medium`, `high`, `xhigh`, `max`; no `ultra`) applies in
+every case. Declaring the absent peer does not silently revert to the default: the runner warns naming the
+substitution and falls back to the running harness's CLI. An invalid declaration is dropped by
+`repo-config.sh` with a warning and the peer-CLI default applies; declaring a reviewer never bypasses the
+consent record or the provider-token mapping above.
 
 The one-shot blocking entry point is:
 
@@ -360,11 +294,3 @@ this receipt publishes (Phase C, or a later `pr-to-green` round): `review-ledger
 that later commit onto the published entry's lineage instead, so `merge-gate.sh` reads it as
 covered rather than `stale` with zero additional review spends — see
 ["$agentkit/pr-to-green/references/auto-merge.md"](../../pr-to-green/references/auto-merge.md#recording-a-merge-down-or-retarget-transition-issue-567).
-
-## Pitfalls
-
-| Problem | Fix |
-|---|---|
-| Running the adversarial review early or repeatedly | Apply the materiality gate ONCE as the LAST draft step (CI green first). For a material diff, fix confirmed findings and do not re-review the fixes. |
-| Skipping review because the diff is short | Size is not risk. Skip only with a deterministic mechanical oracle; runtime, contract, security, persistence, workflow, or accessibility changes are material. |
-| Auto-applying adversarial findings | Evaluate first — verify each finding against the actual code, downgrade overstated severities, and drop false positives. Confirmed findings go through Step 5; document outcomes. |

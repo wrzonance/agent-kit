@@ -234,4 +234,8 @@ assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'explicit mode is also a single call'
 assert_rc 2 'unknown flag is a usage error' -- env PATH="$tmp/stub:$PATH" \
     "$tr_sh" --repo-root "$repo" --bogus
 
+# 2026-09-08 size wave two: hold the helper at its measured line count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/triage-issues.sh") -le 506 ]] && printf yes || printf no)" \
+    'triage-issues.sh stays at or under 506 lines'
+
 finish
