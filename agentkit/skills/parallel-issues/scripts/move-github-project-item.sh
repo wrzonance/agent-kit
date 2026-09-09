@@ -22,26 +22,17 @@ Options:
   --status STATUS           One of the canonical board columns:
                             'Backlog', 'Ready', 'In progress', 'In review', 'Done'.
                             Matched against the board's own options case-insensitively.
-  --repo OWNER/REPO         Repository holding the issue (e.g. OWNER/REPO). Also
-                            selects the card: boards shared across an org can hold
-                            several issues numbered #N, one per repository.
+  --repo OWNER/REPO         Repository holding the issue; also selects the card on an
+                            org board holding several issues numbered #N.
                             --repository is a silent alias, accepted for
                             compatibility; new callers should use --repo.
-  --repo-root DIR           Repository root holding .agent/ (default: git toplevel
-                            of the cwd). A warm .agent/board.json plus
-                            .agent/cache/board-items.json performs the mutation
-                            directly when both trusted caches match this repo;
-                            a cache miss reads that one declared board before
-                            editing and refreshes the item cache.
-  --all-boards              Walk EVERY project the issue is on: keep going after
-                            a successful move, and keep going past a board that
-                            has no Status field or no matching Status option.
-                            One output line is printed per such board.
+  --repo-root DIR           Repository root holding .agent/ (default: git toplevel of
+                            the cwd). Warm .agent/board.json + .agent/cache/board-items.json
+                            mutate directly in one call; a cache miss reads that one board first.
+  --all-boards              Walk EVERY project the issue is on, past successful moves and
+                            past boards with no Status field/option; one line per board.
+                            Default: stop at the first board updated or the first mismatch.
   -h, --help                Print this help and exit 0.
-
-Without --all-boards (the default) the run stops at the first board that is
-successfully updated, and also stops at the first board that has no Status field
-or no matching Status option.
 
 Output (stdout carries only these lines):
   moved #42 -> "In review" on project #3 "Example Board" (board.json, 1 call)
@@ -51,25 +42,16 @@ Output (stdout carries only these lines):
   no-op: project #3 "Example Board" has no Status field
   no-op: project #3 "Example Board" has no matching Status option "In review"
   moved=1 no-op=0 of=1
-
-Successful runs end with a summary of terminal evidence lines. Compare its
-`of` count with the captured issue-result lines to detect truncated output.
-
-The "(board.json, 1 call)" warm path deliberately skips reading the card's
-current status before mutating it -- that read is the API call this path
-exists to avoid. So it reports "moved" even when the card was already in the
-target status; only the slower paths can report the "already" no-op above.
-Callers must treat "moved" as covering both "moved" and "already there".
-
-The unreadable-membership no-op names its cause in parentheses, one of:
-"auth/scope", "rate limit", "api error", or "other" (a shape anomaly, or the
-transient read that gh's own GraphQL index lags on right after an issue is
-created). The label is always one of those four words -- never a raw error
-message, a token, or a full API response body.
-
-Exit status: 0 on a move or a no-op (an unreadable board membership included --
-a board move must never fail the real work it is annotating), 1 on bad
-arguments or an API error unrelated to reading board membership.
+The summary's `of` count against the captured issue-result lines detects truncated
+output. The "(board.json, 1 call)" warm path never reads the card's current status
+first (that read is the call it avoids), so it reports "moved" even when the card was
+already in the target status: callers treat "moved" as covering both. The unreadable-
+membership no-op names its cause as exactly one of "auth/scope", "rate limit",
+"api error", or "other" (often GraphQL index lag right after issue creation -- retry
+later) -- never a raw error message, token, or response body.
+Exit status: 0 on a move or a no-op (an unreadable board membership included -- a
+board move must never fail the real work), 1 on bad arguments or an unrelated API error,
+2 on an unexpected argument after --.
 EOF
 }
 
