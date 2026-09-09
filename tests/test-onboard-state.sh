@@ -136,6 +136,15 @@ assert_contains "$out" 'CI entry point/defaults: inspect verify.sh --help' \
 assert_contains "$out" 'config-validate= ok' \
     'preflight reports a clean config as valid (issue #606)'
 
+# --- fix round 2: a missing-equals declaration must fail --validate, not
+# just --canonical-keys, or onboarding reports a rejected declaration as ok.
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_CMD_TEST=pytest -q\nAGENT_NOT_A_KEY without an equals sign\n' \
+    > "$pre/.agent/config.env"
+out=$(PATH="$tmp/bin:$PATH" "$state_sh" --repo-root "$pre" --preflight)
+assert_contains "$out" 'config-validate= invalid' \
+    'preflight flags a declaration with no equals sign as invalid (issue #606 round 2)'
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_CMD_TEST=pytest -q\n' > "$pre/.agent/config.env"
+
 # The report carries the one-line drift summary so a caller does not need a
 # second probe to discover that onboarding facts are stale.
 drift_repo="$tmp/drift"
