@@ -156,6 +156,7 @@ reads for file hints -- never a second fetch performed for this check alone:
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 "$agentkit/.shared/scripts/triage-issues.sh" --classify-shape "$body_file"
+"$agentkit/.shared/scripts/triage-issues.sh" --classify-deps "$body_file"
 ```
 
 `$body_file` holds the issue body bytes already in hand for this candidate's conflict
@@ -175,6 +176,11 @@ work-shape=implementation signal=-
 The `no-code` disposition is HOLD, not an alternate dispatch path: this skill defines exactly one end-to-end
 shape (worktree → branch → commit → draft PR), and improvising a no-PR variant per run is the failure this
 axis exists to stop.
+
+A `dependency-signal=` other than `-` means the body names a dependency change: put every dependency
+manifest in the chain-base tree (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`) into that entry's
+`predictedWriteSet`; the validator then demands each manifest's lockfile plus the generated files whose CI
+workflow `paths:` trigger on that lockfile, and `--fix` appends them (#610).
 
 Record the verdict on the dispatch-plan entry (`workShape`, and `holdReason` when
 `no-code`) so a later step or a resumed session reads it back instead of re-classifying
@@ -394,7 +400,8 @@ when an issue body does not mention them: build configuration, lockfiles, and
 generated contracts (including the repository's equivalent names and globs).
 The resulting paths belong in each affected `predictedWriteSet`; they are not
 optional cleanup. Record the conflict pairs and their overlap globs in
-`conflictMap.pairs` before selection is finalized.
+`conflictMap.pairs` before selection is finalized. `write-merge-plan.sh --validate-only` enforces the
+manifest → lockfile → CI-sibling part; `--fix` applies it.
 
 `AGENT_GENERATED_PATHS` (declared once in `.agent/config.env`) feeds both this write-set check and
 `gh-pr-state.sh`'s staleness exemption (a base advance confined to those paths reports `stale=no`).

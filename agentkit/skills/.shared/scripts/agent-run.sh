@@ -242,12 +242,46 @@ export_cache_var() {
     export "$name=$path"
 }
 
+# CARGO_HOME is not a pure cache: it also holds config/config.toml (registry
+# definitions, e.g. a private registry) and credentials/credentials.toml (auth
+# tokens) -- Cargo reads the extensionless name too (legacy, and preferred
+# over the .toml twin when both exist). Redirect it only when the effective
+# default cargo home is unwritable -- mirroring the unwritable-$HOME rule
+# select_caches already applies for the tmp cache root -- and when
+# redirecting, carry all four names into the new home so a private registry
+# keeps working (PR #690 review; extensionless names PR #690 follow-up).
+select_cargo_home() {
+    local root=$1 default=${CARGO_HOME:-${HOME:+$HOME/.cargo}} new_home src
+    [[ -n $default ]] && dir_writable "$default" && return 0
+    new_home=$root/cargo
+    dir_writable "$new_home" || die "Cannot create cache directory: $new_home"
+    if [[ -n $default ]]; then
+        for src in config config.toml credentials credentials.toml; do
+            [[ -f $default/$src && ! -L $default/$src ]] || continue
+            cp -- "$default/$src" "$new_home/$src" 2>/dev/null || continue
+            [[ $src == credentials || $src == credentials.toml ]] && chmod 600 -- "$new_home/$src" 2>/dev/null
+        done
+    fi
+    export CARGO_HOME="$new_home"
+}
+
 select_caches() {
     local root=${AGENT_CACHE_ROOT:-} home_cache=${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}
     if [[ -z $root ]]; then
         # $HOME matters too: some package managers cache beside it, not under the
         # XDG cache home, so a read-only HOME must force the fallback as well.
-        dir_writable "$home_cache" && [[ -w ${HOME:-/nonexistent} ]] && return 0
+        # An otherwise-writable HOME can still have an unwritable CARGO_HOME (or
+        # $HOME/.cargo), so select_cargo_home must run here too, not only in the
+        # fallback-root branch below (issue #690 review). A caller-supplied
+        # GOMODCACHE needs the same treatment, but only when one is actually
+        # set -- an unset GOMODCACHE must stay unset here (Go's own default
+        # applies), never be redirected just because this branch runs
+        # (issue #690 review).
+        if dir_writable "$home_cache" && [[ -w ${HOME:-/nonexistent} ]]; then
+            select_cargo_home "$home_cache"   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+            [[ -z ${GOMODCACHE:-} ]] || export_cache_var GOMODCACHE "$home_cache/go-mod"  # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+            return 0
+        fi
         root=${TMPDIR:-/tmp}/agent-cache-$(id -u)
         add_note "cache home unusable (${home_cache:-unset}); caches under $root"
         assert_private_dir "$root"
@@ -262,6 +296,8 @@ select_caches() {
     # surfaced as an opaque ERR_SQLITE_ERROR and cost an agent several calls.
     export_cache_var npm_config_store_dir "$root/pnpm-store"  # ecosystem-allow:
     export_cache_var PIP_CACHE_DIR "$root/pip"
+    select_cargo_home "$root"                   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+    export_cache_var GOMODCACHE "$root/go-mod"  # ecosystem-allow: same; GOCACHE already follows XDG_CACHE_HOME
 }
 
 # ---------------------------------------------------------------------- TLS ---

@@ -507,8 +507,140 @@ assert_not_contains "$latest_attempt_out" 'classification: load-flake' \
     'classification uses only the just-failed retry attempt'
 assert_eq '2' "$(<"$latest_attempt_count")" 'the mixed failure runs exactly the initial attempt and one retry'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1595 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1595 lines'
+# issue #610: with an unwritable cache home the wrapper redirects CARGO_HOME and
+# GOMODCACHE beside uv/npm/pip, so a Cargo or Go dependency step never fails on a
+# read-only ~/.cargo the contract never mentioned.
+cache_repo=$(make_repo)
+mkdir -p "$cache_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "%%s:%%s\\n" "$CARGO_HOME" "$GOMODCACHE"\n' > "$cache_repo/tools/show-caches"
+chmod +x "$cache_repo/tools/show-caches"
+printf 'AGENT_CMD_TEST=tools/show-caches\n' > "$cache_repo/.agent/config.env"
+ro_home="$tmp/ro-home"
+mkdir -p "$ro_home"
+chmod 500 "$ro_home"
+(cd "$cache_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$ro_home" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$ro_home"
+cache_log=$(find "$cache_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$cache_log")" "$tmp/agent-cache-$(id -u)/cargo:$tmp/agent-cache-$(id -u)/go-mod" \
+    'CARGO_HOME and GOMODCACHE are redirected under the fallback cache root'
+
+# issue #690 (Codex adversarial review of #610's PR, P2): CARGO_HOME is not a
+# pure cache -- it holds config.toml (registry definitions) and
+# credentials.toml (auth tokens) -- so a writable default cargo home must be
+# left alone, and a redirected one must carry those files along instead of
+# starting empty (which previously broke a private-registry build that
+# worked before the CARGO_HOME redirect was added).
+cargo_home_writable_repo=$(make_repo)
+mkdir -p "$cargo_home_writable_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$cargo_home_writable_repo/tools/show-cargo-home"
+chmod +x "$cargo_home_writable_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$cargo_home_writable_repo/.agent/config.env"
+writable_home="$tmp/cargo-writable-home"
+mkdir -p "$writable_home/.cargo"
+alt_cache_root="$tmp/alt-agent-cache"
+(cd "$cargo_home_writable_repo" && env -u CARGO_HOME HOME="$writable_home" AGENT_CACHE_ROOT="$alt_cache_root" TMPDIR="$tmp" \
+    "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+writable_log=$(find "$cargo_home_writable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$writable_log")" 'CARGO_HOME=[]' \
+    'a writable default cargo home is left alone, not redirected under AGENT_CACHE_ROOT'
+
+cargo_home_unwritable_repo=$(make_repo)
+mkdir -p "$cargo_home_unwritable_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$cargo_home_unwritable_repo/tools/show-cargo-home"
+chmod +x "$cargo_home_unwritable_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$cargo_home_unwritable_repo/.agent/config.env"
+unwritable_home="$tmp/cargo-unwritable-home"
+mkdir -p "$unwritable_home/.cargo"
+printf '[registries.private]\nindex = "sparse+https://example.invalid/"\n' > "$unwritable_home/.cargo/config.toml"
+printf 'token = "secret-token"\n' > "$unwritable_home/.cargo/credentials.toml"
+# CR-690-A: Cargo also reads the extensionless config/credentials names
+# (legacy, and preferred over the .toml twin when both exist) -- both must be
+# carried too, and credentials narrowed to 600 like its .toml twin.
+printf '[registries.legacy]\nindex = "sparse+https://legacy.invalid/"\n' > "$unwritable_home/.cargo/config"
+printf 'token = "legacy-secret-token"\n' > "$unwritable_home/.cargo/credentials"
+chmod 500 "$unwritable_home/.cargo"
+(cd "$cargo_home_unwritable_repo" && env -u CARGO_HOME HOME="$unwritable_home" AGENT_CACHE_ROOT="$alt_cache_root" TMPDIR="$tmp" \
+    "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$unwritable_home/.cargo"
+redirected_log=$(find "$cargo_home_unwritable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$redirected_log")" "CARGO_HOME=[$alt_cache_root/cargo]" \
+    'an unwritable default cargo home is redirected under AGENT_CACHE_ROOT'
+assert_contains "$(cat "$alt_cache_root/cargo/config.toml")" 'registries.private' \
+    'the redirected home carries the fixture config.toml along'
+cred_mode=$(stat -c '%a' "$alt_cache_root/cargo/credentials.toml" 2>/dev/null || stat -f '%Lp' "$alt_cache_root/cargo/credentials.toml")
+assert_eq '600' "$cred_mode" 'the copied credentials.toml is narrowed to mode 600'
+assert_contains "$(cat "$alt_cache_root/cargo/config")" 'registries.legacy' \
+    'the redirected home carries the extensionless config along too'
+legacy_cred_mode=$(stat -c '%a' "$alt_cache_root/cargo/credentials" 2>/dev/null || stat -f '%Lp' "$alt_cache_root/cargo/credentials")
+assert_eq '600' "$legacy_cred_mode" 'the copied extensionless credentials is narrowed to mode 600'
+
+# CR-690-B: select_caches' writable-HOME branch used to return before ever
+# calling select_cargo_home, so a writable HOME with an unwritable default
+# cargo home (here $HOME/.cargo itself) kept the broken default instead of
+# redirecting under $HOME/.cache/cargo.
+writable_home_unwritable_cargo_repo=$(make_repo)
+mkdir -p "$writable_home_unwritable_cargo_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$writable_home_unwritable_cargo_repo/tools/show-cargo-home"
+chmod +x "$writable_home_unwritable_cargo_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$writable_home_unwritable_cargo_repo/.agent/config.env"
+writable_home_bad_cargo="$tmp/writable-home-bad-cargo"
+mkdir -p "$writable_home_bad_cargo/.cargo" "$writable_home_bad_cargo/.cache"
+chmod 500 "$writable_home_bad_cargo/.cargo"
+(cd "$writable_home_unwritable_cargo_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$writable_home_bad_cargo" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$writable_home_bad_cargo/.cargo"
+writable_home_bad_cargo_log=$(find "$writable_home_unwritable_cargo_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$writable_home_bad_cargo_log")" "CARGO_HOME=[$writable_home_bad_cargo/.cache/cargo]" \
+    'a writable HOME with an unwritable default cargo home still redirects CARGO_HOME under the home cache dir'
+
+# CR-690-B (round 2): a caller-supplied but UNUSABLE GOMODCACHE must fall back
+# to the home cache dir in this same writable-HOME branch; an unset GOMODCACHE
+# must stay unset (Go's own default applies) rather than being forced onto a
+# path just because this branch ran.
+gomodcache_unwritable_repo=$(make_repo)
+mkdir -p "$gomodcache_unwritable_repo/tools"
+# shellcheck disable=SC2016  # the literal $GOMODCACHE belongs to the fixture script
+printf '#!/bin/sh\nprintf "GOMODCACHE=[%%s]\\n" "$GOMODCACHE"\n' > "$gomodcache_unwritable_repo/tools/show-gomodcache"
+chmod +x "$gomodcache_unwritable_repo/tools/show-gomodcache"
+printf 'AGENT_CMD_TEST=tools/show-gomodcache\n' > "$gomodcache_unwritable_repo/.agent/config.env"
+gomodcache_home="$tmp/gomodcache-writable-home"
+mkdir -p "$gomodcache_home/.cache" "$gomodcache_home/.cargo"
+bad_gomodcache="$tmp/gomodcache-unwritable-target"
+mkdir -p "$bad_gomodcache"
+chmod 500 "$bad_gomodcache"
+(cd "$gomodcache_unwritable_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME \
+    HOME="$gomodcache_home" TMPDIR="$tmp" GOMODCACHE="$bad_gomodcache" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$bad_gomodcache"
+gomodcache_unwritable_log=$(find "$gomodcache_unwritable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$gomodcache_unwritable_log")" "GOMODCACHE=[$gomodcache_home/.cache/go-mod]" \
+    'a writable HOME with a caller-supplied but unwritable GOMODCACHE still redirects it under the home cache dir'
+
+gomodcache_unset_repo=$(make_repo)
+mkdir -p "$gomodcache_unset_repo/tools"
+printf '#!/bin/sh\nif env | grep -q "^GOMODCACHE="; then printf "GOMODCACHE_PRESENT\\n"; else printf "GOMODCACHE_ABSENT\\n"; fi\n' \
+    > "$gomodcache_unset_repo/tools/show-gomodcache-presence"
+chmod +x "$gomodcache_unset_repo/tools/show-gomodcache-presence"
+printf 'AGENT_CMD_TEST=tools/show-gomodcache-presence\n' > "$gomodcache_unset_repo/.agent/config.env"
+(cd "$gomodcache_unset_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$gomodcache_home" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+gomodcache_unset_log=$(find "$gomodcache_unset_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$gomodcache_unset_log")" 'GOMODCACHE_ABSENT' \
+    'an unset GOMODCACHE stays unset in this branch instead of being forced onto a path'
+
+# issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection; issue #690
+# review: +23 for select_cargo_home (redirect only when the default is
+# unwritable, and carry config.toml/credentials.toml into the new home);
+# issue #690 follow-up: +8 for carrying the extensionless config/credentials
+# names too, and for running select_cargo_home from the writable-HOME branch
+# of select_caches (CR-690-A, CR-690-B); +5 for falling an unusable
+# caller-supplied GOMODCACHE back to the home cache dir in that same branch
+# while leaving an unset one alone (CR-690-B round 2).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1627 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1627 lines'
 
 finish

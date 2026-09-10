@@ -364,4 +364,241 @@ assert_eq '1' "$rc" \
 assert_contains "$stderr" 'independent[0]' \
     'the null-record error names the record, not the generic fallback'
 
+# --- CR-690-D/E: workflow_lock_siblings() matches `paths:` globs, and
+# excludes only the workflow file itself, not every .github/ path -----------
+dep_base="$tmp/dep-base"
+mkdir -p "$dep_base/tools/dep" "$dep_base/.github/workflows"
+printf '[package]\nname = "root"\n' >"$dep_base/Cargo.toml"
+printf '# generated\n' >"$dep_base/Cargo.lock"
+printf '[package]\nname = "dep"\n' >"$dep_base/tools/dep/Cargo.toml"
+printf '# generated\n' >"$dep_base/tools/dep/Cargo.lock"
+printf '{}\n' >"$dep_base/.github/dependency-snapshot.json"
+printf 'rs companion\n' >"$dep_base/only-for-rs.txt"
+cat >"$dep_base/.github/workflows/lockfile-check.yml" <<'EOF'
+on:
+  push:
+    paths:
+      - '**/Cargo.lock'
+      - '.github/dependency-snapshot.json'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+EOF
+cat >"$dep_base/.github/workflows/rust-lint.yml" <<'EOF'
+on:
+  push:
+    paths:
+      - '**/*.rs'
+      - 'only-for-rs.txt'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+EOF
+git init -q -b main "$dep_base"
+git -C "$dep_base" config user.email test@example.invalid
+git -C "$dep_base" config user.name test
+git -C "$dep_base" add -- .
+git -C "$dep_base" commit -qm base
+
+dep_missing_plan="$tmp/dep-missing-companions.json"
+cat >"$dep_missing_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 610, "predictedWriteSet": ["Cargo.toml", "tools/dep/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+dep_missing_rc=0
+dep_missing_err=$("$writer" --dispatch-plan "$dep_missing_plan" --chain-base "$dep_base" \
+    --validate-only 2>&1 >/dev/null) || dep_missing_rc=$?
+assert_eq 1 "$dep_missing_rc" \
+    'predicting a manifest without its lockfile and workflow-triggered companion is rejected'
+assert_contains "$dep_missing_err" 'omits its companion: Cargo.lock' \
+    'the root manifest is missing its sibling Cargo.lock'
+assert_contains "$dep_missing_err" 'omits its companion: tools/dep/Cargo.lock' \
+    'the nested manifest is missing its own sibling Cargo.lock (glob-matched at depth)'
+assert_contains "$dep_missing_err" 'omits its companion: .github/dependency-snapshot.json' \
+    'the workflow paths: glob sibling of Cargo.lock is a required companion, not excluded as a blanket .github/ path'
+assert_not_contains "$dep_missing_err" 'only-for-rs.txt' \
+    'an unrelated paths: glob (**/*.rs) never contributes a Cargo.lock companion'
+
+dep_complete_plan="$tmp/dep-complete.json"
+cat >"$dep_complete_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 610, "predictedWriteSet": [
+    "Cargo.toml", "Cargo.lock", "tools/dep/Cargo.toml", "tools/dep/Cargo.lock",
+    ".github/dependency-snapshot.json"
+  ]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a predicted write set already naming every manifest companion is accepted' -- \
+    "$writer" --dispatch-plan "$dep_complete_plan" --chain-base "$dep_base" --validate-only
+
+# --- CR-690-F: nearest_ancestor_lockfile() only lets Cargo adopt an ancestor
+# lockfile, and only when a tracked ancestor Cargo.toml proves [workspace] --
+ws_base="$tmp/ws-base"
+mkdir -p "$ws_base/crates/foo"
+printf '[workspace]\nmembers = ["crates/foo"]\n' >"$ws_base/Cargo.toml"
+printf '# generated\n' >"$ws_base/Cargo.lock"
+printf '[package]\nname = "foo"\n' >"$ws_base/crates/foo/Cargo.toml"
+git init -q -b main "$ws_base"
+git -C "$ws_base" config user.email test@example.invalid
+git -C "$ws_base" config user.name test
+git -C "$ws_base" add -- .
+git -C "$ws_base" commit -qm base
+
+ws_member_plan="$tmp/ws-member.json"
+cat >"$ws_member_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 611, "predictedWriteSet": ["crates/foo/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+ws_member_err=$("$writer" --dispatch-plan "$ws_member_plan" --chain-base "$ws_base" \
+    --validate-only 2>&1 >/dev/null) && ws_member_rc=0 || ws_member_rc=$?
+assert_eq 1 "$ws_member_rc" \
+    'a workspace member manifest without the workspace-root Cargo.lock is rejected'
+assert_contains "$ws_member_err" 'omits its companion: Cargo.lock' \
+    'the proven workspace root Cargo.lock is adopted as the ancestor companion'
+
+ws_member_complete_plan="$tmp/ws-member-complete.json"
+cat >"$ws_member_complete_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 611, "predictedWriteSet": ["crates/foo/Cargo.toml", "Cargo.lock"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a workspace member paired with the proven ancestor Cargo.lock is accepted' -- \
+    "$writer" --dispatch-plan "$ws_member_complete_plan" --chain-base "$ws_base" --validate-only
+
+nonws_base="$tmp/nonws-base"
+mkdir -p "$nonws_base/tools/bar"
+printf '[package]\nname = "root"\n' >"$nonws_base/Cargo.toml"
+printf '# generated -- belongs to the unrelated root project only\n' >"$nonws_base/Cargo.lock"
+printf '[package]\nname = "bar"\n' >"$nonws_base/tools/bar/Cargo.toml"
+git init -q -b main "$nonws_base"
+git -C "$nonws_base" config user.email test@example.invalid
+git -C "$nonws_base" config user.name test
+git -C "$nonws_base" add -- .
+git -C "$nonws_base" commit -qm base
+
+nonws_plan="$tmp/nonws.json"
+cat >"$nonws_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 612, "predictedWriteSet": ["tools/bar/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a nested project under an unrelated root Cargo.toml (no [workspace]) never adopts the root Cargo.lock' -- \
+    "$writer" --dispatch-plan "$nonws_plan" --chain-base "$nonws_base" --validate-only
+
+# --- CR-690-F round 2: a "[workspace]" header alone proves an ancestor IS a
+# workspace root, but not that THIS manifest is one of its declared members
+# -- nearest_ancestor_lockfile() must also prove membership (members glob
+# match, and no exclude match) before adopting the ancestor Cargo.lock -----
+ws_glob_base="$tmp/ws-glob-base"
+mkdir -p "$ws_glob_base/crates/foo" "$ws_glob_base/crates/bar" "$ws_glob_base/tools/unlisted" "$ws_glob_base/crates/excluded-crate"
+cat >"$ws_glob_base/Cargo.toml" <<'EOF'
+[workspace]
+members = [
+    "crates/*",
+]
+exclude = ["crates/excluded-crate"]
+EOF
+printf '# generated\n' >"$ws_glob_base/Cargo.lock"
+printf '[package]\nname = "foo"\n' >"$ws_glob_base/crates/foo/Cargo.toml"
+printf '[package]\nname = "bar"\n' >"$ws_glob_base/crates/bar/Cargo.toml"
+printf '[package]\nname = "unlisted"\n' >"$ws_glob_base/tools/unlisted/Cargo.toml"
+printf '[package]\nname = "excluded"\n' >"$ws_glob_base/crates/excluded-crate/Cargo.toml"
+git init -q -b main "$ws_glob_base"
+git -C "$ws_glob_base" config user.email test@example.invalid
+git -C "$ws_glob_base" config user.name test
+git -C "$ws_glob_base" add -- .
+git -C "$ws_glob_base" commit -qm base
+
+ws_glob_member_plan="$tmp/ws-glob-member.json"
+cat >"$ws_glob_member_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 614, "predictedWriteSet": ["crates/foo/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+ws_glob_member_err=$("$writer" --dispatch-plan "$ws_glob_member_plan" --chain-base "$ws_glob_base" \
+    --validate-only 2>&1 >/dev/null) && ws_glob_member_rc=0 || ws_glob_member_rc=$?
+assert_eq 1 "$ws_glob_member_rc" \
+    'a manifest matched by a members glob (crates/*) is still rejected without its ancestor lockfile'
+assert_contains "$ws_glob_member_err" 'omits its companion: Cargo.lock' \
+    'the members glob "crates/*" proves crates/foo is a workspace member, so the ancestor Cargo.lock is adopted'
+
+ws_unlisted_plan="$tmp/ws-unlisted.json"
+cat >"$ws_unlisted_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 615, "predictedWriteSet": ["tools/unlisted/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a manifest under a workspace root but not matched by any members entry never adopts the ancestor Cargo.lock' -- \
+    "$writer" --dispatch-plan "$ws_unlisted_plan" --chain-base "$ws_glob_base" --validate-only
+
+ws_excluded_plan="$tmp/ws-excluded.json"
+cat >"$ws_excluded_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 616, "predictedWriteSet": ["crates/excluded-crate/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a manifest matched by members but also matched by exclude never adopts the ancestor Cargo.lock' -- \
+    "$writer" --dispatch-plan "$ws_excluded_plan" --chain-base "$ws_glob_base" --validate-only
+
+go_base="$tmp/go-base"
+mkdir -p "$go_base/services/x" "$go_base/services/y"
+printf 'module example.invalid/root\n' >"$go_base/go.mod"
+printf 'example.invalid/dep v1.0.0 h1:abc=\n' >"$go_base/go.sum"
+printf 'module example.invalid/x\n' >"$go_base/services/x/go.mod"
+printf 'module example.invalid/y\n' >"$go_base/services/y/go.mod"
+printf 'example.invalid/dep v1.0.0 h1:def=\n' >"$go_base/services/y/go.sum"
+git init -q -b main "$go_base"
+git -C "$go_base" config user.email test@example.invalid
+git -C "$go_base" config user.name test
+git -C "$go_base" add -- .
+git -C "$go_base" commit -qm base
+
+go_no_sibling_plan="$tmp/go-no-sibling.json"
+cat >"$go_no_sibling_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 613, "predictedWriteSet": ["services/x/go.mod"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a Go module with no sibling go.sum never adopts a same-named ancestor go.sum' -- \
+    "$writer" --dispatch-plan "$go_no_sibling_plan" --chain-base "$go_base" --validate-only
+
+go_sibling_plan="$tmp/go-sibling.json"
+cat >"$go_sibling_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 613, "predictedWriteSet": ["services/y/go.mod"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+go_sibling_err=$("$writer" --dispatch-plan "$go_sibling_plan" --chain-base "$go_base" \
+    --validate-only 2>&1 >/dev/null) && go_sibling_rc=0 || go_sibling_rc=$?
+assert_eq 1 "$go_sibling_rc" \
+    'a Go module with its own sibling go.sum still requires that companion'
+assert_contains "$go_sibling_err" 'omits its companion: services/y/go.sum' \
+    'the sibling go.sum (not the unrelated root go.sum) is the required companion'
+
 finish

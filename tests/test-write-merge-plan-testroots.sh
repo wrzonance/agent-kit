@@ -296,4 +296,153 @@ assert_not_contains "$ref_err" 'beta' \
 assert_contains "$ref_err" 'test-root config source: chain-base ref' \
     'the resolved config source is disclosed'
 
+# --- issue #610: a predicted dependency manifest drags its lockfile and the
+# generated files whose CI workflow paths: trigger on that lockfile. ---------
+dep_base="$tmp/dep-base"
+mkdir -p "$dep_base/src" "$dep_base/packaging/flatpak" "$dep_base/.github/workflows" "$dep_base/.agent"
+printf '%s\n' 'fn main() {}' >"$dep_base/src/main.rs"
+printf '%s\n' '[package]' 'name = "honk"' >"$dep_base/Cargo.toml"
+printf '%s\n' '# lock' >"$dep_base/Cargo.lock"
+printf '%s\n' '[]' >"$dep_base/packaging/flatpak/cargo-sources.json"
+cat >"$dep_base/.github/workflows/flatpak-cargo-sources.yml" <<'EOF'
+name: flatpak-cargo-sources
+on:
+  push:
+    paths:
+      - 'Cargo.lock'
+      - "packaging/flatpak/cargo-sources.json"
+      - .github/workflows/flatpak-cargo-sources.yml
+  pull_request:
+    paths: [Cargo.lock, 'packaging/flatpak/cargo-sources.json']
+jobs:
+  check:
+    steps:
+      - run: echo check
+EOF
+printf '%s\n' 'AGENT_CMD_TEST=cargo test' >"$dep_base/.agent/config.env" # ecosystem-allow: fixture
+git init -q -b main "$dep_base"
+git -C "$dep_base" config user.email test@example.invalid
+git -C "$dep_base" config user.name test
+git -C "$dep_base" add -- .
+git -C "$dep_base" commit -qm 'cargo repo with a CI-checked generated file'
+
+dep_plan="$tmp/dep.json"
+cat >"$dep_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 52, "predictedWriteSet": ["src/**", "Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+dep_rc=0
+dep_err=$("$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only 2>&1 >/dev/null) || dep_rc=$?
+assert_eq 1 "$dep_rc" 'a predicted manifest without its lockfile is a validation failure'
+assert_contains "$dep_err" 'Cargo.lock' 'the manifest completion names the lockfile'
+assert_contains "$dep_err" 'packaging/flatpak/cargo-sources.json' \
+    'the manifest completion names the generated file whose CI workflow triggers on the lockfile'
+assert_not_contains "$dep_err" 'omits its companion: .github/workflows' \
+    'the workflow file itself is never demanded as a companion'
+assert_rc 0 '--fix appends the companions to predictedWriteSet' -- \
+    "$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only --fix
+assert_eq 'src/**,Cargo.toml,Cargo.lock,packaging/flatpak/cargo-sources.json' \
+    "$(jq -r '.entries[0].predictedWriteSet | join(",")' "$dep_plan")" \
+    '--fix records the lockfile and the CI-declared generated file, in order, once'
+assert_rc 0 'a completed dependency write set validates cleanly' -- \
+    "$writer" --dispatch-plan "$dep_plan" --chain-base "$dep_base" --validate-only
+
+nodep_plan="$tmp/nodep.json"
+cat >"$nodep_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 53, "predictedWriteSet": ["src/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a write set that names no manifest is never asked for a lockfile' -- \
+    "$writer" --dispatch-plan "$nodep_plan" --chain-base "$dep_base" --validate-only
+
+# --- issue #690 (Codex adversarial review of #610's PR, P2): a workspace
+# member manifest with only a root lockfile must still resolve to it via an
+# ancestor walk, instead of being silently skipped because no sibling
+# lockfile sits beside the member. ------------------------------------------
+ws_base="$tmp/workspace-base"
+mkdir -p "$ws_base/crates/foo/src" "$ws_base/.agent"
+printf '%s\n' '[workspace]' 'members = ["crates/foo"]' >"$ws_base/Cargo.toml"
+printf '%s\n' '# lock' >"$ws_base/Cargo.lock"
+printf '%s\n' '[package]' 'name = "foo"' >"$ws_base/crates/foo/Cargo.toml"
+printf '%s\n' 'fn main() {}' >"$ws_base/crates/foo/src/main.rs"
+printf '%s\n' 'AGENT_CMD_TEST=cargo test' >"$ws_base/.agent/config.env" # ecosystem-allow: fixture
+git init -q -b main "$ws_base"
+git -C "$ws_base" config user.email test@example.invalid
+git -C "$ws_base" config user.name test
+git -C "$ws_base" add -- .
+git -C "$ws_base" commit -qm 'cargo workspace with a member manifest and a root-only lockfile'
+
+ws_plan="$tmp/workspace.json"
+cat >"$ws_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 54, "predictedWriteSet": ["crates/foo/**"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+ws_rc=0
+ws_err=$("$writer" --dispatch-plan "$ws_plan" --chain-base "$ws_base" --validate-only 2>&1 >/dev/null) || ws_rc=$?
+assert_eq 1 "$ws_rc" 'a workspace member manifest without a sibling lockfile still demands the root lockfile'
+assert_contains "$ws_err" 'omits its companion: Cargo.lock' \
+    'the ancestor walk resolves to the root Cargo.lock, not a nonexistent crates/foo/Cargo.lock'
+assert_rc 0 '--fix appends the ancestor-resolved lockfile' -- \
+    "$writer" --dispatch-plan "$ws_plan" --chain-base "$ws_base" --validate-only --fix
+assert_eq 'crates/foo/**,Cargo.lock' \
+    "$(jq -r '.entries[0].predictedWriteSet | join(",")' "$ws_plan")" \
+    '--fix records the ancestor-resolved root lockfile'
+
+# --- issue #690 (Codex adversarial review of #610's PR, P2): a workflow
+# paths: entry keeps a trailing comment on a quoted scalar, and a blank line
+# sits mid-list -- neither may hide the sibling generated file. -------------
+cmt_base="$tmp/comment-base"
+mkdir -p "$cmt_base/src" "$cmt_base/packaging/flatpak" "$cmt_base/.github/workflows" "$cmt_base/.agent"
+printf '%s\n' 'fn main() {}' >"$cmt_base/src/main.rs"
+printf '%s\n' '[package]' 'name = "honk"' >"$cmt_base/Cargo.toml"
+printf '%s\n' '# lock' >"$cmt_base/Cargo.lock"
+printf '%s\n' '[]' >"$cmt_base/packaging/flatpak/cargo-sources.json"
+cat >"$cmt_base/.github/workflows/flatpak-cargo-sources.yml" <<'EOF'
+name: flatpak-cargo-sources
+on:
+  push:
+    paths:
+      - 'Cargo.lock' # dependency changes
+
+      - "packaging/flatpak/cargo-sources.json"
+jobs:
+  check:
+    steps:
+      - run: echo check
+EOF
+printf '%s\n' 'AGENT_CMD_TEST=cargo test' >"$cmt_base/.agent/config.env" # ecosystem-allow: fixture
+git init -q -b main "$cmt_base"
+git -C "$cmt_base" config user.email test@example.invalid
+git -C "$cmt_base" config user.name test
+git -C "$cmt_base" add -- .
+git -C "$cmt_base" commit -qm 'workflow paths: entry with a trailing comment and a blank line mid-list'
+
+cmt_plan="$tmp/comment.json"
+cat >"$cmt_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 55, "predictedWriteSet": ["src/**", "Cargo.toml", "Cargo.lock"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+cmt_rc=0
+cmt_err=$("$writer" --dispatch-plan "$cmt_plan" --chain-base "$cmt_base" --validate-only 2>&1 >/dev/null) || cmt_rc=$?
+assert_eq 1 "$cmt_rc" 'a commented, blank-line-interrupted paths: entry still demands its generated-file companion'
+assert_contains "$cmt_err" 'packaging/flatpak/cargo-sources.json' \
+    'a trailing comment on the quoted lockfile entry does not hide the sibling generated file'
+assert_rc 0 '--fix appends the companion' -- \
+    "$writer" --dispatch-plan "$cmt_plan" --chain-base "$cmt_base" --validate-only --fix
+assert_eq 'src/**,Cargo.toml,Cargo.lock,packaging/flatpak/cargo-sources.json' \
+    "$(jq -r '.entries[0].predictedWriteSet | join(",")' "$cmt_plan")" \
+    '--fix records the companion despite the comment and blank line'
+
 finish

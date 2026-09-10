@@ -8,6 +8,8 @@
 #                    [--fuzzy N] [--json]
 #   triage-issues.sh --classify-shape FILE   # offline work-shape classification of an
 #                                            # already-fetched body; no gh preflight
+#   triage-issues.sh --classify-deps FILE    # offline dependency-signal classification of an
+#                                            # already-fetched body; no gh preflight
 # Exit: 0 success (including a partial response or a --classify-shape verdict),
 #       1 the query failed, 2 bad usage, 3 gh unavailable/unauthenticated.
 set -euo pipefail
@@ -30,6 +32,7 @@ die_usage() {
     printf 'usage: %s [--repo-root DIR] [--limit N] [--issues N,N,N] [--fuzzy N] [--json]\n' \
         "$PROGRAM" >&2
     printf '       %s --classify-shape FILE\n' "$PROGRAM" >&2
+    printf '       %s --classify-deps FILE\n' "$PROGRAM" >&2
     exit 2
 }
 
@@ -85,6 +88,34 @@ classify_work_shape() {
     fi
 }
 
+# Does the body name a dependency change (add/bump/remove a crate, package,
+# module; a package-manager add/update command; a manifest or lockfile by
+# name)? A hit tells the root to predict the manifest, its lockfile, and the
+# CI-declared generated files up front (issue #610). Crude on purpose, like
+# classify_work_shape: a miss is never proof, a hit is a signal to confirm.
+classify_dependency_signal() {
+    local file=$1
+    [[ -f $file && -r $file ]] || die_usage "--classify-deps file not readable: $file"
+    local -a signals=(
+        '\b(add|adds|adding|added|introduce|introduces|bump|bumps|bumping|upgrade|upgrades|update|updates|pin|pins|remove|removes|replace|replaces|swap|swaps)( (the|a|an|new))?( [^[:space:]]+)? (crate|crates|dependency|dependencies|package|packages|module|modules|gem|gems)\b'
+        '\b(cargo add|cargo update|npm (install|i|add|update)|pnpm (add|install|update)|yarn (add|upgrade)|go get|go mod tidy|pip install|uv (add|lock)|poetry (add|lock)|bundle (add|update))\b' # ecosystem-allow: detection
+        '\b(Cargo\.(toml|lock)|package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|go\.(mod|sum)|pyproject\.toml|uv\.lock|poetry\.lock|requirements[^[:space:]]*\.txt|Gemfile(\.lock)?)\b' # ecosystem-allow: detection
+    )
+    local pattern matched
+    pattern=$(IFS='|'; printf '%s' "${signals[*]}")
+    matched=$(grep -iE -m 1 -- "$pattern" "$file" || true)
+    matched=$(printf '%s' "$matched" | tr -d '[:cntrl:]')
+    matched="${matched#"${matched%%[![:space:]]*}"}"
+    matched="${matched%"${matched##*[![:space:]]}"}"
+    matched="${matched#[-*+] }"
+    if [[ -n $matched ]]; then
+        ((${#matched} <= 160)) || matched="${matched:0:160}..."
+        printf 'dependency-signal=%s\n' "$matched"
+    else
+        printf 'dependency-signal=-\n'
+    fi
+}
+
 repo_root=''
 repo_root_supplied=0
 limit=$DEFAULT_LIMIT
@@ -96,6 +127,8 @@ fuzzy_supplied=0
 as_json=0
 classify_shape_file=''
 classify_shape_supplied=0
+classify_deps_file=''
+classify_deps_supplied=0
 
 # Every query flag tracks whether it was actually SUPPLIED, not just its
 # final value: an explicit `--limit 30` is indistinguishable from the
@@ -135,6 +168,12 @@ while (($#)); do
             classify_shape_file=$1
             classify_shape_supplied=1
             ;;
+        --classify-deps)
+            shift
+            (($#)) || die_usage '--classify-deps requires a file path'
+            classify_deps_file=$1
+            classify_deps_supplied=1
+            ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
     esac
@@ -146,10 +185,24 @@ done
 # must never fall through into the live gh query path below.
 if ((classify_shape_supplied)); then
     [[ -n $classify_shape_file ]] || die_usage '--classify-shape requires a non-empty file path'
+    ((classify_deps_supplied == 0)) || die_usage '--classify-shape does not combine with --classify-deps'
     ((repo_root_supplied == 0 && limit_supplied == 0 && issues_supplied == 0 &&
         fuzzy_supplied == 0 && as_json == 0)) ||
         die_usage '--classify-shape does not combine with the query flags'
     classify_work_shape "$classify_shape_file"
+    exit 0
+fi
+
+# classify_deps_supplied -- same non-empty-path routing as --classify-shape
+# above -- an empty `--classify-deps ""` must never fall through into the
+# live gh query path below.
+if ((classify_deps_supplied)); then
+    [[ -n $classify_deps_file ]] || die_usage '--classify-deps requires a non-empty file path'
+    ((classify_shape_supplied == 0)) || die_usage '--classify-deps does not combine with --classify-shape'
+    ((repo_root_supplied == 0 && limit_supplied == 0 && issues_supplied == 0 &&
+        fuzzy_supplied == 0 && as_json == 0)) ||
+        die_usage '--classify-deps does not combine with the query flags'
+    classify_dependency_signal "$classify_deps_file"
     exit 0
 fi
 

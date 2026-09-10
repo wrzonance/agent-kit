@@ -924,7 +924,7 @@ probe_tls() {
 # Mirrors agent-run.sh's selection exactly, so the agent knows the cache layout before its
 # first uv/npm/pip invocation instead of after that invocation's read-only failure.
 probe_caches() {
-    local home_cache root reason
+    local home_cache root reason cargo_home cargo_home_default
     home_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
     # A whitespace byte in root= could spoof extra caches= tokens (issue #332
     # F2), so EVERY source that can become root= (AGENT_CACHE_ROOT, TMPDIR, the
@@ -955,7 +955,17 @@ probe_caches() {
             reason="home-cache-unwritable"
         fi
     fi
-    emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root"
+    # CARGO_HOME is not a pure cache (config.toml/credentials.toml live there),
+    # so the contract's token mirrors agent-run.sh's select_cargo_home: report
+    # the effective default cargo home as-is when writable, root/cargo only
+    # when it is not (PR #690 review).
+    cargo_home_default="${CARGO_HOME:-${HOME:+$HOME/.cargo}}"
+    if [[ -n "$cargo_home_default" ]] && dir_writable "$cargo_home_default"; then
+        cargo_home="$cargo_home_default"
+    else
+        cargo_home="$root/cargo"
+    fi
+    emit "caches= root=$root reason=$reason home-cache=$home_cache UV_CACHE_DIR=$root/uv NPM_CONFIG_CACHE=$root/npm PIP_CACHE_DIR=$root/pip XDG_CACHE_HOME=$root CARGO_HOME=$cargo_home GOMODCACHE=$root/go-mod"
 }
 
 # The repo command runner is a convention this skill defines and documents: a repo opts in

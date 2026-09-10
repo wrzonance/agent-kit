@@ -300,6 +300,266 @@ path_is_ancestor_or_equal() {
     [[ $a == "$b" || $b == "$a"/* ]]
 }
 
+# --- dependency-manifest completion (issue #610) ----------------------------
+# A predicted manifest drags its lockfile and the generated files whose CI
+# freshness workflow triggers on that lockfile: two of five workers in the
+# 2026-09-05 run blocked on turn 1 with class=write-set for exactly these paths.
+# The table enumerates what a repository MIGHT use; it prescribes nothing.
+readonly MANIFEST_LOCKS='Cargo.toml:Cargo.lock package.json:package-lock.json package.json:pnpm-lock.yaml package.json:yarn.lock package.json:bun.lockb go.mod:go.sum pyproject.toml:uv.lock pyproject.toml:poetry.lock Pipfile:Pipfile.lock Gemfile:Gemfile.lock composer.json:composer.lock' # ecosystem-allow: detection
+
+tree_has_path() {
+    local wanted=$1 path
+    for path in "${chain_tree_paths[@]}"; do [[ $path == "$wanted" ]] && return 0; done
+    return 1
+}
+
+# Prints, one per line, the raw entries of the [workspace] table's $2 array
+# ("members" or "exclude") from TOML ($1, already-fetched file content):
+# quotes, commas, and trailing `#` comments stripped. The array may be inline
+# (`members = ["a", "b"]`) or span multiple lines; scanning the table stops
+# at the next `[table]` header, so a key of the same name in a later table
+# is never read (issue #690 review).
+cargo_workspace_array() {
+    local toml=$1 key=$2 line clean in_ws=0 in_key=0 buf=''
+    while IFS= read -r line; do
+        clean=${line%%#*}
+        if ((! in_ws)); then
+            [[ $clean =~ ^[[:space:]]*\[workspace\][[:space:]]*$ ]] && in_ws=1
+            continue
+        fi
+        if ((in_key)); then
+            buf+=" $clean"
+            if [[ $clean == *']'* ]]; then
+                in_key=0
+                cargo_array_print "${buf%%]*}"
+            fi
+            continue
+        fi
+        if [[ $clean =~ ^[[:space:]]*\[ ]]; then
+            in_ws=0
+            continue
+        fi
+        if [[ $clean =~ ^[[:space:]]*${key}[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            buf=${BASH_REMATCH[1]}
+            buf=${buf#\[}
+            if [[ $buf == *']'* ]]; then
+                cargo_array_print "${buf%%]*}"
+            else
+                in_key=1
+            fi
+        fi
+    done <<<"$toml"
+}
+
+# Splits a comma-joined TOML array body (its closing "]" already removed)
+# into one trimmed, unquoted entry per printed line.
+cargo_array_print() {
+    local raw=$1 part
+    local -a parts
+    IFS=',' read -ra parts <<<"$raw"
+    for part in "${parts[@]}"; do
+        part=${part#"${part%%[![:space:]]*}"}
+        part=${part%"${part##*[![:space:]]}"}
+        part=${part#\"}; part=${part%\"}
+        part=${part#\'}; part=${part%\'}
+        [[ -n $part ]] && printf '%s\n' "$part"
+    done
+}
+
+# True when REL (a candidate manifest directory expressed relative to the
+# ancestor whose Cargo.toml is TOML) is actually a member of that workspace:
+# REL glob-matches an entry in `members` and matches no entry in `exclude`
+# (issue #690 review -- a "[workspace]" table header alone proves the
+# ancestor IS a workspace root, but not that this particular nested manifest
+# is one of ITS members, as opposed to an unrelated nested project the
+# workspace never claims). A workspace with no `members` key at all only
+# ever implicitly includes its own root package (REL == ".").
+cargo_workspace_member_match() {
+    local toml=$1 rel=$2 pattern member_count=0 matched=0
+    while IFS= read -r pattern; do
+        # A member/exclude entry is a shell-style glob ("crates/*"), so the
+        # unquoted right-hand side is deliberate here, not an oversight.
+        # shellcheck disable=SC2053
+        [[ $rel == $pattern ]] && return 1
+    done < <(cargo_workspace_array "$toml" exclude)
+    while IFS= read -r pattern; do
+        member_count=$((member_count + 1))
+        # shellcheck disable=SC2053
+        [[ $rel == $pattern ]] && matched=1
+    done < <(cargo_workspace_array "$toml" members)
+    if ((member_count == 0)); then
+        [[ $rel == . ]]
+        return
+    fi
+    ((matched))
+}
+
+# A workspace member manifest (crates/foo/Cargo.toml) often has no sibling
+# lockfile of its own -- the workspace lockfile sits at the repo root or at
+# some other ancestor. The sibling lockfile ($1/$2) is always accepted with
+# no further proof. Beyond the sibling, only Cargo ($3=1) ever adopts an
+# ancestor lockfile -- Go modules never share an ancestor go.sum, and
+# npm/pnpm/yarn/uv/poetry/bundler lockfiles sit beside their manifest # ecosystem-allow: detection
+# (enumerating the ecosystems this MIGHT apply to, prescribing none), so
+# every other manifest returns failure once the sibling check misses. For
+# Cargo, walk from $1 up through its ancestors, and at each level accept
+# "<ancestor>/$2" only when the tracked "<ancestor>/Cargo.toml" (read at
+# $chain_ref) proves BOTH that the ancestor is a workspace root (a
+# "[workspace]" table header) AND that $1, relative to that ancestor,
+# is one of its declared members and not excluded (issue #690 review,
+# round 2 -- a workspace-root header alone does not prove THIS manifest is
+# a member of it, only that some workspace exists there) -- an unrelated
+# ancestor Cargo.lock that merely shares a filename must never be adopted.
+# The walk stops at the first ancestor that proves workspace ownership,
+# whether or not membership or the lockfile itself holds up there, rather
+# than searching past it into an unrelated project.
+nearest_ancestor_lockfile() {
+    local dir=$1 lock=$2 is_cargo=$3 candidate manifest_candidate lock_candidate
+    local manifest_dir=$dir rel toml
+    candidate=${dir:+$dir/}$lock
+    if tree_has_path "$candidate"; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+    [[ $is_cargo == 1 ]] || return 1
+    while [[ -n $dir ]]; do
+        if [[ $dir == */* ]]; then
+            dir=${dir%/*}
+        else
+            dir=''
+        fi
+        manifest_candidate=${dir:+$dir/}Cargo.toml
+        tree_has_path "$manifest_candidate" || continue
+        toml=$(git -C "$chain_root" show "$chain_ref:$manifest_candidate" 2>/dev/null) || continue
+        grep -qE '^[[:space:]]*\[workspace\]' <<<"$toml" || continue
+        rel=${manifest_dir#"${dir:+$dir/}"}
+        cargo_workspace_member_match "$toml" "$rel" || return 1
+        lock_candidate=${dir:+$dir/}$lock
+        if tree_has_path "$lock_candidate"; then
+            printf '%s' "$lock_candidate"
+            return 0
+        fi
+        return 1
+    done
+    return 1
+}
+
+# Entries listed beside LOCK in any `paths:` block of a tracked
+# .github/workflows file, minus the workflow file itself (by identity, not by
+# a blanket .github/ exclusion -- issue #690 review: that dropped a real
+# generated companion such as .github/dependency-snapshot.json). `paths:`
+# entries are glob patterns (GitHub Actions semantics: `**/Cargo.lock` matches
+# any depth, `*` never crosses a `/`), so LOCK is matched against each entry
+# with globmatch() rather than string equality (issue #690 review). Printed
+# (COMPANION) entries stay literal -- glob-shaped ones are never emitted as a
+# companion path. Read from the chain-base ref, never the live checkout.
+workflow_lock_siblings() {
+    local lock=$1 wf
+    for wf in "${chain_tree_paths[@]}"; do
+        [[ $wf == .github/workflows/*.yml || $wf == .github/workflows/*.yaml ]] || continue
+        git -C "$chain_root" show "$chain_ref:$wf" 2>/dev/null | awk -v lock="$lock" -v wf="$wf" '
+            # Quote-aware scalar decode: a quoted value keeps only what is
+            # between the matching quotes (a trailing " # comment" outside
+            # the quotes is discarded with it); an unquoted value has a
+            # trailing " #comment" stripped (issue #690 review -- the old
+            # blind quote-strip left a trailing comment glued to the value).
+            function strip(s,   q, i, n) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+                if (s == "") return s
+                q = substr(s, 1, 1)
+                if (q == "\"" || q == "'"'"'") {
+                    n = length(s)
+                    for (i = 2; i <= n; i++) if (substr(s, i, 1) == q) return substr(s, 2, i - 2)
+                }
+                sub(/[[:space:]]+#.*$/, "", s)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+                return s
+            }
+            # Convert a GitHub Actions `paths:` glob to an anchored ERE and test
+            # s against it, one character of pat at a time so a bracket class
+            # "[...]" (passed through unescaped) is never touched by the glob
+            # substitutions applied to the characters around it: escape regex
+            # metacharacters, "**/" -> "(.*/)?", remaining "**" -> ".*",
+            # "*" -> "[^/]*", "?" -> "[^/]".
+            function globmatch(pat, s,   re, i, n, ch) {
+                re = ""
+                n = length(pat)
+                for (i = 1; i <= n; i++) {
+                    ch = substr(pat, i, 1)
+                    if (ch == "*" && substr(pat, i, 2) == "**") {
+                        if (substr(pat, i + 2, 1) == "/") { re = re "(.*/)?"; i += 2 }
+                        else { re = re ".*"; i += 1 }
+                        continue
+                    }
+                    if (ch == "*") { re = re "[^/]*"; continue }
+                    if (ch == "?") { re = re "[^/]"; continue }
+                    if (ch == "[") {
+                        re = re "["
+                        i++
+                        while (i <= n && substr(pat, i, 1) != "]") { re = re substr(pat, i, 1); i++ }
+                        re = re "]"
+                        continue
+                    }
+                    if (ch ~ /[.+(){}|^$\\]/) { re = re "\\" ch; continue }
+                    re = re ch
+                }
+                return s ~ ("^" re "$")
+            }
+            function flush(   i, hit) {
+                hit = 0; for (i = 1; i <= c; i++) if (globmatch(items[i], lock)) hit = 1
+                if (hit) for (i = 1; i <= c; i++) if (items[i] != wf && items[i] !~ /[*?[]/) print items[i]
+                c = 0; delete items; inlist = 0 }
+            /^[[:space:]]*paths:[[:space:]]*\[/ { s = $0; sub(/^[^[]*\[/, "", s); sub(/\].*$/, "", s); n = split(s, a, ",")
+                for (i = 1; i <= n; i++) { v = strip(a[i]); if (v != "") items[++c] = v }; flush(); next }
+            /^[[:space:]]*paths:[[:space:]]*$/ { inlist = 1; next }
+            # A comment-only or blank line inside the list is not the list'"'"'s
+            # end -- only a line that is neither blank, a comment, nor a "-"
+            # item terminates it (issue #690 review).
+            inlist && /^[[:space:]]*#/ { next }
+            inlist && /^[[:space:]]*$/ { next }
+            inlist && /^[[:space:]]*-[[:space:]]*/ { v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); v = strip(v); if (v != "") items[++c] = v; next }
+            inlist { flush() }
+            END { flush() }'
+    done | awk 'NF && !seen[$0]++'
+}
+
+# Prints, one per line and in discovery order, every companion the given
+# prediction patterns must add: for each tree path a pattern matches whose
+# basename is a manifest, the lockfile beside it (when tracked) and that
+# lockfile's workflow siblings (when tracked), minus what a pattern already covers.
+manifest_companions_missing() {
+    local -a patterns=("$@") companions=()
+    local pattern regex path pair manifest lock dir is_cargo lockpath companion covered
+    for pattern in "${patterns[@]}"; do
+        regex=$(glob_regex "$pattern")
+        for path in "${chain_tree_paths[@]}"; do
+            [[ $path =~ $regex ]] || continue
+            for pair in $MANIFEST_LOCKS; do
+                manifest=${pair%%:*}; lock=${pair##*:}
+                [[ ${path##*/} == "$manifest" ]] || continue
+                dir=${path%"$manifest"}
+                dir=${dir%/}
+                is_cargo=0
+                [[ $manifest == Cargo.toml ]] && is_cargo=1
+                lockpath=$(nearest_ancestor_lockfile "$dir" "$lock" "$is_cargo") || continue
+                companions+=("$lockpath")
+                while IFS= read -r companion; do
+                    [[ -n $companion ]] && tree_has_path "$companion" && companions+=("$companion")
+                done < <(workflow_lock_siblings "$lockpath")
+            done
+        done
+    done
+    ((${#companions[@]})) || return 0
+    while IFS= read -r companion; do
+        covered=0
+        for pattern in "${patterns[@]}"; do
+            regex=$(glob_regex "$pattern")
+            [[ $companion =~ $regex ]] && { covered=1; break; }
+        done
+        ((covered)) || printf '%s\n' "$companion"
+    done < <(printf '%s\n' "${companions[@]}" | awk '!seen[$0]++')
+}
+
 # Prints the first protected pattern predictedWriteSet entry $1 collides
 # with and returns 0; returns 1 when it collides with none of the remaining
 # arguments. $1 is either a literal repo-relative path or a "dir/**"
@@ -423,6 +683,8 @@ if ((validate_only)); then
     declare -a violation_lines=()
     declare -A missing_roots_by_issue=()
     declare -a missing_issue_order=()
+    declare -A missing_companions_by_issue=()
+    declare -a companion_issue_order=()
 
     # --- protected-path collision check: runs unconditionally, independent
     # of --chain-base, because it is pure pattern matching over the plan's
@@ -495,6 +757,16 @@ if ((validate_only)); then
                     violation_lines+=("issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling")
                 }
             done
+            while IFS= read -r companion; do
+                [[ -n $companion ]] || continue
+                violation_lines+=("issue #$issue predictedWriteSet names a dependency manifest but omits its companion: $companion; add it to predictedWriteSet (a manifest change regenerates its lockfile and every file whose CI workflow paths: trigger on that lockfile)")
+                if [[ -z ${missing_companions_by_issue[$issue]+yes} ]]; then
+                    missing_companions_by_issue[$issue]=$companion
+                    companion_issue_order+=("$issue")
+                else
+                    missing_companions_by_issue[$issue]+=",$companion"
+                fi
+            done < <(manifest_companions_missing "${prediction_patterns[@]}")
             ((${#chain_test_roots[@]})) || continue
             source_prediction=0
             for pattern in "${prediction_patterns[@]}"; do
@@ -554,19 +826,25 @@ if ((validate_only)); then
     # Protected-path collisions are never auto-fixable (dropping, splitting to
     # an operator step, or acknowledging is a human decision), so they are
     # reported alongside any test-root violations but excluded from the
-    # missing-test-root remedy/--fix machinery below, which only ever
-    # understands testRootExclusions patches.
+    # missing-test-root remedy/--fix machinery below, which understands
+    # testRootExclusions patches and predictedWriteSet manifest-companion
+    # patches.
     if ((${#violation_lines[@]})); then
         for violation in "${violation_lines[@]}"; do
             printf '%s: %s\n' "$PROGRAM" "$violation" >&2
         done
-        if ((${#missing_issue_order[@]})); then
+        if ((${#missing_issue_order[@]} + ${#companion_issue_order[@]})); then
             if ((fix)); then
                 fix_filter='.'
                 for issue in "${missing_issue_order[@]}"; do
                     IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
                     missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
                     fix_filter+=" | (.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $missing_globs_json | unique)"
+                done
+                for issue in "${companion_issue_order[@]}"; do
+                    IFS=',' read -ra companions <<< "${missing_companions_by_issue[$issue]}"
+                    companions_json=$(printf '%s\n' "${companions[@]}" | jq -R . | jq -sc .)
+                    fix_filter+=" | (.entries[] | select(.issue == $issue) | .predictedWriteSet) |= (. + $companions_json | reduce .[] as \$p ([]; if index(\$p) then . else . + [\$p] end))"
                 done
                 target_dir=$(dirname -- "$dispatch_plan")
                 fixed=$(mktemp "$target_dir/.dispatch-plan.XXXXXX") || die 'could not stage --fix patch'
@@ -583,13 +861,14 @@ if ((validate_only)); then
                 recheck_rc=0
                 recheck_err=$("${BASH_SOURCE[0]}" --dispatch-plan "$dispatch_plan" \
                     --chain-base "$chain_base" --validate-only 2>&1 >/dev/null) || recheck_rc=$?
+                fixed_issues=$(printf '%s\n' "${missing_issue_order[@]}" "${companion_issue_order[@]}" | awk 'NF && !seen[$0]++' | paste -sd,)
                 if ((recheck_rc == 0)); then
                     printf 'dispatch-plan=%s fix=applied issues=%s\n' \
-                        "$dispatch_plan" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")"
+                        "$dispatch_plan" "$fixed_issues"
                     exit 0
                 fi
                 printf '%s: fix=applied issues=%s but violations remain:\n' \
-                    "$PROGRAM" "$(IFS=,; printf '%s' "${missing_issue_order[*]}")" >&2
+                    "$PROGRAM" "$fixed_issues" >&2
                 printf '%s\n' "$recheck_err" >&2
                 exit 1
             fi
@@ -602,12 +881,23 @@ if ((validate_only)); then
             # shell variables -- the single quotes are load-bearing.
             # shellcheck disable=SC2016
             remedy_filter='(.entries[] | select(.issue == $issue) | .testRootExclusions) |= ((. // []) + $roots | unique)'
-            printf '%s: remedy -- apply each entry testRootExclusions patch below, then re-run:\n' "$PROGRAM" >&2
+            printf '%s: remedy -- apply each entry patch below, then re-run:\n' "$PROGRAM" >&2
             for issue in "${missing_issue_order[@]}"; do
                 IFS=',' read -ra roots <<< "${missing_roots_by_issue[$issue]}"
                 missing_globs_json=$(printf '%s\n' "${roots[@]}" | jq -R '. + "/**"' | jq -sc .)
                 printf '  jq --argjson issue %q --argjson roots %q %q %q >%q.tmp && mv %q.tmp %q\n' \
                     "$issue" "$missing_globs_json" "$remedy_filter" \
+                    "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
+            done
+            # $issue and $paths below are jq --argjson variables, not shell
+            # variables -- the single quotes are load-bearing.
+            # shellcheck disable=SC2016
+            remedy_ws_filter='(.entries[] | select(.issue == $issue) | .predictedWriteSet) |= (. + $paths | reduce .[] as $p ([]; if index($p) then . else . + [$p] end))'
+            for issue in "${companion_issue_order[@]}"; do
+                IFS=',' read -ra companions <<< "${missing_companions_by_issue[$issue]}"
+                companions_json=$(printf '%s\n' "${companions[@]}" | jq -R . | jq -sc .)
+                printf '  jq --argjson issue %q --argjson paths %q %q %q >%q.tmp && mv %q.tmp %q\n' \
+                    "$issue" "$companions_json" "$remedy_ws_filter" \
                     "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" "$dispatch_plan" >&2
             done
             printf '%s: or re-run with --fix to apply the same patches automatically\n' "$PROGRAM" >&2

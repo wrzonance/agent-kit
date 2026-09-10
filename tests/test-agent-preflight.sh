@@ -1260,9 +1260,40 @@ assert_contains "$runners_line" 'node-roots=a,b' \
 assert_contains "$runners_line" 'node-pm=unresolved' \
     'roots resolving to different managers collapse to unresolved, never the first root'"'"'s manager'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1330 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1330 lines'
+# issue #610: caches= names the Cargo and Go module caches beside uv/npm/pip, so a
+# worker never rediscovers a read-only ~/.cargo or ~/go/pkg/mod mid-turn.
+# issue #690 (Codex adversarial review of #610's PR, P2): CARGO_HOME is not a
+# pure cache, so the token must mirror agent-run.sh's select_cargo_home --
+# reported as $root/cargo only when the effective default cargo home is
+# unwritable. Both variants use a controlled HOME so the assertion is
+# deterministic regardless of the running user's real ~/.cargo.
+cargo_unwritable_home="$tmp/cargo-preflight-unwritable-home"
+mkdir -p "$cargo_unwritable_home"
+chmod 000 "$cargo_unwritable_home"
+cargo_repo=$(new_repo)
+cargo_out=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME HOME="$cargo_unwritable_home" TMPDIR="$tmp" \
+    "$script" --worktree "$cargo_repo" --no-write 2>/dev/null)
+chmod 700 "$cargo_unwritable_home"
+cargo_line=$(grep '^caches=' <<< "$cargo_out")
+cargo_root=$(sed -n 's/^caches= root=\([^[:space:]]*\).*/\1/p' <<< "$cargo_line")
+assert_contains "$cargo_line" " CARGO_HOME=$cargo_root/cargo " \
+    'caches= redirects CARGO_HOME under the selected cache root when the default cargo home is unwritable'
+assert_contains "$cargo_line" " GOMODCACHE=$cargo_root/go-mod" 'caches= names GOMODCACHE under the selected cache root'
+
+cargo_writable_home="$tmp/cargo-preflight-writable-home"
+mkdir -p "$cargo_writable_home"
+cargo_writable_repo=$(new_repo)
+cargo_writable_out=$(env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME HOME="$cargo_writable_home" TMPDIR="$tmp" \
+    "$script" --worktree "$cargo_writable_repo" --no-write 2>/dev/null)
+cargo_writable_line=$(grep '^caches=' <<< "$cargo_writable_out")
+assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo " \
+    'caches= leaves a writable default cargo home alone instead of redirecting it'
+
+# issue #610: caches= grew CARGO_HOME/GOMODCACHE in place; issue #690 review:
+# +10 lines for the writable-default-cargo-home check the contract token now
+# mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1333 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1333 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
