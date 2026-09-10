@@ -31,6 +31,7 @@ make_fixture() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-markdown-blocks.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-invocations.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-size.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-helper-size.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-helper-refs.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-reference-manifest.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-versioned-plugin-paths.sh"
@@ -38,6 +39,7 @@ make_fixture() {
     cp -- "$root/tests/stub/gh" "$dir/tests/stub/gh"
     chmod +x "$dir/tests/run-tests.sh" "$dir/tests/lint-markdown-blocks.sh" \
         "$dir/tests/lint-skill-invocations.sh" "$dir/tests/lint-skill-size.sh" \
+        "$dir/tests/lint-helper-size.sh" \
         "$dir/tests/lint-helper-refs.sh" "$dir/tests/lint-reference-manifest.sh" \
         "$dir/tests/lint-versioned-plugin-paths.sh" \
         "$dir/tests/stub/gh"

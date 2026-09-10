@@ -148,6 +148,9 @@ step 'skill helper invocations'
 step 'skill size'
 "$here/lint-skill-size.sh" "$skills" || rc=1
 
+step 'helper size'
+"$here/lint-helper-size.sh" "$plugin" || rc=1
+
 step 'helper/reference paths'
 "$here/lint-helper-refs.sh" "$skills" || rc=1
 
