@@ -27,8 +27,21 @@ assert_contains "$wait_text" 'Worker implementation wait' \
 worker_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline" | grep -oE '[0-9]+' | head -n1)
 assert_eq yes "$([[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] && printf yes || printf no)" \
     'the worker-wait row names a positive numeric bound'
-assert_contains "$wait_text" 'never be re-issued at the same duration' \
-    'the never-re-issue-a-timed-out-wait rule remains stated'
+assert_contains "$wait_text" 'At the effective cap, repeat that capped wait' \
+    'timeouts at the runtime cap do not force premature stall checks'
+assert_contains "$wait_text" 'requests_per_wait_minute' 'handoff defines wait cost metric'
+assert_contains "$wait_text" 'synthetic' 'synthetic evidence is labelled'
+assert_contains "$skill_text" 'Before the threshold elapses, do not call' 'stall checks are threshold-gated'
+prompts=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+assert_contains "$prompts" '## Throwaway waiter prompt' 'fresh waiter template exists'
+assert_contains "$prompts" 'Never resume this waiter' 'waiters are never reused'
+waiter=${prompts#*## Throwaway waiter prompt}
+waiter=${waiter%%## PR-loop setup worker prompt*}
+assert_eq yes "$([[ ${#waiter} -lt 6000 ]] && printf yes || printf no)" \
+    'waiter template leaves room for filled paths under the approximate 2K-token prompt budget'
+setup=${prompts#*## PR-loop setup worker prompt}
+assert_not_contains "$setup" '--wait-ci --rounds 60' 'setup worker does not poll CI'
+assert_contains "$(<"$root/agentkit/skills/.shared/spawn-contract.md")" 'effective cap' 'spawn contract defers wait limits to runtime'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.
@@ -64,7 +77,7 @@ assert_contains "$skill_text" '**900 s** minimum, draft-loop/review/CI waits **6
 assert_contains "$skill_text" 'Dispatch already printed this worker'\''s own bound as a `wait-bound=`' \
     'polling discipline points at the printed dispatch-time value instead of only the recalled rule'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/wait-discipline.md") -le 8700 ]] && printf yes || printf no)" \
-    'wait-discipline policy stays at or under 8700 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/wait-discipline.md") -le 10700 ]] && printf yes || printf no)" \
+    'wait-discipline policy stays at or under 10700 bytes (fresh waiter and metrics contract)'
 
 finish

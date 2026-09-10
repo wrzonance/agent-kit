@@ -1,0 +1,9 @@
+{
+  "evidence": "synthetic",
+  "durations_seconds": [1200, 1800],
+  "root_cap_seconds": 600,
+  "waiter_cap_seconds": 30,
+  "stall_threshold_seconds": 720,
+  "initial_context_tokens": 1800,
+  "growth_tokens_per_request": 80
+}

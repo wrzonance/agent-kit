@@ -2,6 +2,7 @@
 
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
+- [Throwaway waiter prompt](#throwaway-waiter-prompt) — one bounded CI/review observation in fresh context
 - [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
 - [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
@@ -294,6 +295,39 @@ publication handback — or BLOCKED with one concrete reason. Do not contact the
 pushing your own branch, and do not ask for privilege escalation.
 ````
 
+## Throwaway waiter prompt
+
+Root fills only this template (under approximately 2K tokens), using the fresh-context shape
+and effective runtime caps in `.shared/spawn-contract.md`. Supply trusted absolute paths and
+argv, no issue history, diff, full setup prompt, or review payload. Never reuse an implementation
+worker. Review consent-bearing launches stay with their consent holder; the helper here only
+observes existing work. If a caller is itself a worker, return pending state to root for dispatch.
+
+```text
+You are a read-only throwaway waiter. Never resume this waiter for another wait.
+Worktree: <absolute worktree>; repository/PR: <slug and number>.
+Helper argv: <one trusted bounded helper invocation, including numeric rounds/interval or duration>.
+Helper bound: <seconds>; effective tool caps: <advertised names and milliseconds>.
+Output: <absolute dedicated result file>; diagnostics: <absolute dedicated log file>.
+Run exactly that helper once in the supplied worktree, redirecting stdout/stderr to those files.
+Use the largest permitted yield and wait parameters; higher-priority tool/communication limits
+prevail. Continue the SAME running session/cell after a yield; never restart the command or
+hand-poll CI. No repository exploration, edits, review launches, messages to other actors,
+stall checks, or additional commands. Never treat a timeout as success.
+At helper completion/expiry/error, return exactly one result line:
+wait-result status=<complete|expired|error> exit=<code> elapsed_seconds=<measured>
+result=<path> log=<path> waiter_requests=<observed|unavailable>
+max_waiter_context_tokens=<observed|unavailable>
+(Join those fields on one line.) Preserve nonzero helper exits; a successful state query
+can still report failing CI, so root must inspect the result before classifying readiness.
+No empty-yield narration except communication required by higher-priority instructions.
+Missing request/token telemetry is unavailable, never inferred from tool-call counts.
+```
+
+Root counts its own wait requests, aggregates the shared handoff metrics, and reads the
+terminal result once. Retire the waiter after this result; a new bounded attempt needs a new
+waiter and an explicit remaining budget. Expiry ends this attempt, not an automatic retry.
+
 ## PR-loop setup worker prompt
 
 **Per-agent prompt template:**
@@ -343,13 +377,13 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Wait for CI with the bounded helper, capture and inspect its bounded digest. A failing check is a
-terminal setup result, not a fix batch:
+Snapshot CI once; root assigns pending CI to a fresh throwaway waiter, never resumes setup
+as a poller. A failing check is a terminal setup result, not a fix batch:
 
 setup_terminal='launch-ready'
 ci_red=0
 ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO \
-  --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}") || exit 1
+  "${acceptance_args[@]}") || exit 1
 printf '%s\n' "$ci_digest"
 ci_line=$(sed -n '/^ci=/p' <<<"$ci_digest")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
