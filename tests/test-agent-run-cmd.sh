@@ -596,15 +596,51 @@ chmod 500 "$writable_home_bad_cargo/.cargo"
 chmod 700 "$writable_home_bad_cargo/.cargo"
 writable_home_bad_cargo_log=$(find "$writable_home_unwritable_cargo_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
 assert_contains "$(cat "$writable_home_bad_cargo_log")" "CARGO_HOME=[$writable_home_bad_cargo/.cache/cargo]" \
-    'a writable HOME with an unwritable default cargo home still redirects CARGO_HOME under $HOME/.cache/cargo'
+    'a writable HOME with an unwritable default cargo home still redirects CARGO_HOME under the home cache dir'
+
+# CR-690-B (round 2): a caller-supplied but UNUSABLE GOMODCACHE must fall back
+# to the home cache dir in this same writable-HOME branch; an unset GOMODCACHE
+# must stay unset (Go's own default applies) rather than being forced onto a
+# path just because this branch ran.
+gomodcache_unwritable_repo=$(make_repo)
+mkdir -p "$gomodcache_unwritable_repo/tools"
+# shellcheck disable=SC2016  # the literal $GOMODCACHE belongs to the fixture script
+printf '#!/bin/sh\nprintf "GOMODCACHE=[%%s]\\n" "$GOMODCACHE"\n' > "$gomodcache_unwritable_repo/tools/show-gomodcache"
+chmod +x "$gomodcache_unwritable_repo/tools/show-gomodcache"
+printf 'AGENT_CMD_TEST=tools/show-gomodcache\n' > "$gomodcache_unwritable_repo/.agent/config.env"
+gomodcache_home="$tmp/gomodcache-writable-home"
+mkdir -p "$gomodcache_home/.cache" "$gomodcache_home/.cargo"
+bad_gomodcache="$tmp/gomodcache-unwritable-target"
+mkdir -p "$bad_gomodcache"
+chmod 500 "$bad_gomodcache"
+(cd "$gomodcache_unwritable_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME \
+    HOME="$gomodcache_home" TMPDIR="$tmp" GOMODCACHE="$bad_gomodcache" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$bad_gomodcache"
+gomodcache_unwritable_log=$(find "$gomodcache_unwritable_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$gomodcache_unwritable_log")" "GOMODCACHE=[$gomodcache_home/.cache/go-mod]" \
+    'a writable HOME with a caller-supplied but unwritable GOMODCACHE still redirects it under the home cache dir'
+
+gomodcache_unset_repo=$(make_repo)
+mkdir -p "$gomodcache_unset_repo/tools"
+printf '#!/bin/sh\nif env | grep -q "^GOMODCACHE="; then printf "GOMODCACHE_PRESENT\\n"; else printf "GOMODCACHE_ABSENT\\n"; fi\n' \
+    > "$gomodcache_unset_repo/tools/show-gomodcache-presence"
+chmod +x "$gomodcache_unset_repo/tools/show-gomodcache-presence"
+printf 'AGENT_CMD_TEST=tools/show-gomodcache-presence\n' > "$gomodcache_unset_repo/.agent/config.env"
+(cd "$gomodcache_unset_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$gomodcache_home" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+gomodcache_unset_log=$(find "$gomodcache_unset_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$gomodcache_unset_log")" 'GOMODCACHE_ABSENT' \
+    'an unset GOMODCACHE stays unset in this branch instead of being forced onto a path'
 
 # issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection; issue #690
 # review: +23 for select_cargo_home (redirect only when the default is
 # unwritable, and carry config.toml/credentials.toml into the new home);
 # issue #690 follow-up: +8 for carrying the extensionless config/credentials
 # names too, and for running select_cargo_home from the writable-HOME branch
-# of select_caches (CR-690-A, CR-690-B).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1622 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1622 lines'
+# of select_caches (CR-690-A, CR-690-B); +5 for falling an unusable
+# caller-supplied GOMODCACHE back to the home cache dir in that same branch
+# while leaving an unset one alone (CR-690-B round 2).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1627 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1627 lines'
 
 finish

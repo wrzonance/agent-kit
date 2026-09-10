@@ -501,6 +501,67 @@ EOF
 assert_rc 0 'a nested project under an unrelated root Cargo.toml (no [workspace]) never adopts the root Cargo.lock' -- \
     "$writer" --dispatch-plan "$nonws_plan" --chain-base "$nonws_base" --validate-only
 
+# --- CR-690-F round 2: a "[workspace]" header alone proves an ancestor IS a
+# workspace root, but not that THIS manifest is one of its declared members
+# -- nearest_ancestor_lockfile() must also prove membership (members glob
+# match, and no exclude match) before adopting the ancestor Cargo.lock -----
+ws_glob_base="$tmp/ws-glob-base"
+mkdir -p "$ws_glob_base/crates/foo" "$ws_glob_base/crates/bar" "$ws_glob_base/tools/unlisted" "$ws_glob_base/crates/excluded-crate"
+cat >"$ws_glob_base/Cargo.toml" <<'EOF'
+[workspace]
+members = [
+    "crates/*",
+]
+exclude = ["crates/excluded-crate"]
+EOF
+printf '# generated\n' >"$ws_glob_base/Cargo.lock"
+printf '[package]\nname = "foo"\n' >"$ws_glob_base/crates/foo/Cargo.toml"
+printf '[package]\nname = "bar"\n' >"$ws_glob_base/crates/bar/Cargo.toml"
+printf '[package]\nname = "unlisted"\n' >"$ws_glob_base/tools/unlisted/Cargo.toml"
+printf '[package]\nname = "excluded"\n' >"$ws_glob_base/crates/excluded-crate/Cargo.toml"
+git init -q -b main "$ws_glob_base"
+git -C "$ws_glob_base" config user.email test@example.invalid
+git -C "$ws_glob_base" config user.name test
+git -C "$ws_glob_base" add -- .
+git -C "$ws_glob_base" commit -qm base
+
+ws_glob_member_plan="$tmp/ws-glob-member.json"
+cat >"$ws_glob_member_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 614, "predictedWriteSet": ["crates/foo/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+ws_glob_member_err=$("$writer" --dispatch-plan "$ws_glob_member_plan" --chain-base "$ws_glob_base" \
+    --validate-only 2>&1 >/dev/null) && ws_glob_member_rc=0 || ws_glob_member_rc=$?
+assert_eq 1 "$ws_glob_member_rc" \
+    'a manifest matched by a members glob (crates/*) is still rejected without its ancestor lockfile'
+assert_contains "$ws_glob_member_err" 'omits its companion: Cargo.lock' \
+    'the members glob "crates/*" proves crates/foo is a workspace member, so the ancestor Cargo.lock is adopted'
+
+ws_unlisted_plan="$tmp/ws-unlisted.json"
+cat >"$ws_unlisted_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 615, "predictedWriteSet": ["tools/unlisted/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a manifest under a workspace root but not matched by any members entry never adopts the ancestor Cargo.lock' -- \
+    "$writer" --dispatch-plan "$ws_unlisted_plan" --chain-base "$ws_glob_base" --validate-only
+
+ws_excluded_plan="$tmp/ws-excluded.json"
+cat >"$ws_excluded_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{"issue": 616, "predictedWriteSet": ["crates/excluded-crate/Cargo.toml"]}],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+assert_rc 0 'a manifest matched by members but also matched by exclude never adopts the ancestor Cargo.lock' -- \
+    "$writer" --dispatch-plan "$ws_excluded_plan" --chain-base "$ws_glob_base" --validate-only
+
 go_base="$tmp/go-base"
 mkdir -p "$go_base/services/x" "$go_base/services/y"
 printf 'module example.invalid/root\n' >"$go_base/go.mod"

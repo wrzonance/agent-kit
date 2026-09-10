@@ -272,9 +272,14 @@ select_caches() {
         # XDG cache home, so a read-only HOME must force the fallback as well.
         # An otherwise-writable HOME can still have an unwritable CARGO_HOME (or
         # $HOME/.cargo), so select_cargo_home must run here too, not only in the
-        # fallback-root branch below (issue #690 review).
+        # fallback-root branch below (issue #690 review). A caller-supplied
+        # GOMODCACHE needs the same treatment, but only when one is actually
+        # set -- an unset GOMODCACHE must stay unset here (Go's own default
+        # applies), never be redirected just because this branch runs
+        # (issue #690 review).
         if dir_writable "$home_cache" && [[ -w ${HOME:-/nonexistent} ]]; then
             select_cargo_home "$home_cache"   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
+            [[ -z ${GOMODCACHE:-} ]] || export_cache_var GOMODCACHE "$home_cache/go-mod"  # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
             return 0
         fi
         root=${TMPDIR:-/tmp}/agent-cache-$(id -u)

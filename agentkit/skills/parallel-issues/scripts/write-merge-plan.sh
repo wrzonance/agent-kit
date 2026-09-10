@@ -313,6 +313,87 @@ tree_has_path() {
     return 1
 }
 
+# Prints, one per line, the raw entries of the [workspace] table's $2 array
+# ("members" or "exclude") from TOML ($1, already-fetched file content):
+# quotes, commas, and trailing `#` comments stripped. The array may be inline
+# (`members = ["a", "b"]`) or span multiple lines; scanning the table stops
+# at the next `[table]` header, so a key of the same name in a later table
+# is never read (issue #690 review).
+cargo_workspace_array() {
+    local toml=$1 key=$2 line clean in_ws=0 in_key=0 buf=''
+    while IFS= read -r line; do
+        clean=${line%%#*}
+        if ((! in_ws)); then
+            [[ $clean =~ ^[[:space:]]*\[workspace\][[:space:]]*$ ]] && in_ws=1
+            continue
+        fi
+        if ((in_key)); then
+            buf+=" $clean"
+            if [[ $clean == *']'* ]]; then
+                in_key=0
+                cargo_array_print "${buf%%]*}"
+            fi
+            continue
+        fi
+        if [[ $clean =~ ^[[:space:]]*\[ ]]; then
+            in_ws=0
+            continue
+        fi
+        if [[ $clean =~ ^[[:space:]]*${key}[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            buf=${BASH_REMATCH[1]}
+            buf=${buf#\[}
+            if [[ $buf == *']'* ]]; then
+                cargo_array_print "${buf%%]*}"
+            else
+                in_key=1
+            fi
+        fi
+    done <<<"$toml"
+}
+
+# Splits a comma-joined TOML array body (its closing "]" already removed)
+# into one trimmed, unquoted entry per printed line.
+cargo_array_print() {
+    local raw=$1 part
+    local -a parts
+    IFS=',' read -ra parts <<<"$raw"
+    for part in "${parts[@]}"; do
+        part=${part#"${part%%[![:space:]]*}"}
+        part=${part%"${part##*[![:space:]]}"}
+        part=${part#\"}; part=${part%\"}
+        part=${part#\'}; part=${part%\'}
+        [[ -n $part ]] && printf '%s\n' "$part"
+    done
+}
+
+# True when REL (a candidate manifest directory expressed relative to the
+# ancestor whose Cargo.toml is TOML) is actually a member of that workspace:
+# REL glob-matches an entry in `members` and matches no entry in `exclude`
+# (issue #690 review -- a "[workspace]" table header alone proves the
+# ancestor IS a workspace root, but not that this particular nested manifest
+# is one of ITS members, as opposed to an unrelated nested project the
+# workspace never claims). A workspace with no `members` key at all only
+# ever implicitly includes its own root package (REL == ".").
+cargo_workspace_member_match() {
+    local toml=$1 rel=$2 pattern member_count=0 matched=0
+    while IFS= read -r pattern; do
+        # A member/exclude entry is a shell-style glob ("crates/*"), so the
+        # unquoted right-hand side is deliberate here, not an oversight.
+        # shellcheck disable=SC2053
+        [[ $rel == $pattern ]] && return 1
+    done < <(cargo_workspace_array "$toml" exclude)
+    while IFS= read -r pattern; do
+        member_count=$((member_count + 1))
+        # shellcheck disable=SC2053
+        [[ $rel == $pattern ]] && matched=1
+    done < <(cargo_workspace_array "$toml" members)
+    if ((member_count == 0)); then
+        [[ $rel == . ]]
+        return
+    fi
+    ((matched))
+}
+
 # A workspace member manifest (crates/foo/Cargo.toml) often has no sibling
 # lockfile of its own -- the workspace lockfile sits at the repo root or at
 # some other ancestor. The sibling lockfile ($1/$2) is always accepted with
@@ -323,13 +404,18 @@ tree_has_path() {
 # every other manifest returns failure once the sibling check misses. For
 # Cargo, walk from $1 up through its ancestors, and at each level accept
 # "<ancestor>/$2" only when the tracked "<ancestor>/Cargo.toml" (read at
-# $chain_ref) proves that ancestor is a workspace root (a "[workspace]"
-# table header) -- an unrelated ancestor Cargo.lock that merely shares a
-# filename must never be adopted (issue #690 review). The walk stops at the
-# first ancestor that proves workspace ownership, whether or not its lockfile
-# is tracked there, rather than searching past it into an unrelated project.
+# $chain_ref) proves BOTH that the ancestor is a workspace root (a
+# "[workspace]" table header) AND that $1, relative to that ancestor,
+# is one of its declared members and not excluded (issue #690 review,
+# round 2 -- a workspace-root header alone does not prove THIS manifest is
+# a member of it, only that some workspace exists there) -- an unrelated
+# ancestor Cargo.lock that merely shares a filename must never be adopted.
+# The walk stops at the first ancestor that proves workspace ownership,
+# whether or not membership or the lockfile itself holds up there, rather
+# than searching past it into an unrelated project.
 nearest_ancestor_lockfile() {
     local dir=$1 lock=$2 is_cargo=$3 candidate manifest_candidate lock_candidate
+    local manifest_dir=$dir rel toml
     candidate=${dir:+$dir/}$lock
     if tree_has_path "$candidate"; then
         printf '%s' "$candidate"
@@ -344,8 +430,10 @@ nearest_ancestor_lockfile() {
         fi
         manifest_candidate=${dir:+$dir/}Cargo.toml
         tree_has_path "$manifest_candidate" || continue
-        git -C "$chain_root" show "$chain_ref:$manifest_candidate" 2>/dev/null |
-            grep -qE '^[[:space:]]*\[workspace\]' || continue
+        toml=$(git -C "$chain_root" show "$chain_ref:$manifest_candidate" 2>/dev/null) || continue
+        grep -qE '^[[:space:]]*\[workspace\]' <<<"$toml" || continue
+        rel=${manifest_dir#"${dir:+$dir/}"}
+        cargo_workspace_member_match "$toml" "$rel" || return 1
         lock_candidate=${dir:+$dir/}$lock
         if tree_has_path "$lock_candidate"; then
             printf '%s' "$lock_candidate"
