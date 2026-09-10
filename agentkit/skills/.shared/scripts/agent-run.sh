@@ -37,7 +37,10 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  runner, or unresolved and exits 0, 4, or 3 respectively; exit 2
                  is reserved for a fatal unsupported-interpreter guard.
   --cmd NAME     Run the command this repository declares under that name, instead
-                 of spelling one out. Mutually exclusive with a literal command.
+                 of spelling one out. Repeatable: each --cmd runs only after the
+                 previous one exits 0 (re-execs itself for the rest); --if-declared
+                 binds to the --cmd immediately before it. Mutually exclusive with
+                 a literal command.
   --             End of options; everything after it is the command.
   -h, --help     Show this help and exit 0.
 
@@ -79,6 +82,29 @@ die() {
     exit 1
 }
 
+# `--cmd NAME [--if-declared] --cmd NAME2 ...` (issue #697) chains named
+# commands in one recipe line: this process runs only the first, then re-execs
+# itself for the rest on success -- matching shell `&&` short-circuiting.
+build_chain_argv() {
+    chain_argv=()
+    [[ -z $dir_opt ]] || chain_argv+=(--dir "$dir_opt")
+    local i
+    for ((i = 0; i < ${#remaining_queue[@]}; i++)); do
+        chain_argv+=(--cmd "${remaining_queue[i]}")
+        ((remaining_if_declared[i])) && chain_argv+=(--if-declared)
+    done
+    return 0
+}
+
+finish() {
+    local rc=$1
+    if ((rc == 0)) && ((${#remaining_queue[@]})); then
+        build_chain_argv
+        exec "$0" "${chain_argv[@]}"
+    fi
+    exit "$rc"
+}
+
 # ---------------------------------------------------------------- arguments ---
 dir_opt=
 label=
@@ -99,10 +125,15 @@ literal_repository_base=''
 # argv and so must not be handed to the runner as a subcommand.
 cmd_declared=no
 if_declared=0
+declare -a cmd_queue=() cmd_queue_if_declared=() remaining_queue=() remaining_if_declared=()
 
 while (($#)); do
     case $1 in
-        --if-declared) if_declared=1; shift ;;
+        --if-declared)
+            ((${#cmd_queue[@]})) || die '--if-declared must directly follow a --cmd NAME.'
+            cmd_queue_if_declared[${#cmd_queue[@]} - 1]=1
+            shift
+            ;;
         --force)
             force_cmd=1
             shift
@@ -132,7 +163,7 @@ while (($#)); do
                 --baseline-id) baseline_id=$2 ;;
                 --dir|--repo-root) dir_opt=$2 ;;
                 --label) label=$2 ;;
-                --cmd) cmd_name=$2 ;;
+                --cmd) cmd_queue+=("$2"); cmd_queue_if_declared+=(0) ;;
                 --resolve) resolve_name=$2 ;;
             esac
             shift 2
@@ -155,6 +186,13 @@ while (($#)); do
             ;;
     esac
 done
+
+if ((${#cmd_queue[@]})); then
+    cmd_name=${cmd_queue[0]}
+    if_declared=${cmd_queue_if_declared[0]}
+    remaining_queue=("${cmd_queue[@]:1}")
+    remaining_if_declared=("${cmd_queue_if_declared[@]:1}")
+fi
 
 if ((focus_requested)); then
     [[ -n $focus_opt ]] || die '--only requires a non-empty value.'
@@ -899,7 +937,7 @@ resolve_named_command() {
     # never promised that name, so the skill was wrong to assume it.
     if ((if_declared)); then
         printf 'agent-run: no command named %s declared here; skipping\n' "$name" >&2
-        exit 0
+        finish 0
     fi
     if [[ -n $resolve_name ]]; then
         printf 'unresolved\n'
@@ -1491,7 +1529,7 @@ tree_hash=''
 if verification_cache_eligible; then
     tree_hash=$(compute_tree_hash 2>/dev/null || true)
     if [[ -n $tree_hash ]] && verification_cache_hit "$tree_hash"; then
-        exit 0
+        finish 0
     fi
 fi
 
@@ -1524,6 +1562,8 @@ export AGENT_RUN_LABEL="$label"
 # A declared AGENT_CMD_* value is the entire command: the repository has already
 # said exactly what to run, so it is not handed to the runner as a subcommand.
 if [[ $cmd_declared == no ]] && resolve_runner; then
+    ((${#remaining_queue[@]} == 0)) ||
+        die 'chained --cmd after a runner-delegated command is not supported; run them separately.'
     printf 'delegating: runner=%s source=%s cwd=%s\n' "$runner_path" "$runner_src" "$work_dir" >&2
     print_notes '' >&2
     cd -- "$work_dir"
@@ -1624,4 +1664,4 @@ if ((rc == 0)); then
 else
     report_failure "$rc" "$log_file"
 fi
-exit "$rc"
+finish "$rc"

@@ -632,6 +632,55 @@ gomodcache_unset_log=$(find "$gomodcache_unset_repo/.agent/logs" -type f -name '
 assert_contains "$(cat "$gomodcache_unset_log")" 'GOMODCACHE_ABSENT' \
     'an unset GOMODCACHE stays unset in this branch instead of being forced onto a path'
 
+# --- issue #697: `--cmd NAME [--if-declared] --cmd NAME2 ...` chains named ---
+# commands in one invocation (review-remote-pr Step 2's lint-then-test fold),
+# short-circuiting like `&&` and re-execing itself for each queued name.
+chain_repo=$(make_repo)
+printf 'AGENT_CMD_TEST=echo chain-test-ran\n' > "$chain_repo/.agent/config.env"
+out=$(cd "$chain_repo" && "$real_run_sh" --cmd lint --if-declared --cmd test 2>&1); rc=$?
+assert_eq '0' "$rc" 'an undeclared first link skips cleanly and the chain continues'
+assert_contains "$out" 'skipping' 'the skipped first link still says so'
+assert_contains "$out" 'chain-test-ran' 'and the declared second link still runs'
+
+chain_repo2=$(make_repo)
+printf 'AGENT_CMD_LINT=echo chain-lint-ran\nAGENT_CMD_TEST=echo chain-test-ran\n' \
+    > "$chain_repo2/.agent/config.env"
+out=$(cd "$chain_repo2" && "$real_run_sh" --cmd lint --if-declared --cmd test 2>&1); rc=$?
+assert_eq '0' "$rc" 'two declared links both run'
+assert_contains "$out" 'chain-lint-ran' 'the first declared link ran'
+assert_contains "$out" 'chain-test-ran' 'and the second declared link ran'
+
+chain_fail_repo=$(make_repo)
+printf 'AGENT_CMD_LINT=false\nAGENT_CMD_TEST=echo chain-test-should-not-run\n' \
+    > "$chain_fail_repo/.agent/config.env"
+out=$( (cd "$chain_fail_repo" && "$real_run_sh" --cmd lint --cmd test 2>&1) ); rc=$?
+assert_eq '1' "$rc" 'a failing first link fails the whole chain'
+assert_not_contains "$out" 'chain-test-should-not-run' \
+    'and the chain never runs the second link after a failure (matches && semantics)'
+
+out=$( (cd "$chain_repo" && "$real_run_sh" --if-declared --cmd test 2>&1) || true)
+assert_contains "$out" '--if-declared must directly follow' \
+    'a leading --if-declared with no prior --cmd is refused, not silently ignored'
+
+chain_runner_repo=$(make_repo)
+mkdir -p "$chain_runner_repo/tools"
+printf '#!/bin/sh\nprintf "runner-ran\\n"\n' > "$chain_runner_repo/tools/verify"
+chmod +x "$chain_runner_repo/tools/verify"
+printf 'AGENT_REPO_RUNNER=tools/verify\n' > "$chain_runner_repo/.agent/config.env"
+out=$( (cd "$chain_runner_repo" && "$real_run_sh" --cmd lint --cmd test 2>&1) ); rc=$?
+assert_eq '1' "$rc" 'chaining after a runner-delegated command is refused rather than silently dropped'
+assert_contains "$out" 'not supported' \
+    'the refusal names why: runner delegation execs and never returns to run the rest of the chain'
+assert_not_contains "$out" 'runner-ran' \
+    'the unsupported chain never actually delegates'
+
+# --- issue #697 follow-up: existing single-name callers are unaffected ------
+single_repo=$(make_repo)
+printf 'AGENT_CMD_TEST=echo declared-test-ran\n' > "$single_repo/.agent/config.env"
+out=$(cd "$single_repo" && "$real_run_sh" --cmd test 2>&1)
+assert_contains "$out" 'declared-test-ran' \
+    'a single --cmd still runs exactly as before the chaining feature'
+
 # issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection; issue #690
 # review: +23 for select_cargo_home (redirect only when the default is
 # unwritable, and carry config.toml/credentials.toml into the new home);
@@ -640,7 +689,11 @@ assert_contains "$(cat "$gomodcache_unset_log")" 'GOMODCACHE_ABSENT' \
 # of select_caches (CR-690-A, CR-690-B); +5 for falling an unusable
 # caller-supplied GOMODCACHE back to the home cache dir in that same branch
 # while leaving an unset one alone (CR-690-B round 2).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1627 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1627 lines'
+# issue #697: +40 for repeatable `--cmd NAME [--if-declared] --cmd NAME2 ...`
+# chaining (build_chain_argv/finish, the cmd_queue parse/derive plumbing, and
+# the runner-delegation chain guard) -- folds review-remote-pr Step 2's
+# lint-then-test pair into one recipe call.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1667 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1667 lines'
 
 finish
