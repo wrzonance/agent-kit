@@ -83,8 +83,15 @@ cp "$real_estimator" "$synth/tests/lib/token-estimate.sh"
 # coincidentally-right one.
 printf -- '---\nname: alpha\ndescription: Use when testing.\n---\n%s\n' "$(head -c 96 /dev/zero | tr '\0' a)" \
     > "$synth/agentkit/skills/alpha/SKILL.md" # 100 body bytes after frontmatter, but whole-file size is what's summed
+# recipe_blocks: two executable fences here (one `bash`, one `sh`), one in
+# the reference, and a `text` fence plus an indented one in .shared that must
+# NOT count -- only a line-initial bash/sh opener is a tool turn.
+fence='```'
+printf '%sbash\necho one\n%s\nprose\n%ssh\necho two\n%s\n' "$fence" "$fence" "$fence" "$fence" >> "$synth/agentkit/skills/alpha/SKILL.md"
 printf '%s\n' "$(head -c 199 /dev/zero | tr '\0' b)" > "$synth/agentkit/skills/alpha/references/ref.md"
+printf '%sbash\necho three\n%s\n' "$fence" "$fence" >> "$synth/agentkit/skills/alpha/references/ref.md"
 printf '%s\n' "$(head -c 79 /dev/zero | tr '\0' c)" > "$synth/agentkit/skills/.shared/policy.md"
+printf '%stext\nshown, not run\n%s\n  %sbash\nindented, not a fence opener\n  %s\n' "$fence" "$fence" "$fence" "$fence" >> "$synth/agentkit/skills/.shared/policy.md"
 printf '%s\n' "$(head -c 39 /dev/zero | tr '\0' d)" > "$synth/agentkit/skills/parallel-issues/references/worker-prompts.md"
 # a non-.md file under skills/ must never contribute to either surface
 printf '%s\n' "should never be counted" > "$synth/agentkit/skills/alpha/notes.txt"
@@ -98,6 +105,9 @@ tab_dir="$synth/agentkit/skills/$(printf 'weird\tname')"
 mkdir -p "$tab_dir"
 printf -- '---\nname: weird\ndescription: Use when the path itself is adversarial.\n---\n%s\n' \
     "$(head -c 19 /dev/zero | tr '\0' e)" > "$tab_dir/SKILL.md"
+printf '%sbash\necho four\n%s\n' "$fence" "$fence" >> "$tab_dir/SKILL.md"
+expect_resident_blocks=3   # alpha (2) + tab-path skill (1)
+expect_reachable_blocks=4  # + ref.md (1); policy.md's text/indented fences excluded
 
 skill_bytes=$(wc -c < "$synth/agentkit/skills/alpha/SKILL.md")
 ref_bytes=$(wc -c < "$synth/agentkit/skills/alpha/references/ref.md")
@@ -135,6 +145,15 @@ assert_eq "$(printf '%s\ttier0-v1\tstatic-accounting\tn/a' "$sha1")" "$got_key" 
 
 resident_tokens=$(jq -r '.resident.tokens' <<< "$record1")
 assert_eq "$((expect_resident / 4))" "$resident_tokens" 'resident tokens = bytes/4 via the shared estimator'
+
+got_resident_blocks=$(jq -r '.recipe_blocks.resident' <<< "$record1")
+got_reachable_blocks=$(jq -r '.recipe_blocks.reachable' <<< "$record1")
+assert_eq "$expect_resident_blocks" "$got_resident_blocks" \
+    'recipe_blocks.resident = line-initial bash/sh fences across every SKILL.md (including the tab-path one)'
+assert_eq "$expect_reachable_blocks" "$got_reachable_blocks" \
+    'recipe_blocks.reachable = the same count across every *.md; text and indented fences excluded'
+assert_contains "$RUN_OUT" "recipe_blocks=$expect_resident_blocks/$expect_reachable_blocks" \
+    'the summary line prints resident/reachable recipe-block counts'
 
 # --- dispatched_template absent before the file exists -------------------
 rm "$synth/agentkit/skills/parallel-issues/references/worker-prompts.md"
