@@ -163,6 +163,40 @@ fi
 assert_eq "$before_contract" "$(cat -- "$mismatch_repo/.agent/env-contract.txt")" \
     'the read and explicit remedy leave the contract unchanged'
 
+# A relative helper must print a remedy usable from another repository; the
+# reader still requires an absolute root before it can reach this diagnostic.
+other_repo="$tmp/other-repo"
+make_valid_repo "$other_repo"
+other_cache=$(cat -- "$other_repo/.agent/cache/contract-session.env")
+printf '%s\n' "$before_cache" > "$mismatch_repo/.agent/cache/contract-session.env"
+relative_reader=agentkit/skills/.shared/scripts/lib/contract-cache.sh
+rc=0
+out=$(cd -- "$root" && "$relative_reader" --read-session-context --repo-root . 2> "$tmp/relative-root.err") || rc=$?
+assert_eq 1 "$rc" 'the CLI still refuses a relative repository root'
+assert_eq '' "$out" 'relative-root refusal still has no stdout'
+assert_eq 'contract-cache: session-context invalid' "$(cat -- "$tmp/relative-root.err")" \
+    'relative-root refusal does not offer a refresh remedy'
+rc=0
+out=$(cd -- "$root" && "$relative_reader" --read-session-context --repo-root "$mismatch_repo" 2> "$tmp/relative-helper.err") || rc=$?
+err=$(cat -- "$tmp/relative-helper.err")
+assert_eq 1 "$rc" 'relative-helper invocation preserves mismatch refusal'
+assert_eq '' "$out" 'relative-helper mismatch still has no stdout'
+assert_contains "$err" '; remedy (Bash): source ' 'relative-helper invocation supplies a refresh remedy'
+remedy=${err#*; remedy (Bash): }
+if [[ $remedy != "$err" ]]; then
+    rc=0
+    (cd -- "$other_repo" && bash -c "$remedy") || rc=$?
+    assert_eq 0 "$rc" 'the relative-helper remedy executes from another repository'
+    rc=0
+    out=$("$cache_reader" --read-session-context --repo-root "$mismatch_repo" --get agentkit 2> "$tmp/after-remedy.err") || rc=$?
+    assert_eq 0 "$rc" 'the remedy refreshes the intended repository from another cwd'
+    assert_eq '/tmp/installed-v2/agentkit/skills' "$out" 'the intended cache reflects the current skills path'
+fi
+assert_eq "$other_cache" "$(cat -- "$other_repo/.agent/cache/contract-session.env")" \
+    'the remedy leaves the other repository cache untouched'
+assert_eq "$before_contract" "$(cat -- "$mismatch_repo/.agent/env-contract.txt")" \
+    'the relative-helper remedy leaves the intended contract untouched'
+
 # --- stale: contract_inputs_sha256 no longer matches ----------------------
 stale_repo="$tmp/stale"
 make_valid_repo "$stale_repo"
