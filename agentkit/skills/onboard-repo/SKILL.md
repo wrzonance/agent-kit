@@ -61,21 +61,16 @@ agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]
 contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
 ```
 
-With the tree resolved, report its onboarding stage:
+With the tree resolved, report its onboarding stage, remaining go-live steps, and (before the first
+verification) the same boundary's environment preflight — include its component, package, runtime-pin,
+and setup lines in the handoff:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$agentkit/.shared/scripts/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report
-"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --next-steps
+"$agentkit/.shared/scripts/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report --next-steps --preflight
 ```
 
-Perform only the reported `next` stage. Before the first verification, also run the same boundary's
-environment preflight and include its component, package, runtime-pin, and setup lines in the handoff:
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --preflight
-```
+Perform only the reported `next` stage.
 
 ## Step 1 — look before writing
 
@@ -93,8 +88,7 @@ guess — ask the user which they want, then:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$agentkit/.shared/scripts/board-setup.sh" --dry-run          # creates a board, canonical columns, links it
-"$shared/board-setup.sh"                    # or --project N to re-column an existing one
+"$agentkit/.shared/scripts/board-setup.sh"   # creates a board, canonical columns, links it; --project N re-columns an existing one
 ```
 
 **Do not do this by hand.** `updateProjectV2Field`/`singleSelectOptions` replaces the option set and can unassign every item; the helper snapshots and restores assignments. Re-run Step 1 with `--project N`.
@@ -122,11 +116,12 @@ This writes `.agent/config.env` and `.agent/board.json` and verifies `.agent/*` 
 
 ## Step 3 — find what it left blank
 
+`gaps` also lists commented-out non-command declarations (labels, ADR dir, protected paths, review
+providers) itself, and `suggestions` is Step 4's candidate list — one call covers both steps:
+
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$agentkit/.shared/scripts/repo-config.sh" --list
-grep -n '^# AGENT_' .agent/config.env
-"$agentkit/.shared/scripts/detect-toolchains.sh" --format gaps
+"$agentkit/.shared/scripts/detect-toolchains.sh" --format gaps,suggestions
 ```
 
 Run the detector even when config looks complete; report "nothing NEW was found" rather than treating quiet as proof.
@@ -152,12 +147,7 @@ Never bypass hooks with `--no-verify`, `core.hooksPath`, aliases, or any equival
 
 This is the part worth thinking about. Look at what the repository actually runs: CI workflow steps, a
 pre-commit hook, a `Makefile`, `package.json` scripts, a `tools/` directory, `CONTRIBUTING.md`. Start from
-the detector rather than hand-guessing:
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/detect-toolchains.sh" --format suggestions
-```
+the detector rather than hand-guessing — Step 3's combined call above already printed the suggestions.
 
 Treat every line as a CANDIDATE: it inspects marker files without running anything, so nothing here is
 proven until Step 6 runs it.
@@ -179,12 +169,7 @@ AGENT_CMD_TEST=<the full suite, minutes>
 
 **A declared command runs directly, with no approval step.** `agent-run.sh --cmd <name>` runs the
 exact `AGENT_CMD_<NAME>` value as soon as it is declared — review the declaration before you write
-it, since nothing checks it again at run time:
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$agentkit/.shared/scripts/agent-run.sh" --cmd verify
-```
+it, since nothing checks it again at run time. Step 6 below is where it actually runs.
 
 **Several commands in one ecosystem** get one key each — values are argv, no shell syntax, pipes, `&&`, or
 `cd`. A command needing to run inside a component pairs with a rundir key instead of wrapping itself
@@ -226,6 +211,8 @@ every future session:
 "$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, hand this to the user to run themselves:
 "$agentkit/.shared/scripts/agent-run.sh" --cmd verify
+# Step 8's harness check, run here rather than as its own call:
+"$agentkit/.shared/scripts/harness-advice.sh"
 ```
 
 `--list` prints warnings for values the resolver rejects — a declared command that doesn't pass it isn't
@@ -258,15 +245,10 @@ prints the diff, and refuses on trunk — commit/PR the result through this same
 
 ## Step 8 — check the harness itself
 
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$agentkit/.shared/scripts/harness-advice.sh"
-```
-
-Silent means nothing needs changing. Anything it prints is a setting **the operator must decide on** — never
-apply one yourself, and never edit their harness config. Relay the block verbatim, including the risk note:
-the writable-roots setting trades a filesystem protection for a pattern-based one, and that is theirs to
-weigh.
+`harness-advice.sh` already ran as part of Step 6's block above. Silent means nothing needs changing.
+Anything it prints is a setting **the operator must decide on** — never apply one yourself, and never edit
+their harness config. Relay the block verbatim, including the risk note: the writable-roots setting trades
+a filesystem protection for a pattern-based one, and that is theirs to weigh.
 
 ## Step 9 — report
 
