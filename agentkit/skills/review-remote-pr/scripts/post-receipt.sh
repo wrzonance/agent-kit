@@ -445,6 +445,8 @@ validate_publish_args() {
     [[ -n $P2 ]] || die_usage '--p2 is required'
     require_uint '--p2' "$P2"
     [[ -n $AGENT_IDENTITY ]] || die_usage '--agent-identity is required'
+    [[ -z $SKIP_RATIONALE || -z $MODEL_SUBSTITUTED_FROM ]] ||
+        die_usage '--model-substituted-from cannot accompany --skip-rationale: a verified skip has no model-selection evidence'
     if [[ -n $SKIP_RATIONALE || -n $ORACLE ]]; then
         [[ -n $SKIP_RATIONALE && -n $ORACLE ]] ||
             die_usage '--skip-rationale and --oracle must be given together'

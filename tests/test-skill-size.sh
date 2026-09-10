@@ -182,7 +182,7 @@ mkdir -p "$root/review-remote-pr"
 } > "$root/review-remote-pr/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted skill that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 7943 tokens' 'the token ratchet names its ceiling'
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 7974 tokens' 'the token ratchet names its ceiling'
 
 root=$tmp/ratchet-lines
 mkdir -p "$root/review-remote-pr"
@@ -223,7 +223,7 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
 assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 946 lines' \
     'the parallel-issues line ratchet pins the stacked ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 18029 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 18030 tokens' \
     'the parallel-issues token ratchet pins the stacked ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these

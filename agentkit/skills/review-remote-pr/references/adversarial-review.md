@@ -262,6 +262,7 @@ value as `modelSubstitutedFrom` in `adversarial.result.json` and annotates its s
 The receipt composer reads this evidence automatically; `post-receipt.sh publish` also accepts
 `--model-substituted-from VALUE` for older result artifacts, but refuses a value conflicting with
 recorded provenance. The `Reviewer:` line and review-ledger entry preserve the substitution.
+Verified skips reject this flag because no reviewer model was selected.
 Valid or absent declarations retain the existing reviewer line. The same rule applies to an
 invalid selected fallback model; unused model slots and roster selections are unaffected.
 Only model-shaped identifiers up to 200 characters are copied into this public provenance;

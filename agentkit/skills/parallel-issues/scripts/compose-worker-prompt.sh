@@ -296,7 +296,10 @@ if [[ -n $root_git_common ]]; then
 fi
 if [[ -n ${repo_root:-} ]]; then
     root_contract=$(contract_cache_contract_file "$repo_root")
-    if [[ -f $root_contract && ! -L $root_contract && $root_contract != "$contract" ]]; then
+    if [[ $root_contract != "$contract" && ( -e $root_contract || -L $root_contract ) ]]; then
+        if [[ -L $repo_root/.agent ]] || ! "$contract_reader" --repo-root "$repo_root" --check > /dev/null 2>&1; then
+            die "refusing: root-contract-untrusted: $root_contract"
+        fi
         root_sandbox=$(grep -m1 '^sandbox=' "$root_contract" 2>/dev/null || true)
         worktree_sandbox=$(grep -m1 '^sandbox=' "$contract" 2>/dev/null || true)
         if [[ -n $root_sandbox && -n $worktree_sandbox ]]; then

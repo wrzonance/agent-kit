@@ -23,19 +23,21 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1333:15916:800"
-    [skills/.shared/scripts/agent-run.sh]="1627:17340:800"
+    [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
+    # #612: explicit formatter pairs and byte-bounded cargo failure context.
+    [skills/.shared/scripts/agent-run.sh]="1685:17676:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1123:11566:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1276:16733:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
-    [skills/review-remote-pr/scripts/post-receipt.sh]="988:11162:800"
+    # #706 skip-provenance refusal plus #707 observed CI evidence.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -44,8 +46,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# Issue #707: explicit stacked-base CI evidence in state, body, and receipts.
-readonly MAX_TREE_TOKENS=398319
+# Final #706 + #707 measured tree, plus selected #709 contract-cache.sh delta: 406 bytes.
+# Exact combined ceiling: (1597574 + 406) / 4, integer floor; no spare allowance.
+readonly MAX_TREE_TOKENS=399495
 
 violations=0
 checked=0
