@@ -306,9 +306,8 @@ the evidence.
 **The verdicts are evidence, not conclusions.** The script proves that a pull
 request references an issue; it cannot prove that pull request covered the whole
 ask, and it does not judge ADRs. Issues with Status `Done` are already excluded.
-Read [references/triage-and-selection.md](references/triage-and-selection.md) in full for the
-prior-art and board adjudication tables — **only for the issues the digest flagged**; a `clean`
-issue needs none of it.
+Digest flags: read [prior-art](references/triage-and-selection.md#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted)
+& [board](references/triage-and-selection.md#board-adjudication); skip `clean`.
 
 | Verdict | What it proves | What you do |
 |---|---|---|
