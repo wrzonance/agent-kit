@@ -230,6 +230,25 @@ field is unavailable.
 Do not describe this call without making it. A task is dispatched only after `spawn_agent`
 returns a task/agent identifier.
 
+## Throwaway waiters and runtime caps
+
+Only root dispatches a fresh read-only waiter for one bounded CI/review wait; never resume
+a setup or fix-batch worker as a poller. Use the compact waiter template in
+`parallel-issues/references/worker-prompts.md` with no repository history or diff. Keep its
+filled prompt below approximately 2K tokens; count runtime-injected context in telemetry too.
+Use `fork_turns: "none"` when advertised; otherwise use the runtime's documented
+fresh-context equivalent. Never assume another harness's isolation parameter is accepted.
+If isolation is unavailable, record degraded local waiting, not a fictitious fresh worker.
+Select model/effort with the declarations above; never inherit root context to save a spawn.
+
+The current tool schema owns parameter names and limits for each harness. Record its
+advertised `yield_time_ms` / `timeout_ms` maxima (or actual equivalent), then use the
+**effective cap**: the lesser of that maximum and higher-priority communication limits.
+Do not copy caps from another harness, probe invented values, or override a developer's
+maximum blocking duration. A waiter continues the same running cell/session after yields;
+it does not restart the helper. Root uses its own effective cap while collecting the result.
+At the cap, empty returns do not authorize stall checks before the shared threshold.
+
 ## Degraded path — `spawn_agent` unavailable (`multi_agent = false`)
 
 Record the reason before falling back, but do not manufacture a call to prove a known

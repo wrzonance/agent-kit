@@ -330,9 +330,9 @@ rc=0
 if ((rc == 0)); then mv -f -- "$tmp" "$RUN_DIR/baseline-evidence.md"; else rm -f -- "$tmp"; fi
 ```
 
-### Wait contract: one turn-free wait
+### Wait contract: fresh bounded waiter
 
-Read ["$agentkit/.shared/wait-discipline.md"](../.shared/wait-discipline.md) before waits (no-model-turn, bounds, durable-state; Step 4 adds CI settlement). Keep waits silent until terminal: log heartbeats, emit one completion/expiry line.
+Follow [wait-discipline](../.shared/wait-discipline.md): root spawns its fresh waiter template for CI/review. Respect runtime/communication caps; silent until terminal.
 
 ### Adversarial-review receipt:
 
@@ -387,7 +387,7 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 
 ## Step 4: Wait for CI
 
-Wait in **bounded rounds** — never one unbounded wait — then refresh Step 5's evidence too:
+Guards run only in root. Before dispatch, root must substitute absolute helper/artifact paths and resolved PR/repo values below, then send only the resulting single bounded invocation to the fresh waiter. Refresh Step 5 afterward:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
@@ -439,7 +439,7 @@ GitHub Code Quality: [no findings | auto-cleared | dismissed with reasons | bloc
 CodeRabbit approval: [approved | changes requested | commented | not observable | no provider review observed],
 Adversarial review [Claude Opus 5 | blind Codex-agent fallback (reason: <blockedReason>|absent) | verified skip (oracle: <oracle>) | already spent | none (reason)]: M findings, M handled.
 Implementation worker: [<model> <effort> | worker=self — reason: <why>], six-step gate complete.
-Human review: [none | H1 approved/replied/open | H2 awaiting confirmation].
+Human review: [none | H1 approved/replied/open | H2 awaiting confirmation]. Wait: [shared requests_per_wait_minute metrics | unavailable].
 [Waiting for you to mark it ready — this skill will not trigger a review. | Ready to merge | Awaiting user confirmation; not claiming readiness]
 ```
 (Draft phase: report the observed thread and approval state; `0/0` and "no provider review observed" only when evidence shows none. Name the reviewer/fallback reason, the worker's model/effort or
