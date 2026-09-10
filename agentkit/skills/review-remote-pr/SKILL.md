@@ -41,7 +41,7 @@ trigger a review bot, resolve a human's thread, or act without per-item confirma
 
 ## Session decision ledger
 
-After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the ledger identity to this invocation's authorization input before recording any decision:
+After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the ledger identity to this invocation before recording any decision:
 
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
@@ -55,9 +55,9 @@ RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
 : "$RUN_ID"
 ```
 
-This stops replay across differently-flagged invocations. Append every human grant, steer, or review adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+This stops cross-invocation replay. Append every human grant, steer, or review adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
 `QUOTE` is the verbatim quote; never put secrets in any field.
-After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as durable.
+After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat the output as durable.
 
 ## Runtime and provider neutrality
 
@@ -68,9 +68,9 @@ Read ["$agentkit/review-remote-pr/references/environment-contract.md"](reference
 
 ## Automated review provider rules
 
-CodeRabbit and `github-code-quality[bot]` get provider-specific handling; other bots and humans have their
-own lanes. Authoritative signals: GraphQL `author.__typename == "Bot"`, REST `author.type == "Bot"`, or an
-exact `[bot]` login suffix — a login merely containing `bot` is human. A generic automated finding is an automated B-item, never
+CodeRabbit and `github-code-quality[bot]` get provider-specific handling; other bots and humans have
+their own lanes. Authoritative signals: GraphQL `author.__typename == "Bot"`, REST `author.type ==
+"Bot"`, or an exact `[bot]` login suffix — a login merely containing `bot` is human. A generic automated finding is an automated B-item, never
 H; H labels are human-only. Every automated reply passes the reply-body integrity gate
 (`$agentkit/review-remote-pr/scripts/gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
@@ -89,10 +89,9 @@ provider table, classifier, human gate, and settlement recipes. Reuse that loade
 The warm-up writes data-only `.agent/cache/contract-session.env` (never sourced); a changed input makes it stale until refreshed.
 
 ```bash
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
+# Resolve the skill tree from the environment contract at the repository root;
+# trust it only when untracked, a regular file, and owned by this user -- a
+# tracked, symlinked, or foreign-owned contract could redirect execution.
 agentkit=''
 contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
 contract="$contract_root/.agent/env-contract.txt"
@@ -151,11 +150,13 @@ PHASE C — REVIEW (when provider findings land)
 auto-cleared/dismissed; all body nitpicks fixed or declined+documented; every confirmed adversarial
 finding fixed or declined with a PR comment; every human-lane item has an explicit decision
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
-the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must surface as knowing acceptance, never silently inherited or re-pinged.
+the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base
+line means checks are not green, and a pre-retarget approval must surface as knowing acceptance,
+not inherited silently.
 
-CodeRabbit's auto-approve (when enabled) needs settled replies on every thread it opened and no
-failing checks — never resolve before its fresh acknowledgement. Disabled →
-no formal approval ever comes; "green" is threads resolved + nitpicks handled.
+CodeRabbit's auto-approve (enabled) needs settled replies on every opened thread and no failing
+checks — never resolve before its fresh ack. Disabled → no formal approval comes; "green" means
+threads resolved + nitpicks handled.
 
 ---
 
@@ -197,20 +198,21 @@ A protected path caught in a base merge uses the commit helper's named-base affo
 `merge-inherited paths parked/handed off` (exit `3`, an attended park; exit `2` is the git-metadata elevation
 handback). A hook refusal is one bounded named park: **never** bypass with `--no-verify`, `core.hooksPath`, an alias, or any equivalent.
 
-```bash
-MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable'); echo "Mergeable: $MERGEABLE"
-```
-
-If `CONFLICTING`, root merges the base into the PR branch — **never rebase** a published branch, never
-force-push it. Resolve (`git checkout --ours|--theirs <path>` or edit; strip markers with `sed`, never
-`python3 -c`), grep-verify no `<<<<<<<`/`=======`/`>>>>>>>` remain, then commit via
-`$agentkit/.shared/scripts/worktree-commit.sh` and verify via `$agentkit/.shared/scripts/agent-run.sh`:
+Read `mergeable=`/`base: ref=...` from one `gh-pr-state.sh` call; merge only when `CONFLICTING` —
+**never rebase** a published branch, never force-push it. Resolve (`git checkout --ours|--theirs
+<path>` or edit; strip markers with `sed`, never `python3 -c`), grep-verify no
+`<<<<<<<`/`=======`/`>>>>>>>` remain, then commit via `$agentkit/.shared/scripts/worktree-commit.sh`
+and verify via `$agentkit/.shared/scripts/agent-run.sh`:
 
 ```bash
-BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+pr_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO") || exit 1
+MERGEABLE=$(sed -n 's/^pr=.*mergeable=\([A-Z]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
+BASE_BRANCH=$(sed -n 's/^base: ref=\([^ ]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
+echo "Mergeable: $MERGEABLE"
+[ "$MERGEABLE" = CONFLICTING ] || exit 0
 git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
 # harness.trailer composes a full "Co-Authored-By: ..." line already; pass it verbatim.
 contract_root="$(git rev-parse --show-toplevel)"
@@ -309,8 +311,7 @@ The worker verifies independently before its cycle push, through `agent-run.sh`:
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
-"$agent_run" --cmd lint --if-declared
-"$agent_run" --cmd test
+"$agent_run" --cmd lint --if-declared --cmd test
 ```
 
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
@@ -386,17 +387,19 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 
 ## Step 4: Wait for CI
 
-Wait in **bounded rounds** — never one unbounded wait:
+Wait in **bounded rounds** — never one unbounded wait — then refresh Step 5's evidence too:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
+  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60 --full --tmpdir "$RUN_DIR/state"
 ```
 
-Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, Step 1's digest on stdout. Never grep
-repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing; `/coderabbit/i` checks are ignored
-for settlement but still counted in `pending=`. Still pending after the bounded rounds →
+Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, digest plus Step 1's `pr_<N>_*.json`
+artifacts on stdout. Never grep repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing;
+`/coderabbit/i` checks are ignored for settlement but still counted in `pending=`. A `note:`
+means still-settling CI; exit-1 names the broken fetch. Still pending after the bounded rounds →
 **stop and escalate**; do not keep raising `--rounds`. Never infer review behavior from a push.
 
 ---
@@ -416,21 +419,14 @@ Post declines before the cycle's single push (Step 1c); root reviews the pushed 
 
 ## Step 6: Evaluate and Repeat
 
-Refresh every artifact with the same single call as Step 1 — no separate `gh pr checks`, no
-hand-rolled GraphQL re-query:
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
-```
+No `gh pr checks`, GraphQL re-query, or second `gh-pr-state.sh` — Step 4 already refreshed it.
 
 The digest's `agent-docs: N eligible` line reports this workflow's marked agent-doc threads
-(rule: provider-rules.md, Step 1a). Any CI failure, unhandled automated-review thread/finding, or
-unaddressed body nitpick/adversarial finding → back to Step 1 (max 3 cycles — The Loop's cap).
-Human-authored content lacking an explicit user decision surfaces the gate and waits; never post,
-resolve, or claim readiness.
+(rule: provider-rules.md, Step 1a). Route by what Step 4 settled (max 3 cycles — The Loop's cap):
+CI red → Step 2's CI-repair procedure, re-entering 3a/4 after its push; CI green with an unresolved
+automated-review finding or unaddressed nitpick → Step 5; checks still settling → Step 4 again.
+Human-authored content lacking an explicit user decision surfaces the gate and
+waits; never post, resolve, or claim readiness.
 
 ---
 
