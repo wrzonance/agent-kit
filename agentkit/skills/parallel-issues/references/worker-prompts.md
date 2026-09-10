@@ -386,6 +386,7 @@ ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo 
   "${acceptance_args[@]}") || exit 1
 printf '%s\n' "$ci_digest"
 ci_line=$(sed -n '/^ci=/p' <<<"$ci_digest")
+ci_pending=$(sed -n 's/^ci=.*pending=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing_checks=$(sed -n 's/^ci=.*failing=[1-9][0-9]* failing-checks=\(.*\)$/\1/p' <<<"$ci_line")
 if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
@@ -395,6 +396,8 @@ if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
   else
     setup_terminal='ci-red: unknown-check'
   fi
+elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
+  setup_terminal='ci-pending'
 fi
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
@@ -450,6 +453,8 @@ if ((ci_red)); then
   else
     setup_terminal='ci-red: unknown-check'
   fi
+elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
+  setup_terminal='ci-pending'
 fi
 
 Run the materiality precheck against the PR's current head before any review spend:
@@ -533,12 +538,12 @@ has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_c
 `cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
 (agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
 review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
-exactly `launch-ready`. `ci-red` always wins the terminal slot over `cq-open`/`icf-open` when more
-than one signal is non-zero; every printed evidence line still reaches the root regardless of which
-one is chosen as the terminal marker.
+exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root dispatches
+a fresh waiter. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
+evidence line still reaches root regardless of which signal occupies the terminal slot.
 The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
 `ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
-`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
+`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, `ci-pending run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
 The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
 findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
 setup outcome, even when `cq-repo: M` is non-zero.

@@ -3,7 +3,7 @@
 Read this before dispatching any implementation worker — issue leads in `parallel-issues`
 Phase 2's Dispatch step, and mechanical fix-batch workers in `review-remote-pr`'s
 Implementation-worker gate.
-It is the single detailed home for model/effort selection, the exact spawn call shape, and
+It is the single detailed home for model/effort selection, spawn policy, and
 the degraded no-spawn path. The dispatching skill's own body states only that the gate is
 mandatory and names this file for the detail.
 
@@ -13,7 +13,7 @@ Implementation work is assigned to a worker for role separation: each worker rec
 with sole-writer isolation, while the root performs independent root validation before publication. Resolve
 the repository's `AGENT_WORKER_MODEL`,
 `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations before inspecting the
-current `collaboration.spawn_agent` capability; worker model and effort are configuration, not a
+current `spawn_agent` capability; worker model and effort are configuration, not a
 model-tier or pricing judgment. The resolver reads `.agent/config.env` line-wise and never
 sources it:
 
@@ -194,7 +194,7 @@ required by the gate above. The completion table records every pivot verbatim, e
 `worker=claude-sonnet-5 high (pivoted from cross-harness declaration 'gpt-5.6-luna')`, so a
 substitution is always evidence, never inferred from prompt text alone.
 
-Inspect the current `collaboration.spawn_agent` capability before dispatch:
+Inspect the current `spawn_agent` capability before dispatch:
 
 - Preferred model: the resolved `worker_model`, with automatic fallback to the resolved
   `worker_model_fallback`; the resolved `worker_effort` applies to either.
@@ -205,7 +205,7 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
   `fallback_pivot_note` when the fallback was — the pivot notes are per-slot, so a fallback
   selected after a cross-harness pivot must not lose its own audit note to the preferred slot's
   (which may be empty, or may record a different pivot, or none at all).
-- Required context isolation: **`fork_context: false`**. Paste the complete issue/spec,
+- Required context isolation: Paste the complete issue/spec,
   prior art, branch rules, and the six-step contract into the prompt — do not rely on
   inherited history.
 - Required role: **`agent_type: "worker"`**.
@@ -215,7 +215,7 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
   editing code** and report the capability block. The spawn request is the model-and-effort evidence:
   the completion table carries the actual `worker model` and `worker effort` (or `worker=self (spawn unavailable)`)
   plus `selected_worker_pivot_note` when non-empty, so a tier claim is never inferred from prompt text.
-- This gate applies only when `collaboration.spawn_agent` exists. If the runtime advertises
+- This gate applies only when `spawn_agent` exists. If the runtime advertises
   **no** spawn capability (`multi_agent = false`), there is no worker to configure and no
   model to select — take the degraded path below instead of blocking the run.
 - `review-remote-pr`'s Step 1b read-only reviewer role never satisfies this gate; it is a
@@ -226,23 +226,6 @@ Inspect the current `collaboration.spawn_agent` capability before dispatch:
 Set the worker's working directory to its assigned worktree whenever the harness supports a
 cwd/workdir field; the absolute-path rule in the prompt remains mandatory even when that
 field is unavailable.
-
-```text
-multi_agent_v1__spawn_agent({
-  agent_type: "worker",                                  // default | explorer | worker | report-synthesizer
-  fork_context: false,                                   // false = initial prompt only; true = forks this thread
-  model: "$selected_worker_model",
-  reasoning_effort: "$worker_effort",
-  message: "<complete prompt>"
-})
-// returns { agent_id, nickname }
-```
-
-**Parameter names are exact.** There is no `task_name` and no `fork_turns`; an invented key
-is silently ignored, so a spawn that *looks* isolated can quietly inherit the calling
-thread. `fork_context: false` is what makes the worker start from the pasted prompt alone —
-which is why the environment contract and the spec must be pasted as contents, never as a
-path or a pointer to this file.
 
 Do not describe this call without making it. A task is dispatched only after `spawn_agent`
 returns a task/agent identifier.
@@ -265,13 +248,6 @@ Do not copy caps from another harness, probe invented values, or override a deve
 maximum blocking duration. A waiter continues the same running cell/session after yields;
 it does not restart the helper. Root uses its own effective cap while collecting the result.
 At the cap, empty returns do not authorize stall checks before the shared threshold.
-
-## Nesting is blocked
-
-A spawned worker cannot itself spawn — verified: a nested attempt returns "no child-worker
-subagent capability is available." A dispatched worker has no mapper or reviewer subagents
-of its own; it performs every step itself, strictly sequentially. Only the root orchestrator
-spawns.
 
 ## Degraded path — `spawn_agent` unavailable (`multi_agent = false`)
 

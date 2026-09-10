@@ -387,7 +387,7 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 
 ## Step 4: Wait for CI
 
-Root gives the fresh waiter this **bounded rounds** invocation, then refreshes Step 5:
+Guards run only in root. Before dispatch, root must substitute absolute helper/artifact paths and resolved PR/repo values below, then send only the resulting single bounded invocation to the fresh waiter. Refresh Step 5 afterward:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }

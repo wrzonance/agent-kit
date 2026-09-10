@@ -505,9 +505,9 @@ approval flow (its reviewer can grant it); that is a runtime permission, not a u
 decision to re-litigate. The still-gated actions are unchanged: ready-flips, merges,
 bot triggers, and human-review responses.
 
-Every issue-lead call uses the spawn shape and exact-parameter rules in
-["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) — that file has no `task_name`
-parameter; fill in only the complete prompt below. When constructing a worker session, set its working directory to the assigned worktree
+Every issue-lead call uses the spawn policy in
+["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md); fill in the complete prompt below.
+When constructing a worker session, set its working directory to the assigned worktree
 whenever the harness supports a cwd/workdir field; the prompt's absolute-path rule remains
 mandatory even when that field is unavailable. Do not describe the spawn call without making
 it — a task is dispatched only after `spawn_agent` returns a task/agent identifier. On the

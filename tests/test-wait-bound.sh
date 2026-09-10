@@ -42,6 +42,10 @@ assert_eq yes "$([[ ${#waiter} -lt 6000 ]] && printf yes || printf no)" \
 setup=${prompts#*## PR-loop setup worker prompt}
 assert_not_contains "$setup" '--wait-ci --rounds 60' 'setup worker does not poll CI'
 assert_contains "$(<"$root/agentkit/skills/.shared/spawn-contract.md")" 'effective cap' 'spawn contract defers wait limits to runtime'
+review=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
+assert_contains "$review" 'Guards run only in root' 'fresh waiter does not receive root shell guards'
+assert_contains "$review" 'substitute absolute helper/artifact paths' 'root resolves waiter paths before dispatch'
+assert_contains "$review" 'only the resulting single bounded invocation' 'root dispatches resolved helper argv only'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.
