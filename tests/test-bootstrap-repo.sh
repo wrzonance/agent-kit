@@ -330,10 +330,14 @@ repo=$(make_repo)
 mkdir -p "$repo/tools"
 printf '#!/bin/sh\nexit 0\n' > "$repo/tools/verify"
 chmod +x "$repo/tools/verify"
-printf '{"scripts":{"test":"jest","lint":"eslint .","build":"tsc"}}\n' > "$repo/package.json"
+printf '{"scripts":{"test":"jest","lint":"eslint .","build":"tsc","format:check":"prettier --check src"}}\n' > "$repo/package.json"
+touch "$repo/Cargo.toml" "$repo/App.csproj"
 run_bs --repo-root "$repo" --project 7 --force > /dev/null 2>&1
 config=$(cat "$repo/.agent/config.env")
 assert_contains "$config" '# AGENT_CMD_' 'suggests commands as commented lines'
+assert_contains "$config" '# AGENT_CMD_FORMAT_FIX=cargo fmt' 'bootstrap writes rustfmt fix proposal'
+assert_contains "$config" '# AGENT_CMD_FORMAT_FIX=dotnet format' 'bootstrap writes dotnet fix proposal'
+assert_contains "$config" '# AGENT_CMD_FORMAT_FIX=npm exec --no -- prettier --write src' 'bootstrap writes safe Prettier fix proposal'
 assert_contains "$config" 'AGENT_CMD_VERIFY=tools/verify' 'surfaces a bespoke dispatcher as a declaration'
 assert_contains "$config" '# proposal-component|.|node|package.json' \
     'records the detected component in the proposal inventory'

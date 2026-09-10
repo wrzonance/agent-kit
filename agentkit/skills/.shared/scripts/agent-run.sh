@@ -26,6 +26,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  compatibility with the kit's other checkout-path helpers.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Execute a named command even when green evidence is current.
+  --fix          With --cmd [COMPONENT-]format, run its declared *_FORMAT_FIX
+                 pair. Applies to that link only; never falls back to a runner.
   --only NAME[,NAME...]  For --cmd test, use the repository's
                  AGENT_CMD_TEST_FOCUS declaration and pass names through its %s placeholder.
   --baseline-ref REF  On a failed verification, compare against this chain-base ref.
@@ -95,6 +97,7 @@ build_chain_argv() {
     for ((i = 0; i < ${#remaining_queue[@]}; i++)); do
         chain_argv+=(--cmd "${remaining_queue[i]}")
         ((remaining_if_declared[i])) && chain_argv+=(--if-declared)
+        ((remaining_fix[i])) && chain_argv+=(--fix)
     done
     return 0
 }
@@ -117,6 +120,7 @@ cmd=()
 focus_opt=''
 focus_requested=0
 force_cmd=0
+fix_cmd=0
 baseline_ref=''
 baseline_path=''
 baseline_id=''
@@ -129,9 +133,19 @@ literal_repository_base=''
 cmd_declared=no
 if_declared=0
 declare -a cmd_queue=() cmd_queue_if_declared=() remaining_queue=() remaining_if_declared=()
+declare -a cmd_queue_fix=() remaining_fix=()
 
 while (($#)); do
     case $1 in
+        --fix)
+            ((${#cmd_queue[@]})) || die '--fix requires a preceding --cmd format.'
+            fix_name=${cmd_queue[${#cmd_queue[@]} - 1]}
+            fix_name=${fix_name,,}; fix_name=${fix_name//_/-}
+            [[ $fix_name == format || $fix_name == *-format ]] ||
+                die '--fix is supported only with --cmd [COMPONENT-]format.'
+            cmd_queue_fix[${#cmd_queue[@]} - 1]=1
+            shift
+            ;;
         --if-declared)
             ((${#cmd_queue[@]})) || die '--if-declared must directly follow a --cmd NAME.'
             cmd_queue_if_declared[${#cmd_queue[@]} - 1]=1
@@ -159,7 +173,7 @@ while (($#)); do
                 --baseline-id) baseline_id=$2 ;;
                 --dir|--repo-root) dir_opt=$2 ;;
                 --label) label=$2 ;;
-                --cmd) cmd_queue+=("$2"); cmd_queue_if_declared+=(0) ;;
+                --cmd) cmd_queue+=("$2"); cmd_queue_if_declared+=(0); cmd_queue_fix+=(0) ;;
                 --resolve) resolve_name=$2 ;;
             esac
             shift 2
@@ -186,8 +200,10 @@ done
 if ((${#cmd_queue[@]})); then
     cmd_name=${cmd_queue[0]}
     if_declared=${cmd_queue_if_declared[0]}
+    fix_cmd=${cmd_queue_fix[0]}
     remaining_queue=("${cmd_queue[@]:1}")
     remaining_if_declared=("${cmd_queue_if_declared[@]:1}")
+    remaining_fix=("${cmd_queue_fix[@]:1}")
 fi
 
 if ((focus_requested)); then
@@ -840,6 +856,7 @@ resolve_named_command() {
     # naming the right spelling in the error still cost three calls a session --
     # accept either and canonicalise to the dashed form.
     name=$(printf '%s' "$name" | tr '[:upper:]_' '[:lower:]-')
+    ((fix_cmd)) && name+=-fix
     [[ $name =~ ^[a-z][a-z0-9-]*$ ]] ||
         die "--cmd NAME must be letters, digits, dashes or underscores, got: $1"
 
@@ -889,6 +906,8 @@ resolve_named_command() {
         fi
         return 0
     fi
+
+    ((fix_cmd == 0)) || die "--fix requires $key in .agent/config.env."
 
     # A bespoke dispatcher IS the runner; `runner <name>` is how the runner
     # convention already invokes it, so this needs no special case.
@@ -1287,6 +1306,45 @@ compose_dependency_start_collision() {
         "$log" 2>/dev/null
 }
 
+failure_excerpt() {
+    local log=$1
+    if grep -qE 'panicked at|error\[|^failures:' "$log"; then
+        # Reserve space for test names before compiler/panic context. Byte and
+        # line caps apply before printing, including pathological single lines.
+        LC_ALL=C awk '
+            function emit(line) {
+                line=substr(line,1,200)
+                if (used+length(line)+1 > 1200) exit
+                print line; used+=length(line)+1
+            }
+            { gsub(/\033\[[0-9;]*m/, "") }
+            /^failures:/ { names=1; next }
+            names && /^[[:space:]]+[^[:space:]]/ { emit($0); next }
+            names && /[^[:space:]]/ { names=0 }
+        ' "$log"
+        LC_ALL=C awk '
+            function emit(line) {
+                line=substr(line,1,240)
+                if (used+length(line)+1 > 4200) { print "  [summary truncated]"; exit }
+                print line; used+=length(line)+1
+            }
+            { gsub(/\033\[[0-9;]*m/, "") }
+            /panicked at|error\[/ { context=7 }
+            context { emit($0); context--; next }
+            /^test result:/ { emit($0) }
+        ' "$log"
+    else
+        # Generic diagnostics retain the same matching policy, now byte bounded.
+        LC_ALL=C awk '
+            tolower($0) ~ /error|fail|traceback|assert|refused|denied/ {
+                line=substr($0,1,240)
+                if (++count>20) exit
+                print line
+            }
+        ' "$log"
+    fi
+}
+
 report_failure() {
     local rc=$1 log=$2 excerpt formatter_paths
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
@@ -1311,8 +1369,8 @@ report_failure() {
             printf '  formatter failing paths: %s\n' "$(format_paths_csv "$formatter_paths")"
         fi
     fi
-    excerpt=$(grep -iE 'error|fail|traceback|assert|refused|denied' "$log" 2>/dev/null | head -n 20 || true)
-    [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null || true)
+    excerpt=$(failure_excerpt "$log" 2>/dev/null || true)
+    [[ -n $excerpt ]] || excerpt=$(tail -n 20 "$log" 2>/dev/null | LC_ALL=C cut -c 1-240 || true)
     if [[ -n $excerpt ]]; then
         printf '%s\n' "$excerpt"
     else

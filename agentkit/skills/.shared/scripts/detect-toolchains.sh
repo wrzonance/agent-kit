@@ -395,13 +395,16 @@ node_invocation() {
 
 gen_node_tasks() {
     local pkg=$1 runner=$2
-    local -a keys=(lint test build typecheck type-check format:check format test:coverage coverage verify)
-    local -a tasks=(LINT TEST BUILD TYPECHECK TYPECHECK FORMAT FORMAT COVERAGE COVERAGE VERIFY)
+    local -a keys=(lint test build typecheck type-check format:check format:fix format test:coverage coverage verify)
+    local -a tasks=(LINT TEST BUILD TYPECHECK TYPECHECK FORMAT FORMAT_FIX FORMAT COVERAGE COVERAGE VERIFY)
     local i key task seen=''
     [[ -f $pkg ]] || return 0
     for i in "${!keys[@]}"; do
         key=${keys[$i]}
         task=${tasks[$i]}
+        # A dedicated check paired with the repository's own format script keeps
+        # Prettier flags, paths, quoting, and package-manager behavior intact.
+        [[ $key != format || $seen != *'|FORMAT|'* ]] || task=FORMAT_FIX
         case $seen in *"|$task|"*) continue ;; esac
         grep -qF "\"$key\":" "$pkg" || continue
         # `npm lint` is not a command. npm requires `run` for anything that is  # ecosystem-allow: detection
@@ -411,6 +414,18 @@ gen_node_tasks() {
         printf '%s\t%s\n' "$task" "$(node_invocation "$runner" "$key")"
         seen="$seen|$task|"
     done
+    [[ $seen == *'|FORMAT|'* && $seen != *'|FORMAT_FIX|'* ]] || return 0
+    # Only literal Prettier checks with simple operands are safe.
+    # Complex forms need an explicit fix script.
+    local check_script simple_check='^prettier --check ([A-Za-z0-9_.][A-Za-z0-9_./-]*( [A-Za-z0-9_.][A-Za-z0-9_./-]*)*)$' prefix=''
+    check_script=$(jq -er '(.scripts["format:check"] // .scripts.format) | select(type == "string")' "$pkg" 2>/dev/null) || return 0
+    [[ $check_script =~ $simple_check ]] || return 0
+    case $runner in
+        npm) prefix='npm exec --no --' ;; # refuse implicit package installation
+        pnpm | yarn) prefix="$runner exec" ;; # ecosystem-allow: detection
+        *) return 0 ;;
+    esac
+    printf 'FORMAT_FIX\t%s prettier --write %s\n' "$prefix" "${BASH_REMATCH[1]}"
 }
 
 gen_python_tasks() {
@@ -423,6 +438,7 @@ gen_python_tasks() {
         bin=$(py_bin_prefix "$dir" "$runner" ruff)
         printf 'LINT\t%s\n' "$bin"
         printf 'FORMAT\t%s format --check\n' "$bin"
+        printf 'FORMAT_FIX\t%s format\n' "$bin"
     fi
     if py_tool_present "$dir" mypy "$runner"; then
         bin=$(py_bin_prefix "$dir" "$runner" mypy)
@@ -434,6 +450,7 @@ gen_dotnet_tasks() {
     printf 'BUILD\tdotnet build\n'
     printf 'TEST\tdotnet test\n'
     printf 'FORMAT\tdotnet format --verify-no-changes\n'
+    printf 'FORMAT_FIX\tdotnet format\n'
 }
 
 gen_go_tasks() {
@@ -445,6 +462,7 @@ gen_rust_tasks() {
     printf 'TEST\tcargo test\n' # ecosystem-allow: detection
     printf 'LINT\tcargo clippy\n'
     printf 'FORMAT\tcargo fmt --check\n' # ecosystem-allow: detection
+    printf 'FORMAT_FIX\tcargo fmt\n' # ecosystem-allow: detection
 }
 
 gen_markdown_tasks() {
@@ -531,6 +549,9 @@ print_suggestions() {
         ((${#tasks[@]})) || continue
         any=1
         printf '# component: %s (%s, %s)\n' "$path" "$lang" "$marker"
+        if [[ $lang == node && ${tasks[*]} == *$'FORMAT\t'* && ${tasks[*]} != *$'FORMAT_FIX\t'* ]]; then
+            printf '# No safe FORMAT_FIX proposal: add an explicit format:fix script.\n'
+        fi
         cname=$(component_name "$path")
         for entry in "${tasks[@]}"; do
             task=${entry%%$'\t'*}
