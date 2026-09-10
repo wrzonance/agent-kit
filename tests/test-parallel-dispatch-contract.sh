@@ -1378,6 +1378,17 @@ assert_contains "$single_issue_reference_set" '"$agentkit/references.md"' \
     'the single-issue dispatch set retains the reference manifest'
 assert_contains "$single_issue_reference_set" 'references/triage-and-selection.md' \
     'the single-issue dispatch set retains triage and selection rules'
+# Issue #708: Step 2 must agree with the section-conditional read policy.
+assert_not_contains "$normalized_text" '(references/triage-and-selection.md) in full' \
+    'triage never requests an unanchored whole-reference read'
+assert_contains "$normalized_text" '(references/triage-and-selection.md#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted)' \
+    'triage links directly to prior-art adjudication'
+assert_contains "$normalized_text" '(references/triage-and-selection.md#board-adjudication)' \
+    'triage links directly to board adjudication'
+assert_contains "$normalized_text" 'Digest flags: read [prior-art]' \
+    'adjudication section reads remain conditional on digest flags'
+assert_contains "$normalized_text" '; skip `clean`.' \
+    'clean issues require no adjudication reference reads'
 assert_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
     'the single-issue dispatch set retains worker prompts'
 assert_contains "$single_issue_reference_set" '.shared/spawn-contract.md' \
