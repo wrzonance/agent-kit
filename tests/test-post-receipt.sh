@@ -353,6 +353,17 @@ cp "$tmp/original-result.json" "$tmp/adversarial.result.json"
 
 # -- publish: counts must match the findings ledger -------------------------
 
+# Compatibility: older completed results predate the optional provenance field.
+reset_not_spent
+legacy_provenance_rc=0
+run_publish --pr 152 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --model-substituted-from claude-fable-5.1 \
+    --effort high --mode cross-provider --p1 0 --p2 0 --agent-identity Codex \
+    >"$tmp/provenance.out" 2>"$tmp/provenance.err" || legacy_provenance_rc=$?
+assert_eq 0 "$legacy_provenance_rc" 'legacy completed result accepts explicit substitution provenance'
+assert_contains "$(rendered_body)" 'configured claude-fable-5.1 was invalid and dropped' \
+    'legacy completed result retains the caller-provided annotation'
+
 : >"$tmp/gh.log"
 reset_not_spent
 reset_findings
@@ -731,6 +742,34 @@ assert_contains "$swapped" 'ledger severities are P1=0 P2=1' \
 # adversarial.result.json exists yet. publish must write that result artifact
 # itself instead of refusing the whole skip path for a file only the runner it
 # was told it could skip would produce.
+
+# A verified skip never selected a model: caller-only substitution would
+# fabricate both the public receipt and ledger provenance. Refuse before any
+# result artifact, comment snapshot, or transport mutation.
+substitution_skip_dir="$tmp/substitution-skip-run"
+mkdir "$substitution_skip_dir"
+: >"$substitution_skip_dir/findings.ndjson"
+printf '[]\n' >"$tmp/substitution-skip-comments.json"
+cp "$tmp/substitution-skip-comments.json" "$tmp/substitution-skip-original.json"
+: >"$tmp/gh.log"
+substitution_skip_rc=0
+GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/substitution-skip-payload.json" \
+    "$script" publish --findings-file "$substitution_skip_dir/findings.ndjson" \
+    --pr 400 --repo owner/repo --issue-comments "$tmp/substitution-skip-comments.json" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity Codex --skip-rationale docs-only --oracle 'git diff --stat' \
+    --model-substituted-from claude-fable-5.1 \
+    >"$tmp/substitution-skip.out" 2>"$tmp/substitution-skip.err" || substitution_skip_rc=$?
+assert_eq 2 "$substitution_skip_rc" 'verified skip refuses a fabricated model substitution'
+assert_contains "$(cat "$tmp/substitution-skip.err")" 'a verified skip has no model-selection evidence' \
+    'verified skip explains why substitution cannot be attested'
+assert_eq '' "$(cat "$tmp/gh.log")" 'fabricated skip provenance never reaches transport'
+assert_eq no "$([[ -e $substitution_skip_dir/adversarial.result.json ]] && printf yes || printf no)" \
+    'refused skip writes no fabricated result artifact'
+assert_eq no "$([[ -e $tmp/substitution-skip-payload.json ]] && printf yes || printf no)" \
+    'refused skip writes no receipt containing fabricated provenance'
+assert_eq yes "$(cmp -s "$tmp/substitution-skip-original.json" "$tmp/substitution-skip-comments.json" && printf yes || printf no)" \
+    'refused skip preserves the comment snapshot'
 
 skip_dir="$tmp/skip-run"
 mkdir -p "$skip_dir"
@@ -1166,7 +1205,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #706 adds evidence-backed model substitution to receipt and ledger.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 968 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 968 lines'
+# Review follow-up refuses verified-skip substitution before artifact mutation.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 970 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 970 lines'
 
 finish

@@ -404,7 +404,8 @@ assert_eq '1' "$(grep -c '^gaps= detected=' <<< "$out")" \
 # coverage and format-list dedup grew the helper by a few lines, then a
 # comment trim clawed most of it back; net vs. the prior 768 ceiling is still
 # a reduction, so the ceiling ratchets down with it rather than up.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 766 ]] && printf yes || printf no)" \
-    'detect-toolchains.sh stays at or under 766 lines'
+# #612 adds fix proposals beside the existing formatter checks.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 787 ]] && printf yes || printf no)" \
+    'detect-toolchains.sh stays at or under 787 lines'
 
 finish

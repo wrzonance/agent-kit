@@ -593,7 +593,7 @@ assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, o
 # naming the prompt-overhead and output/reasoning-reserve terms the gate
 # adds on top of the diff estimate, not just the diff itself; measured.
 # Issue #706 documents evidence-backed model provenance and safe redaction.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 21527 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 21527 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 21599 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 21599 bytes'
 
 finish
