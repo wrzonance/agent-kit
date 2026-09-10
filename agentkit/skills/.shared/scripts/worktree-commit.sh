@@ -737,19 +737,12 @@ report_commit() {
     printf 'committed %s %s (%s files)\n' "$sha" "$SUBJECT" "$count"
 }
 
-# Validation catches a malformed --trailer before it is ever staged, but it
-# cannot catch git's own trailer parser disagreeing with ours. Read the
-# trailers back off the commit we just made -- the way the receipt publisher
-# byte-verifies its own output -- and fail loudly, before the one-line success
-# record prints, if an intended trailer did not survive into the real commit.
+# Read the trailers back off the commit we just made and fail loudly, before the
+# success record prints, if git's own parser disagreed with ours about one.
 verify_trailers() {
     local actual line key value aline akey avalue found
-    # Pin the separator this read is parsed with: a repository-local
-    # trailer.separators config that drops ':' (e.g. "=") would otherwise
-    # change how git's own pretty-format parses trailers, misreporting a real
-    # commit with a well-formed "Key: value" trailer as a verification
-    # failure purely because of repo config, not the commit itself. This
-    # helper's documented, validated syntax is always "Key: value".
+    # Pin the separator: a repository-local trailer.separators config that drops ':'
+    # would otherwise change how git parses the very trailer this helper validated.
     actual="$(git -c trailer.separators=: log -1 --format='%(trailers:only=true,unfold=true)' HEAD)"
     for line in "${TRAILERS[@]}"; do
         key="$(trailer_key "$line")"
@@ -767,6 +760,35 @@ verify_trailers() {
         (( found == 1 )) || die 1 \
             "post-commit verification failed: expected trailer not found on $(git rev-parse HEAD): $line"
     done
+}
+
+# Append this commit's paths to the ledger the PreToolUse guard keeps when it is
+# armed (issue #611): a worker whose harness never armed the hook still hands
+# back a complete .agent/evidence/paths-touched.ndjson. Same predicates as the
+# guard (owned, non-symlink .agent and evidence dir; owner-private file), and
+# deliberately non-blocking -- an evidence hiccup must never fail the commit.
+record_paths_touched() {
+    local root evidence_dir ledger record paths_json
+    local -a paths=()
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+    [[ -d $root/.agent && ! -L $root/.agent && -O $root/.agent ]] || return 0
+    command -v jq >/dev/null 2>&1 || {
+        printf '%s: jq not found; paths-touched ledger not written\n' "$PROGNAME" >&2; return 0; }
+    mapfile -d '' -t paths < <(git show --pretty=format: --name-only -z --no-renames \
+        --diff-merges=first-parent HEAD)
+    evidence_dir=$root/.agent/evidence
+    [[ -e $evidence_dir || -L $evidence_dir ]] || mkdir -m 700 -- "$evidence_dir" 2>/dev/null || return 0
+    [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
+    ledger=$evidence_dir/paths-touched.ndjson
+    [[ ! -L $ledger ]] || return 0
+    [[ ! -e $ledger || ( -f $ledger && -O $ledger ) ]] || return 0
+    [[ ! -e $ledger ]] || chmod 600 -- "$ledger" 2>/dev/null || return 0
+    paths_json=$(jq -nc '$ARGS.positional' --args "${paths[@]}" 2>/dev/null) || return 0
+    record=$(jq -nc --arg ts "$(date +%s)" --arg sha "$(git rev-parse HEAD)" --arg cwd "$root" \
+        --argjson paths "$paths_json" \
+        '{timestamp:($ts|tonumber),session:"",tool:"worktree-commit",tool_call_id:"",commit:$sha,cwd:$cwd,command:"",paths_touched:$paths}' \
+        2>/dev/null) || return 0
+    (umask 077; printf '%s\n' "$record" >>"$ledger") 2>/dev/null || true
 }
 
 main() {
@@ -787,6 +809,7 @@ main() {
     build_message_args
     do_commit
     verify_trailers
+    record_paths_touched
     report_commit
 }
 
