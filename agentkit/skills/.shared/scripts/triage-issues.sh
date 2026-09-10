@@ -97,7 +97,7 @@ classify_dependency_signal() {
     local file=$1
     [[ -f $file && -r $file ]] || die_usage "--classify-deps file not readable: $file"
     local -a signals=(
-        '\b(add|adds|adding|added|introduce|introduces|bump|bumps|bumping|upgrade|upgrades|update|updates|pin|pins|remove|removes|replace|replaces|swap|swaps)( the| a| an| new)? [^[:space:]]+ (crate|crates|dependency|dependencies|package|packages|module|modules|gem|gems)\b'
+        '\b(add|adds|adding|added|introduce|introduces|bump|bumps|bumping|upgrade|upgrades|update|updates|pin|pins|remove|removes|replace|replaces|swap|swaps)( (the|a|an|new))?( [^[:space:]]+)? (crate|crates|dependency|dependencies|package|packages|module|modules|gem|gems)\b'
         '\b(cargo add|cargo update|npm (install|i|add|update)|pnpm (add|install|update)|yarn (add|upgrade)|go get|go mod tidy|pip install|uv (add|lock)|poetry (add|lock)|bundle (add|update))\b' # ecosystem-allow: detection
         '\b(Cargo\.(toml|lock)|package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|go\.(mod|sum)|pyproject\.toml|uv\.lock|poetry\.lock|requirements[^[:space:]]*\.txt|Gemfile(\.lock)?)\b' # ecosystem-allow: detection
     )

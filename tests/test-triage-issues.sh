@@ -234,6 +234,37 @@ assert_eq '1' "$(wc -l < "$tmp/gh.log")" 'explicit mode is also a single call'
 assert_rc 2 'unknown flag is a usage error' -- env PATH="$tmp/stub:$PATH" \
     "$tr_sh" --repo-root "$repo" --bogus
 
+# --- CR-690-C: classify_dependency_signal() matches "add a dependency" -----
+# without a name token before the noun ---------------------------------------
+no_name_fixture="$tmp/dep-no-name.txt"
+printf '%s\n' 'Add a dependency to fix the build.' >"$no_name_fixture"
+no_name_out=$("$tr_sh" --classify-deps "$no_name_fixture")
+assert_contains "$no_name_out" 'dependency-signal=Add a dependency to fix the build.' \
+    '"Add a dependency" without a name token before the noun is still a dependency signal'
+
+# The bare article form above happened to match even before this fix (the
+# article itself could satisfy the old regex's mandatory generic-name-token
+# slot); the unambiguous regression is the articleless form, where the old
+# regex required a name token between the verb and the noun and had none to
+# consume.
+no_article_fixture="$tmp/dep-no-article.txt"
+printf '%s\n' 'Add dependency to fix the build.' >"$no_article_fixture"
+no_article_out=$("$tr_sh" --classify-deps "$no_article_fixture")
+assert_contains "$no_article_out" 'dependency-signal=Add dependency to fix the build.' \
+    '"Add dependency" with neither an article nor a name token before the noun is still a dependency signal'
+
+named_fixture="$tmp/dep-named.txt"
+printf '%s\n' 'Add the ebur128 crate for loudness metering.' >"$named_fixture"
+named_out=$("$tr_sh" --classify-deps "$named_fixture")
+assert_contains "$named_out" 'dependency-signal=Add the ebur128 crate for loudness metering.' \
+    'an existing named-crate case still matches after the name token is made optional'
+
+no_dep_fixture="$tmp/dep-none.txt"
+printf '%s\n' 'Document the package layout in the README.' >"$no_dep_fixture"
+no_dep_out=$("$tr_sh" --classify-deps "$no_dep_fixture")
+assert_eq 'dependency-signal=-' "$no_dep_out" \
+    'a negative control ("Document the package layout") still misses'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # issue #610: +50 lines for the --classify-deps body classifier, including the --classify-shape mirror check.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/triage-issues.sh") -le 556 ]] && printf yes || printf no)" \

@@ -557,6 +557,11 @@ unwritable_home="$tmp/cargo-unwritable-home"
 mkdir -p "$unwritable_home/.cargo"
 printf '[registries.private]\nindex = "sparse+https://example.invalid/"\n' > "$unwritable_home/.cargo/config.toml"
 printf 'token = "secret-token"\n' > "$unwritable_home/.cargo/credentials.toml"
+# CR-690-A: Cargo also reads the extensionless config/credentials names
+# (legacy, and preferred over the .toml twin when both exist) -- both must be
+# carried too, and credentials narrowed to 600 like its .toml twin.
+printf '[registries.legacy]\nindex = "sparse+https://legacy.invalid/"\n' > "$unwritable_home/.cargo/config"
+printf 'token = "legacy-secret-token"\n' > "$unwritable_home/.cargo/credentials"
 chmod 500 "$unwritable_home/.cargo"
 (cd "$cargo_home_unwritable_repo" && env -u CARGO_HOME HOME="$unwritable_home" AGENT_CACHE_ROOT="$alt_cache_root" TMPDIR="$tmp" \
     "$real_run_sh" --cmd test >/dev/null 2>&1) || true
@@ -568,11 +573,38 @@ assert_contains "$(cat "$alt_cache_root/cargo/config.toml")" 'registries.private
     'the redirected home carries the fixture config.toml along'
 cred_mode=$(stat -c '%a' "$alt_cache_root/cargo/credentials.toml" 2>/dev/null || stat -f '%Lp' "$alt_cache_root/cargo/credentials.toml")
 assert_eq '600' "$cred_mode" 'the copied credentials.toml is narrowed to mode 600'
+assert_contains "$(cat "$alt_cache_root/cargo/config")" 'registries.legacy' \
+    'the redirected home carries the extensionless config along too'
+legacy_cred_mode=$(stat -c '%a' "$alt_cache_root/cargo/credentials" 2>/dev/null || stat -f '%Lp' "$alt_cache_root/cargo/credentials")
+assert_eq '600' "$legacy_cred_mode" 'the copied extensionless credentials is narrowed to mode 600'
+
+# CR-690-B: select_caches' writable-HOME branch used to return before ever
+# calling select_cargo_home, so a writable HOME with an unwritable default
+# cargo home (here $HOME/.cargo itself) kept the broken default instead of
+# redirecting under $HOME/.cache/cargo.
+writable_home_unwritable_cargo_repo=$(make_repo)
+mkdir -p "$writable_home_unwritable_cargo_repo/tools"
+# shellcheck disable=SC2016  # the literal $CARGO_HOME belongs to the fixture script
+printf '#!/bin/sh\nprintf "CARGO_HOME=[%%s]\\n" "$CARGO_HOME"\n' > "$writable_home_unwritable_cargo_repo/tools/show-cargo-home"
+chmod +x "$writable_home_unwritable_cargo_repo/tools/show-cargo-home"
+printf 'AGENT_CMD_TEST=tools/show-cargo-home\n' > "$writable_home_unwritable_cargo_repo/.agent/config.env"
+writable_home_bad_cargo="$tmp/writable-home-bad-cargo"
+mkdir -p "$writable_home_bad_cargo/.cargo" "$writable_home_bad_cargo/.cache"
+chmod 500 "$writable_home_bad_cargo/.cargo"
+(cd "$writable_home_unwritable_cargo_repo" && env -u AGENT_CACHE_ROOT -u XDG_CACHE_HOME -u CARGO_HOME -u GOMODCACHE \
+    HOME="$writable_home_bad_cargo" TMPDIR="$tmp" "$real_run_sh" --cmd test >/dev/null 2>&1) || true
+chmod 700 "$writable_home_bad_cargo/.cargo"
+writable_home_bad_cargo_log=$(find "$writable_home_unwritable_cargo_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
+assert_contains "$(cat "$writable_home_bad_cargo_log")" "CARGO_HOME=[$writable_home_bad_cargo/.cache/cargo]" \
+    'a writable HOME with an unwritable default cargo home still redirects CARGO_HOME under $HOME/.cache/cargo'
 
 # issue #610: +2 lines for CARGO_HOME/GOMODCACHE cache redirection; issue #690
 # review: +23 for select_cargo_home (redirect only when the default is
-# unwritable, and carry config.toml/credentials.toml into the new home).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1614 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1614 lines'
+# unwritable, and carry config.toml/credentials.toml into the new home);
+# issue #690 follow-up: +8 for carrying the extensionless config/credentials
+# names too, and for running select_cargo_home from the writable-HOME branch
+# of select_caches (CR-690-A, CR-690-B).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1622 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1622 lines'
 
 finish

@@ -315,35 +315,61 @@ tree_has_path() {
 
 # A workspace member manifest (crates/foo/Cargo.toml) often has no sibling
 # lockfile of its own -- the workspace lockfile sits at the repo root or at
-# some other ancestor. Walk from $1 (the manifest's directory, '' for the
-# repo root) up through its ancestors to the root, printing the first tracked
-# "<ancestor>/$2" found; prints nothing and fails when none is tracked
-# anywhere on the path (PR #690 review).
+# some other ancestor. The sibling lockfile ($1/$2) is always accepted with
+# no further proof. Beyond the sibling, only Cargo ($3=1) ever adopts an
+# ancestor lockfile -- Go modules never share an ancestor go.sum, and
+# npm/pnpm/yarn/uv/poetry/bundler lockfiles sit beside their manifest # ecosystem-allow: detection
+# (enumerating the ecosystems this MIGHT apply to, prescribing none), so
+# every other manifest returns failure once the sibling check misses. For
+# Cargo, walk from $1 up through its ancestors, and at each level accept
+# "<ancestor>/$2" only when the tracked "<ancestor>/Cargo.toml" (read at
+# $chain_ref) proves that ancestor is a workspace root (a "[workspace]"
+# table header) -- an unrelated ancestor Cargo.lock that merely shares a
+# filename must never be adopted (issue #690 review). The walk stops at the
+# first ancestor that proves workspace ownership, whether or not its lockfile
+# is tracked there, rather than searching past it into an unrelated project.
 nearest_ancestor_lockfile() {
-    local dir=$1 lock=$2 candidate
-    while true; do
-        candidate=${dir:+$dir/}$lock
-        if tree_has_path "$candidate"; then
-            printf '%s' "$candidate"
-            return 0
-        fi
-        [[ -z $dir ]] && return 1
+    local dir=$1 lock=$2 is_cargo=$3 candidate manifest_candidate lock_candidate
+    candidate=${dir:+$dir/}$lock
+    if tree_has_path "$candidate"; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+    [[ $is_cargo == 1 ]] || return 1
+    while [[ -n $dir ]]; do
         if [[ $dir == */* ]]; then
             dir=${dir%/*}
         else
             dir=''
         fi
+        manifest_candidate=${dir:+$dir/}Cargo.toml
+        tree_has_path "$manifest_candidate" || continue
+        git -C "$chain_root" show "$chain_ref:$manifest_candidate" 2>/dev/null |
+            grep -qE '^[[:space:]]*\[workspace\]' || continue
+        lock_candidate=${dir:+$dir/}$lock
+        if tree_has_path "$lock_candidate"; then
+            printf '%s' "$lock_candidate"
+            return 0
+        fi
+        return 1
     done
+    return 1
 }
 
-# Literal (non-glob) entries listed beside LOCK in any `paths:` block of a
-# tracked .github/workflows file, minus the workflow files themselves. Read
-# from the chain-base ref, never the live checkout.
+# Entries listed beside LOCK in any `paths:` block of a tracked
+# .github/workflows file, minus the workflow file itself (by identity, not by
+# a blanket .github/ exclusion -- issue #690 review: that dropped a real
+# generated companion such as .github/dependency-snapshot.json). `paths:`
+# entries are glob patterns (GitHub Actions semantics: `**/Cargo.lock` matches
+# any depth, `*` never crosses a `/`), so LOCK is matched against each entry
+# with globmatch() rather than string equality (issue #690 review). Printed
+# (COMPANION) entries stay literal -- glob-shaped ones are never emitted as a
+# companion path. Read from the chain-base ref, never the live checkout.
 workflow_lock_siblings() {
     local lock=$1 wf
     for wf in "${chain_tree_paths[@]}"; do
         [[ $wf == .github/workflows/*.yml || $wf == .github/workflows/*.yaml ]] || continue
-        git -C "$chain_root" show "$chain_ref:$wf" 2>/dev/null | awk -v lock="$lock" '
+        git -C "$chain_root" show "$chain_ref:$wf" 2>/dev/null | awk -v lock="$lock" -v wf="$wf" '
             # Quote-aware scalar decode: a quoted value keeps only what is
             # between the matching quotes (a trailing " # comment" outside
             # the quotes is discarded with it); an unquoted value has a
@@ -361,9 +387,39 @@ workflow_lock_siblings() {
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
                 return s
             }
+            # Convert a GitHub Actions `paths:` glob to an anchored ERE and test
+            # s against it, one character of pat at a time so a bracket class
+            # "[...]" (passed through unescaped) is never touched by the glob
+            # substitutions applied to the characters around it: escape regex
+            # metacharacters, "**/" -> "(.*/)?", remaining "**" -> ".*",
+            # "*" -> "[^/]*", "?" -> "[^/]".
+            function globmatch(pat, s,   re, i, n, ch) {
+                re = ""
+                n = length(pat)
+                for (i = 1; i <= n; i++) {
+                    ch = substr(pat, i, 1)
+                    if (ch == "*" && substr(pat, i, 2) == "**") {
+                        if (substr(pat, i + 2, 1) == "/") { re = re "(.*/)?"; i += 2 }
+                        else { re = re ".*"; i += 1 }
+                        continue
+                    }
+                    if (ch == "*") { re = re "[^/]*"; continue }
+                    if (ch == "?") { re = re "[^/]"; continue }
+                    if (ch == "[") {
+                        re = re "["
+                        i++
+                        while (i <= n && substr(pat, i, 1) != "]") { re = re substr(pat, i, 1); i++ }
+                        re = re "]"
+                        continue
+                    }
+                    if (ch ~ /[.+(){}|^$\\]/) { re = re "\\" ch; continue }
+                    re = re ch
+                }
+                return s ~ ("^" re "$")
+            }
             function flush(   i, hit) {
-                hit = 0; for (i = 1; i <= c; i++) if (items[i] == lock) hit = 1
-                if (hit) for (i = 1; i <= c; i++) if (items[i] != lock && items[i] !~ /[*?[]/ && items[i] !~ /^\.github\//) print items[i]
+                hit = 0; for (i = 1; i <= c; i++) if (globmatch(items[i], lock)) hit = 1
+                if (hit) for (i = 1; i <= c; i++) if (items[i] != wf && items[i] !~ /[*?[]/) print items[i]
                 c = 0; delete items; inlist = 0 }
             /^[[:space:]]*paths:[[:space:]]*\[/ { s = $0; sub(/^[^[]*\[/, "", s); sub(/\].*$/, "", s); n = split(s, a, ",")
                 for (i = 1; i <= n; i++) { v = strip(a[i]); if (v != "") items[++c] = v }; flush(); next }
@@ -385,7 +441,7 @@ workflow_lock_siblings() {
 # lockfile's workflow siblings (when tracked), minus what a pattern already covers.
 manifest_companions_missing() {
     local -a patterns=("$@") companions=()
-    local pattern regex path pair manifest lock dir lockpath companion covered
+    local pattern regex path pair manifest lock dir is_cargo lockpath companion covered
     for pattern in "${patterns[@]}"; do
         regex=$(glob_regex "$pattern")
         for path in "${chain_tree_paths[@]}"; do
@@ -395,7 +451,9 @@ manifest_companions_missing() {
                 [[ ${path##*/} == "$manifest" ]] || continue
                 dir=${path%"$manifest"}
                 dir=${dir%/}
-                lockpath=$(nearest_ancestor_lockfile "$dir" "$lock") || continue
+                is_cargo=0
+                [[ $manifest == Cargo.toml ]] && is_cargo=1
+                lockpath=$(nearest_ancestor_lockfile "$dir" "$lock" "$is_cargo") || continue
                 companions+=("$lockpath")
                 while IFS= read -r companion; do
                     [[ -n $companion ]] && tree_has_path "$companion" && companions+=("$companion")
