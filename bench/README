@@ -101,6 +101,14 @@ Tier-0-specific fields (bench/tier0.sh):
                   the per-issue substitution byte count (issue body, prior
                   art, write set) needs a frozen reference-dispatch fixture
                   and belongs to a later slice, not this one.
+- `recipe_blocks` -- `{resident, reachable}` -- the number of line-initial
+                  ```bash / ```sh fence openers over the same two file sets
+                  as `resident` and `reachable` (issue #694). Every
+                  executable fence on a skill's path is at least one tool
+                  turn, so this is Tier 0's static turn surface: a proxy for
+                  the turns the prose demands, not a transcript count.
+                  Shown-only fences (text, json, ini) and indented ones do
+                  not count.
 
 `tokens` fields are always `bytes / 4` (integer division), computed through
 the single shared estimator in tests/lib/token-estimate.sh -- the same
