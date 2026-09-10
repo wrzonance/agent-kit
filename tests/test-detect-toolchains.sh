@@ -341,8 +341,70 @@ assert_contains "$out" 'AGENT_CMD_TEST' 'no config.env means everything is undec
 assert_rc 2 'an unknown --format is still a usage error' -- \
     "$dt_sh" --repo-root "$repo" --format nonsense
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 782 ]] && printf yes || printf no)" \
-    'detect-toolchains.sh stays at or under 782 lines'
+# --- combined --format list: one call, several sections (issue #696 fold) ---
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf 'AGENT_REPO_SLUG=o/r\n' > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps,suggestions)
+assert_contains "$out" 'gaps= detected=' 'a comma-joined --format runs the gaps section'
+assert_contains "$out" '# component:' 'and the suggestions section, in one call'
+
+assert_rc 2 'an unknown format inside a comma list is still a usage error' -- \
+    "$dt_sh" --repo-root "$repo" --format gaps,nonsense
+
+# --- gaps absorbs the blank-declaration grep glue (issue #696 fold) --------
+# onboard-repo's Step 3 used to run its own `grep '^# AGENT_'` beside this
+# call; the fold moves that glue in here so one call covers both.
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_CMD_TEST=vitest\n# AGENT_LABEL_TYPES=bug,feature\n# AGENT_ADR_DIR=docs/adr\n' \
+    > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" '# AGENT_LABEL_TYPES=bug,feature' \
+    'gaps reports a commented-out non-command declaration'
+assert_contains "$out" '# AGENT_ADR_DIR=docs/adr' \
+    'and another commented-out declaration in the same repo'
+assert_not_contains "$out" 'AGENT_CMD_TEST' \
+    'an already-declared command is not re-listed as a blank declaration'
+
+# No config at all: the blank-declaration section is silently absent, not an error.
+repo=$(new_repo)
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+assert_rc 0 'gaps with no .agent/config.env at all still exits 0' -- \
+    "$dt_sh" --repo-root "$repo" --format gaps
+
+# A commented custom command declaration (e.g. AGENT_CMD_SETUP) is not something
+# the detector can infer from disk -- there is no marker for a bespoke setup
+# script -- so the raw grep glue is the only way it ever surfaces. The former
+# unrestricted `grep '^# AGENT_'` exposed it; print_blank_declarations()'s
+# LABEL/ADR/PROTECTED/REVIEW-only regex silently drops it.
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf 'AGENT_REPO_SLUG=o/r\n# AGENT_CMD_SETUP=tools/setup\n# AGENT_LABEL_TYPES=bug,feature\n# AGENT_ADR_DIR=docs/adr\n' \
+    > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" '# AGENT_CMD_SETUP=tools/setup' \
+    'a commented custom command declaration is surfaced too, not only LABEL/ADR/PROTECTED/REVIEW keys'
+assert_contains "$out" '# AGENT_LABEL_TYPES=bug,feature' \
+    'and an already-covered category still comes through beside it'
+
+# A duplicated section in a comma-joined --format list must run once, not print
+# its section twice -- a caller adopting the output verbatim would otherwise get
+# every key doubled.
+repo=$(new_repo)
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+out=$("$dt_sh" --repo-root "$repo" --format gaps,gaps)
+assert_eq '1' "$(grep -c '^gaps= detected=' <<< "$out")" \
+    'a format repeated in the list still prints its section exactly once'
+
+# 2026-09-10 fix wave (issue #696 findings): full commented-declaration
+# coverage and format-list dedup grew the helper by a few lines, then a
+# comment trim clawed most of it back; net vs. the prior 768 ceiling is still
+# a reduction, so the ceiling ratchets down with it rather than up.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 766 ]] && printf yes || printf no)" \
+    'detect-toolchains.sh stays at or under 766 lines'
 
 finish

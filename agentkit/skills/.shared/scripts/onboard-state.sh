@@ -2,22 +2,25 @@
 # Report the next resumable onboarding stage and environment setup facts.
 set -uo pipefail
 PROGRAM=${0##*/}
-usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight | --next-steps)\n' "$PROGRAM" >&2; exit 2; }
+usage() { printf 'usage: %s --repo-root DIR (--report | --next | --preflight | --next-steps)...\n' "$PROGRAM" >&2; exit 2; }
 die() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; exit 1; }
-repo_root=''; mode=''
+repo_root=''
+want_report=0; want_next=0; want_preflight=0; want_next_steps=0
 while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
-        --report) mode=report; shift ;;
-        --next) mode=next; shift ;;
-        --preflight) mode=preflight; shift ;;
-        --next-steps) mode='next-steps'; shift ;;
+        # Combinable: --report --next-steps --preflight run in that fixed order.
+        --report) want_report=1; shift ;;
+        --next) want_next=1; shift ;;
+        --preflight) want_preflight=1; shift ;;
+        --next-steps) want_next_steps=1; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
 done
-[[ -n $repo_root && -d $repo_root && -n $mode ]] || usage
+[[ -n $repo_root && -d $repo_root ]] || usage
+(( want_report || want_next || want_preflight || want_next_steps )) || usage
 repo_root=$(cd -- "$repo_root" && pwd -P) || die "cannot resolve repository root: $repo_root"
 
 state='not onboarded'; next='discover'
@@ -42,21 +45,17 @@ else
             git -C "$repo_root" check-ignore --no-index -- "$declaration" > /dev/null 2>&1 || locally_ignored=no
         done
         if [[ $tracked == no && $locally_ignored == yes ]]; then
-            # The blessed model keeps declarations per-machine. Once verified,
-            # a local exclude is the completion boundary; no onboarding PR or
-            # tracked artifact is required before the guards can arm.
+            # Per-machine declarations: once verified, a local exclude is the
+            # completion boundary -- no onboarding PR/tracked artifact needed.
             state=armed; next=none
         elif [[ $tracked == yes ]]; then
-            # A feature branch can carry the artifacts before its onboarding
-            # PR merges. Arm only when the declared base branch itself carries
-            # all three files; missing/ambiguous refs stay conservatively
-            # committed.
+            # A feature branch can carry the artifacts before its onboarding PR
+            # merges. Arm only when the declared base branch itself carries all
+            # three files; missing/ambiguous refs stay conservatively committed.
             base_branch=$(sed -n 's/^AGENT_BASE_BRANCH=//p' "$config" 2> /dev/null | head -n 1)
             base_ref=''
             if [[ $base_branch =~ ^[A-Za-z0-9._/-]+$ && $base_branch != -* && $base_branch != *..* ]]; then
-                # Remote-tracking origin is fresher after a merge performed by
-                # another checkout. Prefer it whenever present; local base is
-                # only the fallback for repositories without origin refs.
+                # Prefer origin (fresher after another checkout's merge) over local.
                 if git -C "$repo_root" rev-parse --verify "refs/remotes/origin/$base_branch" > /dev/null 2>&1; then
                     base_ref="refs/remotes/origin/$base_branch"
                 elif git -C "$repo_root" rev-parse --verify "refs/heads/$base_branch" > /dev/null 2>&1; then
@@ -77,7 +76,26 @@ else
 fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
-if [[ $mode == next-steps ]]; then
+
+# --next is the bare stage/next line, exclusive of every other section.
+if ((want_next)); then
+    printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
+    exit 0
+fi
+
+printed=0
+sep() { ((printed)) && printf '\n'; printed=1; }
+
+if ((want_report)); then
+    sep
+    printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
+    if [[ -r $config && -x $self_dir/onboard-refresh.sh ]]; then
+        "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --summary 2> /dev/null || true
+    fi
+fi
+
+if ((want_next_steps)); then
+    sep
     agent_run=$self_dir/agent-run.sh
     preflight=$self_dir/agent-preflight.sh
     commit_helper=$self_dir/worktree-commit.sh
@@ -88,16 +106,10 @@ if [[ $mode == next-steps ]]; then
     printf '3. The environment contract (trusted skills path) is still verified; declared commands run directly, with no input-trust step.\n'
     printf '   If the contract is missing or untrusted, refresh it with: %s --ensure --worktree %s\n' \
         "$preflight" "$repo_root"
-    exit 0
 fi
-if [[ $mode == report || $mode == next ]]; then
-    printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
-    if [[ $mode == report && -r $config && -x $self_dir/onboard-refresh.sh ]]; then
-        "$self_dir/onboard-refresh.sh" --repo-root "$repo_root" --summary 2> /dev/null || true
-    fi
-    [[ $mode == next ]] && exit 0
-fi
-[[ $mode == preflight ]] || exit 0
+
+((want_preflight)) || exit 0
+sep
 
 detector=$self_dir/detect-toolchains.sh
 printf 'environment-preflight repo-root=%s\n' "$repo_root"

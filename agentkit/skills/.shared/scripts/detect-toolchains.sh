@@ -15,21 +15,23 @@ a moved component can be found again and onboarding never hardcodes one
 ecosystem.
 
 Usage:
-  detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|gaps|drift]
+  detect-toolchains.sh [--repo-root DIR] [--format LIST]
+  LIST is one or more of components,suggestions,gaps,drift (comma-joined),
+  each section run once and printed in the order given.
 
---format components   one line per detected component (default: suggestions)
+--format components   one line per detected component
 --format suggestions  commented AGENT_CMD_*/AGENT_RUNDIR_* declarations
---format gaps         detected commands this repo has NOT declared (re-onboarding)
+--format gaps         detected commands this repo has NOT declared (re-onboarding);
+                       also lists other commented-out AGENT_* declarations
+                       (labels, ADR dir, protected paths, review providers)
 --format drift        compares .agent/config.env declarations against disk
 
 Exit 0 always; exit 3 only when --repo-root DIR is not a directory.
 EOF
 }
 
-# Directories excluded at ANY depth. A directory inside one of these is not a
-# component -- the case that motivates this: a real repository carries
-# dashboard/.next/package.json (a build artifact, not a source component),
-# and reporting it would be a phantom that then gets declared and committed.
+# Directories excluded at ANY depth (e.g. dashboard/.next/package.json is a
+# build artifact, not a component -- reporting it would get it declared).
 readonly -a EXCLUDE_NAMES=(
     node_modules .venv venv vendor .git .worktrees site-packages
     dist build target out coverage .next
@@ -79,10 +81,8 @@ depth_of() {
     printf '%d' $((${#slashes} + 1))
 }
 
-# True if any path segment of a repo-relative path is an excluded dir name.
-# Needed on top of the find(1) prune because `git ls-files` output (used for
-# the markdown count and the shell file list) never goes through find's prune
-# at all.
+# True if any path segment is an excluded dir name -- needed because
+# `git ls-files` output (markdown count, shell file list) skips find's prune.
 is_excluded_path() {
     local p=$1 part ex
     local IFS=/
@@ -148,10 +148,8 @@ COMPONENT_LINES=()
 collect_all() {
     local f d name lockfile toolname runner mdcount venvbin
 
-    # node -- runner comes from the lockfile IN THE SAME DIRECTORY; a
-    # directory with no lockfile of its own inherits the nearest ancestor
-    # node component's runner, so a workspace package under a root that
-    # locked with a different tool does not get told to run npm.
+    # node -- runner comes from the lockfile in the same directory; with none,
+    # inherit the nearest ancestor node component's runner (not npm).
     while IFS= read -r f; do
         d=$(componentdir_of_marker "$f")
         NODE_MARKER[$d]=package.json
@@ -213,11 +211,8 @@ collect_all() {
         RUST_MARKER[$d]=Cargo.toml
     done < <(find_files_by_names Cargo.toml)
 
-    # markdown -- conservative on purpose. A config file is definitive; absent
-    # that, only a linter that is actually on PATH plus a real body of tracked
-    # docs (five is arbitrary but nonzero) earns the suggestion. Nobody wants
-    # a markdown linter suggested for every repository that happens to have a
-    # README.
+    # markdown -- conservative on purpose: a config file is definitive; absent
+    # that, only an on-PATH linter plus >5 tracked docs earns the suggestion.
     local -a mdcfg
     mapfile -t mdcfg < <(find "$repo_root" -maxdepth 1 -type f -name '.markdownlint*' 2> /dev/null | sort)
     if ((${#mdcfg[@]})); then
@@ -231,10 +226,8 @@ collect_all() {
         ((mdcount > 5)) && MD_MARKER[.]=markdownlint-cli2
     fi
 
-    # shell -- no single marker file; a component is a directory (any other
-    # component's root, or the repo root) that owns tracked *.sh files not
-    # already claimed by a deeper component directory. Deepest-first so a
-    # nested component claims its own scripts before the root claims the rest.
+    # shell -- no marker file; a component is a directory owning tracked *.sh
+    # files not already claimed by a deeper one (deepest-first).
     local have_shellcheck=0
     command -v shellcheck > /dev/null 2>&1 && have_shellcheck=1
     if ((have_shellcheck)); then
@@ -292,10 +285,8 @@ collect_all() {
         COMPONENT_LINES+=(.$'\t'markdown$'\t'"${MD_MARKER[$d]}"$'\tnone')
         break
     done
-    # Shell and markdown describe the WHOLE repository, not one component of it.
-    # Reported per directory they produced a "shell component" beside every real
-    # one -- and then two components at the same path each proposed
-    # AGENT_CMD_<DIR>_LINT, which is a duplicate key in a committed file.
+    # Shell and markdown describe the WHOLE repository, not one component of
+    # it -- reported per directory, they'd duplicate AGENT_CMD_<DIR>_LINT.
     if ((${#SHELL_MARKER[@]})); then
         COMPONENT_LINES+=(.$'\t'shell$'\t''*.sh'$'\tnone')
     fi
@@ -344,11 +335,9 @@ config_quote_token() {
     esac
 }
 
-# Whether TOOL is actually available to a python component with runner
-# RUNNER. A resolved .venv is checked by binary presence, which is the
-# strongest evidence (a listed dependency is not necessarily installed); an
-# unresolved runner (uv / python3 -m) falls back to a text match against the
-# component's own marker files.
+# Whether TOOL is available to a python component with runner RUNNER: a
+# resolved .venv checks binary presence (strongest evidence); otherwise fall
+# back to a text match against the component's own marker files.
 py_tool_present() {
     local dir=$1 tool=$2 runner=$3 f
     if [[ $runner == */* ]]; then
@@ -466,10 +455,8 @@ gen_shell_tasks() {
     printf 'LINT\tshellcheck\n'
 }
 
-# A repository that already has ONE entry point has answered the question, and
-# it outranks anything inferred per component. The rewrite that introduced
-# language detection dropped both of these, so a repo with tools/verify -- the
-# exact shape this project recommends -- stopped being offered it.
+# A repository with ONE entry point (e.g. tools/verify) has answered the
+# question already, and that outranks anything inferred per component.
 gen_dispatcher_tasks() {
     local script
     for script in tools/verify tools/dev/verify bin/verify scripts/verify; do
@@ -548,10 +535,8 @@ print_suggestions() {
         for entry in "${tasks[@]}"; do
             task=${entry%%$'\t'*}
             value=${entry#*$'\t'}
-            # An auxiliary language at the repository root would otherwise
-            # claim the same key as a real component there: one repository
-            # proposed AGENT_CMD_LINT twice, once for its node scripts and once
-            # for the shell linter.
+            # An auxiliary language at the repo root would otherwise claim the
+            # same key as a real component there (e.g. AGENT_CMD_LINT twice).
             case $lang in
                 shell | markdown) name=$(suggestion_name "$cname" "${task}_$(printf '%s' "$lang" | tr '[:lower:]' '[:upper:]')") ;;
                 *) name=$(suggestion_name "$cname" "$task") ;;
@@ -572,22 +557,10 @@ print_suggestions() {
 
 # ---- gaps --------------------------------------------------------------------
 
-# What has this repository NOT declared?
-#
-# Onboarding a fresh repository and re-onboarding a live one are different
-# questions, and only the first is answered by a list of suggestions. Asked to
-# re-onboard a repository whose config.env was already populated, a session
-# reasonably concluded the command set was known, skipped the detector, and
-# never saw the C# component sitting beside the node one -- because the
-# repository's own file, written before that component was detectable, was
-# treated as the record of what exists.
-#
-# A cached artifact read as a fresh observation. The file is the memory, and a
-# memory cannot report what it never knew.
-#
-# Built by filtering the SAME generator print_suggestions uses. A second
-# implementation would drift from it, and the first symptom of that drift would
-# be this report going quiet.
+# What has this repository NOT declared? Re-onboarding a repo with an existing
+# config.env must still run the detector -- trusting that file as "what
+# exists" misses components added since it was last written. Built by
+# filtering the SAME generator print_suggestions uses, so this can't drift.
 print_gaps() {
     local line header key pending_header='' shown=0 total=0 declared=0
     local -a undeclared=()
@@ -623,21 +596,31 @@ print_gaps() {
     if ((shown == 0)); then
         printf 'Every command this detector can see is already declared.\n'
         printf 'That is not the same as complete -- it only means nothing NEW was found.\n'
-        return 0
+    else
+        printf 'DETECTED but not declared -- nothing in .agent/config.env runs these:\n\n'
+        printf '%s\n' "${undeclared[@]}"
+        printf '\n'
+        suggestion_footer
     fi
-    printf 'DETECTED but not declared -- nothing in .agent/config.env runs these:\n\n'
-    printf '%s\n' "${undeclared[@]}"
-    printf '\n'
-    suggestion_footer
+    print_blank_declarations
+}
+
+# What onboarding's own `grep '^# AGENT_'` glue used to do beside this call:
+# surface EVERY commented-out declaration, including ones with no marker file
+# to infer from (e.g. AGENT_CMD_SETUP) -- one call now covers this plus grep.
+print_blank_declarations() {
+    local config=$repo_root/.agent/config.env blanks
+    [[ -r $config ]] || return 0
+    blanks=$(grep -nE '^# AGENT_' "$config" 2> /dev/null || true)
+    [[ -n $blanks ]] || return 0
+    printf '\nOther commented declarations still blank:\n\n%s\n' "$blanks"
 }
 
 # ---- drift -------------------------------------------------------------------
 
 # Locate a plausible replacement for a missing declared path, by basename:
-# search the tree for a same-named directory that is itself a real component
-# (holds one of the known marker files). Only called for a path already
-# confirmed missing, and the search is scoped to one basename -- this is what
-# keeps drift cheap enough to run every session.
+# search for a same-named directory that is itself a real component (holds a
+# known marker file). Scoped to one basename, keeping drift cheap to run.
 find_drift_candidate() {
     local missing=$1 base d rel
     local -a matches=()
@@ -736,13 +719,22 @@ while (($#)); do
     shift
 done
 
-case $ARG_FORMAT in
-    components | suggestions | gaps | drift) ;;
-    *)
-        printf '%s: unknown --format %s (want components|suggestions|gaps|drift)\n' "$PROGRAM" "$ARG_FORMAT" >&2
-        exit 2
-        ;;
-esac
+# A comma-joined list runs each named section in one call -- e.g.
+# `--format gaps,suggestions` -- so onboarding no longer needs two separate
+# invocations to get both reports (issue #696); duplicates dedupe to first.
+declare -a ARG_FORMATS=() ARG_FORMATS_UNIQUE=()
+declare -A seen_fmt=()
+IFS=, read -ra ARG_FORMATS <<< "$ARG_FORMAT"
+for fmt in "${ARG_FORMATS[@]}"; do
+    case $fmt in
+        components | suggestions | gaps | drift) ;;
+        *)
+            printf '%s: unknown --format %s (want components|suggestions|gaps|drift)\n' "$PROGRAM" "$fmt" >&2
+            exit 2
+            ;;
+    esac
+    [[ -n ${seen_fmt[$fmt]:-} ]] || { seen_fmt[$fmt]=1; ARG_FORMATS_UNIQUE+=("$fmt"); }
+done
 
 if [[ -n $ARG_REPO_ROOT ]]; then
     [[ -d $ARG_REPO_ROOT ]] || {
@@ -758,22 +750,17 @@ repo_root=$(cd -- "$repo_root" && pwd)
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
 
-case $ARG_FORMAT in
-    components)
-        collect_all
-        print_components
-        ;;
-    suggestions)
-        collect_all
-        print_suggestions
-        ;;
-    gaps)
-        collect_all
-        print_gaps
-        ;;
-    drift)
-        print_drift
-        ;;
-esac
+[[ $ARG_FORMAT == drift ]] || collect_all
+first=1
+for fmt in "${ARG_FORMATS_UNIQUE[@]}"; do
+    ((first)) || printf '\n'
+    first=0
+    case $fmt in
+        components) print_components ;;
+        suggestions) print_suggestions ;;
+        gaps) print_gaps ;;
+        drift) print_drift ;;
+    esac
+done
 
 exit 0
