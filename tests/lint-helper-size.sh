@@ -33,9 +33,11 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="959:12068:800"
+    # Issue #706: preserve selected invalid model provenance through the result.
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1193:14442:800"
-    [skills/review-remote-pr/scripts/post-receipt.sh]="949:10549:800"
+    # Review follow-up: refuse substitution on a verified skip before mutation.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="970:10936:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -44,7 +46,8 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-readonly MAX_TREE_TOKENS=396379
+# Integrated #612 and #706: formatter handling plus receipt provenance/refusal.
+readonly MAX_TREE_TOKENS=397369
 
 violations=0
 checked=0

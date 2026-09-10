@@ -104,6 +104,7 @@ BASE_CONFIG_FILE=''
 BASE_REF=''
 PROVIDER=''
 MODEL=''
+MODEL_SUBSTITUTED_FROM=''
 EFFORT=''
 MODE=''
 HELPER=''
@@ -275,6 +276,46 @@ resolve_config_value() {
     printf '%s' "$value"
 }
 
+# Resolve only the model slot actually selected above. Keep the resolver's
+# invalid/absent distinction and warning; never read candidate config or eval
+# declarations. Its get output deliberately omits rejected values, so extract
+# only this key from the same base snapshot using its trim/unquote rules.
+resolve_selected_model() {
+    local key=$1 config_file=$2 value rc=0 line parsed_key dropped=''
+    [[ -n $config_file && -x $REPO_CONFIG_SH ]] || return 0
+    value=$("$REPO_CONFIG_SH" --repo-root "$CONTRACT_ROOT" --config-file "$config_file" \
+        --get "$key") || rc=$?
+    if ((rc == 0)); then
+        [[ -z $value ]] || MODEL=$value
+    elif ((rc == 2)); then
+        while IFS= read -r line || [[ -n $line ]]; do
+            line=${line%$'\r'}
+            [[ $line == *=* ]] || continue
+            parsed_key=${line%%=*}
+            parsed_key=${parsed_key#"${parsed_key%%[![:space:]]*}"}
+            parsed_key=${parsed_key%"${parsed_key##*[![:space:]]}"}
+            [[ $parsed_key == "$key" ]] || continue
+            value=${line#*=}
+            value=${value#"${value%%[![:space:]]*}"}
+            value=${value%"${value##*[![:space:]]}"}
+            if ((${#value} >= 2)) &&
+                [[ (${value:0:1} == '"' && ${value: -1} == '"') ||
+                   (${value:0:1} == "'" && ${value: -1} == "'") ]]; then
+                value=${value:1:${#value}-2}
+            fi
+            [[ -z $value ]] || dropped=$value
+        done <"$config_file"
+        # Only identifiers belong in a public identity line. Arbitrary config
+        # text (markup, shell syntax, controls, huge strings) is not published.
+        if [[ $dropped =~ ^[A-Za-z0-9._-]+$ ]] && ((${#dropped} <= 200)); then
+            MODEL_SUBSTITUTED_FROM=$dropped
+        else
+            MODEL_SUBSTITUTED_FROM='[non-model value redacted]'
+        fi
+    fi
+    return 0
+}
+
 # select_reviewer CONFIG_FILE -- the ONLY source consulted for
 # AGENT_ADVERSARIAL_* ('' = pinned defaults); never the candidate PR's own
 # checkout (a PR could edit .agent/config.env to steer its own review): main
@@ -417,11 +458,9 @@ select_reviewer() {
     # interpreted against. AGENT_ADVERSARIAL_REVIEW_EFFORT is harness-neutral
     # (same convention as AGENT_WORKER_EFFORT) and always applies.
     if ((fell_back)); then
-        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK "$config_file") &&
-            MODEL=$declared_value
+        resolve_selected_model AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK "$config_file"
     elif [[ -n $declared_reviewer ]]; then
-        declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_MODEL "$config_file") &&
-            MODEL=$declared_value
+        resolve_selected_model AGENT_ADVERSARIAL_REVIEW_MODEL "$config_file"
     fi
     declared_value=$(resolve_config_value AGENT_ADVERSARIAL_REVIEW_EFFORT "$config_file") && EFFORT=$declared_value
 
@@ -754,14 +793,23 @@ valid_blocked_result() {
 }
 
 receipt_line() {
-    local path=$RUN_DIR/adversarial.result.json p1 p2 verdict
+    local path=$RUN_DIR/adversarial.result.json p1 p2 verdict tmp model_note=''
+    if [[ -n $MODEL_SUBSTITUTED_FROM ]]; then
+        tmp=$(mktemp "$RUN_DIR/adversarial.provenance.XXXXXXXXXX") ||
+            die 'could not create model provenance artifact'
+        jq --arg value "$MODEL_SUBSTITUTED_FROM" '.modelSubstitutedFrom=$value' "$path" >"$tmp" ||
+            die 'could not encode model provenance'
+        chmod 600 -- "$tmp" || die 'could not secure model provenance'
+        mv -f -- "$tmp" "$path" || die 'could not publish model provenance'
+        model_note=" (configured $MODEL_SUBSTITUTED_FROM was invalid and dropped; see repo-config warning)"
+    fi
     # Status is authoritative over the verdict object: even if a blocked result
     # reaches here by some other path, it must never report findings.
     p1=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P1")] | length end' <"$path")
     p2=$(jq -r 'if .status == "blocked" then 0 else [.verdict | objects | .findings[]? | select(.priority == "P2")] | length end' <"$path")
     verdict=$(jq -r 'if .status == "blocked" then "blocked" else (.verdict | objects | .verdict) // "blocked" end' <"$path")
-    printf 'provider=%s model=%s effort=%s mode=%s P1=%s P2=%s verdict=%s exclusions=%s excluded_sha256=%s\n' \
-        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict" \
+    printf 'provider=%s model=%s%s effort=%s mode=%s P1=%s P2=%s verdict=%s exclusions=%s excluded_sha256=%s\n' \
+        "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict" \
         "${#EXCLUSION_SPECS[@]}" "${EXCLUDED_SHA256:-none}"
 }
 

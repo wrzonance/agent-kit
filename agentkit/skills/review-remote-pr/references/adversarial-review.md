@@ -256,6 +256,19 @@ substitution and falls back to the running harness's CLI. An invalid declaration
 `repo-config.sh` with a warning and the peer-CLI default applies; declaring a reviewer never bypasses the
 consent record or the provider-token mapping above.
 
+When the selected bare-CLI model declaration is invalid, the runner retains the dropped
+value as `modelSubstitutedFrom` in `adversarial.result.json` and annotates its summary:
+`model=claude-opus-5 (configured claude-fable-5.1 was invalid and dropped; see repo-config warning)`.
+The receipt composer reads this evidence automatically; `post-receipt.sh publish` also accepts
+`--model-substituted-from VALUE` for older result artifacts, but refuses a value conflicting with
+recorded provenance. The `Reviewer:` line and review-ledger entry preserve the substitution.
+Verified skips reject this flag because no reviewer model was selected.
+Valid or absent declarations retain the existing reviewer line. The same rule applies to an
+invalid selected fallback model; unused model slots and roster selections are unaffected.
+Only model-shaped identifiers up to 200 characters are copied into this public provenance;
+arbitrary malformed text is represented as `[non-model value redacted]` and is never evaluated.
+Selection still uses only the trusted base config snapshot, never a session-local override.
+
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]

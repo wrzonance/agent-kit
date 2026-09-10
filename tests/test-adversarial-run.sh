@@ -517,6 +517,31 @@ make_trust_repo() {
     printf '%s' "$dir"
 }
 
+# An invalid model in that same trusted source must survive as provenance.
+invalid_model_repo=$(make_trust_repo 'AGENT_ADVERSARIAL_REVIEWER=claude
+ AGENT_ADVERSARIAL_REVIEW_MODEL = "claude-fable-5.1"
+AGENT_ADVERSARIAL_REVIEW_EFFORT=xhigh')
+write_contract_at "$invalid_model_repo" codex claude "present path=$tmp/fake-claude"
+git -C "$invalid_model_repo" switch --quiet -c feature
+printf '%s\n' changed >"$invalid_model_repo/example.txt"
+git -C "$invalid_model_repo" commit --quiet -am change
+FAKE_HEAD_OID=$(git -C "$invalid_model_repo" rev-parse HEAD)
+export FAKE_HEAD_OID
+git -C "$invalid_model_repo" diff --find-renames --unified=25 origin/main...HEAD >"$tmp/invalid-model.diff"
+invalid_model_run="$tmp/invalid-model-run"
+grant "$invalid_model_run" anthropic "$tmp/invalid-model.diff"
+invalid_model_rc=0
+(cd "$invalid_model_repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$invalid_model_run") \
+    >"$tmp/invalid-model.out" 2>"$tmp/invalid-model.err" || invalid_model_rc=$?
+assert_eq 0 "$invalid_model_rc" 'invalid model keeps the documented successful fallback'
+assert_eq claude-fable-5.1 "$(jq -r '.modelSubstitutedFrom' "$invalid_model_run/adversarial.result.json")" \
+    'runner result preserves the dropped base-declared model'
+assert_contains "$(cat "$tmp/invalid-model.out")" 'configured claude-fable-5.1 was invalid and dropped' \
+    'runner summary discloses the substituted model'
+assert_contains "$(cat "$tmp/invalid-model.err")" 'did you mean claude-fable-5-1' \
+    'runner preserves the resolver warning'
+
 # --- (b) the base revision's declared values are honoured when the diff
 # does not touch config.env -- and prove it is genuinely an override, not
 # agreement: the peer (claude) is present and would normally be selected.
@@ -1431,8 +1456,9 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # the Codex helper's dynamic output+reasoning consumption, not just what is
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 959 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 959 lines'
+# Issue #706 adds selected-model provenance extraction and atomic result annotation.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1007 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1007 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the
