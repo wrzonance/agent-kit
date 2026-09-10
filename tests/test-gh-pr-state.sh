@@ -17,7 +17,7 @@ case " $* " in
         printf '{"security_and_analysis":{"code_security":{"status":"%s"}}}\n' "${REPO_CODE_SECURITY_STATUS:-enabled}"
         ;;
     *" api repos/owner/repo/pulls/14 "*)
-        printf '%s\n' '{"number":14,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"abcdef0123456789"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":14,"draft":true,"mergeable":true,"head":{"ref":"feat/test","sha":"abcdef0123456789"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/abcdef0123456789/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"},{"name":"coderabbitai","status":"in_progress"},{"name":"lint","status":"completed","conclusion":"failure"}]}'
@@ -109,7 +109,7 @@ cat >"$tmp/case-stale-base/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/77 "*)
-        printf '%s\n' '{"number":77,"draft":false,"mergeable":true,"head":{"ref":"feat/child","sha":"childsha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":77,"draft":false,"mergeable":true,"head":{"ref":"feat/child","sha":"childsha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/childsha/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -169,7 +169,7 @@ base_unavailable_err="$tmp/base-unavailable.err"
 base_unavailable_output=$(PATH="$tmp/case-base-unavailable:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 78 --repo owner/repo 2>"$base_unavailable_err")
 assert_contains "$base_unavailable_output" 'ci=1/1 green pending=0 failing=0' \
-    'unknown ancestry does not relabel otherwise green checks'
+    'a known non-chain base retains ordinary CI despite unavailable comparison metadata'
 assert_contains "$base_unavailable_output" 'base: ref=deleted-parent behind=unknown stale=unknown' \
     'base lookup failure keeps base evidence explicitly unknown'
 assert_contains "$(cat "$base_unavailable_err")" 'base comparison unavailable' \
@@ -191,7 +191,7 @@ cat >"$tmp/case-automation-only/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/810 "*)
-        printf '%s\n' '{"number":810,"draft":false,"mergeable":true,"head":{"ref":"feat/automation","sha":"autosha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":810,"draft":false,"mergeable":true,"head":{"ref":"feat/automation","sha":"autosha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/autosha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -227,7 +227,7 @@ cat >"$tmp/case-automation-mixed/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/811 "*)
-        printf '%s\n' '{"number":811,"draft":false,"mergeable":true,"head":{"ref":"feat/mixed","sha":"mixedsha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":811,"draft":false,"mergeable":true,"head":{"ref":"feat/mixed","sha":"mixedsha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/mixedsha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -267,7 +267,7 @@ cat >"$tmp/case-automation-truncated/gh" <<EOF
 set -euo pipefail
 case " \$* " in
     *" api repos/owner/repo/pulls/813 "*)
-        printf '%s\n' '{"number":813,"draft":false,"mergeable":true,"head":{"ref":"feat/truncated","sha":"truncsha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":813,"draft":false,"mergeable":true,"head":{"ref":"feat/truncated","sha":"truncsha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/truncsha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -301,7 +301,7 @@ cat >"$tmp/case-automation-rename/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/814 "*)
-        printf '%s\n' '{"number":814,"draft":false,"mergeable":true,"head":{"ref":"feat/rename","sha":"renamesha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":814,"draft":false,"mergeable":true,"head":{"ref":"feat/rename","sha":"renamesha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/renamesha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -346,7 +346,7 @@ cat >"$tmp/case-repo-declared-tier0/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/812 "*)
-        printf '%s\n' '{"number":812,"draft":false,"mergeable":true,"head":{"ref":"feat/tier0","sha":"tier0sha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":812,"draft":false,"mergeable":true,"head":{"ref":"feat/tier0","sha":"tier0sha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/tier0sha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -386,7 +386,7 @@ cat >"$tmp/case-approved-zero-threads/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -417,7 +417,7 @@ cat >"$tmp/case-changes-requested/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -448,7 +448,7 @@ cat >"$tmp/case-ack-only-not-reviewed/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -477,7 +477,7 @@ cat >"$tmp/case-most-recent-review-wins/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -511,7 +511,7 @@ cat >"$tmp/case-stale-head-review/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -547,7 +547,7 @@ cat >"$tmp/case-rate-limited/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -574,7 +574,7 @@ cat >"$tmp/case-stale-then-rate-limited/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -603,7 +603,7 @@ cat >"$tmp/case-agent-docs/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -654,10 +654,23 @@ cat >"$tmp/case-all-zero/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/99 "*)
-        printf '%s\n' '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"main"}}'
+        printf '{"number":99,"draft":true,"mergeable":true,"head":{"ref":"feat/x","sha":"1111111111"},"base":{"ref":"%s","repo":{"default_branch":"main"}}}' "${TEST_BASE:-main}"
         ;;
     *" api repos/owner/repo/commits/1111111111/check-runs"*)
-        printf '%s\n' '{"check_runs":[]}'
+        if [[ ${TEST_CHECK:-0} == 1 ]]; then
+            printf '%s\n' '{"check_runs":[{"name":"test","app":{"id":15368},"status":"completed","conclusion":"success"}]}'
+        else
+            printf '%s\n' '{"check_runs":[]}'
+        fi
+        ;;
+    *'/commits/1111111111/status?'*) printf '%s\n' '{"statuses":[]}' ;;
+    *'/pulls?'*) printf '%s\n' '[{"number":716,"base":{"ref":"main","repo":{"default_branch":"main"}},"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]' ;;
+    *'/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?'*)
+        if [[ ${TEST_CI_GAP:-0} == 1 ]]; then
+            printf '%s\n' '{"check_runs":[{"name":"test","app":{"id":15368},"status":"completed","conclusion":"success"},{"name":"Analyze (python)","app":{"id":15368},"status":"completed","conclusion":"success"},{"name":"Analyze (javascript-typescript)","app":{"id":15368},"status":"completed","conclusion":"success"}]}'
+        else
+            printf '%s\n' '{"check_runs":[{"name":"test","app":{"id":15368},"status":"completed","conclusion":"success"}]}'
+        fi
         ;;
     *" graphql "*)
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
@@ -673,6 +686,31 @@ assert_not_contains "$all_zero_output" 'next:' 'every lane at zero prints no nex
 assert_contains "$all_zero_output" 'ci=0/0 none pending=0 failing=0' \
     'zero checks outside --wait-ci still report none, never none-configured'
 
+stacked_zero_output=$(TEST_BASE=feat/issue-707 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_contains "$stacked_zero_output" 'ci: not-triggered-on-stacked-base' 'stacked missing CI marker'
+assert_contains "$stacked_zero_output" 'verification=no-ci-on-stacked-base' 'stacked machine verification state'
+assert_not_contains "$all_zero_output" 'not-triggered-on-stacked-base' 'default base unaffected'
+stacked_checked_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_not_contains "$stacked_checked_output" 'not-triggered-on-stacked-base' 'stacked registered CI is unaffected'
+
+
+partial_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 TEST_CI_GAP=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_contains "$partial_output" 'ci=1/1 partial' 'green subset is not full CI verification'
+assert_contains "$partial_output" 'verification=partial-ci-on-stacked-base' 'digest carries the partial coverage state'
+assert_contains "$partial_output" 'Analyze (python)' 'digest names missing reference checks'
+assert_contains "$partial_output" 'ci-reference: pr=716 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'digest pins observed reference PR/head'
+release_output=$(TEST_BASE=release-1.x TEST_CHECK=1 TEST_CI_GAP=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_contains "$release_output" 'ci=1/1 green' 'release backport retains its ordinary green checks'
+assert_not_contains "$release_output" 'verification=' 'release backport does not require a default-target reference'
+
+
+mkdir -p "$tmp/case-missing-base"
+sed 's/"default_branch":"main"/"default_branch":""/g' "$tmp/case-all-zero/gh" >"$tmp/case-missing-base/gh"
+chmod +x "$tmp/case-missing-base/gh"
+unknown_base_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 PATH="$tmp/case-missing-base:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_contains "$unknown_base_output" 'ci=1/1 unknown' 'missing base metadata never becomes green'
+assert_contains "$unknown_base_output" 'verification=unknown' 'missing metadata is explicit coverage uncertainty'
+
 # --- --wait-ci: zero registered checks right after a push (agent-kit#396) --
 
 # A stub that returns 0 checks for the first two rounds, then a real pending
@@ -684,7 +722,7 @@ cat >"$tmp/case-wait-grace/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/601 "*)
-        printf '%s\n' '{"number":601,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"6010601060"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":601,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"6010601060"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/6010601060/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -731,7 +769,7 @@ cat >"$tmp/case-wait-none/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/602 "*)
-        printf '%s\n' '{"number":602,"draft":true,"mergeable":true,"head":{"ref":"feat/none","sha":"6020602060"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":602,"draft":true,"mergeable":true,"head":{"ref":"feat/none","sha":"6020602060"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/6020602060/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -776,7 +814,7 @@ cat >"$tmp/case-wait-onebyone/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/604 "*)
-        printf '%s\n' '{"number":604,"draft":true,"mergeable":true,"head":{"ref":"feat/onebyone","sha":"onebyonesha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":604,"draft":true,"mergeable":true,"head":{"ref":"feat/onebyone","sha":"onebyonesha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/onebyonesha/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -835,7 +873,7 @@ cat >"$tmp/case-wait-floor-holds/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/605 "*)
-        printf '%s\n' '{"number":605,"draft":true,"mergeable":true,"head":{"ref":"feat/floor","sha":"floorholdssha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":605,"draft":true,"mergeable":true,"head":{"ref":"feat/floor","sha":"floorholdssha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/floorholdssha/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -880,7 +918,7 @@ cat >"$tmp/case-wait-floor-unmet/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/606 "*)
-        printf '%s\n' '{"number":606,"draft":true,"mergeable":true,"head":{"ref":"feat/floor-unmet","sha":"floorunmetsha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":606,"draft":true,"mergeable":true,"head":{"ref":"feat/floor-unmet","sha":"floorunmetsha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/floorunmetsha/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -921,7 +959,7 @@ cat >"$tmp/case-wait-no-default-floor/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/607 "*)
-        printf '%s\n' '{"number":607,"draft":true,"mergeable":true,"head":{"ref":"feat/no-default","sha":"nodefaultsha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":607,"draft":true,"mergeable":true,"head":{"ref":"feat/no-default","sha":"nodefaultsha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/nodefaultsha/check-runs"*)
         n=$(( $(cat "$COUNT_FILE" 2>/dev/null || printf 0) + 1 ))
@@ -966,7 +1004,7 @@ cat >"$tmp/case-acceptance/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/515 "*)
-        printf '%s\n' '{"number":515,"draft":true,"mergeable":true,"head":{"ref":"feat/acceptance","sha":"5155155155"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":515,"draft":true,"mergeable":true,"head":{"ref":"feat/acceptance","sha":"5155155155"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/5155155155/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"repo-verify","status":"completed","conclusion":"success"}]}'
@@ -994,7 +1032,7 @@ cat >"$tmp/case-acceptance-flag/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/516 "*)
-        printf '%s\n' '{"number":516,"draft":false,"mergeable":true,"head":{"ref":"feat/acceptance-flag","sha":"5165165165"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":516,"draft":false,"mergeable":true,"head":{"ref":"feat/acceptance-flag","sha":"5165165165"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/5165165165/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tools/certify","status":"completed","conclusion":"success"}]}'
@@ -1049,7 +1087,7 @@ cat >"$tmp/case-graphql-dead/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/404 "*)
-        printf '%s\n' '{"number":404,"draft":true,"mergeable":true,"head":{"ref":"feat/rest","sha":"2222222222"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":404,"draft":true,"mergeable":true,"head":{"ref":"feat/rest","sha":"2222222222"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/2222222222/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -1112,7 +1150,7 @@ cat >"$tmp/case-graphql-malformed/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/707 "*)
-        printf '%s\n' '{"number":707,"draft":true,"mergeable":true,"head":{"ref":"feat/malformed","sha":"7070707070"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":707,"draft":true,"mergeable":true,"head":{"ref":"feat/malformed","sha":"7070707070"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/7070707070/check-runs"*) printf '%s\n' '{"check_runs":[]}' ;;
     *" api repos/owner/repo/commits/7070707070/status"*) printf '%s\n' '{"statuses":[]}' ;;
@@ -1143,7 +1181,7 @@ cat >"$tmp/case-legacy-status/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/505 "*)
-        printf '%s\n' '{"number":505,"draft":false,"mergeable":true,"head":{"ref":"feat/status","sha":"5050505050"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":505,"draft":false,"mergeable":true,"head":{"ref":"feat/status","sha":"5050505050"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/5050505050/check-runs"*)
         printf '%s\n' '{"check_runs":[]}'
@@ -1241,10 +1279,10 @@ printf '%s\n' "\$*" >>"$cache_call_log"
 updated_at=\${CACHE_UPDATED_AT:-2026-08-20T00:00:00Z}
 case " \$* " in
     *" api repos/owner/repo/pulls/900 "*)
-        printf '{"number":900,"draft":true,"mergeable":true,"head":{"ref":"feat/cache","sha":"cachesha1"},"base":{"ref":"main"},"updated_at":"%s"}\n' "\$updated_at"
+        printf '{"number":900,"draft":true,"mergeable":true,"head":{"ref":"feat/cache","sha":"cachesha1"},"base":{"ref":"main","repo":{"default_branch":"main"}},"updated_at":"%s"}\n' "\$updated_at"
         ;;
     *" api repos/owner/repo/pulls/903 "*)
-        printf '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/other","sha":"cachesha1"},"base":{"ref":"main"},"updated_at":"%s"}\n' "\$updated_at"
+        printf '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/other","sha":"cachesha1"},"base":{"ref":"main","repo":{"default_branch":"main"}},"updated_at":"%s"}\n' "\$updated_at"
         ;;
     *" api repos/owner/repo/commits/cachesha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -1359,7 +1397,7 @@ set -euo pipefail
 printf '%s\n' "\$*" >>"$wait_call_log"
 case " \$* " in
     *" api repos/owner/repo/pulls/902 "*)
-        printf '%s\n' '{"number":902,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"waitsha1"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":902,"draft":true,"mergeable":true,"head":{"ref":"feat/wait","sha":"waitsha1"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/waitsha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"in_progress"}]}'
@@ -1399,7 +1437,7 @@ cat >"$tmp/case-wait-failing-name/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/903 "*)
-        printf '%s\n' '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/wait-failing","sha":"waitfailsha"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":903,"draft":true,"mergeable":true,"head":{"ref":"feat/wait-failing","sha":"waitfailsha"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/waitfailsha/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"gates and suites","status":"completed","conclusion":"failure"},{"name":"tests","status":"completed","conclusion":"success"}]}'
@@ -1439,7 +1477,7 @@ case " \$* " in
         printf '%s' "\$n" >"$retarget_counter"
         sha=oldsha1
         ((n > 1)) && sha=newsha2
-        printf '{"number":905,"draft":true,"mergeable":true,"head":{"ref":"feat/retarget","sha":"%s"},"base":{"ref":"main"}}\n' "\$sha"
+        printf '{"number":905,"draft":true,"mergeable":true,"head":{"ref":"feat/retarget","sha":"%s"},"base":{"ref":"main","repo":{"default_branch":"main"}}}\n' "\$sha"
         ;;
     *" api repos/owner/repo/commits/oldsha1/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"in_progress"}]}'
@@ -1496,7 +1534,7 @@ cat >"$tmp/case-issue-comment-findings/gh" <<'EOF'
 set -euo pipefail
 case " $* " in
     *" api repos/owner/repo/pulls/777 "*)
-        printf '%s\n' '{"number":777,"draft":true,"mergeable":true,"head":{"ref":"feat/icf","sha":"3333333333"},"base":{"ref":"main"}}'
+        printf '%s\n' '{"number":777,"draft":true,"mergeable":true,"head":{"ref":"feat/icf","sha":"3333333333"},"base":{"ref":"main","repo":{"default_branch":"main"}}}'
         ;;
     *" api repos/owner/repo/commits/3333333333/check-runs"*)
         printf '%s\n' '{"check_runs":[{"name":"tests","status":"completed","conclusion":"success"}]}'

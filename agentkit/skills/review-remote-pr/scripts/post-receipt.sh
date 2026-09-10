@@ -7,6 +7,10 @@
 # parallel-issues used to copy-paste. Contract and exit codes: --help.
 
 set -euo pipefail
+STACKED_CI_DIR=${BASH_SOURCE[0]%/*}
+[[ $STACKED_CI_DIR != "${BASH_SOURCE[0]}" ]] || STACKED_CI_DIR=.
+# shellcheck disable=SC1091
+source "$STACKED_CI_DIR/../../.shared/scripts/lib/stacked-ci.sh"
 umask 077
 
 readonly PROGNAME=${0##*/}
@@ -810,11 +814,27 @@ render_body() {
         "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$MODE_REASON"
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_head_lines
+    render_ci_verification
     render_supersedes_line
     render_findings_block
     render_skip_line
     printf '%s\n' "$RECEIPT_MARKER"
     printf '%s Co-authored by %s.\n' "$ROBOT" "$AGENT_IDENTITY"
+}
+
+# Read current forge evidence, not a caller-supplied claim that CI passed.
+render_ci_verification() {
+    local snapshot metadata gh_bin=${GH_COMMENT_GH:-gh}
+    if metadata=$("$gh_bin" api "repos/$REPO/pulls/$PR"); then
+        snapshot=$(stacked_ci_snapshot "$gh_bin" "$REPO" '' "$metadata")
+    else
+        snapshot='{"state":"unknown","reason":"live PR metadata unavailable"}'
+    fi
+    jq -r 'select(.state!="not-stacked" and .state!="reference-checks-present")
+        | "- Verification: " + (if .state=="unknown" then "unknown; " else "" end)
+          + "verification=\(.state); "
+          + (if .state=="no-ci-on-stacked-base" then "ci: not-triggered-on-stacked-base; " else "" end)
+          + "observed evidence=\(.|tojson); cause and requiredness are unknown. Observe checks after any retarget; local verification is separate evidence."' <<<"$snapshot"
 }
 
 recover_after_failed_publish() {

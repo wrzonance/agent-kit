@@ -272,6 +272,11 @@ else
     block 'pr-state digest could not determine base freshness'
 fi
 
+if [[ $base =~ ^feat/issue-[1-9][0-9]*$ ]] &&
+    grep -qE '^verification=(no-ci-on-stacked-base|partial-ci-on-stacked-base|unknown)$' "$digest_file"; then
+    block 'CI coverage comparison is missing checks or unavailable'
+fi
+
 if grep -qE '^ci=[0-9]+/[0-9]+ [a-z]+ pending=[0-9]+ failing=[0-9]+$' "$digest_file"; then
     ci_line=$(grep -E '^ci=[0-9]+/[0-9]+ [a-z]+ pending=[0-9]+ failing=[0-9]+$' "$digest_file" | head -n 1)
     ci_word=$(sed -nE 's/^ci=[0-9]+\/[0-9]+ ([a-z]+) .*$/\1/p' <<<"$ci_line")
