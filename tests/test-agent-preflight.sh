@@ -605,6 +605,28 @@ for keyed_topology in keyed-only stale-legacy; do
     fi
 done
 
+# Refreshing a stale keyed contract must converge on the same selected path.
+for stale_kind in missing-fields mismatched-hash; do
+    stale_keyed_repo=$(new_repo)
+    "$ensure_build_script" --worktree "$stale_keyed_repo" > /dev/null 2>&1
+    stale_keyed="$stale_keyed_repo/.agent/env-contract.$keyed_harness.txt"
+    mv "$stale_keyed_repo/.agent/env-contract.txt" "$stale_keyed"
+    case $stale_kind in
+        missing-fields) sed -i '/^protected=/d; /^skills-content=/d' "$stale_keyed" ;;
+        mismatched-hash) sed -i 's/^skills-content=.*/skills-content= sha256=stale/' "$stale_keyed" ;;
+    esac
+    refreshed=$("$ensure_build_script" --ensure --worktree "$stale_keyed_repo" 2> "$tmp/keyed-refresh.err")
+    assert_eq "$refreshed" "$(cat "$stale_keyed")" "--ensure $stale_kind refreshes the selected keyed file"
+    assert_eq no "$([[ -e $stale_keyed_repo/.agent/env-contract.txt ]] && printf yes || printf no)" \
+        "--ensure $stale_kind refresh does not create a legacy file"
+    printf 'second-reuse-proof=keep\n' >> "$stale_keyed"
+    refreshed_before=$(cat "$stale_keyed")
+    reused=$("$ensure_build_script" --ensure --worktree "$stale_keyed_repo" 2> "$tmp/keyed-reuse.err")
+    assert_eq "$refreshed_before" "$reused" "--ensure $stale_kind second call reuses refreshed bytes"
+    assert_not_contains "$(cat "$tmp/keyed-reuse.err")" 'fresh preflight' \
+        "--ensure $stale_kind second call does not re-probe"
+done
+
 # Mutate one shipped file in the tree the script is actually running from.
 printf '\n# mutated for the --ensure staleness test\n' >> "$ensure_build/.shared/scripts/agent-run.sh"
 out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> "$tmp/ensure-content-mismatch-stderr")
@@ -1317,8 +1339,8 @@ assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo 
 # issue #610: caches= grew CARGO_HOME/GOMODCACHE in place; issue #690 review:
 # +10 lines for the writable-default-cargo-home check the contract token now
 # mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1333 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1333 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1335 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1335 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \

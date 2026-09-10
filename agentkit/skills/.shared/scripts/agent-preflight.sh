@@ -1263,7 +1263,9 @@ main() {
             # existed would otherwise be served forever without it. Fall through to
             # the same fresh-preflight path a failed provenance re-read already uses,
             # rather than adding a second return path.
-            if existing="$(cat -- "$(contract_cache_contract_file "$WORKTREE")")"; then
+            # A stale trusted contract must be refreshed at the path readers select.
+            ARG_WRITE=$(contract_cache_contract_file "$WORKTREE")
+            if existing="$(cat -- "$ARG_WRITE")"; then
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
                     # Presence proves the KEYS exist, not that their VALUES
                     # describe this tree (issue #453 review): recompute both
