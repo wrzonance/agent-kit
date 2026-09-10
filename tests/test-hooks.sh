@@ -1642,6 +1642,66 @@ mapfile -t destructive_flush_segs < <(
 assert_eq "${destructive_flush_segs[*]-}" "${gh_flush_segs[*]-}" \
     'both lexers agree on a trailing inert heredoc: one owner-line segment each'
 
+# issue #661: guard_gh_command_segments IS guard_destructive_command_segments
+# in drop mode. A body handed to a shell is recovered and re-segmented by the
+# destructive lexer (issue #364) and never by the gh lexer -- the one place the
+# two modes must differ, pinned so a future edit cannot quietly merge them.
+shell_body_payload=$'bash <<\'EOF\'\nrm -rf /tmp/x\nEOF'
+mapfile -t recover_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$shell_body_payload"
+)
+mapfile -t drop_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$shell_body_payload" drop
+)
+mapfile -t gh_shell_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_gh_command_segments "$shell_body_payload"
+)
+assert_eq '2' "${#recover_segs[@]}" \
+    'recover mode re-segments a shell-consumer heredoc body (recovered command plus owner line)'
+assert_eq '1' "${#drop_segs[@]}" \
+    'drop mode emits only the owner line for a shell-consumer heredoc'
+assert_eq "${gh_shell_segs[*]-}" "${drop_segs[*]-}" \
+    'the gh lexer is the destructive lexer in drop mode'
+
+# CR-687-1: drop mode discards the heredoc body at the terminator, but used to
+# accumulate every body line into $body first anyway -- pure wasted work since
+# drop mode never reads $body. Skipping the accumulation must not change the
+# segments drop mode emits: the owner line plus whatever follows the
+# terminator.
+drop_body_payload=$'cat <<EOF\nline one\nline two\nline three\nEOF\necho after'
+mapfile -t drop_body_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$drop_body_payload" drop
+)
+assert_eq '2' "${#drop_body_segs[@]}" \
+    'drop mode still emits the owner segment plus the trailing command once body accumulation is skipped'
+assert_eq 'cat <<EOF' "${drop_body_segs[0]-}" \
+    'and the owner-line segment is unchanged by skipping body accumulation'
+assert_eq 'echo after' "${drop_body_segs[1]-}" \
+    'and the command following the heredoc terminator is still segmented correctly'
+
+# CR-687-1 perf: measured directly (not asserted here, since a timeout-based
+# check would not reliably discriminate) -- a 20000-line heredoc body in drop
+# mode runs in well under a second either way at this size, and even at
+# 200000 lines the pre-fix accumulating lexer finishes in ~3.5s, so a
+# `timeout`-based regression guard would pass whether or not the fix is
+# present. What the fix changes is work done, not a pass/fail time
+# threshold, so pin correctness instead: a large heredoc body in drop mode
+# must still emit exactly the owner-line segment once accumulation is
+# skipped.
+large_heredoc_payload=$'cat <<EOF\n'"$(seq 1 20000)"$'\nEOF'
+mapfile -t large_heredoc_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$large_heredoc_payload" drop
+)
+assert_eq '1' "${#large_heredoc_segs[@]}" \
+    'drop mode emits exactly the owner-line segment for a large (20000-line) heredoc body'
+assert_eq 'cat <<EOF' "${large_heredoc_segs[0]-}" \
+    'and that segment is unchanged by skipping accumulation of a large body'
+
 trailing_heredoc_foreign=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/hooks-trailing-heredoc.XXXXXX")
 trailing_heredoc_cmd=$(printf "cat > %s/notes.md <<'EOF'\nfoo\nEOF" "$trailing_heredoc_foreign")
 out=$(pre_input "$scope_repo" "$trailing_heredoc_cmd" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
@@ -2941,7 +3001,7 @@ assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && pr
     'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
 
 # 2026-09-08 size wave two: hold the hook sources at their measured line counts.
-for hook_ceiling in 'lib/guard-lib.sh:2407' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
+for hook_ceiling in 'lib/guard-lib.sh:2298' 'pre-tool-use.sh:190' 'post-tool-use.sh:250' 'session-start.sh:348'; do
     hook_file=${hook_ceiling%%:*}; hook_cap=${hook_ceiling##*:}
     assert_eq yes "$([[ $(wc -l < "$hooks/$hook_file") -le $hook_cap ]] && printf yes || printf no)" \
         "$hook_file stays at or under $hook_cap lines (measured $(wc -l < "$hooks/$hook_file"))"
