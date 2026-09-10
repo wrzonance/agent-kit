@@ -776,13 +776,13 @@ record_paths_touched() {
         printf '%s: jq not found; paths-touched ledger not written\n' "$PROGNAME" >&2; return 0; }
     mapfile -d '' -t paths < <(git show --pretty=format: --name-only -z --no-renames \
         --diff-merges=first-parent HEAD)
-    ((${#paths[@]})) || return 0
     evidence_dir=$root/.agent/evidence
     [[ -e $evidence_dir || -L $evidence_dir ]] || mkdir -m 700 -- "$evidence_dir" 2>/dev/null || return 0
     [[ -d $evidence_dir && ! -L $evidence_dir && -O $evidence_dir ]] || return 0
     ledger=$evidence_dir/paths-touched.ndjson
     [[ ! -L $ledger ]] || return 0
     [[ ! -e $ledger || ( -f $ledger && -O $ledger ) ]] || return 0
+    [[ ! -e $ledger ]] || chmod 600 -- "$ledger" 2>/dev/null || return 0
     paths_json=$(jq -nc '$ARGS.positional' --args "${paths[@]}" 2>/dev/null) || return 0
     record=$(jq -nc --arg ts "$(date +%s)" --arg sha "$(git rev-parse HEAD)" --arg cwd "$root" \
         --argjson paths "$paths_json" \

@@ -1099,6 +1099,45 @@ merge_ledger="$merge_repo/.agent/evidence/paths-touched.ndjson"
 assert_eq 'main-only.txt' "$(jq -r '.paths_touched[]' "$merge_ledger" 2>/dev/null | paste -sd ' ')" \
     'the ledger records the files a clean merge brings in relative to first parent'
 
+# CR-688-1: an --allow-empty commit (no paths in the diff) must still append a
+# ledger record -- paths_touched is legitimately [], not a skipped write.
+allow_empty_ledger_repo="$tmp/paths-touched-allow-empty-repo"
+new_repo "$allow_empty_ledger_repo"
+allow_empty_ledger_rc=0
+(cd "$allow_empty_ledger_repo" && "$script" --exact --allow-empty \
+    --message 'chore: empty marker commit' --trailer "$TEST_TRAILER" -- \
+    >/dev/null 2>&1) || allow_empty_ledger_rc=$?
+assert_eq '0' "$allow_empty_ledger_rc" 'an --allow-empty commit succeeds'
+allow_empty_ledger_file="$allow_empty_ledger_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$([[ -f $allow_empty_ledger_file ]] && printf yes || printf no)" \
+    'an --allow-empty commit still writes a ledger record'
+assert_eq '[]' "$(jq -c '.paths_touched' "$allow_empty_ledger_file" 2>/dev/null | tail -n 1)" \
+    'the --allow-empty ledger record carries an empty paths_touched array'
+assert_eq "$(git -C "$allow_empty_ledger_repo" rev-parse HEAD)" \
+    "$(jq -r '.commit' "$allow_empty_ledger_file" 2>/dev/null | tail -n 1)" \
+    'the --allow-empty ledger record carries the commit it describes'
+
+# CR-688-2: a pre-existing ledger left group/world-readable (0644) is forced
+# back to owner-private before the append, mirroring the guard's own
+# chmod-before-append predicate in guard-lib.sh.
+mode_repo="$tmp/paths-touched-mode-repo"
+new_repo "$mode_repo"
+mkdir -m 700 -- "$mode_repo/.agent/evidence"
+mode_ledger="$mode_repo/.agent/evidence/paths-touched.ndjson"
+printf '%s\n' '{"pre":"existing"}' > "$mode_ledger"
+chmod 644 -- "$mode_ledger"
+printf 'changed\n' > "$mode_repo/base.txt"
+mode_rc=0
+(cd "$mode_repo" && "$script" --exact --message 'fix: mode repo commit' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || mode_rc=$?
+assert_eq '0' "$mode_rc" 'a commit succeeds when the pre-existing ledger is group/world-readable'
+assert_eq '600' "$(stat -c %a -- "$mode_ledger" 2>/dev/null)" \
+    'the pre-existing ledger is forced back to owner-private before the append'
+assert_eq '2' "$(wc -l < "$mode_ledger" 2>/dev/null | tr -d '[:space:]')" \
+    'the pre-existing record is preserved and the new record appended'
+assert_eq 'base.txt' "$(tail -n 1 -- "$mode_ledger" | jq -r '.paths_touched[]' 2>/dev/null)" \
+    'the newly appended record lists the changed path'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 816 ]] && printf yes || printf no)" \
