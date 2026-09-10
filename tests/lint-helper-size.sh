@@ -97,7 +97,11 @@ check_size() {
     if ((lines > MAX_HELPER_LINES || tokens > MAX_HELPER_TOKENS)); then
         over=1
     fi
-    if [[ -v KNOWN_OVERSIZE[$rel] ]]; then
+    # `-v arr[$key]` re-expands $key as a subscript on Bash 5.1+, so a helper
+    # path containing a command substitution would execute it during linting.
+    # The `+present}` parameter-expansion form does not re-evaluate the
+    # subscript and is the safe membership check.
+    if [[ ${KNOWN_OVERSIZE[$rel]+present} ]]; then
         check_allowlisted "$file" "$rel" "$lines" "$tokens" "$over"
         return 0
     fi
@@ -115,11 +119,24 @@ for sub in skills hooks; do
     [[ -d $plugin_dir/$sub ]] && scan_roots+=("$plugin_dir/$sub")
 done
 if ((${#scan_roots[@]})); then
-    while IFS= read -r file; do
-        checked=$((checked + 1))
-        rel=${file#"$plugin_dir"/}
-        check_size "$file" "$rel"
-    done < <(find "${scan_roots[@]}" -name '*.sh' -not -path '*/.system/*' | sort)
+    # Captured into a variable rather than piped through `< <(...)` process
+    # substitution: a process substitution's exit status is never checked, so
+    # a `find` failure (e.g. an unreadable subtree) would be silently
+    # discarded and the lint would exit 0 having scanned only part of the
+    # tree. `set -o pipefail` (on via the file-level `set -euo pipefail`)
+    # makes this assignment fail if either `find` or `sort` does.
+    files_list=''
+    if ! files_list=$(find "${scan_roots[@]}" -name '*.sh' -not -path '*/.system/*' | sort); then
+        report "$plugin_dir" \
+            "helper scan failed: find or sort exited non-zero -- the tree may be incompletely scanned (check for an unreadable subtree)"
+    fi
+    if [[ -n $files_list ]]; then
+        while IFS= read -r file; do
+            checked=$((checked + 1))
+            rel=${file#"$plugin_dir"/}
+            check_size "$file" "$rel"
+        done <<< "$files_list"
+    fi
 fi
 
 tree_tokens=$(estimate_tokens "$tree_bytes")

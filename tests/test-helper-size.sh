@@ -14,7 +14,9 @@ source "$here/lib/assert.sh"
 lint="$here/lint-helper-size.sh"
 plugin="$(dirname -- "$here")/agentkit"
 tmp=$(mktemp -d)
-trap 'rm -rf -- "$tmp"' EXIT
+# u+rwx first: a case that locks down a fixture subdirectory (chmod 000) must
+# not leave rm -rf unable to remove it.
+trap 'chmod -R u+rwx -- "$tmp" 2> /dev/null; rm -rf -- "$tmp"' EXIT
 
 LINT_RC=0
 LINT_OUT=''
@@ -127,6 +129,38 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a tree over the total token ceiling fails'
 assert_contains "$LINT_OUT" 'tree total' 'the tree ceiling is named'
 assert_not_contains "$LINT_OUT" 'part-0.sh: body is' 'no per-file violation is reported'
+
+# --- subscript injection -------------------------------------------------
+# `-v arr[$key]` re-expands $key as a subscript for an associative array on
+# Bash 5.1+, so a helper path containing a command substitution must never
+# have that substitution executed while linting.
+root=$tmp/inject
+marker=$tmp/pwned-marker
+rm -f -- "$marker"
+write_script "$root" "skills/x/scripts/\$(touch $marker).sh" 10 30
+run_lint "$root"
+if [[ -e $marker ]]; then
+    _fail 'a command substitution in a helper path is never executed' \
+        "marker file was created: $marker"
+else
+    _pass 'a command substitution in a helper path is never executed'
+fi
+
+# --- scan failure ---------------------------------------------------------
+# A `find`/`sort` failure (an unreadable subtree) must fail the lint loudly
+# rather than being silently discarded by an unchecked process substitution.
+if ((EUID == 0)); then
+    printf '  skip  unreadable subtree fails the scan (running as root; chmod is a no-op)\n'
+else
+    root=$tmp/unreadable
+    write_script "$root" skills/x/scripts/ok.sh 10 30
+    write_script "$root" skills/locked/hidden.sh 10 30
+    chmod 000 "$root/skills/locked"
+    run_lint "$root"
+    assert_eq '1' "$LINT_RC" 'an unreadable subtree fails the lint rather than passing on a partial scan'
+    assert_contains "$LINT_OUT" 'scan failed' 'the scan failure is named as a violation'
+    chmod u+rwx "$root/skills/locked"
+fi
 
 # --- nothing scanned ----------------------------------------------------
 root=$tmp/empty
