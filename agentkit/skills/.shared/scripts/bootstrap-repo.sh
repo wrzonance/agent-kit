@@ -782,8 +782,8 @@ fi
 ((carried_count == 0)) ||
     printf 'carried forward %s existing declaration(s); nothing was discarded\n' "$carried_count"
 # shellcheck disable=SC2016  # emitted text is literal command syntax
-printf 'next step: agentkit=$(sed -n '\''s/^skills= path=//p'\'' "%s/.agent/env-contract.txt" | head -n 1); "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "%s" --report\n' \
-    "$repo_root" "$repo_root"
+printf 'next step: agentkit=$(%q --repo-root %q --get skills.path) && "$agentkit/.shared/scripts/onboard-state.sh" --repo-root %q --report\n' \
+    "$self_dir/contract-read.sh" "$repo_root" "$repo_root"
 
 # The declarations must be ignored in the working tree, except a trunk-carried
 # file this run just patched in place. --no-index is required so this remains

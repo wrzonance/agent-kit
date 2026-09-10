@@ -311,7 +311,7 @@ for f in "$skills"/*/SKILL.md; do
     assert_eq '0' "$stale" "$name has no invocation bypassing the resolver"
 done
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 18700 ]] && printf yes || printf no)" \
-    'onboard-repo SKILL.md stays at or under 18700 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 18936 ]] && printf yes || printf no)" \
+    'onboard-repo SKILL.md stays at or under 18936 bytes'
 
 finish

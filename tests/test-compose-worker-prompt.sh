@@ -901,6 +901,21 @@ assert_contains "$widen_err" 'worktree-contract-less-restrictive-than-root' \
 assert_contains "$widen_err" 're-run create-issue-worktree.sh' \
     'the refusal names the fix'
 
+# A stale legacy root must not override the current harness's measurement.
+keyed_root="$tmp/keyed-root"
+make_widen_root "$keyed_root" "$restrictive_line"
+printf '%s\n' "$loose_line" > "$keyed_root/.agent/env-contract.codex.txt"
+keyed_worktree="$keyed_root/.worktrees/feat-issue-keyed"
+make_widen_worktree "$keyed_root" feat/issue-keyed "$keyed_worktree" "$loose_line"
+keyed_rc=0
+env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+    bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$keyed_worktree" --issue 996 --branch feat/issue-keyed \
+    --worker-model gpt-5.6-luna --worker-effort high > "$tmp/keyed.out" 2> "$tmp/keyed.err" || keyed_rc=$?
+assert_eq 0 "$keyed_rc" 'matching keyed root overrides a stale restrictive legacy contract'
+assert_not_contains "$(cat "$tmp/keyed.err")" 'worktree-contract-less-restrictive-than-root' \
+    'current keyed sandbox does not produce a false widening refusal'
+
 # The inherited (byte-identical) case must NOT be flagged -- this is the
 # normal, expected shape after create-issue-worktree.sh carries the root
 # contract's sandbox= line forward verbatim.

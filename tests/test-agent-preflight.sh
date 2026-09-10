@@ -580,6 +580,31 @@ assert_eq "$before_mtime" "$after_mtime" \
 assert_contains "$out" "skills-content= sha256=$first_stamp" \
     'and the unchanged case still reports the original stamp'
 
+# Root --ensure must read the same keyed contract its provenance check selected.
+for keyed_topology in keyed-only stale-legacy; do
+    keyed_repo=$(new_repo)
+    "$ensure_build_script" --worktree "$keyed_repo" > /dev/null 2>&1
+    keyed_harness=$("$ensure_build/.shared/scripts/harness-id.sh" --name)
+    keyed_contract="$keyed_repo/.agent/env-contract.$keyed_harness.txt"
+    mv "$keyed_repo/.agent/env-contract.txt" "$keyed_contract"
+    printf 'keyed-reuse-proof=keep\n' >> "$keyed_contract"
+    if [[ $keyed_topology == stale-legacy ]]; then
+        printf 'stale-legacy-proof=keep\n' > "$keyed_repo/.agent/env-contract.txt"
+    fi
+    keyed_before=$(cat "$keyed_contract")
+    keyed_out=$("$ensure_build_script" --ensure --worktree "$keyed_repo" 2> "$tmp/keyed-ensure.err")
+    assert_eq "$keyed_before" "$keyed_out" "--ensure $keyed_topology reuses the complete keyed bytes"
+    assert_not_contains "$(cat "$tmp/keyed-ensure.err")" 'fresh preflight' \
+        "--ensure $keyed_topology does not re-probe"
+    if [[ $keyed_topology == keyed-only ]]; then
+        assert_eq no "$([[ -e $keyed_repo/.agent/env-contract.txt ]] && printf yes || printf no)" \
+            '--ensure keyed-only reuse does not create a legacy file'
+    else
+        assert_eq 'stale-legacy-proof=keep' "$(cat "$keyed_repo/.agent/env-contract.txt")" \
+            '--ensure keyed reuse leaves stale legacy bytes untouched'
+    fi
+done
+
 # Mutate one shipped file in the tree the script is actually running from.
 printf '\n# mutated for the --ensure staleness test\n' >> "$ensure_build/.shared/scripts/agent-run.sh"
 out=$("$ensure_build_script" --ensure --worktree "$ensure_repo" 2> "$tmp/ensure-content-mismatch-stderr")

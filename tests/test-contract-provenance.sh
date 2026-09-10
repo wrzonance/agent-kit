@@ -23,8 +23,9 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
         "$name rejects symlinked contracts"
     assert_contains "$text" '-O $contract' \
         "$name rejects foreign-owned contracts"
-    assert_contains "$text" 'git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt' \
+    assert_contains "$text" 'git -C "$contract_root" ls-files --error-unmatch -- "$contract"' \
         "$name rejects tracked contracts, anchored to the repository root"
+    assert_contains "$text" '[[ $tracked_rc == 1 ]]' "$name requires proven untracked status"
 
     # A sed/grep line inside any fenced block that takes the bare relative
     # path as an operand bypasses both the provenance guards and the
@@ -53,7 +54,8 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
     unguarded=$(awk -v GUARD="$FULL_GUARD" '
         function flush() {
             full_checks = (block ~ /! -L \$contract/ && block ~ /-O \$contract/ &&
-                block ~ /git -C "\$contract_root" ls-files --error-unmatch -- \.agent\/env-contract\.txt/)
+                block ~ /git -C "\$contract_root" ls-files --error-unmatch -- "\$contract"/ &&
+                block ~ /\[\[ \$tracked_rc == 1 \]\]/)
             guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/ &&
                 index(block, GUARD) > 0)
             local_redefine = (block ~ /(^|[^[:alnum:]_])contract(_root)?=[^=]/)

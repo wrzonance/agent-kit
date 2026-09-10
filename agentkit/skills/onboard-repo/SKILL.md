@@ -30,8 +30,21 @@ agentkit=''
 contract_ready=no
 contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
 contract="$contract_root/.agent/env-contract.txt"
-if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O $contract ]] &&
-    ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt > /dev/null 2>&1; then
+# Match runtime harness signal priority before the skills tree is available.
+contract_harness=unknown
+if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then contract_harness=claude
+elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then contract_harness=codex
+elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then contract_harness=opencode
+elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then contract_harness=codex
+fi
+keyed_contract="$contract_root/.agent/env-contract.$contract_harness.txt"
+[[ ! -e $keyed_contract && ! -L $keyed_contract ]] || contract=$keyed_contract
+if [[ -n $contract_root && ( -e $contract || -L $contract ) ]]; then
+    [[ ! -L $contract_root/.agent && -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
+        { printf 'agentkit: untrusted environment contract: %s\n' "$contract" >&2; exit 1; }
+    tracked_rc=0
+    git -C "$contract_root" ls-files --error-unmatch -- "$contract" > /dev/null 2>&1 || tracked_rc=$?
+    [[ $tracked_rc == 1 ]] || { printf 'agentkit: cannot prove contract is untracked: %s\n' "$contract" >&2; exit 1; }
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
     [[ -n $agentkit ]] && contract_ready=yes
 fi

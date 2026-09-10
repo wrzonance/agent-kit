@@ -60,6 +60,22 @@ assert_rc 0 'bootstrap succeeds' -- env PATH="$tmp/stub:$PATH" \
 assert_eq 'yes' "$([[ -f $repo/.agent/config.env ]] && echo yes || echo no)" 'writes config.env'
 assert_eq 'yes' "$([[ -f $repo/.agent/board.json ]] && echo yes || echo no)" 'writes board.json'
 
+# The printed handoff must resolve keyed-only contracts when executed.
+handoff_repo=$(make_repo)
+handoff_out=$(run_bs --repo-root "$handoff_repo" --project 7 2>&1)
+assert_contains "$handoff_out" 'contract-read.sh' 'next step uses the trusted keyed contract reader'
+assert_not_contains "$handoff_out" '/.agent/env-contract.txt' 'next step does not pin the legacy contract'
+handoff_command=$(sed -n 's/^next step: //p' <<< "$handoff_out")
+fake_skills="$tmp/handoff skills"
+mkdir -p "$fake_skills/.shared/scripts"
+printf '#!/usr/bin/env bash\nprintf "handoff-reached\\n"\n' > "$fake_skills/.shared/scripts/onboard-state.sh"
+chmod +x "$fake_skills/.shared/scripts/onboard-state.sh"
+printf 'skills= path=%s\n' "$fake_skills" > "$handoff_repo/.agent/env-contract.codex.txt"
+chmod 600 "$handoff_repo/.agent/env-contract.codex.txt"
+handoff_result=$(env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+    bash -c "$handoff_command" 2>&1)
+assert_contains "$handoff_result" 'handoff-reached' 'keyed-only next step reaches the selected skills tree'
+
 # --- .agent is created 0700 regardless of the ambient umask (issue #474) ---
 # A plain `mkdir -p` inherits the ambient umask; on a `umask 002` machine the
 # kit's own validators (session-ledger.sh's validate_parent) then refuse the
