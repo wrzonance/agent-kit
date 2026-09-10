@@ -662,17 +662,30 @@ out=$( (cd "$chain_repo" && "$real_run_sh" --if-declared --cmd test 2>&1) || tru
 assert_contains "$out" '--if-declared must directly follow' \
     'a leading --if-declared with no prior --cmd is refused, not silently ignored'
 
+# issue #697 finding 1: a repository with AGENT_REPO_RUNNER and no lint
+# declaration used to hit the chain guard and exit 1 before running either
+# check. Runner delegation now runs as a child mid-chain instead of exec'ing
+# over the process, so the chain continues to the declared second link.
 chain_runner_repo=$(make_repo)
 mkdir -p "$chain_runner_repo/tools"
-printf '#!/bin/sh\nprintf "runner-ran\\n"\n' > "$chain_runner_repo/tools/verify"
+# shellcheck disable=SC2016  # "$1" belongs to the generated stub, not to us.
+printf '#!/bin/sh\nprintf "runner-ran:%%s\\n" "$1"\n' > "$chain_runner_repo/tools/verify"
 chmod +x "$chain_runner_repo/tools/verify"
 printf 'AGENT_REPO_RUNNER=tools/verify\n' > "$chain_runner_repo/.agent/config.env"
-out=$( (cd "$chain_runner_repo" && "$real_run_sh" --cmd lint --cmd test 2>&1) ); rc=$?
-assert_eq '1' "$rc" 'chaining after a runner-delegated command is refused rather than silently dropped'
-assert_contains "$out" 'not supported' \
-    'the refusal names why: runner delegation execs and never returns to run the rest of the chain'
-assert_not_contains "$out" 'runner-ran' \
-    'the unsupported chain never actually delegates'
+out=$( (cd "$chain_runner_repo" && "$real_run_sh" --cmd lint --if-declared --cmd test 2>&1) ); rc=$?
+assert_eq '0' "$rc" 'the chain exits with the last link status, never exit 1 from the old guard'
+assert_contains "$out" 'runner-ran:lint' 'the undeclared first link still runs, delegated to the runner'
+assert_contains "$out" 'runner-ran:test' 'and the chain continues to the second link through the runner'
+
+# A failing runner-delegated link still short-circuits the chain (matches &&
+# semantics, same as a declared command failing mid-chain).
+chain_runner_fail_repo=$(make_repo)
+mkdir -p "$chain_runner_fail_repo/tools"
+printf '#!/bin/sh\nexit 1\n' > "$chain_runner_fail_repo/tools/verify"
+chmod +x "$chain_runner_fail_repo/tools/verify"
+printf 'AGENT_REPO_RUNNER=tools/verify\n' > "$chain_runner_fail_repo/.agent/config.env"
+out=$( (cd "$chain_runner_fail_repo" && "$real_run_sh" --cmd lint --cmd test 2>&1) ); rc=$?
+assert_eq '1' "$rc" 'a failing runner-delegated first link fails the whole chain'
 
 # --- issue #697 follow-up: existing single-name callers are unaffected ------
 single_repo=$(make_repo)
@@ -695,6 +708,10 @@ assert_contains "$out" 'declared-test-ran' \
 # lint-then-test pair into one recipe call. A later same-branch trim pass
 # absorbed that +40 back out via comment/whitespace cuts, so the ceiling
 # stays at the pre-#697 value of 1627 rather than the feature's raw +40.
+# PR #701 review: finding 1 replaced the die-based runner-delegation chain
+# guard with child-process delegation so chaining continues past a
+# runner-resolved link; finding 2 carries --force into build_chain_argv. Both
+# were offset by further comment trims elsewhere, holding the line count at 1627.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1627 ]] && printf yes || printf no)" \
     'agent-run.sh stays at or under 1627 lines'
 

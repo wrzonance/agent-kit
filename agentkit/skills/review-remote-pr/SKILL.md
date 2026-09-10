@@ -41,7 +41,7 @@ trigger a review bot, resolve a human's thread, or act without per-item confirma
 
 ## Session decision ledger
 
-After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the ledger identity to this invocation's authorization input before recording any decision:
+After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bind the ledger identity to this invocation before recording any decision:
 
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
@@ -55,9 +55,9 @@ RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
 : "$RUN_ID"
 ```
 
-This stops replay across differently-flagged invocations. Append every human grant, steer, or review adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+This stops cross-invocation replay. Append every human grant, steer, or review adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set review-remote-pr --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
 `QUOTE` is the verbatim quote; never put secrets in any field.
-After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as durable.
+After compaction/resume, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat the output as durable.
 
 ## Runtime and provider neutrality
 
@@ -68,9 +68,9 @@ Read ["$agentkit/review-remote-pr/references/environment-contract.md"](reference
 
 ## Automated review provider rules
 
-CodeRabbit and `github-code-quality[bot]` get provider-specific handling; other bots and humans have their
-own lanes. Authoritative signals: GraphQL `author.__typename == "Bot"`, REST `author.type == "Bot"`, or an
-exact `[bot]` login suffix — a login merely containing `bot` is human. A generic automated finding is an automated B-item, never
+CodeRabbit and `github-code-quality[bot]` get provider-specific handling; other bots and humans have
+their own lanes. Authoritative signals: GraphQL `author.__typename == "Bot"`, REST `author.type ==
+"Bot"`, or an exact `[bot]` login suffix — a login merely containing `bot` is human. A generic automated finding is an automated B-item, never
 H; H labels are human-only. Every automated reply passes the reply-body integrity gate
 (`$agentkit/review-remote-pr/scripts/gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
@@ -89,10 +89,9 @@ provider table, classifier, human gate, and settlement recipes. Reuse that loade
 The warm-up writes data-only `.agent/cache/contract-session.env` (never sourced); a changed input makes it stale until refreshed.
 
 ```bash
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
+# Resolve the skill tree from the environment contract at the repository root;
+# trust it only when untracked, a regular file, and owned by this user -- a
+# tracked, symlinked, or foreign-owned contract could redirect execution.
 agentkit=''
 contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
 contract="$contract_root/.agent/env-contract.txt"
@@ -151,11 +150,13 @@ PHASE C — REVIEW (when provider findings land)
 auto-cleared/dismissed; all body nitpicks fixed or declined+documented; every confirmed adversarial
 finding fixed or declined with a PR comment; every human-lane item has an explicit decision
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
-the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base line means checks are not green, and any pre-retarget provider approval must surface as knowing acceptance, never silently inherited or re-pinged.
+the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base
+line means checks are not green, and a pre-retarget approval must surface as knowing acceptance,
+not inherited silently.
 
-CodeRabbit's auto-approve (when enabled) needs settled replies on every thread it opened and no
-failing checks — never resolve before its fresh acknowledgement. Disabled →
-no formal approval ever comes; "green" is threads resolved + nitpicks handled.
+CodeRabbit's auto-approve (enabled) needs settled replies on every opened thread and no failing
+checks — never resolve before its fresh ack. Disabled → no formal approval comes; "green" means
+threads resolved + nitpicks handled.
 
 ---
 
@@ -418,13 +419,14 @@ Post declines before the cycle's single push (Step 1c); root reviews the pushed 
 
 ## Step 6: Evaluate and Repeat
 
-No `gh pr checks`, no GraphQL re-query, no second `gh-pr-state.sh` — Step 4 already refreshed it.
+No `gh pr checks`, GraphQL re-query, or second `gh-pr-state.sh` — Step 4 already refreshed it.
 
 The digest's `agent-docs: N eligible` line reports this workflow's marked agent-doc threads
-(rule: provider-rules.md, Step 1a). Any CI failure, unhandled automated-review thread/finding, or
-unaddressed body nitpick/adversarial finding → back to Step 4 (max 3 cycles — The Loop's cap).
-Human-authored content lacking an explicit user decision surfaces the gate and waits; never post,
-resolve, or claim readiness.
+(rule: provider-rules.md, Step 1a). Route by what Step 4 settled (max 3 cycles — The Loop's cap):
+CI red → Step 2's CI-repair procedure, re-entering 3a/4 after its push; CI green with an unresolved
+automated-review finding or unaddressed nitpick → Step 5; checks still settling → Step 4 again.
+Human-authored content lacking an explicit user decision surfaces the gate and
+waits; never post, resolve, or claim readiness.
 
 ---
 

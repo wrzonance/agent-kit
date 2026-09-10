@@ -88,6 +88,9 @@ die() {
 build_chain_argv() {
     chain_argv=()
     [[ -z $dir_opt ]] || chain_argv+=(--dir "$dir_opt")
+    # --force is whole-invocation (issue #697 finding 2): carry it into every
+    # queued link, or a later link reuses cached evidence the caller bypassed.
+    ((force_cmd)) && chain_argv+=(--force)
     local i
     for ((i = 0; i < ${#remaining_queue[@]}; i++)); do
         chain_argv+=(--cmd "${remaining_queue[i]}")
@@ -422,9 +425,8 @@ command_is() {
 }
 
 # uv reads the platform trust store when UV_SYSTEM_CERTS is set -- the documented
-# equivalent of its --system-certs flag. Setting the variable rather than splicing
-# a flag into argv keeps this correct for every uv subcommand and invocation form,
-# and removes any need to guess where the subcommand starts.
+# equivalent of --system-certs. Setting the variable (not splicing a flag into
+# argv) keeps this correct for every uv subcommand without guessing where it starts.
 maybe_enable_system_certs() {
     [[ $ca_custom == yes ]] || return 0
     command_is uv || return 0
@@ -597,14 +599,12 @@ compose_project_hardcodes() {
     fi
 }
 
-# Two cases, per Compose's own precedence: COMPOSE_PROJECT_NAME (exported
-# here) outranks a repository `.env` value and a compose-file top-level
-# `name:`, so overriding those IS the isolation and is safe to report and
-# override. A literal -p/--project-name in the declared command outranks the
-# export and cannot be overridden from here, so isolation is genuinely
-# impossible and this fails closed instead of walking into the collision the
-# gate exists to prevent; AGENT_COMPOSE_SERIALIZED=1 asserts no concurrent
-# full-suite run is in flight and lets the command proceed anyway.
+# Two cases, per Compose's own precedence: COMPOSE_PROJECT_NAME (exported here)
+# outranks a repo `.env` value or compose-file `name:`, so overriding those IS
+# the isolation. A literal -p/--project-name in the declared command outranks
+# the export and can't be overridden, so this fails closed instead of walking
+# into the collision the gate exists to prevent -- unless AGENT_COMPOSE_SERIALIZED=1
+# asserts no concurrent full-suite run is in flight.
 configure_compose_project() {
     local finding project argv_findings=()
     [[ -n $cmd_name ]] || return 0
@@ -632,10 +632,9 @@ configure_compose_project() {
 }
 
 # A literal executable path is an ad-hoc command, not a repository
-# declaration. Prefer its relative form from the execution directory, then
-# fall back to the repository toplevel for a root-relative spelling; plain
-# names fall through to PATH lookup. An unprovable token is left untouched so
-# the wrapped command supplies its normal failure status.
+# declaration. Prefer its relative form, then the repository toplevel; plain
+# names fall through to PATH lookup. An unprovable token is left untouched,
+# so the wrapped command supplies its normal failure status.
 resolve_literal_executable() {
     local token=${cmd[0]} candidate resolved
     [[ $cmd_declared == no && $token == */* ]] || return 0
@@ -669,9 +668,8 @@ resolve_literal_executable() {
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
 # Read one repository-declared key. repo-config.sh is the ONLY reader of
-# .agent/config.env (whitelisted keys, never sourced), so values arriving here
-# are already validated. The root is always passed explicitly -- letting the
-# resolver detect it would use THIS process's cwd, not the repository --dir.
+# .agent/config.env (whitelisted keys, never sourced), so values here are
+# already validated; the root is always passed explicitly, never detected.
 repo_config_get() {
     local key=$1 resolver=$self_dir/repo-config.sh
     relevant_config_add "$key"
@@ -809,9 +807,8 @@ resolve_declared_runner() {
 }
 
 # Sets runner_path/runner_src, returns 0 when a runner is declared. Runs in the
-# current shell (never a subshell) so the notes it adds survive for the caller.
-# Memoised, because --cmd resolution may already have asked the same question.
-# The sed picks the file's first non-blank, non-comment line and trims it.
+# current shell so its notes survive the caller, memoised since --cmd
+# resolution may already have asked; the sed trims the first non-comment line.
 resolve_runner() {
     local first
     if [[ -n $runner_path ]]; then
@@ -1039,9 +1036,8 @@ cleanup_suite_run() {
 
 # A worker may ask for one failed verification to be checked against the chain
 # base. The source path must be the same blob at both commits, and the base
-# checkout must produce matching failure evidence. This is deliberately opt-in:
-# ordinary failures remain failures when a worker cannot identify a test or
-# cannot obtain a trustworthy base run.
+# checkout must produce matching failure evidence. Deliberately opt-in: ordinary
+# failures remain failures when a worker can't identify a test or a base run.
 failure_signature() {
     local file=$1
     sed -E \
@@ -1052,11 +1048,10 @@ failure_signature() {
         "$file" | sha256sum | awk '{print $1}'
 }
 
-# Formatter diagnostics are intentionally compared as a normalized set of
-# repository-relative paths. Prettier's output can vary in order, colour, and
-# timing while still identifying exactly the same drift. Only stable
-# `[warn] path` records naming files under the command cwd are accepted;
-# summaries and arbitrary diagnostic text are never candidate paths.
+# Formatter diagnostics are compared as a normalized set of repository-relative
+# paths: Prettier's output can vary in order, colour, and timing while still
+# identifying the same drift. Only stable `[warn] path` records naming files
+# under the command cwd are accepted; arbitrary diagnostic text never is.
 format_failure_paths() {
     local file=$1 cwd=$2 repo_root=$3 line path marker candidate rel paths_tmp rc
     paths_tmp=$(mktemp "${TMPDIR:-/tmp}/agent-run-format-paths.XXXXXX") || return 1
@@ -1527,10 +1522,15 @@ export AGENT_RUN_LABEL="$label"
 # A declared AGENT_CMD_* value is the entire command: the repository has already
 # said exactly what to run, so it is not handed to the runner as a subcommand.
 if [[ $cmd_declared == no ]] && resolve_runner; then
-    ((${#remaining_queue[@]} == 0)) ||
-        die 'chained --cmd after a runner-delegated command is not supported; run them separately.'
     printf 'delegating: runner=%s source=%s cwd=%s\n' "$runner_path" "$runner_src" "$work_dir" >&2
     print_notes '' >&2
+    # A mid-chain link (issue #697 finding 1) runs as a child, not an exec,
+    # so finish can continue the queue on success; a lone link still execs.
+    if ((${#remaining_queue[@]})); then
+        rc=0
+        (cd -- "$work_dir" && exec "$runner_path" "${cmd[@]}") || rc=$?
+        finish "$rc"
+    fi
     cd -- "$work_dir"
     exec "$runner_path" "${cmd[@]}"
 fi

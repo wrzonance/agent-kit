@@ -104,6 +104,27 @@ assert_contains "$out" 'PASS: tools/run' '--force executes instead of short-circ
 assert_not_contains "$out" 'verification current:' '--force does not report a cache hit'
 assert_eq '8' "$(count "$counter")" '--force executes the command'
 
+# --- issue #697 finding 2: --force propagates through a --cmd chain ---------
+# build_chain_argv dropped --force for every link after the first, so a
+# chained `--force --cmd lint --cmd test` re-ran only lint and let test reuse
+# stale cached evidence. --force is whole-invocation, so it must reach every
+# queued link too.
+force_chain_repo=$(make_repo)
+printf 'AGENT_CMD_LINT=true\nAGENT_CMD_TEST=tools/run\n' > "$force_chain_repo/.agent/config.env"
+git -C "$force_chain_repo" add -- .agent/config.env
+git -C "$force_chain_repo" commit -qm 'declare lint alongside test'
+force_chain_counter="$tmp/force-chain-count"
+
+out=$(cd "$force_chain_repo" && COUNT_FILE="$force_chain_counter" "$real_run_sh" --cmd test 2>&1)
+assert_eq '1' "$(count "$force_chain_counter")" 'seeding green evidence for test executes once'
+
+out=$(cd "$force_chain_repo" && COUNT_FILE="$force_chain_counter" \
+    "$real_run_sh" --force --cmd lint --cmd test 2>&1)
+assert_not_contains "$out" 'verification current:' \
+    '--force reaches the chained test link, not only the first lint link'
+assert_eq '2' "$(count "$force_chain_counter")" \
+    '--force propagated through build_chain_argv re-runs the chained test link'
+
 # --- execution directory scopes cache evidence -----------------------------
 scope_repo=$(make_repo)
 mkdir -p "$scope_repo/one" "$scope_repo/two"
