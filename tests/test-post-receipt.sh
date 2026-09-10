@@ -198,6 +198,24 @@ cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ "$*" == *'/pulls/'* ]]; then
+    [[ ${RECEIPT_CI_MODE:-} != unknown ]] || exit 1
+    jq -n --arg base "${RECEIPT_CI_BASE:-feat/parent}" '{head:{sha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},base:{ref:$base,repo:{default_branch:"main"}}}'
+    exit 0
+fi
+if [[ "$*" == *'/check-runs?'* ]]; then
+    if [[ ${RECEIPT_CI_MODE:-} == partial && "$*" == *aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa* ]]; then
+        printf '%s\n' '{"check_runs":[{"name":"Analyze (python)","app":{"id":15368},"status":"completed","conclusion":"success"}]}'
+        exit 0
+    fi
+    jq -n --argjson count "${RECEIPT_CI_COUNT:-0}" '{check_runs:[range($count) | {name:"test",app:{id:15368},status:"completed",conclusion:"success"}]}'
+    exit 0
+fi
+if [[ "$*" == *'/status?'* ]]; then printf '%s\n' '{"statuses":[]}'; exit 0; fi
+if [[ "$*" == *'/pulls?'* ]]; then
+    printf '%s\n' '[{"number":716,"base":{"ref":"main"},"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]'
+    exit 0
+fi
 if [[ ${GH_FAIL_POST:-0} == 1 && " $* " == *" --input - "* ]]; then
     cat >/dev/null
     printf '%s\n' 'simulated ambiguous POST failure' >&2
@@ -255,6 +273,8 @@ assert_eq '0' "$rc" 'publish exits 0 on a successful post'
 assert_contains "$out" 'posted id=501' 'publish surfaces gh-comment.sh'"'"' confirmation'
 
 body=$(rendered_body)
+assert_contains "$body" 'verification=no-ci-on-stacked-base' 'receipt records absent stacked CI'
+assert_contains "$body" 'cause and requiredness are unknown' 'receipt does not invent a trigger cause'
 assert_contains "$body" 'This was written agentically; verify its assertions:' \
     'publish body carries the agentic attribution banner'
 assert_contains "$body" '<!-- review-remote-pr:agent-doc -->' \
@@ -288,6 +308,30 @@ assert_contains "$body" 'decline rationale=style preference, no behavior change'
     'publish body records the decline rationale'
 assert_not_contains "$body" 'none confirmed' \
     'publish body does not claim a clean review when findings were given'
+
+# Current CI evidence distinguishes default bases, registered checks and unavailable evidence.
+for ci_case in default checked unknown partial; do
+    reset_not_spent
+    ci_base=feat/parent ci_count=0
+    [[ $ci_case != default ]] || ci_base=main
+    [[ $ci_case != checked && $ci_case != partial ]] || ci_count=1
+    RECEIPT_CI_BASE=$ci_base RECEIPT_CI_COUNT=$ci_count RECEIPT_CI_MODE=$ci_case \
+        run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+        --provider anthropic --model claude-opus-5 --effort high \
+        --mode cross-provider --mode-reason 'peer CLI available' --p1 1 --p2 2 \
+        --agent-identity 'Claude Opus 5' >/dev/null
+    ci_body=$(rendered_body)
+    assert_not_contains "$ci_body" 'no-ci-on-stacked-base' "receipt $ci_case does not claim zero stacked checks"
+    if [[ $ci_case == unknown ]]; then
+        assert_contains "$ci_body" 'Verification: unknown' 'receipt reports unavailable live CI'
+    elif [[ $ci_case == partial ]]; then
+        assert_contains "$ci_body" 'verification=partial-ci-on-stacked-base' 'receipt carries partial coverage'
+        assert_contains "$ci_body" 'Analyze (python)' 'receipt names missing observed checks'
+        assert_contains "$ci_body" '"pr":716' 'receipt pins the default-target reference'
+    else
+        assert_not_contains "$ci_body" 'Verification:' 'default and checked receipts retain existing text'
+    fi
+done
 
 # -- publish: 'none confirmed' when the findings ledger is empty -------------
 
@@ -899,6 +943,7 @@ cat >"$head_gh_dir/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ "$*" == *'/pulls/'* ]]; then printf '%s\n' '{"base":{"ref":"main","repo":{"default_branch":"main"}}}'; exit 0; fi
 if [[ " $* " == *" --input - "* ]]; then
     n=$(($(cat "$GH_PAYLOAD_DIR/count" 2>/dev/null || echo 0) + 1))
     printf '%s' "$n" >"$GH_PAYLOAD_DIR/count"
@@ -1013,6 +1058,7 @@ cat >"$repo_root_gh_dir/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [[ "$*" == *'/pulls/'* ]]; then printf '%s\n' '{"base":{"ref":"main","repo":{"default_branch":"main"}}}'; exit 0; fi
 if [[ " $* " == *" --input - "* ]]; then
     n=$(($(cat "$GH_PAYLOAD_DIR/count" 2>/dev/null || echo 0) + 1))
     printf '%s' "$n" >"$GH_PAYLOAD_DIR/count"
@@ -1166,7 +1212,9 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #706 adds evidence-backed model substitution to receipt and ledger.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 968 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 968 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 988 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 988 lines'
 
+relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
+assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'
 finish

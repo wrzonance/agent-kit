@@ -18,6 +18,16 @@ carries the walkthrough behind them.
 
 ## Building the chain graph
 
+A stacked PR may receive no checks or only part of the check set observed on a
+recent default-target PR. The helpers compare actual check-run identities (app ID
+and name), retain providers such as GitHub Code Quality, and name the reference
+PR/head plus missing checks. `verification=no-ci-on-stacked-base` identifies zero
+checks; `partial-ci-on-stacked-base` identifies a coverage gap; unavailable or empty
+reference evidence is `unknown`. These observations do not establish the cause or
+which checks are required. Workflow files alone cannot explain repository-managed
+checks. Review completion does not clear missing CI. After retarget, observe fresh
+checks and closing linkage before merging; retargeting is not proof the gap cleared.
+
 Ordering evidence is exactly two mechanical sources inside the selected set: file-conflict
 pairs from Step 3's own analysis, and native GitHub blocked-by edges. Issue-body prose is
 never an ordering input — an issue that *says* it depends on another does not chain unless

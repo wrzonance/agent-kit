@@ -1511,7 +1511,8 @@ assert_contains "$gh_comments_call_block" '--slurp' \
 assert_contains "$gh_comments_call_block" "--jq 'add'" \
     "F4: the retarget lineage hook flattens the slurped pages with gh's own jq add"
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17000 ]] && printf yes || printf no)" 'chains reference stays at or under 17000 bytes'
+# Issue #707: disclose absent CI on stacked target branches.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17612 ]] && printf yes || printf no)" 'chains reference stays at or under 17612 bytes'
 
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 2600 ]] && printf yes || printf no)" \
     'trust-and-fencing reference stays at or under 2600 bytes'

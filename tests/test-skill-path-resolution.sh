@@ -311,7 +311,8 @@ for f in "$skills"/*/SKILL.md; do
     assert_eq '0' "$stale" "$name has no invocation bypassing the resolver"
 done
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 18936 ]] && printf yes || printf no)" \
-    'onboard-repo SKILL.md stays at or under 18936 bytes'
+# Issue #707: recommend target-branch coverage for stacked CI.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 19336 ]] && printf yes || printf no)" \
+    'onboard-repo SKILL.md stays at or under 19336 bytes'
 
 finish

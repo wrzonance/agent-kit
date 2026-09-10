@@ -3,6 +3,10 @@
 # then prove GitHub stored the exact bytes that were authored.
 
 set -euo pipefail
+STACKED_CI_DIR=${BASH_SOURCE[0]%/*}
+[[ $STACKED_CI_DIR != "${BASH_SOURCE[0]}" ]] || STACKED_CI_DIR=.
+# shellcheck disable=SC1091
+source "$STACKED_CI_DIR/lib/stacked-ci.sh"
 
 readonly PROGNAME=${0##*/}
 readonly UINT_RE='^[1-9][0-9]*$'
@@ -30,6 +34,8 @@ MUTATION_COMPLETED=0
 EXPECT_CLOSING_ISSUE=''
 CLOSING_REFERENCE_STATUS=''
 CLOSING_REFERENCE_REASON=''
+CI_VERIFICATION=''
+CI_SNAPSHOT='null'
 JSON_MODE=0
 TICK_TEXT=''
 TICK_NOTE=''
@@ -47,6 +53,10 @@ also proves the closing issue reference, base-aware:
     Fixes/Resolves #N" keyword is still required, but forge-side registration
     cannot happen until the PR is retargeted, so it is reported as a distinct
     non-error "closing-issue #N: deferred (...)" outcome and exits 0.
+    Zero registered checks also emit "ci: not-triggered-on-stacked-base";
+    A settled default-target PR's observed check set supplies a bounded reference.
+    --json adds verification and ci evidence, including missing checks/reference
+    PR/head. Partial or unknown coverage is never proof of full verification.
 
 --json emits exactly one machine-readable JSON object on stdout instead of the
 human-readable lines above (which move to stderr in this mode):
@@ -434,6 +444,11 @@ verify_closing_reference() {
         # non-error outcome -- not silently dropped and not a failure.
         CLOSING_REFERENCE_STATUS='deferred'
         CLOSING_REFERENCE_REASON='base is not the default branch; registration is proven at retarget'
+        local ci_fd=1
+        ((JSON_MODE == 0)) || ci_fd=2
+        CI_SNAPSHOT=$(stacked_ci_snapshot "$GH_BIN" "$owner/$name" "$VERIFY_HOST" "$(cat "$WORK_DIR/stored.json")")
+        CI_VERIFICATION=$(jq -r .state <<<"$CI_SNAPSHOT")
+        stacked_ci_lines "$CI_SNAPSHOT" >&"$ci_fd"
         return 0
     fi
     # shellcheck disable=SC2016  # GraphQL variable names must remain literal.
@@ -531,7 +546,9 @@ emit_json_result() {
     fi
     jq -nc --argjson number "$number" --arg html_url "$html_url" \
         --argjson closing_issue "$closing_issue_json" \
-        '{number: $number, html_url: $html_url, closing_issue: $closing_issue}'
+        --arg verification "$CI_VERIFICATION" --argjson ci "$CI_SNAPSHOT" \
+        '{number: $number, html_url: $html_url, closing_issue: $closing_issue}
+         + (if $verification == "" then {} else {verification: $verification, ci: $ci} end)'
 }
 
 main() {

@@ -55,6 +55,20 @@ if [[ ${1-} == api ]]; then
         api_host=${2-}
         shift 2
     fi
+    if [[ ${1-} == repos/*/commits/*/check-runs* ]]; then
+        [[ ${GH_CI_UNAVAILABLE:-0} != 1 ]] || exit 1
+        if [[ ${GH_CI_GAP:-0} == 1 && $1 == *aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa* ]]; then
+            printf '%s\n' '{"check_runs":[{"name":"Analyze (python)","app":{"id":15368},"status":"completed","conclusion":"success"}]}'
+            exit 0
+        fi
+        jq -n --argjson count "${GH_CI_COUNT:-0}" '{check_runs:[range($count) | {name:"test",app:{id:15368},status:"completed",conclusion:"success"}]}'
+        exit 0
+    fi
+    if [[ ${1-} == repos/*/commits/*/status* ]]; then printf '%s\n' '{"statuses":[]}'; exit 0; fi
+    if [[ ${1-} == repos/*/pulls\?* ]]; then
+        printf '%s\n' '[{"number":40,"base":{"ref":"main"},"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]'
+        exit 0
+    fi
     if [[ ${1-} == graphql ]]; then
         printf 'host=%s endpoint=graphql\n' "${api_host:-<ambient>}" >>"$GH_API_LOG"
         if [[ ${GH_CLOSING_PAGE2:-0} == 1 ]]; then
@@ -121,7 +135,7 @@ if [[ ${1-} == api ]]; then
         # scenarios keep exercising the default-branch (registration-required) path.
         jq -Rs --arg base "${GH_PR_BASE:-main}" --arg default_branch "${GH_PR_DEFAULT_BRANCH:-main}" \
             --argjson number "$stub_number" --arg html_url "$stub_html_url" \
-            '{body: ., base: {ref: $base, repo: {default_branch: $default_branch}}, number: $number, html_url: $html_url}' \
+            '{body: ., head:{sha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, base: {ref: $base, repo: {default_branch: $default_branch}}, number: $number, html_url: $html_url}' \
             <"$GH_STORED_BODY"
     else
         jq -Rs --argjson number "$stub_number" --arg html_url "$stub_html_url" \
@@ -473,6 +487,16 @@ export GH_PR_BASE=feat/issue-299 GH_PR_DEFAULT_BRANCH=main
 stacked_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
     --expect-closing-issue 42)
 unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
+assert_contains "$stacked_output" 'ci: not-triggered-on-stacked-base' 'stacked zero checks are explicit'
+checked_output=$(GH_PR_BASE=feat/parent GH_CI_COUNT=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --expect-closing-issue 42)
+assert_not_contains "$checked_output" 'ci: not-triggered-on-stacked-base' 'registered checks suppress deferred CI'
+partial_output=$(GH_PR_BASE=feat/parent GH_CI_COUNT=1 GH_CI_GAP=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
+assert_eq partial-ci-on-stacked-base "$(jq -r .verification <<<"$partial_output")" 'body JSON carries partial coverage'
+assert_eq 40 "$(jq -r .ci.reference.pr <<<"$partial_output")" 'body JSON names reference PR'
+assert_contains "$partial_output" 'Analyze (python)' 'body JSON names missing observed checks'
+unknown_output=$(GH_PR_BASE=feat/parent GH_CI_UNAVAILABLE=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
+assert_eq unknown "$(jq -r '.verification' <<<"$unknown_output")" 'unreadable CI is unknown rather than zero'
+assert_not_contains "$unknown_output" 'no-ci-on-stacked-base' 'API errors never prove missing CI'
 assert_contains "$stacked_output" 'updated pr #41' \
     'stacked PR still verifies the byte-exact body'
 assert_contains "$stacked_output" 'closing-issue #42: deferred' \
@@ -607,6 +631,7 @@ export GH_PR_BASE=feat/issue-299 GH_PR_DEFAULT_BRANCH=main
 json_deferred_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" \
     --json --expect-closing-issue 42)
 unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
+assert_eq 'no-ci-on-stacked-base' "$(jq -r '.verification' <<<"$json_deferred_output")" 'JSON carries missing stacked CI'
 assert_eq 'deferred' "$(jq -r '.closing_issue.state' <<<"$json_deferred_output")" \
     '--json reports a deferred closing_issue state for a stacked base'
 
@@ -669,4 +694,6 @@ assert_eq "$failed_number" "$(jq -r '.idMap["issue-545"].number' <"$failed_ledge
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/github-body-policy.md") -le 1179 ]] && printf yes || printf no)" \
     'github-body-policy stays at or under 1179 bytes'
 
+relative_help=$(cd "$root/agentkit/skills/.shared/scripts" && bash gh-body.sh --help)
+assert_contains "$relative_help" 'Usage:' 'shared CI library resolves for a basename invocation'
 finish

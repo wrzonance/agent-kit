@@ -18,6 +18,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/provider-identity.sh"
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/gh-budget.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/stacked-ci.sh"
 # CHECK NAMES only. Deliberately a substring: the rollup entry is named
 # "CodeRabbit" in some repos and "coderabbitai" in others, and a check name is a
 # display/CI concern, not an identity boundary.
@@ -980,6 +982,9 @@ save_artifacts() {
 print_ci_line() {
     local total pass pending fail pending_nb failing_checks word
     IFS=$'\t' read -r total pass pending fail pending_nb failing_checks < <(ci_counts)
+    local coverage coverage_state
+    coverage=$(stacked_ci_snapshot gh "$REPO" '' "$(cat "$WORK_DIR/pr-raw.json")" "$(cat "$WORK_DIR/check-runs.raw")" "$(cat "$WORK_DIR/status.raw")")
+    coverage_state=$(jq -r .state <<<"$coverage")
     if ((total == 0)); then
         if ((CI_NONE_CONFIGURED)); then
             word=none-configured
@@ -995,6 +1000,9 @@ print_ci_line() {
     else
         word=green
     fi
+    if [[ $word == green ]]; then
+        case $coverage_state in partial-ci-on-stacked-base) word=partial ;; unknown) word=unknown ;; esac
+    fi
     CI_WORD=$word
     if ((fail > 0)); then
         printf 'ci=%s/%s %s pending=%s failing=%s failing-checks=%s\n' \
@@ -1002,6 +1010,7 @@ print_ci_line() {
     else
         printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
     fi
+    stacked_ci_lines "$coverage"
 }
 
 print_acceptance_lines() {

@@ -34,8 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1193:14442:800"
-    [skills/review-remote-pr/scripts/post-receipt.sh]="968:10889:800"
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
+    [skills/review-remote-pr/scripts/post-receipt.sh]="988:11162:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -44,8 +44,8 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# Issue #706: runner and receipt provenance; measured tree, no spare allowance.
-readonly MAX_TREE_TOKENS=396294
+# Issue #707: explicit stacked-base CI evidence in state, body, and receipts.
+readonly MAX_TREE_TOKENS=398319
 
 violations=0
 checked=0

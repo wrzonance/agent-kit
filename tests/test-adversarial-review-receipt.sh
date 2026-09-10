@@ -169,6 +169,10 @@ reset_rd_not_spent
 cat >"$rd_tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == *'/pulls/'* ]]; then
+    printf '%s\n' '{"base":{"ref":"main","repo":{"default_branch":"main"}}}'
+    exit 0
+fi
 if [[ " $* " == *" --input - "* ]]; then
     cat >"$GH_PAYLOAD"
     jq --argjson id 601 --arg url 'https://example.invalid/comments/601' \

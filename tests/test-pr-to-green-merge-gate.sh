@@ -213,6 +213,24 @@ good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
 
+for ci_word in none none-configured; do
+    sed -i "s/^ci=.*/ci=0\/0 $ci_word pending=0 failing=0/" "$tmp/digest.txt"
+    rc=0
+    out=$(run_gate) || rc=$?
+    assert_eq 1 "$rc" "zero checks ($ci_word) cannot merge"
+    assert_contains "$out" 'gate=BLOCK' 'zero checks do not mean green'
+    good_digest
+done
+
+# A caller's green check-count summary cannot erase a comparison gap.
+for verification in partial-ci-on-stacked-base unknown; do
+    printf 'verification=%s\n' "$verification" >>"$tmp/digest.txt"
+    rc=0
+    out=$(run_gate) || rc=$?
+    assert_eq 1 "$rc" "$verification evidence blocks an otherwise green digest"
+    good_digest
+done
+
 # A forge queue cannot derive the closing issue even when the PR body links
 # one. Feed its actual PR/head/base evidence through the merge boundary.
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
