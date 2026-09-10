@@ -341,8 +341,43 @@ assert_contains "$out" 'AGENT_CMD_TEST' 'no config.env means everything is undec
 assert_rc 2 'an unknown --format is still a usage error' -- \
     "$dt_sh" --repo-root "$repo" --format nonsense
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 782 ]] && printf yes || printf no)" \
-    'detect-toolchains.sh stays at or under 782 lines'
+# --- combined --format list: one call, several sections (issue #696 fold) ---
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf 'AGENT_REPO_SLUG=o/r\n' > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps,suggestions)
+assert_contains "$out" 'gaps= detected=' 'a comma-joined --format runs the gaps section'
+assert_contains "$out" '# component:' 'and the suggestions section, in one call'
+
+assert_rc 2 'an unknown format inside a comma list is still a usage error' -- \
+    "$dt_sh" --repo-root "$repo" --format gaps,nonsense
+
+# --- gaps absorbs the blank-declaration grep glue (issue #696 fold) --------
+# onboard-repo's Step 3 used to run its own `grep '^# AGENT_'` beside this
+# call; the fold moves that glue in here so one call covers both.
+repo=$(new_repo)
+mkdir -p "$repo/.agent"
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_CMD_TEST=vitest\n# AGENT_LABEL_TYPES=bug,feature\n# AGENT_ADR_DIR=docs/adr\n' \
+    > "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" '# AGENT_LABEL_TYPES=bug,feature' \
+    'gaps reports a commented-out non-command declaration'
+assert_contains "$out" '# AGENT_ADR_DIR=docs/adr' \
+    'and another commented-out declaration in the same repo'
+assert_not_contains "$out" 'AGENT_CMD_TEST' \
+    'an already-declared command is not re-listed as a blank declaration'
+
+# No config at all: the blank-declaration section is silently absent, not an error.
+repo=$(new_repo)
+printf '{"scripts":{"test":"vitest"}}' > "$repo/package.json"
+assert_rc 0 'gaps with no .agent/config.env at all still exits 0' -- \
+    "$dt_sh" --repo-root "$repo" --format gaps
+
+# 2026-09-10 recipe-fold wave (issue #696): comma-format + blank-declaration
+# absorption raised the ceiling from the prior 782 (helper grew 19 lines).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 800 ]] && printf yes || printf no)" \
+    'detect-toolchains.sh stays at or under 800 lines'
 
 finish

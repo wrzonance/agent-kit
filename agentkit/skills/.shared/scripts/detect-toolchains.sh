@@ -15,11 +15,15 @@ a moved component can be found again and onboarding never hardcodes one
 ecosystem.
 
 Usage:
-  detect-toolchains.sh [--repo-root DIR] [--format components|suggestions|gaps|drift]
+  detect-toolchains.sh [--repo-root DIR] [--format LIST]
+  LIST is one or more of components,suggestions,gaps,drift (comma-joined),
+  each section run once and printed in the order given.
 
---format components   one line per detected component (default: suggestions)
+--format components   one line per detected component
 --format suggestions  commented AGENT_CMD_*/AGENT_RUNDIR_* declarations
---format gaps         detected commands this repo has NOT declared (re-onboarding)
+--format gaps         detected commands this repo has NOT declared (re-onboarding);
+                       also lists other commented-out AGENT_* declarations
+                       (labels, ADR dir, protected paths, review providers)
 --format drift        compares .agent/config.env declarations against disk
 
 Exit 0 always; exit 3 only when --repo-root DIR is not a directory.
@@ -623,12 +627,25 @@ print_gaps() {
     if ((shown == 0)); then
         printf 'Every command this detector can see is already declared.\n'
         printf 'That is not the same as complete -- it only means nothing NEW was found.\n'
-        return 0
+    else
+        printf 'DETECTED but not declared -- nothing in .agent/config.env runs these:\n\n'
+        printf '%s\n' "${undeclared[@]}"
+        printf '\n'
+        suggestion_footer
     fi
-    printf 'DETECTED but not declared -- nothing in .agent/config.env runs these:\n\n'
-    printf '%s\n' "${undeclared[@]}"
-    printf '\n'
-    suggestion_footer
+    print_blank_declarations
+}
+
+# What onboarding's own `grep '^# AGENT_'` glue used to do beside this call:
+# surface commented-out declarations detect-toolchains cannot infer from disk
+# (labels, ADR dir, protected paths, review providers) -- absorbed here so a
+# caller needs one call, not this report plus its own grep.
+print_blank_declarations() {
+    local config=$repo_root/.agent/config.env blanks
+    [[ -r $config ]] || return 0
+    blanks=$(grep -nE '^# AGENT_(LABEL|ADR|PROTECTED|REVIEW)_' "$config" 2> /dev/null || true)
+    [[ -n $blanks ]] || return 0
+    printf '\nOther commented declarations still blank:\n\n%s\n' "$blanks"
 }
 
 # ---- drift -------------------------------------------------------------------
@@ -736,13 +753,20 @@ while (($#)); do
     shift
 done
 
-case $ARG_FORMAT in
-    components | suggestions | gaps | drift) ;;
-    *)
-        printf '%s: unknown --format %s (want components|suggestions|gaps|drift)\n' "$PROGRAM" "$ARG_FORMAT" >&2
-        exit 2
-        ;;
-esac
+# A comma-joined list runs each named section in one call -- e.g.
+# `--format gaps,suggestions` -- so onboarding no longer needs two separate
+# invocations to get both reports (issue #696).
+declare -a ARG_FORMATS=()
+IFS=, read -ra ARG_FORMATS <<< "$ARG_FORMAT"
+for fmt in "${ARG_FORMATS[@]}"; do
+    case $fmt in
+        components | suggestions | gaps | drift) ;;
+        *)
+            printf '%s: unknown --format %s (want components|suggestions|gaps|drift)\n' "$PROGRAM" "$fmt" >&2
+            exit 2
+            ;;
+    esac
+done
 
 if [[ -n $ARG_REPO_ROOT ]]; then
     [[ -d $ARG_REPO_ROOT ]] || {
@@ -758,22 +782,17 @@ repo_root=$(cd -- "$repo_root" && pwd)
 self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
 
-case $ARG_FORMAT in
-    components)
-        collect_all
-        print_components
-        ;;
-    suggestions)
-        collect_all
-        print_suggestions
-        ;;
-    gaps)
-        collect_all
-        print_gaps
-        ;;
-    drift)
-        print_drift
-        ;;
-esac
+[[ $ARG_FORMAT == drift ]] || collect_all
+first=1
+for fmt in "${ARG_FORMATS[@]}"; do
+    ((first)) || printf '\n'
+    first=0
+    case $fmt in
+        components) print_components ;;
+        suggestions) print_suggestions ;;
+        gaps) print_gaps ;;
+        drift) print_drift ;;
+    esac
+done
 
 exit 0

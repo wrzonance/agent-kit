@@ -157,4 +157,30 @@ out=$($state_sh --repo-root "$drift_repo" --report)
 assert_contains "$out" 'drift= components=+1/-1 generator=stale' \
     'report includes the aggregated drift summary'
 
+# --- combined flags: one call runs several sections (issue #696 fold) ------
+combo_repo="$tmp/combo"
+mkdir -p "$combo_repo"
+make_repo "$combo_repo"
+out=$("$state_sh" --repo-root "$combo_repo" --report --next-steps --preflight)
+assert_contains "$out" 'stage=not onboarded' \
+    'a combined call still runs the report section'
+assert_contains "$out" 'go-live checklist' \
+    'a combined call still runs the next-steps section'
+assert_contains "$out" 'environment-preflight' \
+    'a combined call still runs the preflight section'
+report_pos=${out%%stage=*}
+report_pos=${#report_pos}
+checklist_pos=${out%%go-live checklist*}
+checklist_pos=${#checklist_pos}
+preflight_pos=${out%%environment-preflight*}
+preflight_pos=${#preflight_pos}
+assert_eq yes "$([[ $report_pos -lt $checklist_pos && $checklist_pos -lt $preflight_pos ]] && printf yes || printf no)" \
+    'the combined sections print report, then next-steps, then preflight, in that order'
+
+# --next-steps alone must still work with no other flag (existing caller:
+# test-srisk-helpers.sh).
+out=$("$state_sh" --repo-root "$combo_repo" --next-steps)
+assert_contains "$out" 'go-live checklist' 'a bare --next-steps call still works alone'
+assert_not_contains "$out" 'stage=' 'and does not also run the report section'
+
 finish
