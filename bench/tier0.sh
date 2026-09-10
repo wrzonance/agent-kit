@@ -24,6 +24,14 @@
 #                         per-issue write set -- which varies per issue, not
 #                         per SHA) needs a frozen reference-dispatch fixture
 #                         and is intentionally left to a later slice.
+#   recipe_blocks        line-initial ```bash / ```sh fence openers, counted
+#                         over the same two file sets as resident/reachable
+#                         (issue #694). Every executable fence on a skill's
+#                         path is at least one tool turn, so this is the
+#                         static turn surface next to the token surfaces --
+#                         a proxy for turns the prose demands, deliberately
+#                         not a transcript count. Shown-only fences (text,
+#                         json, ini) and indented ones do not count.
 #
 # Every byte count is converted to tokens through the same estimator
 # tests/lint-skill-size.sh uses (tests/lib/token-estimate.sh), so the lint
@@ -123,8 +131,28 @@ sum_bytes_matching() {
     printf '%d\n' "$total"
 }
 
+# count_recipe_blocks PATTERN -- counts line-initial ```bash / ```sh fence
+# openers across the same path set sum_bytes_matching would sum. Same
+# NUL-delimited walk, same hard failure on an unreadable blob. `grep -c`
+# exits 1 on zero matches -- a count of 0, not an error -- so only its rc 2
+# (a real grep failure) or, under pipefail, cat-file's own failure, is fatal.
+count_recipe_blocks() {
+    local pattern=$1 total=0 path n
+    while IFS= read -r -d '' path; do
+        [[ -n $path ]] || continue
+        [[ $path =~ $pattern ]] || continue
+        n=$(git cat-file -p "$sha:$path" |
+            { grep -cE '^```(bash|sh)([[:space:]]|$)' || [[ $? -eq 1 ]]; }) ||
+            die "could not read blob for $path at $sha"
+        total=$((total + n))
+    done < <(git ls-tree -rz --name-only "$sha" -- agentkit/skills)
+    printf '%d\n' "$total"
+}
+
 resident_bytes=$(sum_bytes_matching '/SKILL\.md$')
 reachable_bytes=$(sum_bytes_matching '\.md$')
+resident_blocks=$(count_recipe_blocks '/SKILL\.md$')
+reachable_blocks=$(count_recipe_blocks '\.md$')
 
 resident_tokens=$(estimate_tokens "$resident_bytes")
 reachable_tokens=$(estimate_tokens "$reachable_bytes")
@@ -162,6 +190,8 @@ record=$(jq -nc \
     --argjson dispatched_template_tokens "$dispatched_template_tokens" \
     --argjson dispatched_template_present "$dispatched_template_present" \
     --arg dispatched_template_source "$dispatched_template_path" \
+    --argjson resident_blocks "$resident_blocks" \
+    --argjson reachable_blocks "$reachable_blocks" \
     '{
         plugin_sha: $plugin_sha,
         fixture_version: $fixture_version,
@@ -175,7 +205,8 @@ record=$(jq -nc \
             tokens: $dispatched_template_tokens,
             present: $dispatched_template_present,
             source: $dispatched_template_source
-        }
+        },
+        recipe_blocks: {resident: $resident_blocks, reachable: $reachable_blocks}
     }') || die 'could not build ledger record'
 
 # Append only. This script never opens the ledger for anything but appending
@@ -183,7 +214,8 @@ record=$(jq -nc \
 # "charts are a pure function of the ledger" note.
 printf '%s\n' "$record" >> "$ledger" || die "could not append to ledger: $ledger"
 
-printf 'tier0 %s: resident=%d bytes (~%d tok) reachable=%d bytes (~%d tok) dispatched_template=%d bytes (~%d tok, present=%s)\n' \
+printf 'tier0 %s: resident=%d bytes (~%d tok) reachable=%d bytes (~%d tok) dispatched_template=%d bytes (~%d tok, present=%s) recipe_blocks=%d/%d\n' \
     "$sha" "$resident_bytes" "$resident_tokens" "$reachable_bytes" "$reachable_tokens" \
-    "$dispatched_template_bytes" "$dispatched_template_tokens" "$dispatched_template_present"
+    "$dispatched_template_bytes" "$dispatched_template_tokens" "$dispatched_template_present" \
+    "$resident_blocks" "$reachable_blocks"
 printf 'appended to %s\n' "$ledger"
