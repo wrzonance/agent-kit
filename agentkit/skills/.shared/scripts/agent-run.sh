@@ -144,17 +144,10 @@ while (($#)); do
             focus_opt=$2
             shift 2
             ;;
-        # --repo-root is the canonical checkout-path flag across the kit
-        # (every other helper that takes one uses it); --dir is this script's
-        # own long-standing name and stays primary, with --repo-root accepted
-        # as a sibling spelling of the identical option so a caller who just
-        # used --repo-root on another helper is not punished here (issue
-        # #556). A prior version pre-rewrote argv to alias this flag before
-        # the option loop ran, but that rewrite could not tell an option
-        # token from a wrapped command's own arguments in agent-run.sh's
-        # bare-command invocation form (no `--`) -- reverted in favor of this
-        # ordinary case-statement branch, which only ever consumes tokens the
-        # loop itself is walking.
+        # --repo-root is accepted as a sibling spelling of --dir (issue #556);
+        # this case-statement branch handles both without pre-rewriting argv,
+        # which could not tell an option token from a wrapped command's own
+        # arguments in agent-run.sh's bare-command form (no `--`).
         --baseline-ref|--baseline-path|--baseline-id|--dir|--repo-root|--label|--cmd|--resolve)
             (($# >= 2)) || die "Missing value for $1."
             case $1 in
@@ -280,14 +273,11 @@ export_cache_var() {
     export "$name=$path"
 }
 
-# CARGO_HOME is not a pure cache: it also holds config/config.toml (registry
-# definitions, e.g. a private registry) and credentials/credentials.toml (auth
-# tokens) -- Cargo reads the extensionless name too (legacy, and preferred
-# over the .toml twin when both exist). Redirect it only when the effective
-# default cargo home is unwritable -- mirroring the unwritable-$HOME rule
-# select_caches already applies for the tmp cache root -- and when
-# redirecting, carry all four names into the new home so a private registry
-# keeps working (PR #690 review; extensionless names PR #690 follow-up).
+# CARGO_HOME also holds config(.toml) (registry definitions) and
+# credentials(.toml) (auth tokens) -- Cargo reads both the extensionless and
+# .toml names. Redirect only when the effective default cargo home is
+# unwritable, carrying all four names into the new home so a private
+# registry keeps working (PR #690 review).
 select_cargo_home() {
     local root=$1 default=${CARGO_HOME:-${HOME:+$HOME/.cargo}} new_home src
     [[ -n $default ]] && dir_writable "$default" && return 0
@@ -306,15 +296,11 @@ select_cargo_home() {
 select_caches() {
     local root=${AGENT_CACHE_ROOT:-} home_cache=${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}
     if [[ -z $root ]]; then
-        # $HOME matters too: some package managers cache beside it, not under the
-        # XDG cache home, so a read-only HOME must force the fallback as well.
-        # An otherwise-writable HOME can still have an unwritable CARGO_HOME (or
-        # $HOME/.cargo), so select_cargo_home must run here too, not only in the
-        # fallback-root branch below (issue #690 review). A caller-supplied
-        # GOMODCACHE needs the same treatment, but only when one is actually
-        # set -- an unset GOMODCACHE must stay unset here (Go's own default
-        # applies), never be redirected just because this branch runs
-        # (issue #690 review).
+        # $HOME matters too: some package managers cache beside it, not under
+        # XDG_CACHE_HOME, so a read-only HOME must force the fallback too. An
+        # otherwise-writable HOME can still have an unwritable CARGO_HOME, so
+        # select_cargo_home runs here as well (issue #690 review); a caller-set
+        # GOMODCACHE gets the same treatment, but stays unset if not already set.
         if dir_writable "$home_cache" && [[ -w ${HOME:-/nonexistent} ]]; then
             select_cargo_home "$home_cache"   # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
             [[ -z ${GOMODCACHE:-} ]] || export_cache_var GOMODCACHE "$home_cache/go-mod"  # ecosystem-allow: environment code, not a claim about which toolchain the repo uses
@@ -494,10 +480,9 @@ canonicalise_work_dir() {
     work_dir=$resolved
 }
 
-# Docker Compose falls back to a directory-derived project name. Worktree
-# directories are not necessarily unique by basename, and concurrent worktrees
-# must never inherit the same project. Hash the canonical git root so the value
-# is stable for this worktree, valid for Compose, and independent of caller env.
+# Docker Compose falls back to a directory-derived name, but worktree dirs
+# aren't unique by basename and concurrent worktrees must never share a
+# project -- hash the canonical git root for a stable, Compose-valid value.
 compose_project_name_for_worktree() {
     local digest
     digest=$(printf '%s' "$git_top" | sha256sum | awk '{print $1}') || return 1
@@ -539,9 +524,8 @@ compose_argv() {
     return 1
 }
 
-# Positive evidence that the repository itself uses Compose, independent of
-# anything a command happened to print. Mirrors the filename shapes
-# compose_project_hardcodes recognises, but only asks whether one exists.
+# Positive evidence the repository itself uses Compose, independent of what a
+# command prints -- mirrors compose_project_hardcodes' filenames, but only asks whether one exists.
 compose_repo_has_compose_file() {
     local rel
     while IFS= read -r -d '' rel; do
@@ -613,19 +597,14 @@ compose_project_hardcodes() {
     fi
 }
 
-# Two cases, because Compose's own precedence splits them:
-#
-#   COMPOSE_PROJECT_NAME (exported here) outranks a repository `.env` value and a
-#   compose-file top-level `name:`. Overriding those IS the isolation, and it is
-#   safe for an ephemeral verification run, so they are reported and overridden.
-#
-#   A literal -p/--project-name in the declared command outranks the export. That
-#   one cannot be overridden from here, so isolation genuinely cannot be
-#   established and every worktree would share one project. Warning and running
-#   anyway walks straight into the collision this gate exists to prevent, so that
-#   path fails closed and the caller serializes instead. Set
-#   AGENT_COMPOSE_SERIALIZED=1 to assert no concurrent full-suite run is in
-#   flight; the command then proceeds under that assertion.
+# Two cases, per Compose's own precedence: COMPOSE_PROJECT_NAME (exported
+# here) outranks a repository `.env` value and a compose-file top-level
+# `name:`, so overriding those IS the isolation and is safe to report and
+# override. A literal -p/--project-name in the declared command outranks the
+# export and cannot be overridden from here, so isolation is genuinely
+# impossible and this fails closed instead of walking into the collision the
+# gate exists to prevent; AGENT_COMPOSE_SERIALIZED=1 asserts no concurrent
+# full-suite run is in flight and lets the command proceed anyway.
 configure_compose_project() {
     local finding project argv_findings=()
     [[ -n $cmd_name ]] || return 0
@@ -652,13 +631,11 @@ configure_compose_project() {
     exit 5
 }
 
-# A literal executable path is an ad-hoc command, not a repository declaration.
-# Prefer its relative form from the exact execution directory, then fall back to
-# the repository toplevel for the common root-relative spelling. Plain names
-# deliberately fall through to PATH lookup. When the token cannot be proven to
-# name a contained executable, leave it untouched so the wrapped command
-# supplies its normal failure status while the diagnostic records both the
-# execution cwd and the toplevel-resolution result.
+# A literal executable path is an ad-hoc command, not a repository
+# declaration. Prefer its relative form from the execution directory, then
+# fall back to the repository toplevel for a root-relative spelling; plain
+# names fall through to PATH lookup. An unprovable token is left untouched so
+# the wrapped command supplies its normal failure status.
 resolve_literal_executable() {
     local token=${cmd[0]} candidate resolved
     [[ $cmd_declared == no && $token == */* ]] || return 0
@@ -692,11 +669,9 @@ resolve_literal_executable() {
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
 # Read one repository-declared key. repo-config.sh is the ONLY reader of
-# .agent/config.env -- it parses that file against a key whitelist and never
-# sources it -- so every value arriving here has already been validated.
-#
-# The root is always passed explicitly. Letting the resolver detect it would use
-# THIS process's cwd, which is not necessarily inside the repository --dir names.
+# .agent/config.env (whitelisted keys, never sourced), so values arriving here
+# are already validated. The root is always passed explicitly -- letting the
+# resolver detect it would use THIS process's cwd, not the repository --dir.
 repo_config_get() {
     local key=$1 resolver=$self_dir/repo-config.sh
     relevant_config_add "$key"
@@ -858,11 +833,9 @@ resolve_runner() {
     runner_src=.agent/runner
 }
 
-# Resolve a command by NAME rather than by ecosystem. The skill says "test"; the
-# repository says what that means. Nothing here knows about npm, cargo, make, or
-# any bespoke dispatcher.
-#
-# Order: AGENT_CMD_<NAME> -> the declared runner as `runner <name>` -> usage error.
+# Resolve a command by NAME rather than by ecosystem: the skill says "test",
+# the repository says what that means. Order: AGENT_CMD_<NAME> -> the declared
+# runner as `runner <name>` -> usage error.
 resolve_named_command() {
     local name=$1 key declared kind_key declared_kind
     # The declaration reads AGENT_CMD_CHECK_NODE_PIN; the invocation is --cmd
@@ -897,9 +870,9 @@ resolve_named_command() {
         cmd_declared=yes
         resolution_kind=declared
 
-        # Formatter diagnostics commonly contain volatile order, colour, and
-        # timing text. Only explicit kind metadata selects path-set comparison;
-        # Command-name heuristics would misclassify tools with similar names.
+        # Formatter diagnostics commonly contain volatile order/colour/timing
+        # text; only explicit kind metadata selects path-set comparison, since
+        # command-name heuristics would misclassify similarly-named tools.
         command_kind=generic
         declared_kind=${resolved_config_values[$kind_key]:-}
         case $declared_kind in
@@ -907,9 +880,9 @@ resolve_named_command() {
             generic|'') ;;
         esac
 
-        # A monorepo command usually has to run IN its component. Without this
-        # the only root-runnable form of a dashboard test invocation globbed
-        # into node_modules and started running a dependency's test suite.
+        # A monorepo command usually has to run IN its component: without this
+        # a root-run dashboard test invocation globbed into node_modules and
+        # ran a dependency's test suite instead.
         rundir=${resolved_config_values[AGENT_RUNDIR_$upper]:-}
         if [[ -n $rundir ]]; then
             [[ -n $git_top ]] || die "AGENT_RUNDIR_$upper is set but this is not a git repository"
@@ -992,11 +965,10 @@ choose_log() {
     printf '%s' "$log"
 }
 
-# Full-suite runs share a host, so a probe that is healthy in isolation can
-# cross its fixed startup bound while sibling suites consume the same cores.
-# Keep short-lived, owner-only markers in /tmp to derive a conservative load
-# count without relying on process-name matching (which is ambiguous in nested
-# shells and across worktrees).
+# Full-suite runs share a host, so a probe healthy in isolation can cross its
+# fixed startup bound while sibling suites consume the same cores. Keep
+# short-lived, owner-only markers in /tmp to derive a conservative load count
+# without process-name matching (ambiguous in nested shells and worktrees).
 suite_marker=''
 concurrent_suites=1
 timeout_scale=1
@@ -1409,20 +1381,13 @@ hash_untracked_files() {
     rm -f -- "$paths"
 }
 
-# Green evidence is keyed to the complete checkout state that a caller can
-# observe. The status stream carries untracked paths; diff HEAD carries both
-# staged and unstaged tracked content. Untracked file contents are added from a
-# NUL-delimited manifest, so same-path edits cannot reuse stale evidence and
-# unusual filenames cannot be split by shell text parsing. Cache state is
-# ignored by git, so it does not feed back into this hash.
-#
-# The resolved argv is folded in too, NUL-delimited per token: `cmd` is already
-# fully resolved by the time this runs (AGENT_CMD_<NAME> read from
-# .agent/config.env, or the runner invocation). That file is conventionally
-# gitignored, so its bytes never appear in HEAD, the tracked diff, or the
-# untracked-file manifest above -- only the resolved argv observes a changed
-# declared value. Without this, editing AGENT_CMD_TEST from `true` to `false`
-# left the tree hash unchanged and served the old green evidence back (#287).
+# Green evidence is keyed to the complete checkout state a caller can observe:
+# git status (untracked paths) + diff HEAD (tracked content) + a NUL-delimited
+# manifest of untracked file bytes, so same-path edits and unusual filenames
+# can't reuse stale evidence. The resolved argv is folded in too -- .agent/
+# config.env is gitignored, so only the resolved argv sees a changed
+# AGENT_CMD_<NAME> value; without it, editing AGENT_CMD_TEST from `true` to
+# `false` left the tree hash unchanged and served stale green evidence (#287).
 compute_tree_hash() {
     local hash_input digest
     [[ -n ${git_top:-} ]] || return 1
@@ -1582,17 +1547,12 @@ printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waitin
     "$cmd_str" "$log_file" >&2
 printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 
-# The log is bracketed, and the closing marker is the point.
-#
-# It used to hold the command's output and nothing else, so a log that stopped
-# mid-stream was indistinguishable from one still being written -- and from one
-# whose process had died. A session that launched several commands at once read
-# two logs ending after their package manager's preamble, could not tell a hang
-# from a failure, and went to `ps` to find out. The absence of a terminator is
-# now the answer: no "exited" line means it did not finish.
-#
-# LOG_HEADER_LINES keeps the "N lines suppressed" count honest -- it reports the
-# command's own output, not this bookkeeping.
+# The log is bracketed, and the closing marker is the point: a log that once
+# held only the command's output was indistinguishable mid-stream from one
+# still being written or from a dead process -- a session with several logs
+# ending after their package manager's preamble had to `ps` to find out. No
+# "exited" line now means it did not finish. LOG_HEADER_LINES keeps the
+# "N lines suppressed" count honest by excluding this bookkeeping.
 readonly LOG_HEADER_LINES=2
 {
     printf '=== agent-run %s\n' "$cmd_str"
