@@ -88,7 +88,11 @@ check_size() {
         over=1
     fi
 
-    if [[ -v KNOWN_OVERSIZE[$name] ]]; then
+    # `-v arr[$key]` re-expands $key as a subscript on Bash 5.1+, so a skill
+    # name containing a command substitution would execute it during linting.
+    # The `+present}` parameter-expansion form does not re-evaluate the
+    # subscript and is the safe membership check.
+    if [[ ${KNOWN_OVERSIZE[$name]+present} ]]; then
         local entry=${KNOWN_OVERSIZE[$name]} line_ceiling token_ceiling target
         IFS=: read -r line_ceiling token_ceiling target <<< "$entry"
         # Every field must be a plain decimal integer before it reaches the
