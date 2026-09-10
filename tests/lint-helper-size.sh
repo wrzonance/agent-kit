@@ -24,7 +24,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
     [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
-    [skills/.shared/scripts/agent-run.sh]="1627:17340:800"
+    # #612: explicit formatter pairs and byte-bounded cargo failure context.
+    [skills/.shared/scripts/agent-run.sh]="1685:17676:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1123:11566:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
@@ -43,7 +44,7 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-readonly MAX_TREE_TOKENS=395931
+readonly MAX_TREE_TOKENS=396379
 
 violations=0
 checked=0
