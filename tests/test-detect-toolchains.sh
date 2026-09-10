@@ -376,8 +376,10 @@ assert_rc 0 'gaps with no .agent/config.env at all still exits 0' -- \
     "$dt_sh" --repo-root "$repo" --format gaps
 
 # 2026-09-10 recipe-fold wave (issue #696): comma-format + blank-declaration
-# absorption raised the ceiling from the prior 782 (helper grew 19 lines).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 800 ]] && printf yes || printf no)" \
-    'detect-toolchains.sh stays at or under 800 lines'
+# absorption grew the helper, then a comment trim shrank it back down; net
+# effect vs. the prior 782 ceiling is a reduction, so the ceiling ratchets
+# down with it rather than up.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/detect-toolchains.sh") -le 768 ]] && printf yes || printf no)" \
+    'detect-toolchains.sh stays at or under 768 lines'
 
 finish
