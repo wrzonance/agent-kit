@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # cross-write-check.sh -- snapshot a root checkout and account for dirt that
-# appears in a dispatched worker's predicted write set.
-#
-# The root checkout is the observation point.  A worker worktree is only the
-# byte-comparison source; it never becomes the target of this helper's writes.
-# A Collect check is deliberately data-bearing: clean output is
-# `cross-write=none`, while an incident names its mtime attribution and an
-# explicit duplicate/divergent disposition.
+# appears in a dispatched worker's predicted write set. The root is the
+# observation point; a worker worktree is only the byte-comparison source and
+# is never written to. Clean output is `cross-write=none`; an incident names
+# its mtime attribution and duplicate/divergent disposition.
 set -euo pipefail
 
 PROGRAM=${0##*/}
@@ -24,6 +21,9 @@ Usage:
       --write-set GLOB [--write-set GLOB ...] \
       [--worker-start EPOCH|ISO8601 --worker-end EPOCH|ISO8601] [--dispose-duplicates]
   cross-write-check.sh dispose --root PATH --worktree PATH --path RELATIVE [--expected-hash HASH]
+  cross-write-check.sh dispatch-fence [snapshot flags | collect flags]
+      Routes to snapshot (no --worker-worktree) or collect (--worker-worktree
+      given) so the dispatch skill's fence recipe names one entry point.
 
 --worker-start/--worker-end each accept a Unix epoch integer (e.g. 1735689600,
 what "$(date -u +%s)" prints) or an ISO-8601 UTC timestamp (e.g.
@@ -85,10 +85,9 @@ path_is_inside() {
     [[ $target == "$root" || $target == "$root"/* ]]
 }
 
-# Resolve every existing component, including symlinks in the parent. A
-# missing leaf is safe to inspect only after its existing parent is proven to
-# remain inside the checkout. Return 3 for a resolved escape so callers can
-# report the containment failure rather than silently skipping it.
+# Resolve every component (incl. parent symlinks); a missing leaf is safe
+# once its parent is proven inside the checkout. Return 3 for a resolved
+# escape so callers can report containment failure rather than skip it.
 resolve_inside_root() {
     local root=$1 path=$2 candidate parent base resolved resolved_root
     [[ -n $path && $path != /* && $path != . && $path != ../* &&
@@ -169,10 +168,8 @@ snapshot_write_sets() {
     sed -n 's/^write-set=//p' "$snapshot"
 }
 
-# capture_head_ref -- the symbolic ref name HEAD currently points at
-# (e.g. "refs/heads/main"), or the literal "HEAD" when detached. This is the
-# same distinction `git symbolic-ref` makes: a resolvable symbolic ref means
-# an ordinary branch checkout, and its absence means a detached HEAD.
+# capture_head_ref -- the symbolic ref HEAD points at (e.g. "refs/heads/main"),
+# or the literal "HEAD" when detached (no resolvable symbolic ref).
 capture_head_ref() {
     local root=$1
     git -C "$root" symbolic-ref -q HEAD || printf 'HEAD\n'
@@ -183,26 +180,18 @@ capture_head_sha() {
     git -C "$root" rev-parse HEAD
 }
 
-# capture_ref_reflog_count -- how many reflog entries a fully-qualified ref
-# currently carries, or 0 when the ref has no reflog at all (reflogs
-# disabled, or a ref Git never logs). Counting entries -- rather than reading
-# wall-clock timestamps -- is what lets Collect notice a mutation with
-# certainty: Git's reflog timestamps are whole-second and a fast dispatch can
-# snapshot and mutate inside the same second, so a timestamp-only comparison
-# cannot reliably tell "before" from "after". A monotonically growing entry
-# count can: any count above the snapshot-time baseline means something was
-# appended to that ref's reflog since the snapshot, full stop.
+# capture_ref_reflog_count -- reflog entry count for a fully-qualified ref, or
+# 0 if it has none. Entries (not wall-clock timestamps) detect mutation
+# reliably: reflog timestamps are whole-second, so a fast dispatch could
+# snapshot and mutate within the same second; a growing entry count can't.
 capture_ref_reflog_count() {
     local root=$1 fullref=$2
     git -C "$root" reflog show "$fullref" 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
-# capture_ref_reflog_usable -- "yes" when Git actually maintains a reflog for
-# this ref, "no" otherwise (reflogs disabled via core.logAllRefUpdates=false,
-# or a ref Git never logs). `reflog show` on an unlogged ref still exits 0
-# with empty output -- indistinguishable from "logged, but zero entries so
-# far" -- so usability has to be its own check (`reflog exists`), never
-# inferred from an entry count of 0.
+# capture_ref_reflog_usable -- "yes" when Git maintains a reflog for this ref,
+# "no" otherwise. `reflog show` on an unlogged ref exits 0 with empty output --
+# indistinguishable from zero entries -- so this checks `reflog exists` instead.
 capture_ref_reflog_usable() {
     local root=$1 fullref=$2
     if git -C "$root" reflog exists "$fullref" >/dev/null 2>&1; then
@@ -212,17 +201,11 @@ capture_ref_reflog_usable() {
     fi
 }
 
-# list_worktree_branches -- branch short names currently checked out by any
-# *other* worktree of this same repository (i.e. every `git worktree list`
-# entry except the one at $root itself). In parallel-issues, worker branches
-# live in the SAME repository as the root checkout -- worktrees share
-# `refs/heads/*` -- so a worker committing and pushing its own branch is a
-# perfectly normal dispatch, not a root mutation. Ownership is decided from
-# Git's own worktree metadata (`git worktree list --porcelain`), never by
-# name pattern: a worktree's checked-out branch is filtered out unless that
-# worktree's path canonicalizes to $root. Root's own branch is never
-# filtered out by this function, even though the root checkout is itself one
-# of the entries `git worktree list` reports.
+# list_worktree_branches -- branch names checked out by any *other* worktree
+# of this repository. Worker worktrees share refs/heads/* with root, so a
+# worker committing its own branch is a normal dispatch, not a root mutation.
+# Ownership comes from Git's own worktree metadata (`git worktree list
+# --porcelain`), never name pattern; root's own branch is never filtered out.
 list_worktree_branches() {
     local root=$1 line wt_path='' branch resolved
     while IFS= read -r line; do
@@ -240,13 +223,9 @@ list_worktree_branches() {
 
 # capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count<TAB>reflog-usable"
 # line per local branch NOT checked out by another worktree, sorted by
-# refname for deterministic snapshot/report ordering. `exclude` is a
-# newline-delimited set of branch names (leading newline included; a
-# *trailing* newline is not guaranteed -- it is built via `$(...)`, which
-# strips trailing newlines, so a name may be the literal end of the string)
-# to skip entirely -- branches owned by other worktrees are not this
-# checkout's concern, and must not appear in either the baseline or the
-# current capture.
+# refname. `exclude` is a newline-delimited set (leading newline included; a
+# trailing newline is NOT guaranteed -- built via `$(...)`, which strips it)
+# of branch names to skip -- those belong to other worktrees, not this one.
 capture_branch_shas() {
     local root=$1 exclude=$2 branch_name branch_sha fullref
     while IFS=$'\t' read -r branch_name branch_sha; do
@@ -304,14 +283,11 @@ snapshot_excluded_branches() {
     sed -n 's/^excluded-branch=//p' "$snapshot"
 }
 
-# reflog_activity -- has a fully-qualified ref's reflog grown past
-# baseline_count since the snapshot was taken, and if so, was the newest new
-# entry's own timestamp inside [start, end]? Prints four tab-separated
-# fields: activity (yes|no), the current entry count, the newest entry's
-# subject ("none" when there is no new activity), and window
-# (in-window|outside-window|unknown). "unknown" covers a ref whose reflog
-# entry disappeared entirely (count fell, e.g. `git reflog expire`) -- still
-# real activity, just not attributable to a single new entry.
+# reflog_activity -- has a ref's reflog grown past baseline_count, and if so
+# was the newest entry's timestamp inside [start, end]? Prints four
+# tab-separated fields: activity (yes|no), current count, newest subject
+# ("none" if no new activity), and window (in-window|outside-window|unknown).
+# "unknown" also covers a reflog that shrank (e.g. `git reflog expire`).
 reflog_activity() {
     local root=$1 fullref=$2 baseline_count=$3 start=$4 end=$5
     local current_count newest selector subject ts window=unknown _
@@ -338,13 +314,11 @@ reflog_activity() {
     printf 'yes\t%s\treflog-count-decreased\tunknown\n' "$current_count"
 }
 
-# normalise_epoch_timestamp -- accept either a Unix epoch integer or an
-# ISO-8601 UTC timestamp for a --worker-start/--worker-end value, and print
-# the resolved epoch. ISO-8601 is recognised structurally (a strict
-# YYYY-MM-DDTHH:MM:SS, optional fractional seconds, then Z or a numeric UTC
-# offset) before ever reaching `date -d`, so an accepted value can never fall
-# through to GNU date's much looser relative-date grammar ("yesterday",
-# "next friday") -- only the two forms named in usage() are ever normalised.
+# normalise_epoch_timestamp -- accepts a Unix epoch integer or an ISO-8601 UTC
+# timestamp for --worker-start/--worker-end, printing the resolved epoch.
+# ISO-8601 is matched structurally before ever reaching `date -d`, so a value
+# can never fall through to GNU date's looser relative-date grammar
+# ("yesterday", "next friday") -- only the two forms in usage() are accepted.
 normalise_epoch_timestamp() {
     local flag=$1 value=$2 epoch
     if [[ $value =~ ^[0-9]+$ ]]; then
@@ -636,10 +610,9 @@ collect_cmd() {
     done <"$current_status"
     rm -f -- "$current_status"
 
-    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch. reset
-    # --soft, checkout <branch>, and branch -f move refs without writing a file,
-    # and a ref that moved and landed back reads as untouched -- so each tracked
-    # ref is also checked for reflog growth (see reflog_activity).
+    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch. `reset
+    # --soft`/`checkout`/`branch -f` move refs without writing a file and can
+    # land back at the same sha -- so each ref is also checked for reflog growth.
     baseline_head_ref=$(snapshot_head_ref "$snapshot")
     baseline_head_sha=$(snapshot_head_sha "$snapshot")
     baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
@@ -652,11 +625,10 @@ collect_cmd() {
         reflog_activity "$root" HEAD "$baseline_head_reflog_count" "$worker_start" "$worker_end"
     )
 
-    # A ref this fence cannot observe cannot be certified clean: a reflog
-    # unusable at snapshot or collect time (core.logAllRefUpdates=false, or a
-    # ref Git never logs) is always a named incident, independent of whether
-    # HEAD's ref/sha also changed -- "cross-write=none" must never mean "we
-    # couldn't tell", only "we checked, and nothing moved".
+    # A ref this fence cannot observe cannot be certified clean: an unusable
+    # reflog (core.logAllRefUpdates=false, or a ref Git never logs) is always
+    # a named incident -- "cross-write=none" must mean "checked", never
+    # "couldn't tell".
     if [[ $baseline_head_reflog_usable != yes || $current_head_reflog_usable != yes ]]; then
         incidents=$((incidents + 1))
         printf 'cross-ref=type=head-reflog-unavailable name=HEAD baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
@@ -678,10 +650,9 @@ collect_cmd() {
     fi
 
     # A branch checked out by another worktree is out of scope for the ROOT ref
-    # fence (that worktree owns its commits; see list_worktree_branches).
-    # Ownership can change between snapshot and collect, so a branch excluded at
-    # EITHER end is excluded at BOTH -- union, not intersection -- or a worktree
-    # lifecycle event reads as a fabricated branch incident.
+    # fence (see list_worktree_branches). Ownership can change between snapshot
+    # and collect, so a branch excluded at EITHER end is excluded at BOTH --
+    # union, not intersection -- or a worktree lifecycle event reads as a fake incident.
     mapfile -t baseline_excluded < <(snapshot_excluded_branches "$snapshot")
     mapfile -t current_excluded < <(list_worktree_branches "$root")
     for excluded_branch in "${baseline_excluded[@]}" "${current_excluded[@]}"; do
@@ -702,19 +673,17 @@ collect_cmd() {
         current_branches["$branch_name"]=$branch_sha
     done < <(capture_branch_shas "$root" "$exclude_set")
 
-    # Compare the UNION of baseline and current branch names, not just the
-    # baseline set: a branch created in the root checkout never appears in
-    # baseline, and a branch deleted from it never appears in current -- each
-    # is a real ref mutation this fence must not pass through as clean.
+    # Compare the UNION of baseline and current branch names: a branch created
+    # in root never appears in baseline, and one deleted never appears in
+    # current -- either way it's a real ref mutation, never clean.
     mapfile -t sorted_branch_names < <(
         printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | sort -u
     )
     for branch_name in "${sorted_branch_names[@]}"; do
         if [[ -z ${baseline_branches[$branch_name]+present} ]]; then
-            # Created: no baseline entry to compare against, so the presence
-            # of the name at all is the incident. reflog_activity against a
-            # zero baseline still reports a useful window/summary when the
-            # branch's own creation reflog entry exists.
+            # Created: no baseline entry to compare, so the name's presence is
+            # itself the incident; reflog_activity against a zero baseline
+            # still reports a window when the creation reflog entry exists.
             current_branch_sha=${current_branches[$branch_name]}
             incidents=$((incidents + 1))
             IFS=$'\t' read -r _ _ ref_summary ref_window < <(
@@ -783,6 +752,18 @@ dispose_cmd() {
     dispose_path "$root" "$worker" "$path" "$expected_hash"
 }
 
+# The dispatch skill's fence takes one snapshot before dispatch and one
+# collect per worker completion (issue #698's fold): rather than name both
+# subcommands in the recipe, this routes on the one flag that only a collect
+# call ever carries.
+dispatch_fence_cmd() {
+    local arg
+    for arg in "$@"; do
+        [[ $arg == --worker-worktree ]] && { collect_cmd "$@"; return; }
+    done
+    snapshot_cmd "$@"
+}
+
 [[ $# -gt 0 ]] || usage
 command=$1
 shift
@@ -790,6 +771,7 @@ case $command in
     snapshot) snapshot_cmd "$@";;
     collect) collect_cmd "$@";;
     dispose) dispose_cmd "$@";;
+    dispatch-fence) dispatch_fence_cmd "$@";;
     -h|--help) usage 0;;
     *) die "unknown command: $command";;
 esac

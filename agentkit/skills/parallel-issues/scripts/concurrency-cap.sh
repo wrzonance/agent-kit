@@ -14,11 +14,13 @@ spawn_mode=auto
 
 usage() {
     cat <<'EOF'
-Usage: concurrency-cap.sh [--config FILE] [--spawn-capable|--no-spawn]
+Usage: concurrency-cap.sh [--config FILE] [--spawn-capable|--no-spawn|--multi-agent VALUE]
 
 Prints the runtime concurrency cap for a spawning session.  When spawning is
 unavailable, prints the serial worker path and exits successfully without
-requiring a runtime config file.
+requiring a runtime config file.  --multi-agent VALUE is the dispatch
+capability probe's own spelling of the same choice: false picks --no-spawn,
+anything else picks --spawn-capable.
 EOF
 }
 
@@ -37,6 +39,11 @@ while (($#)); do
             ;;
         --spawn-capable) spawn_mode=yes; shift ;;
         --no-spawn) spawn_mode=no; shift ;;
+        --multi-agent)
+            (($# >= 2)) || die '--multi-agent requires a value'
+            [[ ${2,,} != false ]] && spawn_mode=yes || spawn_mode=no
+            shift 2
+            ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac

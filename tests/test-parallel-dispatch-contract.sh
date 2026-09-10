@@ -1452,6 +1452,27 @@ snapshot_out=$(
 assert_contains "$snapshot_out" 'snapshot=' \
     'dispatch snapshot reports its persisted path'
 
+# --- issue #698: dispatch-fence folds the snapshot and collect calls into one
+# subcommand, routed by the presence of --worker-worktree, so the SKILL.md
+# recipe names a single entry point for both halves of the fence.
+fence_snapshot="$cross_root/.agent/cross-write-fence.snapshot"
+fence_snapshot_out=$(
+    "$cross_write" dispatch-fence --root "$cross_root" --output "$fence_snapshot" \
+        --write-set 'src/**'
+)
+assert_contains "$fence_snapshot_out" 'snapshot=' \
+    'dispatch-fence with no --worker-worktree snapshots like the snapshot subcommand'
+printf 'fence worker bytes\n' > "$cross_worker/src/fence.txt"
+printf 'fence worker bytes\n' > "$cross_root/src/fence.txt"
+fence_collect_out=$(
+    "$cross_write" dispatch-fence --root "$cross_root" --snapshot "$fence_snapshot" \
+        --worker-worktree "$cross_worker" --issue 698 \
+        --worker-start 1 --worker-end 2147483647 --write-set 'src/**' || true
+)
+assert_contains "$fence_collect_out" 'src/fence.txt' \
+    'dispatch-fence with --worker-worktree collects like the collect subcommand'
+rm -f -- "$cross_root/src/fence.txt"
+
 # Porcelain -z must preserve spaces and non-ASCII path bytes instead of
 # silently dropping Git's quoted representation.
 printf 'worker space\n' > "$cross_worker/src/space café.txt"
