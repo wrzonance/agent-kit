@@ -226,6 +226,42 @@ tick_create_rc=0
 run_body pr create --repo owner/repo --body-file "$body" --tick 'CI green' >/dev/null 2>&1 || tick_create_rc=$?
 assert_eq '1' "$tick_create_rc" '--tick is refused on create'
 
+# issue #689 (CR-689-1): the rewrite loop must not change the body file's
+# trailing-newline state as a side effect of ticking a checkbox.
+last_byte_is_newline() {
+    local marker
+    marker=$(tail -c1 -- "$1"; printf 'X')
+    [[ $marker == $'\n''X' ]]
+}
+
+tick_trailing_nl="$tmp/tick-trailing-nl.md"
+printf '%s\n' 'This was written agentically; verify its assertions:' '' \
+    '## Testing' '- [ ] Unit tests pass' '- [ ] CI green' '' \
+    '🤖 Co-authored by Codex gpt-5.6-luna.' >"$tick_trailing_nl"
+run_body pr edit 41 --repo owner/repo --body-file "$tick_trailing_nl" --tick 'CI green' >/dev/null
+if last_byte_is_newline "$tick_trailing_nl"; then
+    _pass '--tick on a body with a final newline keeps the trailing newline'
+else
+    _fail '--tick on a body with a final newline keeps the trailing newline' 'trailing newline was stripped'
+fi
+
+tick_no_trailing_nl="$tmp/tick-no-trailing-nl.md"
+printf '%s\n' 'This was written agentically; verify its assertions:' '' \
+    '## Testing' '- [ ] Unit tests pass' '- [ ] CI green' '' >"$tick_no_trailing_nl"
+printf '🤖 Co-authored by Codex gpt-5.6-luna.' >>"$tick_no_trailing_nl"
+expected_no_trailing_nl="$tmp/tick-no-trailing-nl-expected.md"
+printf '%s\n' 'This was written agentically; verify its assertions:' '' \
+    '## Testing' '- [ ] Unit tests pass' '- [x] CI green' '' >"$expected_no_trailing_nl"
+printf '🤖 Co-authored by Codex gpt-5.6-luna.' >>"$expected_no_trailing_nl"
+run_body pr edit 41 --repo owner/repo --body-file "$tick_no_trailing_nl" --tick 'CI green' >/dev/null
+assert_eq yes "$(cmp -s "$tick_no_trailing_nl" "$expected_no_trailing_nl" && printf yes || printf no)" \
+    '--tick on a body without a final newline preserves the missing trailing newline byte-for-byte'
+if last_byte_is_newline "$tick_no_trailing_nl"; then
+    _fail '--tick on a body without a final newline still has no trailing newline' 'a trailing newline was added'
+else
+    _pass '--tick on a body without a final newline still has no trailing newline'
+fi
+
 output=$(run_body issue create --repo owner/repo --body-file="$body" --title 'An issue')
 assert_contains "$output" 'https://github.com/owner/repo/issues/42' \
     'issue create returns the gh result after exact verification'

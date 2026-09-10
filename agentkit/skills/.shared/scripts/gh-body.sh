@@ -249,20 +249,27 @@ apply_tick() {
     fi
     [[ $ACTION == edit ]] || die '--tick applies to edit only'
     [[ $TICK_TEXT != *$'\n'* && $TICK_NOTE != *$'\n'* ]] || die '--tick and --note must be single-line'
-    local line matches=0 staged eol
+    local line matches=0 staged eol rc
     while IFS= read -r line || [[ -n $line ]]; do
         [[ $line == "- [ ] $TICK_TEXT"* ]] && matches=$((matches + 1))
     done <"$BODY_FILE"
     ((matches == 1)) || die "--tick must match exactly one unchecked checkbox; '- [ ] $TICK_TEXT' matches $matches"
     staged=$(mktemp "$(dirname -- "$BODY_FILE")/.gh-body-tick.XXXXXX") || die 'could not stage the ticked body'
-    while IFS= read -r line || [[ -n $line ]]; do
+    # `read` exits nonzero on the file's final, unterminated line (no trailing
+    # LF); rc is captured right after read so the loop can reproduce that
+    # exact line ending on write instead of always appending one (#689 CR-1).
+    while IFS= read -r line; rc=$?; ((rc == 0)) || [[ -n $line ]]; do
         if [[ $line == "- [ ] $TICK_TEXT"* ]]; then
             eol=''; [[ $line != *$'\r' ]] || { eol=$'\r'; line=${line%$'\r'}; }
             line="- [x] ${line#- \[ \] }"
             [[ -z $TICK_NOTE ]] || line+=" ($TICK_NOTE)"
             line+=$eol
         fi
-        printf '%s\n' "$line"
+        if ((rc == 0)); then
+            printf '%s\n' "$line"
+        else
+            printf '%s' "$line"
+        fi
     done <"$BODY_FILE" >"$staged" || { rm -f -- "$staged"; die 'could not write the ticked body'; }
     chmod --reference="$BODY_FILE" "$staged" 2>/dev/null || chmod 600 "$staged"
     mv -f -- "$staged" "$BODY_FILE" || { rm -f -- "$staged"; die 'could not replace the body file with its ticked copy'; }

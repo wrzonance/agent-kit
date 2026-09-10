@@ -51,12 +51,14 @@ assert_eq '1' "$null_append_rc" 'append refuses an existing null-valued key inst
 assert_eq 'null' "$("$script" get --file "$state" --path nullable)" 'the refused append left the null value untouched'
 
 printf 'not json\n' > "$tmp/broken.json"
+chmod 600 "$tmp/broken.json"
 broken_rc=0
 broken_err=$("$script" get --file "$tmp/broken.json" --path a 2>&1 >/dev/null) || broken_rc=$?
 assert_eq '1' "$broken_rc" 'an unparseable state file blocks instead of reading as empty'
 assert_contains "$broken_err" 'unparseable' 'the block names the cause'
 
 printf '%s\n' '{"a":1}' '{"b":2}' > "$tmp/multi.json"
+chmod 600 "$tmp/multi.json"
 multi_get_rc=0
 multi_get_err=$("$script" get --file "$tmp/multi.json" --path a 2>&1 >/dev/null) || multi_get_rc=$?
 assert_eq '1' "$multi_get_rc" 'a state file holding two JSON objects is refused on get, not read value-by-value'
@@ -74,6 +76,24 @@ assert_eq '2' "$usage_rc" 'set without --path is a usage error'
 marker_rc=0; marker_out=$("$script" -- 2>&1) || marker_rc=$?
 assert_eq '2' "$marker_rc" 'a bare -- is a usage error'
 assert_not_contains "$marker_out" 'unknown argument' 'the -- marker itself is never rejected'
+
+# issue #689 (CR-689-2): an owned but group/other-readable state file must be
+# refused, not silently trusted -- state may hold run bookkeeping other users
+# on the box should not be able to read.
+insecure_state="$tmp/insecure-run-state.json"
+printf '{"a":1}\n' >"$insecure_state"
+chmod 644 "$insecure_state"
+insecure_get_rc=0
+insecure_get_err=$("$script" get --file "$insecure_state" --path a 2>&1 >/dev/null) || insecure_get_rc=$?
+assert_eq '1' "$insecure_get_rc" 'get on a group/other-readable state file refuses'
+assert_contains "$insecure_get_err" 'owner-private' 'the refusal names the cause'
+insecure_set_rc=0
+insecure_set_err=$("$script" set --file "$insecure_state" --path b --value 1 2>&1 >/dev/null) || insecure_set_rc=$?
+assert_eq '1' "$insecure_set_rc" 'set on a group/other-readable state file refuses too'
+assert_contains "$insecure_set_err" 'owner-private' 'the set refusal names the cause too'
+chmod 600 "$insecure_state"
+assert_eq '1' "$("$script" get --file "$insecure_state" --path a)" 'get succeeds once the file is owner-private'
+assert_rc 0 'set succeeds once the file is owner-private' -- "$script" set --file "$insecure_state" --path b --value 1
 
 repo="$tmp/repo"
 mkdir -p "$repo/.agent"

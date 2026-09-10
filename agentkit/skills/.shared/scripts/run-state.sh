@@ -89,6 +89,9 @@ read_state() {
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ ! -e $FILE ]]; then STATE='{}'; return 0; fi
     [[ -f $FILE && -O $FILE ]] || die "state file must be an owned regular file: $FILE"
+    local mode
+    mode=$(stat -c %a -- "$FILE") || die "state file mode was unreadable: $FILE"
+    (( (8#$mode & 8#077) == 0 )) || die "state file must be owner-private (mode 0600): $FILE"
     STATE=$(jq -ecs 'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one JSON object") end' "$FILE" 2>/dev/null) ||
         die "unparseable run state (not one JSON object): $FILE"
 }

@@ -664,28 +664,27 @@ printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$
 printf '%s\n' "$wait_bound"
 ```
 
-Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. Store reports; `classification=majority-uncovered` is conspicuous. Coverage never blocks.
+Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. `classification=majority-uncovered` is conspicuous; coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
 Act on each lead result as soon as it arrives:
 
 - **Cross-write check first** → run the root-checkout Collect check against the immutable
-  dispatch snapshot before reading the worker's handback as a clean result. Keep the helper's
-  incident line, mtime-window attribution, branch byte-compare, and explicit duplicate/divergent
-  disposition with that worker's evidence. A dirty path in a dispatched write set is never an
-  "unrelated local change" until the check proves it predates dispatch or names a divergent
-  disposition.
+  dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
+  mtime-window attribution, branch byte-compare, and duplicate/divergent disposition with that
+  worker's evidence. A dirty path is never an "unrelated local change" until the check proves
+  otherwise.
 
 - **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
   review and draft PR after a worker push"), opens the draft PR, moves the issue to
   `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
-  A chained successor dispatches the moment the predecessor's SHA lands — it never waits for
-  the PR, the board move, or the ledger write. Diff size is never a reason to withhold this
+  A chained successor dispatches the moment the predecessor's SHA lands, not the PR or board
+  move. Diff size is never a reason to withhold this
   PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, do one `collaboration.followup_task` and record (`$agentkit/.shared/scripts/run-state.sh set --run-id "$RUN_ID" --path redrive.<N>`). If the same lead is unavailable, give a fresh lead an exact resume command `followup_task(<lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
-  A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request that
-  drives that recheck; otherwise report the preserved worktree with the blocker evidence.
+- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>`, proceeding only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, do one `collaboration.followup_task`, then once it succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`). If the same lead is unavailable, give a fresh lead an exact resume command `followup_task(<lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
+  A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request driving
+  that recheck; otherwise report the preserved worktree with the blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
@@ -904,14 +903,14 @@ Mark the ✅ PRs ready when you want to review them — provider review behavior
 I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 ```
 
-The `worker=` column is not decoration: it is the only evidence of which model actually ran. On the degraded path every row reads `worker=self (spawn unavailable)` instead, because spawn availability is a property of the runtime, not of an individual issue — a table mixing the two is a reporting error.
+The `worker=` column records which model actually ran; on the degraded path every row reads `worker=self (spawn unavailable)` instead, since spawn availability is a runtime property, not a per-issue one.
 
 At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `$agentkit/parallel-issues/scripts/chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
-Review behavior after a ready transition or push is repository/provider configuration; no review arriving is an observed state to report, not a trigger decision. Watch each PR on a long interval under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh plus Step 3's and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch a follow-up agent per PR (or run it yourself, labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md) cycle order: approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit threads — one push per cycle, no bot commands.
-When human content lands, surface it with per-item labels, exact feedback, assessment, proposed action, and exact attributed draft reply; wait for explicit per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and cannot be called ready to merge.
+Review timing after a ready transition or push is repo/provider-configured; no review arriving is an observed state, not a trigger. Watch each PR on a long interval under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh plus ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch a follow-up agent per PR (or run it yourself, labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and that same `provider-rules.md` cycle order: approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit threads — one push per cycle, no bot commands.
+When human content lands, surface per-item labels, feedback, assessment, proposed action, and an attributed draft reply; wait for per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and is not ready to merge.
 Per-PR follow-up exit line:
 ```
 "PR #NNN: all CI green, X/X automated threads resolved, Y/Y body nitpicks handled.
@@ -922,7 +921,7 @@ Per-PR follow-up exit line:
 ### Final draft sweep (mandatory before handoff)
 
 With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `post-receipt.sh" status` on the fresh `pr_<N>_issue_comments.json`. A successful adversarial/verified-skip result increments receipts; `10:receipt=none` re-enters the draft loop once per PR (`run-state.sh` `receipt-redrive.<pr>`); duplicate/invalid evidence is unrecoverable: park the PR (`run-state.sh append --path parked`), report; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
+then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. A successful adversarial/verified-skip result increments receipts; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then once the redrive succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`); duplicate/invalid evidence is unrecoverable: park the PR (`"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --path parked --value "$pr"`), report; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
@@ -944,14 +943,13 @@ shopt -u nullglob
 ```
 Cleanup requires user request after merge.
 
-At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`. A nonzero queue is incomplete.
+At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`.
 
-A downstream-owned unknown flag (above) is not a queue entry, but its intent must not evaporate:
-print a second resume line naming the owner once PRs exist, e.g.
-`resume=/pr-to-green <PRs> --auto-merge` — same preserve-flags contract, for a later phase
-instead of a later run.
+A downstream-owned unknown flag is not a queue entry: print a second resume line naming the
+owner once PRs exist, e.g. `resume=/pr-to-green <PRs> --auto-merge`, preserving flags for that
+later phase.
 ## Limits
 
-- Maximum 10 per wave (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill, never drop, and count toward the limit.
+- Maximum 10 per wave (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill toward the same limit.
 - Invocation opts into issue leads; only root spawns. Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, the shipped helpers, and a `main` or `master` branch.
 - Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
