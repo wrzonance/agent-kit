@@ -24,6 +24,9 @@ Usage:
       --write-set GLOB [--write-set GLOB ...] \
       [--worker-start EPOCH|ISO8601 --worker-end EPOCH|ISO8601] [--dispose-duplicates]
   cross-write-check.sh dispose --root PATH --worktree PATH --path RELATIVE [--expected-hash HASH]
+  cross-write-check.sh dispatch-fence [snapshot flags | collect flags]
+      Routes to snapshot (no --worker-worktree) or collect (--worker-worktree
+      given) so the dispatch skill's fence recipe names one entry point.
 
 --worker-start/--worker-end each accept a Unix epoch integer (e.g. 1735689600,
 what "$(date -u +%s)" prints) or an ISO-8601 UTC timestamp (e.g.
@@ -783,6 +786,18 @@ dispose_cmd() {
     dispose_path "$root" "$worker" "$path" "$expected_hash"
 }
 
+# The dispatch skill's fence takes one snapshot before dispatch and one
+# collect per worker completion (issue #698's fold): rather than name both
+# subcommands in the recipe, this routes on the one flag that only a collect
+# call ever carries.
+dispatch_fence_cmd() {
+    local arg
+    for arg in "$@"; do
+        [[ $arg == --worker-worktree ]] && { collect_cmd "$@"; return; }
+    done
+    snapshot_cmd "$@"
+}
+
 [[ $# -gt 0 ]] || usage
 command=$1
 shift
@@ -790,6 +805,7 @@ case $command in
     snapshot) snapshot_cmd "$@";;
     collect) collect_cmd "$@";;
     dispose) dispose_cmd "$@";;
+    dispatch-fence) dispatch_fence_cmd "$@";;
     -h|--help) usage 0;;
     *) die "unknown command: $command";;
 esac

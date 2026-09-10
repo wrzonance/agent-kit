@@ -380,7 +380,10 @@ assert_contains "$bad_error" 'epoch' \
     'the rejection also names the epoch-integer form'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 799 ]] && printf yes || printf no)" \
-    'cross-write-check.sh stays at or under 799 lines'
+# Raised 799 -> 815 for issue #698's `dispatch-fence` subcommand, which folds
+# the SKILL.md snapshot+collect recipe into one call (net +16 lines here,
+# -1 fenced recipe block in parallel-issues/SKILL.md).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 815 ]] && printf yes || printf no)" \
+    'cross-write-check.sh stays at or under 815 lines'
 
 finish
