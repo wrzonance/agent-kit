@@ -265,6 +265,8 @@ fi
 # one axis", never to guess a category neither script can verify.
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
 source "$sandbox_comparator_lib"
+# shellcheck disable=SC1090,SC1091
+source "$script_dir/../../.shared/scripts/lib/contract-cache.sh"
 
 # sandbox= is a SESSION-scoped fact (issue #332): the root checkout's own
 # contract is the authoritative measurement for this run, and
@@ -293,8 +295,11 @@ if [[ -n $root_git_common ]]; then
     repo_root=$(cd -- "$(dirname -- "$root_git_common")" 2>/dev/null && pwd -P) || repo_root=''
 fi
 if [[ -n ${repo_root:-} ]]; then
-    root_contract=$repo_root/.agent/env-contract.txt
-    if [[ -f $root_contract && ! -L $root_contract && $root_contract != "$contract" ]]; then
+    root_contract=$(contract_cache_contract_file "$repo_root")
+    if [[ $root_contract != "$contract" && ( -e $root_contract || -L $root_contract ) ]]; then
+        if [[ -L $repo_root/.agent ]] || ! "$contract_reader" --repo-root "$repo_root" --check > /dev/null 2>&1; then
+            die "refusing: root-contract-untrusted: $root_contract"
+        fi
         root_sandbox=$(grep -m1 '^sandbox=' "$root_contract" 2>/dev/null || true)
         worktree_sandbox=$(grep -m1 '^sandbox=' "$contract" 2>/dev/null || true)
         if [[ -n $root_sandbox && -n $worktree_sandbox ]]; then

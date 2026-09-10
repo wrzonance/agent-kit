@@ -67,7 +67,7 @@ readonly SCRIPT_DIR
 # blocking (see BEHAVIOUR), so a copy without its lib/ sibling still runs and the
 # consumer (probe_protected, apply_never_widen, probe_skills_content, the .agent
 # mkdir sites) discloses the gap via `declare -F`. Issues #332 F3, #453, #474.
-for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir; do
+for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache; do
     preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
     if [[ -r $preflight_lib_path ]]; then
         # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -1255,7 +1255,7 @@ main() {
         fi
         resolve_worktree
         contract_reader="$SCRIPT_DIR/contract-read.sh"
-        if [[ -x $contract_reader ]] &&
+        if [[ -x $contract_reader ]] && declare -F contract_cache_contract_file > /dev/null &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
             # A provenance-trusted contract can still predate protected= (issue #296
             # follow-up): --check only validates ownership/tracked-state, not which
@@ -1263,7 +1263,9 @@ main() {
             # existed would otherwise be served forever without it. Fall through to
             # the same fresh-preflight path a failed provenance re-read already uses,
             # rather than adding a second return path.
-            if existing="$(cat -- "$WORKTREE/.agent/env-contract.txt")"; then
+            # A stale trusted contract must be refreshed at the path readers select.
+            ARG_WRITE=$(contract_cache_contract_file "$WORKTREE")
+            if existing="$(cat -- "$ARG_WRITE")"; then
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
                     # Presence proves the KEYS exist, not that their VALUES
                     # describe this tree (issue #453 review): recompute both

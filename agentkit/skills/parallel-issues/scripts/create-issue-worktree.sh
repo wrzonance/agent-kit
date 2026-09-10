@@ -7,6 +7,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly SCRIPT_DIR
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/worktree-setup.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/contract-cache.sh"
 
 WORKTREE_SETUP_PROGNAME=$PROGNAME
 REPO_ROOT=''
@@ -175,7 +177,7 @@ main() {
     validate_args
 
     local root config shared preflight worktree_root branch worktree start setup_declared
-    local root_harness root_contract
+    local root_contract
     root=$(worktree_setup_resolve_repo_root "$REPO_ROOT") || exit 1
     config="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
     shared="$SCRIPT_DIR/../../.shared/scripts"
@@ -308,12 +310,7 @@ main() {
     # exists; fall back to the legacy bare name -- still a valid inherit
     # source for a root whose contract predates this key, or came from a
     # caller that still writes the bare name.
-    root_harness=$("$shared/harness-id.sh" --name 2> /dev/null) || root_harness=''
-    root_contract="$root/.agent/env-contract.txt"
-    if [[ -n $root_harness && -f "$root/.agent/env-contract.$root_harness.txt" &&
-        ! -L "$root/.agent/env-contract.$root_harness.txt" ]]; then
-        root_contract="$root/.agent/env-contract.$root_harness.txt"
-    fi
+    root_contract=$(contract_cache_contract_file "$root")
     "$preflight" --worktree "$worktree" --inherit-session "$root_contract" || {
         worktree_setup_fail "preflight failed in $worktree"
         exit 1

@@ -128,6 +128,49 @@ assert_eq no "$( [[ -e $missing/state/launch-attempted ]] && printf yes || print
     'missing consent never writes the launch-attempted marker; retry is provably safe'
 
 mismatch_run="$tmp/mismatch-run"
+# Keyed-only roots pass contract loading and still stop at the consent gate.
+mv -- "$contract" "$repo/.agent/env-contract.codex.txt"
+keyed_run="$tmp/keyed-run"
+keyed_rc=0
+(cd "$repo" && env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+    PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget --run-dir "$keyed_run") \
+    > "$tmp/keyed.out" 2> "$tmp/keyed.err" || keyed_rc=$?
+assert_eq 1 "$keyed_rc" 'keyed-only review still requires consent'
+assert_contains "$(cat "$tmp/keyed.err")" 'consent' 'keyed-only root passes contract loading'
+
+# Provenance must apply to the selected keyed path, not the absent legacy path.
+git -C "$repo" add -f -- .agent/env-contract.codex.txt
+tracked_keyed_rc=0
+(cd "$repo" && env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+    PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/tracked-keyed") \
+    > "$tmp/tracked-keyed.out" 2> "$tmp/tracked-keyed.err" || tracked_keyed_rc=$?
+assert_eq 1 "$tracked_keyed_rc" 'tracked keyed contract is rejected'
+assert_contains "$(cat "$tmp/tracked-keyed.err")" 'environment contract is tracked:' \
+    'tracking check names the selected keyed contract'
+git -C "$repo" reset -q -- .agent/env-contract.codex.txt
+mv -- "$repo/.agent/env-contract.codex.txt" "$contract"
+
+for topology in absent symlink; do
+    mv -- "$contract" "$tmp/saved-contract"
+    if [[ $topology == symlink ]]; then
+        ln -s "$tmp/saved-contract" "$repo/.agent/env-contract.codex.txt"
+    fi
+    unsafe_rc=0
+    (cd "$repo" && env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+        PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget --run-dir "$tmp/$topology-run") \
+        > "$tmp/$topology.out" 2> "$tmp/$topology.err" || unsafe_rc=$?
+    assert_eq 1 "$unsafe_rc" "$topology contract is rejected"
+    if [[ $topology == absent ]]; then
+        assert_contains "$(cat "$tmp/$topology.err")" 'no environment contract:' 'absence is distinct from unsafe ownership'
+        assert_contains "$(cat "$tmp/$topology.err")" 'env-contract.codex.txt' 'absence names keyed candidate'
+        assert_contains "$(cat "$tmp/$topology.err")" 'env-contract.txt' 'absence names legacy candidate'
+    else
+        assert_contains "$(cat "$tmp/$topology.err")" 'not a self-owned regular file:' 'keyed symlink remains unsafe'
+        rm -- "$repo/.agent/env-contract.codex.txt"
+    fi
+    mv -- "$tmp/saved-contract" "$contract"
+done
+
 mkdir -- "$mismatch_run" "$mismatch_run/state"
 chmod 700 "$mismatch_run" "$mismatch_run/state"
 mismatch_rc=0
@@ -336,6 +379,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$malformed_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
+    "$malformed_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$malformed_script_dir/claude-adversarial-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -397,6 +442,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$verdict_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
+    "$verdict_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$verdict_script_dir/claude-adversarial-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -660,6 +707,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
+    "$noreceipt_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$noreceipt_script_dir/claude-adversarial-review.sh" <<'EOF'
 #!/usr/bin/env bash
 # Simulates a hard mid-send crash: exits nonzero without writing --output at
@@ -1381,8 +1430,9 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # constant, its derivation comment, and payload_size_gate now accounting for
 # the Codex helper's dynamic output+reasoning consumption, not just what is
 # sent). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 953 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 953 lines'
+# Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 959 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 959 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

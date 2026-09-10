@@ -17,6 +17,8 @@ SCRIPT_DIR=$(cd -- "$SCRIPT_DIR" && pwd -P) || {
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/contract-cache.sh"
 # consent-record.sh owns the state filename so the grant and every check share
 # one spelling. It returns immediately when sourced and has no side effects.
 # shellcheck disable=SC1091
@@ -198,17 +200,21 @@ provider_for_cli() {
 }
 
 load_environment_contract() {
-    local contract_root contract peer_line tracked_rc=0
+    local contract_root contract peer_line contract_harness tracked_rc=0
     if ! contract_root=$(git rev-parse --show-toplevel 2>/dev/null); then
         die 'could not resolve the repository root for the environment contract'
     fi
     CONTRACT_ROOT=$contract_root
-    contract="$contract_root/.agent/env-contract.txt"
+    contract=$(contract_cache_contract_file "$contract_root")
     [[ ! -L $contract_root/.agent ]] ||
         die "environment contract directory is a symlink: $contract_root/.agent"
+    if [[ ! -e $contract && ! -L $contract ]]; then
+        contract_harness=$(contract_cache_harness_name) || contract_harness=unknown
+        die "no environment contract: $contract_root/.agent/env-contract.$contract_harness.txt or $contract_root/.agent/env-contract.txt"
+    fi
     [[ -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
         die "environment contract is not a self-owned regular file: $contract"
-    git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
+    git -C "$contract_root" ls-files --error-unmatch -- "$contract" \
         >/dev/null 2>&1 || tracked_rc=$?
     case $tracked_rc in
         0) die "environment contract is tracked: $contract" ;;
