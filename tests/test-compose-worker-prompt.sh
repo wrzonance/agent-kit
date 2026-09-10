@@ -110,8 +110,8 @@ neutral_prompt=${neutral_prompt//"$root/agentkit/skills"/<agentkit>}
 neutral_prompt=${neutral_prompt//"$(printf %q "$repo")"/<worktree-shell>}
 assert_not_contains "$neutral_prompt" "$tmp" 'the path-neutral prompt carries no fixture temp path'
 assert_not_contains "$neutral_prompt" "$root" 'the path-neutral prompt carries no checkout path'
-assert_eq yes "$([[ ${#neutral_prompt} -le 18756 ]] && printf yes || printf no)" \
-    "issue-lead prompt stays at or under 18756 path-neutral bytes (measured ${#neutral_prompt})"
+assert_eq yes "$([[ ${#neutral_prompt} -le 18755 ]] && printf yes || printf no)" \
+    "issue-lead prompt stays at or under 18755 path-neutral bytes (measured ${#neutral_prompt})"
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \

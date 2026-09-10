@@ -1016,8 +1016,131 @@ partial_out=$(cd "$partial_repo" && "$script" --message 'fix: partial ledger fla
 assert_eq '1' "$partial_rc" 'a partial --ledger/--run-id/--ledger-scope trio is a usage error'
 assert_contains "$partial_out" 'given together' 'the partial-trio refusal names the requirement'
 
+# issue #611: every commit appends its paths to .agent/evidence/paths-touched.ndjson,
+# so a hand-back carries the ledger even when no PreToolUse hook was armed.
+ledger_repo="$tmp/paths-touched-repo"
+new_repo "$ledger_repo"
+printf 'two\n' > "$ledger_repo/second.txt"
+git -C "$ledger_repo" add -- second.txt
+git -C "$ledger_repo" commit -qm 'second tracked file'
+printf 'changed one\n' > "$ledger_repo/base.txt"
+printf 'changed two\n' > "$ledger_repo/second.txt"
+printf 'new\n' > "$ledger_repo/untracked.txt"
+ledger_rc=0
+(cd "$ledger_repo" && "$script" --exact --message 'feat: three paths' --trailer "$TEST_TRAILER" \
+    -- base.txt second.txt untracked.txt >/dev/null 2>&1) || ledger_rc=$?
+assert_eq '0' "$ledger_rc" 'a two-modified-one-untracked commit succeeds'
+ledger_file="$ledger_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$([[ -f $ledger_file ]] && printf yes || printf no)" \
+    'worktree-commit.sh writes .agent/evidence/paths-touched.ndjson at hand-back with no hook armed'
+assert_eq 'base.txt second.txt untracked.txt' \
+    "$(jq -r '.paths_touched[]' "$ledger_file" 2>/dev/null | sort | paste -sd ' ')" \
+    'the ledger lists the two modified and the one previously untracked path'
+assert_eq 'worktree-commit' "$(jq -r '.tool' "$ledger_file" 2>/dev/null)" \
+    'the ledger record names worktree-commit as its writer'
+assert_eq "$(git -C "$ledger_repo" rev-parse HEAD)" "$(jq -r '.commit' "$ledger_file" 2>/dev/null)" \
+    'the ledger record carries the commit it describes'
+assert_eq '600' "$(stat -c %a -- "$ledger_file" 2>/dev/null)" \
+    'the ledger is owner-private, as the guard writes it'
+printf 'again\n' > "$ledger_repo/base.txt"
+(cd "$ledger_repo" && "$script" --exact --message 'feat: second commit' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || true
+assert_eq '2' "$(wc -l < "$ledger_file" 2>/dev/null | tr -d '[:space:]')" \
+    'a second commit appends a second record instead of rewriting the ledger'
+
+# issue #611 Codex round: a dangling ledger symlink is rejected independently
+# of -e, so the append never follows it to create a file at its target.
+symlink_repo="$tmp/paths-touched-symlink-repo"
+new_repo "$symlink_repo"
+mkdir -m 700 -- "$symlink_repo/.agent/evidence"
+symlink_target="$tmp/paths-touched-symlink-target.ndjson"
+ln -s -- "$symlink_target" "$symlink_repo/.agent/evidence/paths-touched.ndjson"
+printf 'changed\n' > "$symlink_repo/base.txt"
+symlink_rc=0
+(cd "$symlink_repo" && "$script" --exact --message 'feat: dangling ledger symlink' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || symlink_rc=$?
+assert_eq '0' "$symlink_rc" 'a commit succeeds even when the ledger path is a dangling symlink'
+assert_eq yes "$([[ -L $symlink_repo/.agent/evidence/paths-touched.ndjson ]] && printf yes || printf no)" \
+    'the dangling ledger symlink is left in place, untouched'
+assert_eq no "$([[ -e $symlink_target ]] && printf yes || printf no)" \
+    'the append never creates a file at the dangling symlink target'
+
+# issue #611 Codex round: a non-ASCII path is recorded byte-for-byte, not
+# git's core.quotePath-escaped display form.
+utf8_repo="$tmp/paths-touched-utf8-repo"
+new_repo "$utf8_repo"
+printf 'contenu\n' > "$utf8_repo/café.txt"
+utf8_rc=0
+(cd "$utf8_repo" && "$script" --exact --message 'feat: add cafe file' --trailer "$TEST_TRAILER" \
+    -- café.txt >/dev/null 2>&1) || utf8_rc=$?
+assert_eq '0' "$utf8_rc" 'a commit adding a non-ASCII filename succeeds'
+utf8_ledger="$utf8_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq 'café.txt' "$(jq -r '.paths_touched[]' "$utf8_ledger" 2>/dev/null)" \
+    'the ledger records the non-ASCII path verbatim, not a quoted display form'
+
+# issue #611 Codex round: a clean merge (combined diff empty) still records
+# the files it brings in relative to first parent.
+merge_repo="$tmp/paths-touched-merge-repo"
+new_repo "$merge_repo"
+printf 'feature\n' > "$merge_repo/feature.txt"
+git -C "$merge_repo" add -- feature.txt
+git -C "$merge_repo" commit -qm feature
+git -C "$merge_repo" checkout -q main
+printf 'main-only\n' > "$merge_repo/main-only.txt"
+git -C "$merge_repo" add -- main-only.txt
+git -C "$merge_repo" commit -qm 'main-only file'
+git -C "$merge_repo" checkout -q feature
+git -C "$merge_repo" merge --no-commit --no-ff -q main
+merge_rc=0
+(cd "$merge_repo" && "$script" --include-staged --message 'feat: merge main into feature' \
+    --trailer "$TEST_TRAILER" -- main-only.txt >/dev/null 2>&1) || merge_rc=$?
+assert_eq '0' "$merge_rc" 'a clean merge commit made through the helper succeeds'
+merge_ledger="$merge_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq 'main-only.txt' "$(jq -r '.paths_touched[]' "$merge_ledger" 2>/dev/null | paste -sd ' ')" \
+    'the ledger records the files a clean merge brings in relative to first parent'
+
+# CR-688-1: an --allow-empty commit (no paths in the diff) must still append a
+# ledger record -- paths_touched is legitimately [], not a skipped write.
+allow_empty_ledger_repo="$tmp/paths-touched-allow-empty-repo"
+new_repo "$allow_empty_ledger_repo"
+allow_empty_ledger_rc=0
+(cd "$allow_empty_ledger_repo" && "$script" --exact --allow-empty \
+    --message 'chore: empty marker commit' --trailer "$TEST_TRAILER" -- \
+    >/dev/null 2>&1) || allow_empty_ledger_rc=$?
+assert_eq '0' "$allow_empty_ledger_rc" 'an --allow-empty commit succeeds'
+allow_empty_ledger_file="$allow_empty_ledger_repo/.agent/evidence/paths-touched.ndjson"
+assert_eq yes "$([[ -f $allow_empty_ledger_file ]] && printf yes || printf no)" \
+    'an --allow-empty commit still writes a ledger record'
+assert_eq '[]' "$(jq -c '.paths_touched' "$allow_empty_ledger_file" 2>/dev/null | tail -n 1)" \
+    'the --allow-empty ledger record carries an empty paths_touched array'
+assert_eq "$(git -C "$allow_empty_ledger_repo" rev-parse HEAD)" \
+    "$(jq -r '.commit' "$allow_empty_ledger_file" 2>/dev/null | tail -n 1)" \
+    'the --allow-empty ledger record carries the commit it describes'
+
+# CR-688-2: a pre-existing ledger left group/world-readable (0644) is forced
+# back to owner-private before the append, mirroring the guard's own
+# chmod-before-append predicate in guard-lib.sh.
+mode_repo="$tmp/paths-touched-mode-repo"
+new_repo "$mode_repo"
+mkdir -m 700 -- "$mode_repo/.agent/evidence"
+mode_ledger="$mode_repo/.agent/evidence/paths-touched.ndjson"
+printf '%s\n' '{"pre":"existing"}' > "$mode_ledger"
+chmod 644 -- "$mode_ledger"
+printf 'changed\n' > "$mode_repo/base.txt"
+mode_rc=0
+(cd "$mode_repo" && "$script" --exact --message 'fix: mode repo commit' --trailer "$TEST_TRAILER" \
+    -- base.txt >/dev/null 2>&1) || mode_rc=$?
+assert_eq '0' "$mode_rc" 'a commit succeeds when the pre-existing ledger is group/world-readable'
+assert_eq '600' "$(stat -c %a -- "$mode_ledger" 2>/dev/null)" \
+    'the pre-existing ledger is forced back to owner-private before the append'
+assert_eq '2' "$(wc -l < "$mode_ledger" 2>/dev/null | tr -d '[:space:]')" \
+    'the pre-existing record is preserved and the new record appended'
+assert_eq 'base.txt' "$(tail -n 1 -- "$mode_ledger" | jq -r '.paths_touched[]' 2>/dev/null)" \
+    'the newly appended record lists the changed path'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 800 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 800 lines'
+# issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 816 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 816 lines'
 
 finish
