@@ -112,7 +112,7 @@ assert_eq 'contract-cache: session-context invalid' "$err" \
 
 # --- skills-path-mismatch: record disagrees with the live contract's ------
 # skills= path (the plugin-upgrade field case from the issue) --------------
-mismatch_repo="$tmp/mismatch"
+mismatch_repo="$tmp/mismatch ' quoted"
 make_valid_repo "$mismatch_repo"
 sed -i 's|^skills= path=.*$|skills= path=/tmp/installed-v2/agentkit/skills|' \
     "$mismatch_repo/.agent/env-contract.txt"
@@ -129,6 +129,8 @@ printf '%s\n' \
     "contract_inputs_sha256=$digest" \
     > "$mismatch_repo/.agent/cache/contract-session.env"
 chmod 600 -- "$mismatch_repo/.agent/cache/contract-session.env"
+before_cache=$(cat -- "$mismatch_repo/.agent/cache/contract-session.env")
+before_contract=$(cat -- "$mismatch_repo/.agent/env-contract.txt")
 rc=0
 out=$("$cache_reader" --read-session-context --repo-root "$mismatch_repo" 2> "$tmp/mismatch.err") || rc=$?
 err=$(cat -- "$tmp/mismatch.err")
@@ -142,6 +144,24 @@ assert_contains "$err" "$mismatch_repo/.agent/cache/contract-session.env" \
     'the reported cache= path is the actual session record'
 assert_contains "$err" "$mismatch_repo/.agent/env-contract.txt" \
     'the reported contract= path is the actual live contract'
+assert_eq "$before_cache" "$(cat -- "$mismatch_repo/.agent/cache/contract-session.env")" \
+    'the refused read does not automatically refresh the session cache'
+assert_contains "$err" '; remedy (Bash): source ' \
+    'the mismatch supplies a Bash refresh command'
+assert_contains "$err" 'contract_cache_refresh_session_context' \
+    'the mismatch names the supported refresh function'
+remedy=${err#*; remedy (Bash): }
+if [[ $remedy != "$err" ]]; then
+    rc=0
+    bash -c "$remedy" || rc=$?
+    assert_eq 0 "$rc" 'the reported remedy executes with a quoted repository path'
+    rc=0
+    out=$("$cache_reader" --read-session-context --repo-root "$mismatch_repo" --get agentkit) || rc=$?
+    assert_eq 0 "$rc" 'the explicit remedy restores a valid session read'
+    assert_eq '/tmp/installed-v2/agentkit/skills' "$out" 'the remedy uses the current contract skills path'
+fi
+assert_eq "$before_contract" "$(cat -- "$mismatch_repo/.agent/env-contract.txt")" \
+    'the read and explicit remedy leave the contract unchanged'
 
 # --- stale: contract_inputs_sha256 no longer matches ----------------------
 stale_repo="$tmp/stale"
@@ -181,8 +201,8 @@ assert_eq '' "$sourced_err" \
 assert_eq absent "$sourced_reason" \
     'sourced use still records the reason for a caller that wants it, without printing'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh") -le 427 ]] && printf yes || printf no)" \
-    'lib/contract-cache.sh stays at or under 427 lines'
+# Issue #709 adds three lines for the shell-quoted refresh remedy.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh") -le 430 ]] && printf yes || printf no)" \
+    'lib/contract-cache.sh stays at or under 430 lines'
 
 finish
