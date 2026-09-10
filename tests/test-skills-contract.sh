@@ -134,8 +134,8 @@ assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' 
 # AGENT_WORKER_MODELS/_FALLBACK roster degrades on its own message instead of
 # reading as silently unset (+618 bytes). Measured.
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
-assert_eq yes "$([[ $spawn_contract_bytes -le 18720 ]] && printf yes || printf no)" \
-    "spawn contract stays at or under 18720 bytes (measured $spawn_contract_bytes)"
+assert_eq yes "$([[ $spawn_contract_bytes -le 17524 ]] && printf yes || printf no)" \
+    "spawn contract stays at or under 17524 bytes (measured $spawn_contract_bytes)"
 resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
@@ -147,12 +147,21 @@ else
 fi
 assert_contains "$spawn_contract_text" 'explicit user authorization' \
     'spawn contract keeps unsupported-model authorization explicit'
-assert_contains "$spawn_contract_text" 'reasoning_effort: "$worker_effort"' \
-    'spawn shape carries the resolved effort'
-assert_not_contains "$spawn_contract_text" 'reasoning_effort: "high"' \
-    'spawn shape does not hardcode high effort'
-assert_contains "$spawn_contract_text" 'model: "$selected_worker_model"' \
-    'spawn shape carries the selected model'
+for stale_schema in 'multi_agent_v1__spawn_agent' 'fork_context' 'There is no `task_name`' \
+    'Nesting is blocked' 'collaboration.spawn_agent'; do
+    assert_not_contains "$spawn_contract_text" "$stale_schema" \
+        "spawn contract leaves runtime schema and capabilities to the runtime: $stale_schema"
+done
+assert_not_contains "$parallel_dispatch_text" 'that file has no `task_name`' \
+    'dispatch pointer does not claim a runtime parameter is absent'
+for policy in 'Required context isolation: Paste the complete issue/spec,' \
+    'inherited history.' 'Required role: **`agent_type: "worker"`**.' \
+    'Never omit `model` or `reasoning_effort`' \
+    'the resolved `worker_effort` applies to either.' \
+    "Set the worker's working directory to its assigned worktree" \
+    'Do not describe this call without making it.' 'returns a task/agent identifier.'; do
+    assert_contains "$spawn_contract_text" "$policy" "spawn contract preserves policy: $policy"
+done
 assert_contains "$spawn_contract_text" 'set `selected_worker_model` to `worker_model`' \
     'spawn contract establishes selected preferred model'
 assert_contains "$spawn_contract_text" '"$agentkit/.shared/scripts/repo-config.sh"' \
@@ -487,9 +496,9 @@ done < <(find "$shared_dir" -maxdepth 1 -name '*.md' -print0)
 # --- no skill re-details a .shared policy ------------------------------------
 # A pointer is worthless if the pointed-to skill also keeps its own competing
 # explanation. The mechanical bullets a dispatched worker needs (STRUCTS,
-# INTERFACES, ... the spawn_agent call shape) are deliberately duplicated
+# INTERFACES, ... the spawn policy) are deliberately duplicated
 # verbatim inside worker-prompt text, per .shared/six-step-loop.md and
-# .shared/spawn-contract.md themselves ("fork_context: false" leaves a worker
+# .shared/spawn-contract.md themselves (isolated context leaves a worker
 # no other way to see them) -- so counting the enumeration keywords would
 # fail on that legitimate, load-bearing duplication. Instead this checks
 # phrases that belong to the CANONICAL RATIONALE only -- prose a worker
@@ -497,7 +506,7 @@ done < <(find "$shared_dir" -maxdepth 1 -name '*.md' -print0)
 # file repo-wide: its own .shared home.
 declare -A shared_canonical_phrase=(
     [six-step-loop.md]='Worker prompts render this content verbatim, not as a pointer'
-    [spawn-contract.md]='multi_agent_v1__spawn_agent('
+    [spawn-contract.md]='omission can silently inherit an expensive parent'
     [wait-discipline.md]='empty wait cycles'
 )
 for shared_name in "${!shared_canonical_phrase[@]}"; do
