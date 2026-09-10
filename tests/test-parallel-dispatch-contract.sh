@@ -524,18 +524,27 @@ assert_contains "$final_sweep_section" 'gh-pr-state.sh' \
     'the final sweep refreshes live PR evidence before classifying receipts'
 assert_contains "$final_sweep_section" '--full --no-cache' \
     'the final sweep forces a fresh live comment fetch'
-assert_contains "$final_sweep_section" 'post-receipt.sh" status' \
-    'the final sweep classifies the refreshed comment artifact'
+assert_contains "$final_sweep_section" 'post-receipt.sh" status --issue-comments' \
+    'the final sweep classifies the refreshed comment artifact with a complete command'
 assert_eq yes "$([[ $(awk '/gh-pr-state\.sh/{fetch=NR} /post-receipt\.sh.*status/{status=NR} END {print (fetch < status ? "yes" : "no")}' <<< "$final_sweep_section") == yes ]] && printf yes || printf no)" \
     'the live refresh precedes receipt classification'
 assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
-assert_contains "$final_sweep_section" 'receipt_redrive_attempted' \
-    'receipt recovery is tracked per PR for a one-shot limit'
+assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
+    'receipt recovery is tracked per PR in run-state for a one-shot limit'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
     'duplicate or invalid receipts are explicitly non-recoverable'
-assert_contains "$final_sweep_section" '++parked_count' \
-    'non-recoverable receipt evidence increments parked_count'
+assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path parked' \
+    'non-recoverable receipt evidence is recorded in run-state with a complete append command'
+# issue #689 (CR-689-3): the final sweep's redrive bookkeeping is durable and
+# one-shot -- gated by a run-state.sh get that must exit 11 (absent) before
+# the redrive runs, with the set write recorded only after it succeeds.
+if [[ $final_sweep_section == *'run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>'*'exits 11'*'run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>'* ]]; then
+    _pass 'the final sweep gates the receipt-redrive get, exit-11 check, and set in durable order'
+else
+    _fail 'the final sweep gates the receipt-redrive get, exit-11 check, and set in durable order' \
+        "final sweep section: ${final_sweep_section:0:600}"
+fi
 assert_contains "$normalized_text" 're-enters the draft loop' \
     'a final-sweep miss re-enters the draft loop'
 assert_contains "$normalized_text" 'handoff cannot print' \
@@ -560,6 +569,30 @@ assert_contains "$normalized_text" 'every active worker' \
     'write-set recovery rechecks every active worker'
 assert_contains "$normalized_text" 'same lead is unavailable' \
     'blocked recovery falls back to a fresh lead when needed'
+
+# issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
+# and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
+# before the redrive runs, with the set write recorded only after it succeeds.
+blocked_bullet=$(grep '^- \*\*BLOCKED\*\*' "$skill")
+assert_contains "$blocked_bullet" 'exit 11 (absent)' \
+    'the BLOCKED bullet names the absent-key exit code before redriving'
+if [[ $blocked_bullet == *'run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>'*'exit 11 (absent)'*'run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>'* ]]; then
+    _pass 'the BLOCKED bullet gates the redrive get, exit-11 check, and set in durable order'
+else
+    _fail 'the BLOCKED bullet gates the redrive get, exit-11 check, and set in durable order' \
+        "bullet: ${blocked_bullet:0:600}"
+fi
+
+# The doc pins "exit 11 (absent)" as run-state.sh's actual get-on-absent-key
+# exit code; verify the real helper still behaves that way rather than
+# trusting the prose to stay in sync with the script.
+real_run_state="$root/agentkit/skills/.shared/scripts/run-state.sh"
+real_absent_state="$tmp/real-run-state-absent.json"
+real_get_absent_rc=0
+"$real_run_state" get --file "$real_absent_state" --path redrive.999 >/dev/null 2>&1 || real_get_absent_rc=$?
+assert_eq '11' "$real_get_absent_rc" \
+    "run-state.sh get on an absent key really exits 11, matching the SKILL.md's pinned exit code"
+
 handoff_retrieval=$(awk '
     /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
     armed && /^```bash$/ { capture=1; next }
