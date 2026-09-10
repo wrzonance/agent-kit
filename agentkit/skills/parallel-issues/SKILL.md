@@ -467,21 +467,28 @@ Role separation: the root/orchestrator must not implement when a real worker can
 
 ### Dispatch (one round, then refill slots)
 
-Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap:
+Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap. As each lead is dispatched (or, on the degraded path, each issue is started), the root also moves that issue's board item — a no-op when the issue is not on a board:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-# `multi_agent` is supplied by the dispatch capability probe. No spawn means
-# the documented worker=self serial degradation and deliberately bypasses the
-# runtime config probe.
-if [[ ${multi_agent:-true} == false ]]; then
-    "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --no-spawn
-else
-    "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --spawn-capable
-fi
+set -euo pipefail
+# `multi_agent` is supplied by the dispatch capability probe; false degrades
+# to the documented worker=self serial path and bypasses the runtime config probe.
+"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --multi-agent "${multi_agent:-true}"
+
+issue_numbers_csv=123,456 # Replace with the selected issue numbers.
+repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
+"$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
+    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
 ```
 
-When runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
+**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
+per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
+leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase —
+never follow it with a verification query or a second invocation. It needs Projects access (fleet
+App: `Projects: write`).
+
+When the runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
 
 **Chained issues defer on the commit, not the publication.** A successor's worktree is created and its lead
 dispatched as soon as the predecessor's worker has committed and pushed its branch — for a join, this means every predecessor pushed AND the merged join base itself pushed — using the full 40-character
@@ -507,25 +514,6 @@ it — a task is dispatched only after `spawn_agent` returns a task/agent identi
 degraded path (`spawn_agent` unavailable), do the implementation yourself per the same
 reference's degraded-path section, one issue to a draft PR before the next, labelled
 `worker=self (spawn unavailable)`.
-
-As the root dispatches each lead (or, on the degraded path, starts each issue itself), the root
-moves its board item (no-ops cleanly if the issue is not on a board):
-
-```bash
-set -euo pipefail
-
-issue_numbers_csv=123,456 # Replace with the selected issue numbers.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
-"$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
-```
-
-**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
-per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
-leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase —
-never follow it with a verification query or a second invocation. It needs Projects access (fleet
-App: `Projects: write`).
 
 ### Root canonical issue fetch and fence preparation
 
@@ -587,35 +575,32 @@ and regenerates without touching implementation files.
 
 ### Root-checkout cross-write fence
 
-The root checkout gets one dirt snapshot immediately before dispatch. The snapshot is the
+The root checkout gets one dirt snapshot immediately before dispatch, then one Collect check after
+each completion and at handoff — `dispatch-fence` below is the single entry point for both: no
+`--worker-worktree` snapshots, `--worker-worktree` given collects. The snapshot is the
 baseline for every Collect check; it is not a worker worktree artifact and it is never replaced
 after a worker starts. Pass every selected issue's `predictedWriteSet` as a separate `--write-set`
-argument, preserving globs byte-for-byte:
+argument, preserving globs byte-for-byte; `worker_started_at`/`worker_finished_at` are
+`$(date -u +%s)` (ISO-8601 UTC also accepted):
 
 ```bash
 cross_write="$agentkit/parallel-issues/scripts/cross-write-check.sh"
 cross_snapshot="$repository_root/.agent/cross-write-dispatch.snapshot"
-cross_snapshot_args=(snapshot --root "$repository_root" --output "$cross_snapshot")
+snapshot_args=(--root "$repository_root" --output "$cross_snapshot")
 for write_set in "${all_dispatched_write_sets[@]}"; do
-    cross_snapshot_args+=(--write-set "$write_set")
+    snapshot_args+=(--write-set "$write_set")
 done
-"$cross_write" "${cross_snapshot_args[@]}"
-```
+"$cross_write" dispatch-fence "${snapshot_args[@]}"
 
-Re-run after each completion and at handoff. Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and `--dispose-duplicates` handles only exact in-window duplicates.
-Never fold dirt first observed inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs explicit disposition.
-`worker_started_at`/`worker_finished_at`: `$(date -u +%s)` (ISO-8601 UTC also accepted).
-
-```bash
 collect_rc=0
-worker_write_set_args=()
-for write_set in "${worker_write_sets[@]}"; do
-    worker_write_set_args+=(--write-set "$write_set")
-done
-"$cross_write" collect --root "$repository_root" --snapshot "$cross_snapshot" \
+collect_args=(--root "$repository_root" --snapshot "$cross_snapshot" \
     --worker-worktree "$worktree" --issue "$issue_number" \
     --worker-start "$worker_started_at" --worker-end "$worker_finished_at" \
-    --dispose-duplicates "${worker_write_set_args[@]}" || collect_rc=$?
+    --dispose-duplicates)
+for write_set in "${worker_write_sets[@]}"; do
+    collect_args+=(--write-set "$write_set")
+done
+"$cross_write" dispatch-fence "${collect_args[@]}" || collect_rc=$?
 case "$collect_rc" in
     0) : ;; # cross-write=none
     10) : ;; # named incident output is the evidence; handle divergent paths explicitly
@@ -623,7 +608,11 @@ case "$collect_rc" in
 esac
 ```
 
-Divergence blocks clean handoff pending root disposition; root dirt is never the human's.
+Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and
+`--dispose-duplicates` handles only exact in-window duplicates. Never fold dirt first observed
+inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs
+explicit disposition. Divergence blocks clean handoff pending root disposition; root dirt is never
+the human's.
 
 ### Compose the issue-lead prompt
 

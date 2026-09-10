@@ -35,6 +35,14 @@ assert_rc 0 'no-spawn degradation does not require a runtime cap' -- \
 out=$("$cap" --config "$tmp/missing.toml" --no-spawn 2>&1)
 assert_contains "$out" 'worker=self (spawn unavailable)' \
     'no-spawn degradation names the serial worker path'
+# --multi-agent absorbs the SKILL.md if/else that chose --no-spawn vs
+# --spawn-capable from the dispatch capability probe (issue #698 fold).
+out=$("$cap" --config "$tmp/missing.toml" --multi-agent false 2>&1)
+assert_contains "$out" 'worker=self (spawn unavailable)' \
+    '--multi-agent false degrades exactly like --no-spawn'
+out=$("$cap" --config "$config" --multi-agent true 2>/dev/null)
+assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+    '--multi-agent true reads the cap exactly like --spawn-capable'
 printf '%s\n' '[other]' 'max_concurrent_threads_per_session = 4' >"$config"
 err=$("$cap" --config "$config" 2>&1 >/dev/null)
 assert_contains "$err" 'outside the accepted sections' \
