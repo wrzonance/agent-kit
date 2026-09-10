@@ -28,6 +28,8 @@ may need `gh auth refresh -s project`, while an unattended fleet session must ve
 entirely, go straight to the blind same-harness fallback; `config= present=no` → facts come from
 discovery instead of `.agent/config.env`.
 
+`skills-path-mismatch` is expected after a kit upgrade changes the skills path; run the printed Bash `contract_cache_refresh_session_context` remedy to refresh the session cache explicitly.
+
 The contract file is keyed by harness (issue #551): `.agent/env-contract.<harness>.txt`, so a second harness
 observing a checkout never overwrites the file the first harness's run relies on; `contract-read.sh` and
 every guard resolve the running harness's file automatically (the bare name is a read-only legacy fallback).

@@ -411,10 +411,13 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     if ((contract_cache_cli_rc == 1 || contract_cache_cli_rc == 75)); then
         contract_cache_cli_reason=${CONTRACT_CACHE_SESSION_CONTEXT_REASON:-invalid}
         if [[ $contract_cache_cli_reason == skills-path-mismatch ]]; then
-            printf 'contract-cache: session-context %s (cache=%s contract=%s)\n' \
+            contract_cache_cli_contract=$(contract_cache_contract_file "$contract_cache_cli_repo_root")
+            printf 'contract-cache: session-context %s (cache=%s contract=%s); remedy (Bash): source %q && contract_cache_refresh_session_context %q %q %q\n' \
                 "$contract_cache_cli_reason" \
                 "$(contract_cache_session_path "$contract_cache_cli_repo_root")" \
-                "$(contract_cache_contract_file "$contract_cache_cli_repo_root")" >&2
+                "$contract_cache_cli_contract" "$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/${BASH_SOURCE[0]##*/}" \
+                "$contract_cache_cli_repo_root" "$contract_cache_cli_contract" \
+                "$(sed -n 's/^skills= path=//p' "$contract_cache_cli_contract" | sed -n '1p')" >&2
         else
             printf 'contract-cache: session-context %s\n' "$contract_cache_cli_reason" >&2
         fi
