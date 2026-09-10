@@ -197,20 +197,21 @@ A protected path caught in a base merge uses the commit helper's named-base affo
 `merge-inherited paths parked/handed off` (exit `3`, an attended park; exit `2` is the git-metadata elevation
 handback). A hook refusal is one bounded named park: **never** bypass with `--no-verify`, `core.hooksPath`, an alias, or any equivalent.
 
-```bash
-MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable'); echo "Mergeable: $MERGEABLE"
-```
-
-If `CONFLICTING`, root merges the base into the PR branch — **never rebase** a published branch, never
-force-push it. Resolve (`git checkout --ours|--theirs <path>` or edit; strip markers with `sed`, never
-`python3 -c`), grep-verify no `<<<<<<<`/`=======`/`>>>>>>>` remain, then commit via
-`$agentkit/.shared/scripts/worktree-commit.sh` and verify via `$agentkit/.shared/scripts/agent-run.sh`:
+Read `mergeable=`/`base: ref=...` from one `gh-pr-state.sh` call; merge only when `CONFLICTING` —
+**never rebase** a published branch, never force-push it. Resolve (`git checkout --ours|--theirs
+<path>` or edit; strip markers with `sed`, never `python3 -c`), grep-verify no
+`<<<<<<<`/`=======`/`>>>>>>>` remain, then commit via `$agentkit/.shared/scripts/worktree-commit.sh`
+and verify via `$agentkit/.shared/scripts/agent-run.sh`:
 
 ```bash
-BASE_BRANCH=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+pr_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO") || exit 1
+MERGEABLE=$(sed -n 's/^pr=.*mergeable=\([A-Z]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
+BASE_BRANCH=$(sed -n 's/^base: ref=\([^ ]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
+echo "Mergeable: $MERGEABLE"
+[ "$MERGEABLE" = CONFLICTING ] || exit 0
 git fetch origin "$BASE_BRANCH" && git merge "origin/$BASE_BRANCH"
 git diff --name-only --diff-filter=U   # resolve each listed file, then:
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 resolved=src/example.ts   # repeat per resolved path
 # harness.trailer composes a full "Co-Authored-By: ..." line already; pass it verbatim.
 contract_root="$(git rev-parse --show-toplevel)"
@@ -309,8 +310,7 @@ The worker verifies independently before its cycle push, through `agent-run.sh`:
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
-"$agent_run" --cmd lint --if-declared
-"$agent_run" --cmd test
+"$agent_run" --cmd lint --if-declared --cmd test
 ```
 
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
@@ -386,17 +386,19 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 
 ## Step 4: Wait for CI
 
-Wait in **bounded rounds** — never one unbounded wait:
+Wait in **bounded rounds** — never one unbounded wait — then refresh Step 5's evidence too:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60
+  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60 --full --tmpdir "$RUN_DIR/state"
 ```
 
-Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, Step 1's digest on stdout. Never grep
-repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing; `/coderabbit/i` checks are ignored
-for settlement but still counted in `pending=`. Still pending after the bounded rounds →
+Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, digest plus Step 1's `pr_<N>_*.json`
+artifacts on stdout. Never grep repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing;
+`/coderabbit/i` checks are ignored for settlement but still counted in `pending=`. A `note:`
+means still-settling CI; exit-1 names the broken fetch. Still pending after the bounded rounds →
 **stop and escalate**; do not keep raising `--rounds`. Never infer review behavior from a push.
 
 ---
@@ -416,19 +418,11 @@ Post declines before the cycle's single push (Step 1c); root reviews the pushed 
 
 ## Step 6: Evaluate and Repeat
 
-Refresh every artifact with the same single call as Step 1 — no separate `gh pr checks`, no
-hand-rolled GraphQL re-query:
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-: "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
-```
+No `gh pr checks`, no GraphQL re-query, no second `gh-pr-state.sh` — Step 4 already refreshed it.
 
 The digest's `agent-docs: N eligible` line reports this workflow's marked agent-doc threads
 (rule: provider-rules.md, Step 1a). Any CI failure, unhandled automated-review thread/finding, or
-unaddressed body nitpick/adversarial finding → back to Step 1 (max 3 cycles — The Loop's cap).
+unaddressed body nitpick/adversarial finding → back to Step 4 (max 3 cycles — The Loop's cap).
 Human-authored content lacking an explicit user decision surfaces the gate and waits; never post,
 resolve, or claim readiness.
 
