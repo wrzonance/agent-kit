@@ -10,9 +10,7 @@ while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
         --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
-        # Combinable: --report --next-steps --preflight in one call runs all
-        # three sections in that fixed order (issue #696 fold), so a caller
-        # no longer needs three separate invocations to get them.
+        # Combinable: --report --next-steps --preflight run in that fixed order.
         --report) want_report=1; shift ;;
         --next) want_next=1; shift ;;
         --preflight) want_preflight=1; shift ;;
@@ -47,21 +45,17 @@ else
             git -C "$repo_root" check-ignore --no-index -- "$declaration" > /dev/null 2>&1 || locally_ignored=no
         done
         if [[ $tracked == no && $locally_ignored == yes ]]; then
-            # The blessed model keeps declarations per-machine. Once verified,
-            # a local exclude is the completion boundary; no onboarding PR or
-            # tracked artifact is required before the guards can arm.
+            # Per-machine declarations: once verified, a local exclude is the
+            # completion boundary -- no onboarding PR/tracked artifact needed.
             state=armed; next=none
         elif [[ $tracked == yes ]]; then
-            # A feature branch can carry the artifacts before its onboarding
-            # PR merges. Arm only when the declared base branch itself carries
-            # all three files; missing/ambiguous refs stay conservatively
-            # committed.
+            # A feature branch can carry the artifacts before its onboarding PR
+            # merges. Arm only when the declared base branch itself carries all
+            # three files; missing/ambiguous refs stay conservatively committed.
             base_branch=$(sed -n 's/^AGENT_BASE_BRANCH=//p' "$config" 2> /dev/null | head -n 1)
             base_ref=''
             if [[ $base_branch =~ ^[A-Za-z0-9._/-]+$ && $base_branch != -* && $base_branch != *..* ]]; then
-                # Remote-tracking origin is fresher after a merge performed by
-                # another checkout. Prefer it whenever present; local base is
-                # only the fallback for repositories without origin refs.
+                # Prefer origin (fresher after another checkout's merge) over local.
                 if git -C "$repo_root" rev-parse --verify "refs/remotes/origin/$base_branch" > /dev/null 2>&1; then
                     base_ref="refs/remotes/origin/$base_branch"
                 elif git -C "$repo_root" rev-parse --verify "refs/heads/$base_branch" > /dev/null 2>&1; then
@@ -83,8 +77,7 @@ fi
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
-# --next is the bare stage/next line, exclusive of every other section: kept
-# as its own quick exit rather than folded into the sequence below.
+# --next is the bare stage/next line, exclusive of every other section.
 if ((want_next)); then
     printf 'stage=%s next=%s repo-root=%s\n' "$state" "$next" "$repo_root"
     exit 0
