@@ -536,18 +536,42 @@ ci_parser=$(printf '%s\n' "$setup_prompt" | awk '
 ci_parser_script="$tmp/ci-parser.sh"
 {
     printf '%s\n' 'set -euo pipefail'
-    printf '%s\n' "ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint'"
+    printf '%s\n' "ci_digest=\$1"
     printf '%s\n' "setup_terminal='launch-ready'" 'ci_red=0'
     printf '%s\n' "$ci_parser"
     printf '%s\n' "setup_result=\$(printf 'setup.result status=complete result=%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "completion=\$(printf '%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "printf '%s\\n%s\\n' \"\$setup_result\" \"\$completion\""
 } > "$ci_parser_script"
-ci_e2e_output=$(bash "$ci_parser_script")
+ci_e2e_output=$(bash "$ci_parser_script" 'ci=1/3 failing pending=1 failing=1 failing-checks=lint')
 assert_contains "$ci_e2e_output" 'result=ci-red: lint run-dir=/tmp/run' \
     'named failing CI survives into setup.result'
 assert_contains "$ci_e2e_output" 'ci-red: lint run-dir=/tmp/run' \
     'named failing CI survives into completion output'
+ci_pending_output=$(bash "$ci_parser_script" 'ci=1/2 pending pending=1 failing=0')
+assert_contains "$ci_pending_output" 'result=ci-pending run-dir=/tmp/run' \
+    'pending CI cannot produce a launch-ready setup result'
+ci_green_output=$(bash "$ci_parser_script" 'ci=2/2 green pending=0 failing=0')
+assert_contains "$ci_green_output" 'result=launch-ready run-dir=/tmp/run' \
+    'settled passing CI retains the launch-ready result'
+ci_priority=$(printf '%s\n' "$setup_prompt" | awk '
+    /^if \(\(ci_red\)\); then$/ { capture=1 }
+    capture { print }
+    capture && /^fi$/ { exit }
+')
+ci_priority_output=$(ci_digest='ci=1/2 pending pending=1 failing=0' bash -c "ci_red=0
+$ci_parser
+setup_terminal='cq-open: findings'
+$ci_priority
+printf '%s\n' \"\$setup_terminal\"")
+assert_eq 'ci-pending' "$ci_priority_output" 'pending terminal survives subsequent finding classification'
+ci_priority_output=$(ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint' bash -c "ci_red=0
+$ci_parser
+setup_terminal='cq-open: findings'
+$ci_priority
+printf '%s\n' \"\$setup_terminal\"")
+assert_eq 'ci-red: lint' "$ci_priority_output" 'failing CI takes precedence over pending CI and findings'
+assert_contains "$setup_prompt" 'ci-pending' 'setup contract documents pending terminal state'
 assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
     'pr-loop setup does not discard state from a temporary evidence directory'
 assert_not_contains "$setup_prompt" 'cq_evidence_dir' \

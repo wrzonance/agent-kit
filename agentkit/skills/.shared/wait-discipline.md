@@ -9,7 +9,15 @@ Waiting is not work, and narrating a wait is not a status report — one observe
 
 ## The rule
 
-**A wait must never spend model turns.** Wait either by invoking a bounded helper that blocks in a single cell — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test` — or by one harness-level wait on a background terminal. A `sleep N` + re-check issued as its own tool call is churn: the model pays a turn to do what the helper's internal poll loop already does for free.
+**A wait must never spend model turns.** This is the cost goal, not a guarantee: a runtime may yield even while a helper blocks. Use a bounded helper — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test`. A `sleep N` + re-check issued as its own tool call is churn: the helper already owns the polling loop.
+
+CI and review waits belong to a throwaway waiter with fresh context, never the setup or
+fix-batch worker. Root dispatches the compact **Throwaway waiter prompt** in
+`parallel-issues/references/worker-prompts.md`, using the spawn contract's isolation and
+effective cap rules. One waiter owns one bounded helper invocation and one result line;
+helper output goes to a file. Consent-bearing review launches remain in the consent-holding
+context: a waiter may observe their completion, never launch them. If spawning is unavailable,
+record that degradation and use one bounded local helper with the same limits and metrics.
 
 Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial max-duration-seconds, the CI round cap, the worker completion marker/contract, or the runner completion marker/contract. Background a worker or producer only when useful work can continue concurrently; when it is the last task standing, rejoin once with a harness-level terminal wait. This rule covers adversarial verdicts, CI, worker waits, and test-runner logs. For logs, run `agent-run.sh --cmd test` in the foreground or poll the log only from inside one bounded harness cell; never issue separate sleep and tail/re-check tool calls.
 
@@ -73,11 +81,31 @@ instead of recalling this rule — see `parallel-issues/SKILL.md`'s "Compose the
 prompt" step. Never duplicate this number as a literal in a script; change it here and the
 printed value follows.
 
-An early completion still returns early, so a large bound costs nothing when workers are
-fast. If the harness caps a single wait below the class default, issue the largest wait it
-permits. A wait that returns `timed_out:true` must never be re-issued at the same duration —
-it produced nothing and will again: escalate the bound (at least double it) or take the
-stall path (`parallel-issues/scripts/stall-check.sh`) instead of blocking blind.
+An early completion still returns early. Use the largest runtime-advertised yield/timeout
+allowed by higher-priority communication limits (the effective cap); class defaults never
+override these limits. Below that cap, increase an empty wait's duration up to the cap.
+At the effective cap, repeat that capped wait only while the bounded task is outstanding.
+An empty yield is neither completion nor a stall. No empty-wait narration, except updates
+required by higher-priority instructions; count those requests too.
+
+For implementation workers, record the last observed progress time at dispatch/completion
+and the next stall-check deadline: progress time plus `STALL_THRESHOLD_MINUTES` (default 12).
+Before that deadline, no `stall-check.sh` call. At or after it, sample once and schedule the
+next sample no sooner than another threshold interval; observed progress resets the deadline.
+The helper still requires its own consecutive quiet samples before declaring a stall.
+External CI pending/expiry is a CI result, not evidence that an implementation worker stalled.
+
+## Wait metrics at handoff
+
+Report `wait_seconds`, `root_requests`, `waiter_requests`, `max_waiter_context_tokens`,
+and `requests_per_wait_minute = (root_requests + waiter_requests) / (wait_seconds / 60)`.
+Count model requests attributable to waiting, including launch, empty yields, required
+updates, and terminal handling; do not equate tool calls with requests. Use the union of
+overlapping wait intervals for run elapsed time; sum requests across actors. No waits means
+zero counts and rate `n/a`. Missing transcript/token telemetry means `unavailable`, never zero.
+Record effective caps and evidence provenance. The virtual 20/30-minute benchmark is
+**synthetic**, not live acceptance: fewer than 10 root requests and waiter context below
+10K require measured live evidence. A strict communication cap can prevent that root budget.
 
 ## Never replay a recorded path as a command
 
