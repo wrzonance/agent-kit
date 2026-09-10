@@ -1446,7 +1446,7 @@ guard_destructive_command_segments() {
             if ((heredoc_tabstrip)); then
                 bodyline=${bodyline#"${bodyline%%[!$'\t']*}"}
             fi
-            body+="$bodyline"$'\n'
+            [[ $mode == drop ]] || body+="$bodyline"$'\n'
             continue
         fi
 

@@ -1666,6 +1666,42 @@ assert_eq '1' "${#drop_segs[@]}" \
 assert_eq "${gh_shell_segs[*]-}" "${drop_segs[*]-}" \
     'the gh lexer is the destructive lexer in drop mode'
 
+# CR-687-1: drop mode discards the heredoc body at the terminator, but used to
+# accumulate every body line into $body first anyway -- pure wasted work since
+# drop mode never reads $body. Skipping the accumulation must not change the
+# segments drop mode emits: the owner line plus whatever follows the
+# terminator.
+drop_body_payload=$'cat <<EOF\nline one\nline two\nline three\nEOF\necho after'
+mapfile -t drop_body_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$drop_body_payload" drop
+)
+assert_eq '2' "${#drop_body_segs[@]}" \
+    'drop mode still emits the owner segment plus the trailing command once body accumulation is skipped'
+assert_eq 'cat <<EOF' "${drop_body_segs[0]-}" \
+    'and the owner-line segment is unchanged by skipping body accumulation'
+assert_eq 'echo after' "${drop_body_segs[1]-}" \
+    'and the command following the heredoc terminator is still segmented correctly'
+
+# CR-687-1 perf: measured directly (not asserted here, since a timeout-based
+# check would not reliably discriminate) -- a 20000-line heredoc body in drop
+# mode runs in well under a second either way at this size, and even at
+# 200000 lines the pre-fix accumulating lexer finishes in ~3.5s, so a
+# `timeout`-based regression guard would pass whether or not the fix is
+# present. What the fix changes is work done, not a pass/fail time
+# threshold, so pin correctness instead: a large heredoc body in drop mode
+# must still emit exactly the owner-line segment once accumulation is
+# skipped.
+large_heredoc_payload=$'cat <<EOF\n'"$(seq 1 20000)"$'\nEOF'
+mapfile -t large_heredoc_segs < <(
+    source "$hooks/lib/guard-lib.sh" 2>/dev/null
+    guard_destructive_command_segments "$large_heredoc_payload" drop
+)
+assert_eq '1' "${#large_heredoc_segs[@]}" \
+    'drop mode emits exactly the owner-line segment for a large (20000-line) heredoc body'
+assert_eq 'cat <<EOF' "${large_heredoc_segs[0]-}" \
+    'and that segment is unchanged by skipping accumulation of a large body'
+
 trailing_heredoc_foreign=$(mktemp -d "${RUNNER_TEMP:-/dev/shm}/hooks-trailing-heredoc.XXXXXX")
 trailing_heredoc_cmd=$(printf "cat > %s/notes.md <<'EOF'\nfoo\nEOF" "$trailing_heredoc_foreign")
 out=$(pre_input "$scope_repo" "$trailing_heredoc_cmd" "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
