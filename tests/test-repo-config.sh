@@ -628,6 +628,13 @@ assert_contains "$validate_out" 'invalid value for AGENT_ADVERSARIAL_REVIEW_MODE
     'a dotted Claude model id is refused with the hyphenated form'
 assert_not_contains "$validate_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK' \
     'a bare CLI name is valid for the fallback reviewer exactly as for the primary'
+invalid_get_rc=0
+invalid_get_out=$("$rc_sh" --repo-root "$repo" --config-file "$repo/.agent/config.env" \
+    --get AGENT_ADVERSARIAL_REVIEW_MODEL 2>"$tmp/invalid-model.err") || invalid_get_rc=$?
+assert_eq 2 "$invalid_get_rc" 'invalid reviewer model get distinguishes rejection from absence'
+assert_eq '' "$invalid_get_out" 'invalid reviewer model get emits no effective model'
+assert_contains "$(cat "$tmp/invalid-model.err")" 'did you mean claude-fable-5-1' \
+    'invalid reviewer model get preserves the correction warning'
 
 # A roster with one correctable item and one unknown item must not suggest a
 # still-invalid correction -- the corrected roster as a whole has to pass.

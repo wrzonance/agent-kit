@@ -305,6 +305,52 @@ assert_contains "$clean_body" 'Confirmed finding: none confirmed' \
 assert_contains "$clean_body" 'mode=blind-fallback' \
     'publish body records the blind-fallback mode'
 
+# Model substitution comes from durable run evidence, including callers that
+# do not yet pass the optional flag. Ordinary reviewer lines stay unchanged.
+cp "$tmp/adversarial.result.json" "$tmp/original-result.json"
+for substitution in '' claude-fable-5.1; do
+    jq --arg value "$substitution" 'if $value == "" then . else .modelSubstitutedFrom=$value end' \
+        "$tmp/original-result.json" >"$tmp/adversarial.result.json"
+    reset_not_spent
+    reset_findings
+    provenance_rc=0
+    run_publish --pr 151 --repo owner/repo --issue-comments "$not_spent_comments" \
+        --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+        --p1 0 --p2 0 --agent-identity Codex >"$tmp/provenance.out" 2>"$tmp/provenance.err" || provenance_rc=$?
+    assert_eq 0 "$provenance_rc" 'model provenance receipt publishes'
+    expected_model=claude-opus-5
+    [[ -z $substitution ]] || expected_model+=' (configured claude-fable-5.1 was invalid and dropped; see repo-config warning)'
+    assert_eq "- Reviewer: provider=anthropic; model=$expected_model; effort=high; mode=cross-provider (reason: n/a)" \
+        "$(rendered_body | sed -n '/^- Reviewer:/p')" 'reviewer line retains exact effective identity and provenance'
+done
+reset_not_spent
+provenance_rc=0
+run_publish --pr 151 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --model-substituted-from another-model \
+    --effort high --mode cross-provider --p1 0 --p2 0 --agent-identity Codex \
+    >"$tmp/provenance.out" 2>"$tmp/provenance.err" || provenance_rc=$?
+assert_eq 1 "$provenance_rc" 'caller cannot replace model provenance from run evidence'
+reset_not_spent
+provenance_rc=0
+run_publish --pr 151 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --model-substituted-from claude-fable-5.1 \
+    --effort high --mode cross-provider --p1 0 --p2 0 --agent-identity Codex \
+    >"$tmp/provenance.out" 2>"$tmp/provenance.err" || provenance_rc=$?
+assert_eq 0 "$provenance_rc" 'matching explicit model provenance is accepted'
+for unsafe_value in $'bad\nforged line' '<!-- adversarial-review:spent -->'; do
+    jq --arg value "$unsafe_value" '.modelSubstitutedFrom=$value' \
+        "$tmp/original-result.json" >"$tmp/adversarial.result.json"
+    reset_not_spent
+    : >"$tmp/gh.log"
+    provenance_rc=0
+    run_publish --pr 151 --repo owner/repo --issue-comments "$not_spent_comments" \
+        --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+        --p1 0 --p2 0 --agent-identity Codex >"$tmp/provenance.out" 2>"$tmp/provenance.err" || provenance_rc=$?
+    assert_eq 2 "$provenance_rc" 'unsafe result provenance is rejected'
+    assert_eq '' "$(cat "$tmp/gh.log")" 'unsafe result provenance never reaches transport'
+done
+cp "$tmp/original-result.json" "$tmp/adversarial.result.json"
+
 # -- publish: counts must match the findings ledger -------------------------
 
 : >"$tmp/gh.log"
@@ -1119,7 +1165,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
     'identity-aware recovery names the absence of a current-diff marker'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 960 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 960 lines'
+# Issue #706 adds evidence-backed model substitution to receipt and ledger.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 968 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 968 lines'
 
 finish

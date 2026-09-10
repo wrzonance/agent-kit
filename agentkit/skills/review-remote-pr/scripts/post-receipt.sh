@@ -25,7 +25,7 @@ Usage: $PROGNAME precheck --issue-comments FILE [--diff-payload ID]
        $PROGNAME --require-pushed publish ...
        $PROGNAME publish --pr N --repo OWNER/REPO --issue-comments FILE \\
                  [--findings-file FILE] \\
-                 --provider S --model S --effort S \\
+                 --provider S --model S --effort S [--model-substituted-from S] \\
                  --mode cross-provider|blind-fallback [--mode-reason S] \\
                  --p1 N --p2 N \\
                  [--skip-rationale S --oracle S] \\
@@ -358,6 +358,7 @@ FINDINGS_FILE=''
 RUN_DIR=${RUN_DIR:-}
 PROVIDER=''
 MODEL=''
+MODEL_SUBSTITUTED_FROM=''
 EFFORT=''
 MODE=''
 MODE_REASON='n/a'
@@ -395,6 +396,7 @@ parse_publish_args() {
             --findings-file) [[ ${2-} ]] || die_usage '--findings-file requires a path'; FINDINGS_FILE=$2; shift 2 ;;
             --provider) [[ ${2-} ]] || die_usage '--provider requires a value'; PROVIDER=$2; shift 2 ;;
             --model) [[ ${2-} ]] || die_usage '--model requires a value'; MODEL=$2; shift 2 ;;
+            --model-substituted-from) [[ ${2-} ]] || die_usage '--model-substituted-from requires a value'; MODEL_SUBSTITUTED_FROM=$2; shift 2 ;;
             --effort) [[ ${2-} ]] || die_usage '--effort requires a value'; EFFORT=$2; shift 2 ;;
             --mode) [[ ${2-} ]] || die_usage '--mode requires a value'; MODE=$2; shift 2 ;;
             --mode-reason) [[ ${2-} ]] || die_usage '--mode-reason requires a value'; MODE_REASON=$2; shift 2 ;;
@@ -447,6 +449,7 @@ validate_publish_args() {
     # validated as a complete NDJSON document below, before any POST.
     reject_unsafe_field '--provider' "$PROVIDER"
     reject_unsafe_field '--model' "$MODEL"
+    reject_unsafe_field '--model-substituted-from' "$MODEL_SUBSTITUTED_FROM"
     reject_unsafe_field '--effort' "$EFFORT"
     reject_unsafe_field '--mode-reason' "$MODE_REASON"
     reject_unsafe_field '--agent-identity' "$AGENT_IDENTITY"
@@ -492,6 +495,18 @@ validate_runner_provenance() {
             (.verdict.findings | type) == "array")
     ' "$result" >/dev/null 2>&1 ||
         evidence_unavailable "adversarial review result is not a completed validated result: $result"
+    # Old results have no substitution field. New evidence is authoritative:
+    # omission by an old caller must not hide it, nor may a flag overwrite it.
+    local recorded
+    recorded=$(jq -er 'if has("modelSubstitutedFrom") then
+        .modelSubstitutedFrom | select(type == "string" and length > 0)
+        else "" end' "$result") || evidence_unavailable 'invalid model substitution provenance'
+    if [[ -n $recorded ]]; then
+        [[ -z $MODEL_SUBSTITUTED_FROM || $MODEL_SUBSTITUTED_FROM == "$recorded" ]] ||
+            evidence_unavailable '--model-substituted-from conflicts with the validated result'
+        MODEL_SUBSTITUTED_FROM=$recorded
+    fi
+    reject_unsafe_field 'model substitution provenance' "$MODEL_SUBSTITUTED_FROM"
 }
 
 # Writes (or idempotently accepts) the verified-skip result artifact at PATH.
@@ -711,12 +726,14 @@ append_ledger_entry() {
         "$FINDINGS_FILE" 2>/dev/null) || covered_heads='[]'
     if ! jq -cn \
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
+        --arg substituted_from "$MODEL_SUBSTITUTED_FROM" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
         --argjson covered_heads "$covered_heads" \
         --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
+         + (if $substituted_from == "" then {} else {modelSubstitutedFrom:$substituted_from} end)
          + (if $harness == "" then {} else {harness:$harness} end)
          + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}
          + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
@@ -781,12 +798,14 @@ render_supersedes_line() {
 }
 
 render_body() {
-    local total=$((P1 + P2))
+    local total=$((P1 + P2)) model_note=''
+    [[ -z $MODEL_SUBSTITUTED_FROM ]] ||
+        model_note=" (configured $MODEL_SUBSTITUTED_FROM was invalid and dropped; see repo-config warning)"
     printf 'This was written agentically; verify its assertions:\n'
     printf '%s\n' "$DOC_MARKER"
     printf '## Adversarial review receipt\n'
-    printf -- '- Reviewer: provider=%s; model=%s; effort=%s; mode=%s (reason: %s)\n' \
-        "$PROVIDER" "$MODEL" "$EFFORT" "$MODE" "$MODE_REASON"
+    printf -- '- Reviewer: provider=%s; model=%s%s; effort=%s; mode=%s (reason: %s)\n' \
+        "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$MODE_REASON"
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_head_lines
     render_supersedes_line
