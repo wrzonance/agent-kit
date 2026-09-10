@@ -692,8 +692,10 @@ assert_contains "$out" 'declared-test-ran' \
 # issue #697: +40 for repeatable `--cmd NAME [--if-declared] --cmd NAME2 ...`
 # chaining (build_chain_argv/finish, the cmd_queue parse/derive plumbing, and
 # the runner-delegation chain guard) -- folds review-remote-pr Step 2's
-# lint-then-test pair into one recipe call.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1667 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1667 lines'
+# lint-then-test pair into one recipe call. A later same-branch trim pass
+# absorbed that +40 back out via comment/whitespace cuts, so the ceiling
+# stays at the pre-#697 value of 1627 rather than the feature's raw +40.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1627 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1627 lines'
 
 finish
