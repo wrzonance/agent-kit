@@ -606,13 +606,12 @@ print_gaps() {
 }
 
 # What onboarding's own `grep '^# AGENT_'` glue used to do beside this call:
-# surface commented-out declarations detect-toolchains cannot infer from disk
-# (labels, ADR dir, protected paths, review providers) -- absorbed here so a
-# caller needs one call, not this report plus its own grep.
+# surface EVERY commented-out declaration, including ones with no marker file
+# to infer from (e.g. AGENT_CMD_SETUP) -- one call now covers this plus grep.
 print_blank_declarations() {
     local config=$repo_root/.agent/config.env blanks
     [[ -r $config ]] || return 0
-    blanks=$(grep -nE '^# AGENT_(LABEL|ADR|PROTECTED|REVIEW)_' "$config" 2> /dev/null || true)
+    blanks=$(grep -nE '^# AGENT_' "$config" 2> /dev/null || true)
     [[ -n $blanks ]] || return 0
     printf '\nOther commented declarations still blank:\n\n%s\n' "$blanks"
 }
@@ -722,8 +721,9 @@ done
 
 # A comma-joined list runs each named section in one call -- e.g.
 # `--format gaps,suggestions` -- so onboarding no longer needs two separate
-# invocations to get both reports (issue #696).
-declare -a ARG_FORMATS=()
+# invocations to get both reports (issue #696); duplicates dedupe to first.
+declare -a ARG_FORMATS=() ARG_FORMATS_UNIQUE=()
+declare -A seen_fmt=()
 IFS=, read -ra ARG_FORMATS <<< "$ARG_FORMAT"
 for fmt in "${ARG_FORMATS[@]}"; do
     case $fmt in
@@ -733,6 +733,7 @@ for fmt in "${ARG_FORMATS[@]}"; do
             exit 2
             ;;
     esac
+    [[ -n ${seen_fmt[$fmt]:-} ]] || { seen_fmt[$fmt]=1; ARG_FORMATS_UNIQUE+=("$fmt"); }
 done
 
 if [[ -n $ARG_REPO_ROOT ]]; then
@@ -751,7 +752,7 @@ self_dir=${BASH_SOURCE[0]%/*}
 
 [[ $ARG_FORMAT == drift ]] || collect_all
 first=1
-for fmt in "${ARG_FORMATS[@]}"; do
+for fmt in "${ARG_FORMATS_UNIQUE[@]}"; do
     ((first)) || printf '\n'
     first=0
     case $fmt in
