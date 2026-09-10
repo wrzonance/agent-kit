@@ -907,13 +907,13 @@ resolve_named_command() {
         return 0
     fi
 
-    ((fix_cmd == 0)) || die "--fix requires $key in .agent/config.env."
+    ((fix_cmd == 0 || if_declared)) || die "--fix requires $key in .agent/config.env."
 
     # A bespoke dispatcher IS the runner; `runner <name>` is how the runner
     # convention already invokes it, so this needs no special case.
     # AGENT_REPO_RUNNER is consulted only on the fallback path. If the caller
     # supplied AGENT_REPO_RUNNER in the environment, the resolver is not read.
-    if resolve_runner; then
+    if ((fix_cmd == 0)) && resolve_runner; then
         cmd=("$name")
         resolution_kind=runner
         command_kind=generic

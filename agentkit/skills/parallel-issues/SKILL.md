@@ -518,9 +518,9 @@ approval flow (its reviewer can grant it); that is a runtime permission, not a u
 decision to re-litigate. The still-gated actions are unchanged: ready-flips, merges,
 bot triggers, and human-review responses.
 
-Every issue-lead call uses the spawn shape and exact-parameter rules in
-["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) — that file has no `task_name`
-parameter; fill in only the complete prompt below. When constructing a worker session, set its working directory to the assigned worktree
+Every issue-lead call uses the spawn policy in
+["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md); fill in the complete prompt below.
+When constructing a worker session, set its working directory to the assigned worktree
 whenever the harness supports a cwd/workdir field; the prompt's absolute-path rule remains
 mandatory even when that field is unavailable. Do not describe the spawn call without making
 it — a task is dispatched only after `spawn_agent` returns a task/agent identifier. On the
@@ -689,9 +689,9 @@ Act on each lead result as soon as it arrives:
   that recheck; otherwise report the preserved worktree with the blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
-**Stall detection is a rule, not forensics.** When a bounded worker wait times out, run
+**Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
 `"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`
-— the worktree's newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
+At the deadline, sample once; schedule the next sample at least one threshold later. The newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
 or process inspection. Two consecutive quiet checks with no filesystem change for the named
 threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: interrupt that
 worker, re-dispatch it once with the preserved worktree evidence and the exact remaining
@@ -761,7 +761,7 @@ Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before 
 owns the no-model-turn rule, one wait per interval, and the durable-state recipe. A bounded wait is
 silent until terminal: emit only the one completion or expiry line and redirect any heartbeat to a log.
 
-Every wait names its numeric bound at the call site: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s** (the shared file's default-bounds table). Dispatch already printed this worker's own bound as a `wait-bound=` line when composing its prompt — quote that printed value instead of recalling this rule. A `timed_out:true` return is never re-issued at the same duration; escalate the bound or run the Collect section's stall check.
+Every wait names its bound: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s**, subject to runtime and communication caps. Dispatch already printed this worker's own bound as a `wait-bound=` line — quote it. Use the shared fresh waiter template for CI/review; at the effective cap, repeat empty waits without premature stall checks.
 
 After completion, inspect durable state (worktree `git status`/`log`, then
 `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):
@@ -931,7 +931,7 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 ## Do NOT Delete Worktrees
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
+**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff plus shared `requests_per_wait_minute` metrics. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
 ```bash
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
 [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob

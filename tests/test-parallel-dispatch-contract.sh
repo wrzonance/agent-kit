@@ -689,7 +689,7 @@ assert_prompt_instruction_contract() {
 assert_prompt_instruction_contract "$issue_lead_prompt" 'issue-lead prompt' 'this issue'
 assert_prompt_instruction_contract "$draft_loop_prompt" 'draft-loop prompt' 'this PR'
 assert_contains "$setup_prompt" 'gh-pr-state.sh' 'setup prompt fetches PR state'
-assert_contains "$setup_prompt" '--wait-ci' 'setup prompt waits for CI'
+assert_not_contains "$setup_prompt" '--wait-ci' 'setup prompt snapshots CI without polling'
 assert_contains "$setup_prompt" 'code-quality-state.sh' 'setup prompt triages Code Quality'
 assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs materiality precheck'
 assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
@@ -1294,8 +1294,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'never be re-issued at the same duration' \
-    'a timed-out wait escalates instead of repeating'
+assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
+    'a capped timed-out wait does not force a premature stall check'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 

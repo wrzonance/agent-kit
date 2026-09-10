@@ -396,3 +396,21 @@ this slice:
   - One real, paid trial end-to-end, which would also be the first chance
     to confirm bench/parse-rollout.py's assumed session-log schema against
     Codex's actual output rather than this slice's synthetic fixture.
+
+Synthetic waiter cost fixture (#608)
+-----------------------------------
+`fixtures/waiter.json` supplies virtual 20/30-minute CI durations, root/waiter
+caps, and explicit context-growth assumptions to `tests/test-waiter-bench.sh`.
+Run through the declared test selector `--only waiter-bench`. No CI service,
+model endpoint, or clock sleep runs. Each actor has a launch request, one
+request per empty yield, and a terminal request. Context starts at 1800 tokens
+and grows by an assumed 80 tokens per request, including continuation overhead.
+These are model inputs, not token telemetry or limits guaranteed by a harness.
+
+The 600-second root cap is a favorable synthetic scenario; the control with a
+60-second communication cap intentionally exceeds the root budget. Reusing a
+163K-context worker intentionally fails the waiter-context budget. CI never
+triggers implementation stall checks; a separate silent-worker scenario samples
+only at 720 and 1440 seconds. Output includes requests per wait-minute, both
+actor request counts, maximum waiter context, and synthetic provenance. A live
+30-minute run and real context telemetry are still needed for live acceptance.

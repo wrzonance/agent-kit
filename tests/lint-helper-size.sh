@@ -23,14 +23,14 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1333:15916:800"
+    [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
     # #612: explicit formatter pairs and byte-bounded cargo failure context.
-    [skills/.shared/scripts/agent-run.sh]="1685:17667:800"
+    [skills/.shared/scripts/agent-run.sh]="1685:17676:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1123:11566:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1276:16733:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     [skills/review-remote-pr/scripts/adversarial-run.sh]="959:12068:800"
@@ -44,7 +44,7 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-readonly MAX_TREE_TOKENS=396295
+readonly MAX_TREE_TOKENS=396379
 
 violations=0
 checked=0

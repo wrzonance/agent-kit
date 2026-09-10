@@ -91,6 +91,24 @@ out=$("$run" --dir "$repo" --cmd format --fix 2>&1)
 assert_contains "$out" 'AGENT_CMD_FORMAT_FIX' 'missing fix declaration names its key'
 assert_eq no "$([[ -e $repo/runner-was-used ]] && printf yes || printf no)" 'missing fix never falls back to runner'
 
+# Optional fix absence must skip before fallback and preserve the next link.
+for check_declared in no yes; do
+    for runner_declared in no yes; do
+        printf 'AGENT_CMD_TEST=touch required-test-ran\n' > "$repo/.agent/config.env"
+        [[ $check_declared == no ]] || printf 'AGENT_CMD_FORMAT=false\n' >> "$repo/.agent/config.env"
+        [[ $runner_declared == no ]] || printf 'AGENT_REPO_RUNNER=./runner\n' >> "$repo/.agent/config.env"
+        scenario="check=$check_declared runner=$runner_declared"
+        assert_rc 0 "optional missing fix skips ($scenario)" -- "$run" --dir "$repo" --cmd format --fix --if-declared
+        rm -f "$repo/required-test-ran"
+        out=$("$run" --dir "$repo" --force --cmd format --fix --if-declared --cmd test 2>&1)
+        assert_eq 0 "$?" "optional fix chain succeeds ($scenario)"
+        assert_contains "$out" 'skipping' "optional fix explains its skip ($scenario)"
+        assert_eq yes "$([[ -e $repo/required-test-ran ]] && printf yes || printf no)" "mandatory chain link executes ($scenario)"
+        assert_eq no "$([[ -e $repo/runner-was-used ]] && printf yes || printf no)" "optional fix bypasses runner ($scenario)"
+        assert_rc 1 "required missing fix still fails ($scenario)" -- "$run" --dir "$repo" --cmd format --fix
+    done
+done
+
 # Recorded cargo-style failure with noisy output and an adversarially long line.
 cat > "$repo/cargo" <<'SH'
 #!/bin/sh

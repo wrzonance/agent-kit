@@ -539,18 +539,42 @@ ci_parser=$(printf '%s\n' "$setup_prompt" | awk '
 ci_parser_script="$tmp/ci-parser.sh"
 {
     printf '%s\n' 'set -euo pipefail'
-    printf '%s\n' "ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint'"
+    printf '%s\n' "ci_digest=\$1"
     printf '%s\n' "setup_terminal='launch-ready'" 'ci_red=0'
     printf '%s\n' "$ci_parser"
     printf '%s\n' "setup_result=\$(printf 'setup.result status=complete result=%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "completion=\$(printf '%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "printf '%s\\n%s\\n' \"\$setup_result\" \"\$completion\""
 } > "$ci_parser_script"
-ci_e2e_output=$(bash "$ci_parser_script")
+ci_e2e_output=$(bash "$ci_parser_script" 'ci=1/3 failing pending=1 failing=1 failing-checks=lint')
 assert_contains "$ci_e2e_output" 'result=ci-red: lint run-dir=/tmp/run' \
     'named failing CI survives into setup.result'
 assert_contains "$ci_e2e_output" 'ci-red: lint run-dir=/tmp/run' \
     'named failing CI survives into completion output'
+ci_pending_output=$(bash "$ci_parser_script" 'ci=1/2 pending pending=1 failing=0')
+assert_contains "$ci_pending_output" 'result=ci-pending run-dir=/tmp/run' \
+    'pending CI cannot produce a launch-ready setup result'
+ci_green_output=$(bash "$ci_parser_script" 'ci=2/2 green pending=0 failing=0')
+assert_contains "$ci_green_output" 'result=launch-ready run-dir=/tmp/run' \
+    'settled passing CI retains the launch-ready result'
+ci_priority=$(printf '%s\n' "$setup_prompt" | awk '
+    /^if \(\(ci_red\)\); then$/ { capture=1 }
+    capture { print }
+    capture && /^fi$/ { exit }
+')
+ci_priority_output=$(ci_digest='ci=1/2 pending pending=1 failing=0' bash -c "ci_red=0
+$ci_parser
+setup_terminal='cq-open: findings'
+$ci_priority
+printf '%s\n' \"\$setup_terminal\"")
+assert_eq 'ci-pending' "$ci_priority_output" 'pending terminal survives subsequent finding classification'
+ci_priority_output=$(ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint' bash -c "ci_red=0
+$ci_parser
+setup_terminal='cq-open: findings'
+$ci_priority
+printf '%s\n' \"\$setup_terminal\"")
+assert_eq 'ci-red: lint' "$ci_priority_output" 'failing CI takes precedence over pending CI and findings'
+assert_contains "$setup_prompt" 'ci-pending' 'setup contract documents pending terminal state'
 assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
     'pr-loop setup does not discard state from a temporary evidence directory'
 assert_not_contains "$setup_prompt" 'cq_evidence_dir' \
@@ -918,6 +942,36 @@ env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
 assert_eq 0 "$keyed_rc" 'matching keyed root overrides a stale restrictive legacy contract'
 assert_not_contains "$(cat "$tmp/keyed.err")" 'worktree-contract-less-restrictive-than-root' \
     'current keyed sandbox does not produce a false widening refusal'
+
+# Unsafe keyed selections cannot suppress comparison with a restrictive root.
+for unsafe_kind in symlink tracked directory absent; do
+    unsafe_root="$tmp/unsafe-root-$unsafe_kind"
+    make_widen_root "$unsafe_root" "$restrictive_line"
+    unsafe_keyed="$unsafe_root/.agent/env-contract.codex.txt"
+    case $unsafe_kind in
+        symlink) ln -s env-contract.txt "$unsafe_keyed" ;;
+        tracked)
+            printf '%s\n' "$loose_line" > "$unsafe_keyed"
+            git -C "$unsafe_root" add -f -- "$unsafe_keyed"
+            ;;
+        directory) mkdir "$unsafe_keyed" ;;
+        absent) rm "$unsafe_root/.agent/env-contract.txt" ;;
+    esac
+    unsafe_worktree="$unsafe_root/.worktrees/feat-issue-unsafe"
+    make_widen_worktree "$unsafe_root" feat/issue-unsafe "$unsafe_worktree" "$loose_line"
+    unsafe_rc=0
+    env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+        bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$unsafe_worktree" --issue 995 --branch feat/issue-unsafe \
+        --worker-model gpt-5.6-luna --worker-effort high > "$tmp/unsafe.out" 2> "$tmp/unsafe.err" || unsafe_rc=$?
+    if [[ $unsafe_kind == absent ]]; then
+        assert_eq 0 "$unsafe_rc" 'an absent root contract still permits composition'
+    else
+        assert_eq 1 "$unsafe_rc" "$unsafe_kind keyed root cannot bypass the sandbox comparison"
+        assert_contains "$(cat "$tmp/unsafe.err")" 'root-contract-untrusted' \
+            "$unsafe_kind keyed root is refused on provenance"
+    fi
+done
 
 # The inherited (byte-identical) case must NOT be flagged -- this is the
 # normal, expected shape after create-issue-worktree.sh carries the root

@@ -2,6 +2,7 @@
 
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
+- [Throwaway waiter prompt](#throwaway-waiter-prompt) — one bounded CI/review observation in fresh context
 - [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
 - [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
@@ -297,6 +298,39 @@ publication handback — or BLOCKED with one concrete reason. Do not contact the
 pushing your own branch, and do not ask for privilege escalation.
 ````
 
+## Throwaway waiter prompt
+
+Root fills only this template (under approximately 2K tokens), using the fresh-context shape
+and effective runtime caps in `.shared/spawn-contract.md`. Supply trusted absolute paths and
+argv, no issue history, diff, full setup prompt, or review payload. Never reuse an implementation
+worker. Review consent-bearing launches stay with their consent holder; the helper here only
+observes existing work. If a caller is itself a worker, return pending state to root for dispatch.
+
+```text
+You are a read-only throwaway waiter. Never resume this waiter for another wait.
+Worktree: <absolute worktree>; repository/PR: <slug and number>.
+Helper argv: <one trusted bounded helper invocation, including numeric rounds/interval or duration>.
+Helper bound: <seconds>; effective tool caps: <advertised names and milliseconds>.
+Output: <absolute dedicated result file>; diagnostics: <absolute dedicated log file>.
+Run exactly that helper once in the supplied worktree, redirecting stdout/stderr to those files.
+Use the largest permitted yield and wait parameters; higher-priority tool/communication limits
+prevail. Continue the SAME running session/cell after a yield; never restart the command or
+hand-poll CI. No repository exploration, edits, review launches, messages to other actors,
+stall checks, or additional commands. Never treat a timeout as success.
+At helper completion/expiry/error, return exactly one result line:
+wait-result status=<complete|expired|error> exit=<code> elapsed_seconds=<measured>
+result=<path> log=<path> waiter_requests=<observed|unavailable>
+max_waiter_context_tokens=<observed|unavailable>
+(Join those fields on one line.) Preserve nonzero helper exits; a successful state query
+can still report failing CI, so root must inspect the result before classifying readiness.
+No empty-yield narration except communication required by higher-priority instructions.
+Missing request/token telemetry is unavailable, never inferred from tool-call counts.
+```
+
+Root counts its own wait requests, aggregates the shared handoff metrics, and reads the
+terminal result once. Retire the waiter after this result; a new bounded attempt needs a new
+waiter and an explicit remaining budget. Expiry ends this attempt, not an automatic retry.
+
 ## PR-loop setup worker prompt
 
 **Per-agent prompt template:**
@@ -346,15 +380,16 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Wait for CI with the bounded helper, capture and inspect its bounded digest. A failing check is a
-terminal setup result, not a fix batch:
+Snapshot CI once; root assigns pending CI to a fresh throwaway waiter, never resumes setup
+as a poller. A failing check is a terminal setup result, not a fix batch:
 
 setup_terminal='launch-ready'
 ci_red=0
 ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO \
-  --wait-ci --rounds 60 --interval 10 "${acceptance_args[@]}") || exit 1
+  "${acceptance_args[@]}") || exit 1
 printf '%s\n' "$ci_digest"
 ci_line=$(sed -n '/^ci=/p' <<<"$ci_digest")
+ci_pending=$(sed -n 's/^ci=.*pending=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing_checks=$(sed -n 's/^ci=.*failing=[1-9][0-9]* failing-checks=\(.*\)$/\1/p' <<<"$ci_line")
 if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
@@ -364,6 +399,8 @@ if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
   else
     setup_terminal='ci-red: unknown-check'
   fi
+elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
+  setup_terminal='ci-pending'
 fi
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
@@ -419,6 +456,8 @@ if ((ci_red)); then
   else
     setup_terminal='ci-red: unknown-check'
   fi
+elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
+  setup_terminal='ci-pending'
 fi
 
 Run the materiality precheck against the PR's current head before any review spend:
@@ -502,12 +541,12 @@ has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_c
 `cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
 (agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
 review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
-exactly `launch-ready`. `ci-red` always wins the terminal slot over `cq-open`/`icf-open` when more
-than one signal is non-zero; every printed evidence line still reaches the root regardless of which
-one is chosen as the terminal marker.
+exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root dispatches
+a fresh waiter. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
+evidence line still reaches root regardless of which signal occupies the terminal slot.
 The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
 `ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
-`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
+`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, `ci-pending run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
 The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
 findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
 setup outcome, even when `cq-repo: M` is non-zero.
