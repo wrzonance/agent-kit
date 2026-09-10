@@ -200,7 +200,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 if [[ "$*" == *'/pulls/'* ]]; then
     [[ ${RECEIPT_CI_MODE:-} != unknown ]] || exit 1
-    jq -n --arg base "${RECEIPT_CI_BASE:-feat/parent}" '{head:{sha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},base:{ref:$base,repo:{default_branch:"main"}}}'
+    jq -n --arg base "${RECEIPT_CI_BASE:-feat/issue-707}" '{head:{sha:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},base:{ref:$base,repo:{default_branch:"main"}}}'
     exit 0
 fi
 if [[ "$*" == *'/check-runs?'* ]]; then
@@ -310,10 +310,11 @@ assert_not_contains "$body" 'none confirmed' \
     'publish body does not claim a clean review when findings were given'
 
 # Current CI evidence distinguishes default bases, registered checks and unavailable evidence.
-for ci_case in default checked unknown partial; do
+for ci_case in default checked unknown partial release; do
     reset_not_spent
-    ci_base=feat/parent ci_count=0
+    ci_base=feat/issue-707 ci_count=0
     [[ $ci_case != default ]] || ci_base=main
+    [[ $ci_case != release ]] || ci_base=release-1.x
     [[ $ci_case != checked && $ci_case != partial ]] || ci_count=1
     RECEIPT_CI_BASE=$ci_base RECEIPT_CI_COUNT=$ci_count RECEIPT_CI_MODE=$ci_case \
         run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
@@ -329,7 +330,7 @@ for ci_case in default checked unknown partial; do
         assert_contains "$ci_body" 'Analyze (python)' 'receipt names missing observed checks'
         assert_contains "$ci_body" '"pr":716' 'receipt pins the default-target reference'
     else
-        assert_not_contains "$ci_body" 'Verification:' 'default and checked receipts retain existing text'
+        assert_not_contains "$ci_body" 'Verification:' 'default, release and checked receipts retain existing text'
     fi
 done
 

@@ -168,8 +168,8 @@ chmod +x "$tmp/case-base-unavailable/gh"
 base_unavailable_err="$tmp/base-unavailable.err"
 base_unavailable_output=$(PATH="$tmp/case-base-unavailable:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
     --pr 78 --repo owner/repo 2>"$base_unavailable_err")
-assert_contains "$base_unavailable_output" 'ci=1/1 unknown pending=0 failing=0' \
-    'missing default-branch metadata leaves coverage unknown despite passing checks'
+assert_contains "$base_unavailable_output" 'ci=1/1 green pending=0 failing=0' \
+    'a known non-chain base retains ordinary CI despite unavailable comparison metadata'
 assert_contains "$base_unavailable_output" 'base: ref=deleted-parent behind=unknown stale=unknown' \
     'base lookup failure keeps base evidence explicitly unknown'
 assert_contains "$(cat "$base_unavailable_err")" 'base comparison unavailable' \
@@ -686,24 +686,28 @@ assert_not_contains "$all_zero_output" 'next:' 'every lane at zero prints no nex
 assert_contains "$all_zero_output" 'ci=0/0 none pending=0 failing=0' \
     'zero checks outside --wait-ci still report none, never none-configured'
 
-stacked_zero_output=$(TEST_BASE=feat/parent PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+stacked_zero_output=$(TEST_BASE=feat/issue-707 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
 assert_contains "$stacked_zero_output" 'ci: not-triggered-on-stacked-base' 'stacked missing CI marker'
 assert_contains "$stacked_zero_output" 'verification=no-ci-on-stacked-base' 'stacked machine verification state'
 assert_not_contains "$all_zero_output" 'not-triggered-on-stacked-base' 'default base unaffected'
-stacked_checked_output=$(TEST_BASE=feat/parent TEST_CHECK=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+stacked_checked_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
 assert_not_contains "$stacked_checked_output" 'not-triggered-on-stacked-base' 'stacked registered CI is unaffected'
 
 
-partial_output=$(TEST_BASE=feat/parent TEST_CHECK=1 TEST_CI_GAP=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+partial_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 TEST_CI_GAP=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
 assert_contains "$partial_output" 'ci=1/1 partial' 'green subset is not full CI verification'
 assert_contains "$partial_output" 'verification=partial-ci-on-stacked-base' 'digest carries the partial coverage state'
 assert_contains "$partial_output" 'Analyze (python)' 'digest names missing reference checks'
 assert_contains "$partial_output" 'ci-reference: pr=716 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'digest pins observed reference PR/head'
+release_output=$(TEST_BASE=release-1.x TEST_CHECK=1 TEST_CI_GAP=1 PATH="$tmp/case-all-zero:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+assert_contains "$release_output" 'ci=1/1 green' 'release backport retains its ordinary green checks'
+assert_not_contains "$release_output" 'verification=' 'release backport does not require a default-target reference'
+
 
 mkdir -p "$tmp/case-missing-base"
 sed 's/"default_branch":"main"/"default_branch":""/g' "$tmp/case-all-zero/gh" >"$tmp/case-missing-base/gh"
 chmod +x "$tmp/case-missing-base/gh"
-unknown_base_output=$(TEST_CHECK=1 PATH="$tmp/case-missing-base:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
+unknown_base_output=$(TEST_BASE=feat/issue-707 TEST_CHECK=1 PATH="$tmp/case-missing-base:$PATH" bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 99 --repo owner/repo)
 assert_contains "$unknown_base_output" 'ci=1/1 unknown' 'missing base metadata never becomes green'
 assert_contains "$unknown_base_output" 'verification=unknown' 'missing metadata is explicit coverage uncertainty'
 

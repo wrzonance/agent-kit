@@ -272,7 +272,8 @@ else
     block 'pr-state digest could not determine base freshness'
 fi
 
-if grep -qE '^verification=(no-ci-on-stacked-base|partial-ci-on-stacked-base|unknown)$' "$digest_file"; then
+if [[ $base =~ ^feat/issue-[1-9][0-9]*$ ]] &&
+    grep -qE '^verification=(no-ci-on-stacked-base|partial-ci-on-stacked-base|unknown)$' "$digest_file"; then
     block 'CI coverage comparison is missing checks or unavailable'
 fi
 

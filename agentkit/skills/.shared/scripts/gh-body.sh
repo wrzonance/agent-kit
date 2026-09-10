@@ -53,7 +53,8 @@ also proves the closing issue reference, base-aware:
     Fixes/Resolves #N" keyword is still required, but forge-side registration
     cannot happen until the PR is retargeted, so it is reported as a distinct
     non-error "closing-issue #N: deferred (...)" outcome and exits 0.
-    Zero registered checks also emit "ci: not-triggered-on-stacked-base";
+    For kit chain bases (feat/issue-N, positive N), zero registered checks also
+    emit "ci: not-triggered-on-stacked-base";
     A settled default-target PR's observed check set supplies a bounded reference.
     --json adds verification and ci evidence, including missing checks/reference
     PR/head. Partial or unknown coverage is never proof of full verification.
@@ -448,6 +449,7 @@ verify_closing_reference() {
         ((JSON_MODE == 0)) || ci_fd=2
         CI_SNAPSHOT=$(stacked_ci_snapshot "$GH_BIN" "$owner/$name" "$VERIFY_HOST" "$(cat "$WORK_DIR/stored.json")")
         CI_VERIFICATION=$(jq -r .state <<<"$CI_SNAPSHOT")
+        [[ $CI_VERIFICATION != not-stacked ]] || { CI_VERIFICATION=''; return 0; }
         stacked_ci_lines "$CI_SNAPSHOT" >&"$ci_fd"
         return 0
     fi

@@ -185,7 +185,7 @@ EOF
 
 run_gate() {
     MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
-        --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
+        --head-sha "$HEAD_SHA" --base "${GATE_BASE:-main}" --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
         --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
@@ -222,14 +222,23 @@ for ci_word in none none-configured; do
     good_digest
 done
 
-# A caller's green check-count summary cannot erase a comparison gap.
+# A caller's green check-count summary cannot erase an actual kit-chain gap.
 for verification in partial-ci-on-stacked-base unknown; do
+    sed -i 's/base: ref=main /base: ref=feat\/issue-707 /' "$tmp/digest.txt"
     printf 'verification=%s\n' "$verification" >>"$tmp/digest.txt"
     rc=0
-    out=$(run_gate) || rc=$?
-    assert_eq 1 "$rc" "$verification evidence blocks an otherwise green digest"
+    out=$(PR_BASE=feat/issue-707 GATE_BASE=feat/issue-707 run_gate) || rc=$?
+    assert_eq 1 "$rc" "$verification evidence blocks an otherwise green kit-chain digest"
     good_digest
 done
+# Reference evidence is irrelevant to an intentional maintenance branch.
+sed -i 's/base: ref=main /base: ref=release-1.x /' "$tmp/digest.txt"
+printf 'verification=unknown\n' >>"$tmp/digest.txt"
+rc=0
+out=$(PR_BASE=release-1.x GATE_BASE=release-1.x run_gate) || rc=$?
+assert_eq 0 "$rc" 'release-1.x can pass without default-target reference evidence'
+assert_contains "$out" 'gate=PASS' 'release backport keeps the ordinary merge policy'
+good_digest
 
 # A forge queue cannot derive the closing issue even when the PR body links
 # one. Feed its actual PR/head/base evidence through the merge boundary.

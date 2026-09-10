@@ -53,7 +53,7 @@ esac
 GH
 chmod +x "$tmp/gh"
 export CI_LOG="$tmp/calls"
-pr='{"number":719,"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/parent","repo":{"default_branch":"main"}}}'
+pr='{"number":719,"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"feat/issue-707","repo":{"default_branch":"main"}}}'
 result=$(stacked_ci_snapshot "$tmp/gh" owner/repo '' "$pr")
 assert_eq partial-ci-on-stacked-base "$(jq -r .state <<<"$result")" 'one green workflow does not hide missing Analyze checks'
 assert_eq 716 "$(jq -r .reference.pr <<<"$result")" 'comparison names an observed default-target PR'
@@ -80,4 +80,14 @@ default_pr=$(jq '.base.ref="main"' <<<"$pr")
 result=$(stacked_ci_snapshot "$tmp/gh" owner/repo '' "$default_pr")
 assert_eq not-stacked "$(jq -r .state <<<"$result")" 'default-target PR behavior is unchanged'
 assert_eq '' "$(cat "$CI_LOG")" 'default-target PRs need no baseline fetch'
+for target in release-1.x feat/parent feat/issue-0 feat/issue-01 feat/issue-707-extra; do
+    : >"$CI_LOG"
+    other_pr=$(jq --arg base "$target" '.base.ref=$base | del(.base.repo.default_branch)' <<<"$pr")
+    result=$(CI_CASE=unavailable stacked_ci_snapshot "$tmp/gh" owner/repo '' "$other_pr")
+    assert_eq not-stacked "$(jq -r .state <<<"$result")" "$target is outside kit chain coverage enforcement"
+    assert_eq '' "$(cat "$CI_LOG")" "$target needs no default-target reference evidence"
+done
+missing_base=$(jq 'del(.base.ref)' <<<"$pr")
+result=$(stacked_ci_snapshot "$tmp/gh" owner/repo '' "$missing_base")
+assert_eq unknown "$(jq -r .state <<<"$result")" 'unreadable base cannot be classified as outside the chain'
 finish

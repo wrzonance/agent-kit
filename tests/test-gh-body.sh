@@ -488,15 +488,18 @@ stacked_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical" 
     --expect-closing-issue 42)
 unset GH_PR_BASE GH_PR_DEFAULT_BRANCH
 assert_contains "$stacked_output" 'ci: not-triggered-on-stacked-base' 'stacked zero checks are explicit'
-checked_output=$(GH_PR_BASE=feat/parent GH_CI_COUNT=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --expect-closing-issue 42)
+checked_output=$(GH_PR_BASE=feat/issue-707 GH_CI_COUNT=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --expect-closing-issue 42)
 assert_not_contains "$checked_output" 'ci: not-triggered-on-stacked-base' 'registered checks suppress deferred CI'
-partial_output=$(GH_PR_BASE=feat/parent GH_CI_COUNT=1 GH_CI_GAP=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
+partial_output=$(GH_PR_BASE=feat/issue-707 GH_CI_COUNT=1 GH_CI_GAP=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
 assert_eq partial-ci-on-stacked-base "$(jq -r .verification <<<"$partial_output")" 'body JSON carries partial coverage'
 assert_eq 40 "$(jq -r .ci.reference.pr <<<"$partial_output")" 'body JSON names reference PR'
 assert_contains "$partial_output" 'Analyze (python)' 'body JSON names missing observed checks'
-unknown_output=$(GH_PR_BASE=feat/parent GH_CI_UNAVAILABLE=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
+unknown_output=$(GH_PR_BASE=feat/issue-707 GH_CI_UNAVAILABLE=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
 assert_eq unknown "$(jq -r '.verification' <<<"$unknown_output")" 'unreadable CI is unknown rather than zero'
 assert_not_contains "$unknown_output" 'no-ci-on-stacked-base' 'API errors never prove missing CI'
+release_output=$(GH_PR_BASE=release-1.x GH_CI_UNAVAILABLE=1 run_body pr edit 41 --repo owner/repo --body-file "$canonical" --json --expect-closing-issue 42)
+assert_eq false "$(jq 'has("verification")' <<<"$release_output")" 'release body keeps ordinary verification fields'
+assert_eq deferred "$(jq -r .closing_issue.state <<<"$release_output")" 'release closing-reference behavior is unchanged'
 assert_contains "$stacked_output" 'updated pr #41' \
     'stacked PR still verifies the byte-exact body'
 assert_contains "$stacked_output" 'closing-issue #42: deferred' \

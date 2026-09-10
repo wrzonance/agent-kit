@@ -165,7 +165,9 @@ the detector rather than hand-guessing — Step 3's combined call above already 
 Treat every line as a CANDIDATE: it inspects marker files without running anything, so nothing here is
 proven until Step 6 runs it.
 
-For stacked PRs, compare observed checks against a recent default-target PR;
+The kit enforces observed coverage only for targets matching `^feat/issue-[1-9][0-9]*$`;
+release/backport and other targets keep their ordinary CI policy.
+For kit stacked PRs, compare observed checks against a recent default-target PR;
 workflow files do not describe every repository-managed provider. Branch filters
 match the target: prefer unfiltered `pull_request:` or include `feat/**` where
 appropriate, but do not infer a missing check's cause from its absence. Workflow

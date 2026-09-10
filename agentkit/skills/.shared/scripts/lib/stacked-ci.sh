@@ -12,9 +12,13 @@ stacked_ci_snapshot() (
     [[ -z $host ]] || api+=(--hostname "$host")
     # Every incomplete read returns explicit unknown evidence, never an empty set.
     unknown() { jq -nc --arg reason "$1" '{state:"unknown",reason:$reason}'; }
-    if ! base=$(jq -er '.base.ref | select(type=="string" and length>0)' <<<"$pr_json") ||
-        ! default_branch=$(jq -er '.base.repo.default_branch | select(type=="string" and length>0)' <<<"$pr_json"); then
+    if ! base=$(jq -er '.base.ref | select(type=="string" and length>0)' <<<"$pr_json"); then
         unknown 'base metadata unavailable'; return;
+    fi
+    # create-issue-worktree.sh owns this convention; other targets keep ordinary CI.
+    if [[ ! $base =~ ^feat/issue-[1-9][0-9]*$ ]]; then printf '%s\n' '{"state":"not-stacked"}'; return; fi
+    if ! default_branch=$(jq -er '.base.repo.default_branch | select(type=="string" and length>0)' <<<"$pr_json"); then
+        unknown 'default-branch metadata unavailable'; return;
     fi
     if [[ $base == "$default_branch" ]]; then printf '%s\n' '{"state":"not-stacked"}'; return; fi
     head=$(jq -er '.head.sha | select(type=="string" and test("^[0-9a-f]{7,40}$"))' <<<"$pr_json") || {

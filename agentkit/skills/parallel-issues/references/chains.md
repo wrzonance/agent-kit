@@ -18,7 +18,10 @@ carries the walkthrough behind them.
 
 ## Building the chain graph
 
-A stacked PR may receive no checks or only part of the check set observed on a
+Coverage enforcement applies only to kit chain targets matching
+`^feat/issue-[1-9][0-9]*$`, the branch convention owned by `create-issue-worktree.sh`.
+Other targets, including release/backport branches, keep their ordinary CI policy.
+A kit stacked PR may receive no checks or only part of the check set observed on a
 recent default-target PR. The helpers compare actual check-run identities (app ID
 and name), retain providers such as GitHub Code Quality, and name the reference
 PR/head plus missing checks. `verification=no-ci-on-stacked-base` identifies zero

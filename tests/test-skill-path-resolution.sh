@@ -312,7 +312,7 @@ for f in "$skills"/*/SKILL.md; do
 done
 
 # Issue #707: recommend target-branch coverage for stacked CI.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 19336 ]] && printf yes || printf no)" \
-    'onboard-repo SKILL.md stays at or under 19336 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 19495 ]] && printf yes || printf no)" \
+    'onboard-repo SKILL.md stays at or under 19495 bytes'
 
 finish
