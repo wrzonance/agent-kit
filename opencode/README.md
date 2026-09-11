@@ -35,11 +35,12 @@ Add the plugin to your project's `opencode.json`:
 }
 ```
 
-or copy/symlink it to `.opencode/plugin/index.js` for auto-loading. Either
-way, `agentkit/hooks/session-start.sh` must be reachable as a sibling of
-`opencode/` (or `.opencode/`) in the project OpenCode is running in -- the
-same layout `tests/build-plugin.sh` ships and this repository's own root
-already has.
+or copy/symlink it into `.opencode/plugins/` (project) or
+`~/.config/opencode/plugins/` (global) for auto-loading. Either way,
+`agentkit/hooks/session-start.sh` must exist relative to the project directory
+OpenCode is running in -- the same layout `tests/build-plugin.sh` ships and
+this repository's own root already has. Anywhere else the probe fails open
+and no contract is injected.
 
 ## API Notes
 

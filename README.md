@@ -2,11 +2,20 @@
 
 Keep your sub-agents in check while systematically working through a GitHub Projects board.
 
-Agent Kit is a plugin for Codex CLI and Claude Code. It ships four skills, a set of bash
-helper scripts, and four lifecycle hooks. A repository you onboard declares its own facts
-once, in a per-machine `.agent/` directory: the trunk branch, the Projects board, the label
-taxonomy, and the commands that verify it. The skills and hooks read those declarations
-instead of rediscovering them on every run; onboarding regenerates them after a fresh clone.
+Agent Kit is a plugin for Codex CLI and Claude Code. It lets a coding agent work through a
+GitHub Projects board: pick a few independent issues, work each one in its own git worktree,
+open a draft pull request for each, and keep going until CI and review are green. A human
+still marks a PR ready and merges it.
+
+It exists because an agent left to itself does two costly things. It rediscovers the same
+repository facts every session (which branch is trunk, which board to use, how to run the
+tests), and now and then it runs a command that throws work away. The kit handles the first
+by having you record those facts once, in a per-machine `.agent/` directory, so the skills
+and hooks read them instead of guessing. It handles the second with a short, fixed list of
+commands the hooks refuse.
+
+It ships four skills, a set of bash helper scripts, and four lifecycle hooks. Onboarding
+writes the `.agent/` directory; a fresh clone runs onboarding again.
 
 ## What it does
 
@@ -56,7 +65,10 @@ cp ~/github/agent-kit/opencode/index.js ~/.config/opencode/plugins/agentkit.js
 ```
 
 OpenCode auto-loads any module dropped into a `plugins/` directory at startup -- no
-`opencode.json` edit or `bun`/`npm install` required. Config sources merge project over
+`opencode.json` edit or `bun`/`npm install` required. The module runs
+`agentkit/hooks/session-start.sh` relative to the directory OpenCode was started in, so it
+only injects a contract when that layout is present there: this checkout, or the tree
+`tests/build-plugin.sh` produces. In any other project it does nothing and says nothing. Config sources merge project over
 global, so a copy under a project's own `.opencode/plugins/` takes precedence over the
 global one. The module ships with zero runtime dependencies; `opencode/package.json`'s
 `@opencode-ai/plugin` reference is a type-only peer dependency, never imported at runtime.
@@ -166,7 +178,7 @@ for the installation permissions and rollout checklist.
 | Hook | Behaviour |
 |---|---|
 | `SessionStart` | Probes the environment once and hands the agent a contract: repo, branch, base, sandbox state, CA bundle, cache roots, and the helpers available here. Without `.agent/config.env` it prints how to onboard instead |
-| `SubagentStart` | Codex-only event. Injects the tooling curriculum into spawned workers; each worker's per-worktree contract travels in the dispatcher's prompt |
+| `SubagentStart` | Fires when the harness spawns a worker. Injects the tooling curriculum; each worker's per-worktree contract travels in the dispatcher's prompt instead |
 | `PreToolUse` | Refuses work-destroying commands every time; refuses once for a bare helper name or an edit to a file that gates other checks |
 | `PostToolUse` | Teaches the cheaper command after a wasteful call returned real data |
 
@@ -258,7 +270,7 @@ agentkit/
     pr-to-green/                    queue, authorized transition, and serial-merge helpers
     review-remote-pr/               scripts/ holds PR digests, comment posting, reviewers
     .shared/
-      schema/config.env.example     every AGENT_* key, documented
+      schema/config.env.example     the AGENT_* keys onboarding writes, documented
       scripts/                      the shared procedural helpers
 opencode/
   package.json                     name, version, license -- counted in the release-version census
