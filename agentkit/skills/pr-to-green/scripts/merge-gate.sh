@@ -20,6 +20,9 @@ digest_file=''
 provider_result=''
 human_decided=''
 adversarial_status=''
+adversarial_comments=''
+repo_root=''
+diff_payload=''
 cq_scan_state=''
 cq_state_file=''
 work_dir=''
@@ -66,6 +69,7 @@ usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --pr-state-digest FILE --provider-result RESULT
        --human-items-decided yes|no
        --adversarial-review-status STATUS
+       [--adversarial-comments FILE] [--repo-root DIR] [--diff-payload ID]
        [--code-quality-scan-state complete|pending|not-enabled]
        [--code-quality-state-file FILE]
 
@@ -79,7 +83,10 @@ one over the other.
 --adversarial-review-status STATUS (issue #477) takes the verdict word
 review-ledger.sh status prints for this PR's current head as the adversarial-
 review completion signal, replacing reliance on an operator's memory that a
-review happened. STATUS must be one of: covered-head, covered-diff, or
+review happened. Forward the same --repo-root and --diff-payload used for
+that verdict: diff coverage requires both; ancestry coverage requires the
+explicit repository context. Remediation rechecks freshness independently.
+STATUS must be one of: covered-head, covered-diff, or
 covered-lineage (each passes, exactly like an AUTO_REVIEW/LANDED CodeRabbit
 result), stale, absent,
 or blocked (each of those three blocks the merge, naming the reason), or
@@ -100,6 +107,9 @@ while (($#)); do
         --provider-result) (($# >= 2)) || usage; provider_result=$2; shift 2 ;;
         --human-items-decided) (($# >= 2)) || usage; human_decided=$2; shift 2 ;;
         --adversarial-review-status) (($# >= 2)) || usage; adversarial_status=$2; shift 2 ;;
+        --adversarial-comments) (($# >= 2)) || usage; adversarial_comments=$2; shift 2 ;;
+        --repo-root) (($# >= 2)) || usage; repo_root=$2; shift 2 ;;
+        --diff-payload) (($# >= 2)) && [[ -n $2 ]] || usage; diff_payload=$2; shift 2 ;;
         --code-quality-scan-state) (($# >= 2)) || usage; cq_scan_state=$2; shift 2 ;;
         --code-quality-state-file) (($# >= 2)) || usage; cq_state_file=$2; shift 2 ;;
         -h|--help) usage 0 ;;
@@ -709,6 +719,23 @@ case $adversarial_status in
     absent) block 'no adversarial review is recorded in the ledger for the current head' ;;
     blocked) block 'adversarial review ledger is present but unparseable (fails closed, never read as absent)' ;;
 esac
+
+if [[ $adversarial_status == covered-* ]]; then
+    remediation=''
+    root_args=(); [[ -z $repo_root ]] || root_args=(--repo-root "$repo_root")
+    [[ -z $diff_payload ]] || root_args+=(--diff-payload "$diff_payload")
+    ledger_script=${BASH_SOURCE[0]%/*}/../../review-remote-pr/scripts/review-ledger.sh
+    if [[ ! -f $adversarial_comments || -L $adversarial_comments || ! -O $adversarial_comments ]]; then
+        block 'adversarial remediation unknown: fetch trusted issue comments with --adversarial-comments'
+    elif ! remediation=$("$ledger_script" remediation --repo "$repo" --pr "$pr" \
+        --comments "$adversarial_comments" --head "$head_sha" --kind adversarial ${root_args[@]+"${root_args[@]}"}); then
+        block 'adversarial remediation evidence unavailable: validate repair or adjudication evidence'
+    elif [[ $(jq -r .remediation <<<"$remediation") != complete ]]; then
+        while IFS= read -r obligation; do block "adversarial remediation $obligation"; done \
+            < <(jq -r '.unresolved[] | "\(.title): \(.nextAction)"' <<<"$remediation")
+        block "adversarial remediation is $(jq -r .remediation <<<"$remediation")"
+    fi
+fi
 
 [[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'
 # not-enabled (issue #403) means Code Quality is disabled for the repository

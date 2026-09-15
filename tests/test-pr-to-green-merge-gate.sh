@@ -183,23 +183,32 @@ alerts: code-scanning open=0
 EOF
 }
 
+write_adversarial_comments() {
+    jq -n --arg head "$HEAD_SHA" --argjson findings "$1" '
+      {version:1,repo:"owner/repo",pr:9,reviews:[{kind:"adversarial",provider:"openai",head_sha:$head,findings:$findings}]} |
+      [{id:1,user:{login:"trusted"},body:("<!-- review-ledger:v1 -->\n```json\n" + tojson + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$tmp/adversarial-comments.json"
+}
+write_adversarial_comments '[]'
+
 run_gate() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
         --head-sha "$HEAD_SHA" --base "${GATE_BASE:-main}" --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
         --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         --code-quality-scan-state "${GATE_CQ_STATE:-complete}"
 }
 
 # Bare invocation with no fixed --code-quality-scan-state default, so
 # --code-quality-state-file tests can supply their own combination of flags.
 run_gate_raw() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
         --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
         --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         "$@"
 }
 
@@ -212,6 +221,14 @@ write_cq_state_file() {
 good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
+
+write_adversarial_comments "$(jq -cn '[range(1;9)|{title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,verdict:"open",rationale:"dispatch repair"}]')"
+rc=0
+out=$(run_gate) || rc=$?
+assert_eq 1 "$rc" 'coverage with eight unresolved findings blocks readiness'
+assert_contains "$out" 'confirmed-8' 'readiness names unresolved findings'
+assert_contains "$out" 'dispatch repair' 'readiness names the next action'
+write_adversarial_comments '[]'
 
 for ci_word in none none-configured; do
     sed -i "s/^ci=.*/ci=0\/0 $ci_word pending=0 failing=0/" "$tmp/digest.txt"
@@ -251,12 +268,13 @@ assert_eq '- RUNNABLE forge main feat/demo' "$(awk '$1 == "#9" {print $2, $3, $4
     'the underived table marker preserves the remaining columns'
 assert_not_contains "$forge_table" '#0' 'a linked forge PR never renders ISSUE #0'
 run_queue_gate() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo \
         --pr "$(jq -r '.[0].pr' <<<"$forge_queue")" \
         --head-sha "$(jq -r '.[0].sha' <<<"$forge_queue")" \
         --base "$(jq -r '.[0].base' <<<"$forge_queue")" \
         --pr-state-digest "$tmp/digest.txt" --provider-result AUTO_REVIEW \
         --human-items-decided yes --adversarial-review-status covered-head \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         --code-quality-scan-state complete
 }
 out=$(run_queue_gate)
@@ -1020,5 +1038,41 @@ set -e
 assert_eq '1' "$rc" '--adversarial-review-status is required'
 assert_contains "$out" '--adversarial-review-status is required' \
     'the missing-flag usage error names the required flag'
+
+# #727 remediation must preserve the same diff and ancestry inputs as status.
+lineage_repo="$tmp/lineage-repo"
+git init -q "$lineage_repo"
+git -C "$lineage_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm reviewed
+reviewed=$(git -C "$lineage_repo" rev-parse HEAD)
+git -C "$lineage_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm advanced
+advanced=$(git -C "$lineage_repo" rev-parse HEAD)
+good_digest
+sed -i "s/sha=$HEAD_SHA7/sha=${advanced:0:7}/g" "$tmp/digest.txt"
+write_context_comments() {
+    jq -n --arg old "$reviewed" --argjson covered "$1" '
+      {version:1,repo:"owner/repo",pr:9,reviews:[{kind:"adversarial",provider:"openai",
+       head_sha:$old,diff_payload:"same-diff",covered_heads:$covered,findings:[]}]} |
+      [{id:1,user:{login:"trusted"},body:("<!-- review-ledger:v1 -->\n```json\n" + tojson + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$tmp/adversarial-comments.json"
+}
+run_context_gate() {
+    PR_HEAD_SHA=$advanced CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$advanced\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+        run_gate_raw --head-sha "$advanced" --code-quality-scan-state complete "$@"
+}
+write_context_comments '[]'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --repo-root "$lineage_repo" --diff-payload same-diff 2>&1) || rc=$?
+assert_eq 0 "$rc" 'a proven ancestor with the same diff passes remediation freshness'
+assert_contains "$out" 'gate=PASS pr=9' 'covered diff carries its payload into the gate subcheck'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --repo-root "$lineage_repo" --diff-payload other-diff 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a mismatched diff still blocks despite caller covered-diff status'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --diff-payload same-diff 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a matching diff without ancestry context still blocks'
+assert_contains "$out" 'gate=BLOCKED pr=9' 'missing ancestry context returns the contractual gate result'
+write_context_comments "[\"$advanced\"]"
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-lineage run_context_gate --repo-root "$lineage_repo" 2>&1) || rc=$?
+assert_eq 0 "$rc" 'covered lineage retains explicit repository context during remediation'
 
 finish

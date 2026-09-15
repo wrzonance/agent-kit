@@ -68,6 +68,19 @@ one_review="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\
 valid_comments="$tmp/valid.json"
 make_comments "$valid_comments" "$(ledger_body "$one_review")" 42
 
+unknown=$("$script" remediation --repo owner/repo --pr 1 --comments "$valid_comments" --head "$head1")
+assert_eq unknown "$(jq -r .remediation <<<"$unknown")" 'legacy coverage does not certify remediation'
+open_reviews=$(jq -cn --arg head "$head1" '{kind:"adversarial",provider:"anthropic",head_sha:$head,
+    findings:[range(1;9)|{title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,verdict:"open",rationale:"dispatch repair"}]} | [.]')
+make_comments "$tmp/open-review.json" "$(ledger_body "$open_reviews")" 42
+open_result=$("$script" remediation --repo owner/repo --pr 1 --comments "$tmp/open-review.json" --head "$head1")
+assert_eq incomplete "$(jq -r .remediation <<<"$open_result")" 'performed review retains incomplete remediation'
+assert_eq 8 "$(jq '.unresolved|length' <<<"$open_result")" 'durable ledger names eight unresolved obligations'
+later_empty=$(jq -c --arg head "$head1" '. + [{kind:"adversarial",provider:"anthropic",head_sha:$head,findings:[]}]' <<<"$open_reviews")
+make_comments "$tmp/later-empty.json" "$(ledger_body "$later_empty")" 42
+hidden=$("$script" remediation --repo owner/repo --pr 1 --comments "$tmp/later-empty.json" --head "$head1")
+assert_eq incomplete "$(jq -r .remediation <<<"$hidden")" 'a later empty review cannot hide earlier open obligations'
+
 out=$("$script" read --repo owner/repo --pr 1 --comments "$valid_comments")
 rc=$?
 assert_eq '0' "$rc" 'read exits 0 for a well-formed ledger'
@@ -720,8 +733,36 @@ out=$("$script" cover --repo owner/repo --pr 1 --comments "$cover_base_comments"
     --gh-comment-script "$fake_gh_dir/gh" 2>&1) || bad_reason_rc=$?
 assert_eq '2' "$bad_reason_rc" 'cover rejects a --reason outside fix:/merge-down:/retarget:'
 
+# A published execution entry resumes after eight repairs without replacing
+# its review attempt or dropping an obligation from the durable ledger.
+repair_reviews=$(jq -c --arg head "$lineage_a" '.[0].head_sha=$head | .[0].attemptId="original-attempt"' <<<"$open_reviews")
+make_comments "$tmp/repair-comments.json" "$(ledger_body "$repair_reviews")" 88
+printf '=== agent-run regression\n=== agent-run exited rc=0 after 1s\n' >"$tmp/repair.log"
+repair_digest=$(sha256sum "$tmp/repair.log"); repair_digest=${repair_digest%% *}
+jq -c --arg sha "$lineage_b" --arg log "$tmp/repair.log" --arg digest "$repair_digest" '
+    .[0].findings[] | .verdict="fixed" | del(.rationale) | .sha=$sha |
+    .evidence={finding:.title,repairSha:$sha,head:$sha,path:"file",command:"regression",status:"passed",log:$log,logSha256:$digest}' \
+    <<<"$repair_reviews" >"$tmp/repairs.ndjson"
+assert_rc 0 'eight repairs update the original durable review entry' -- env GH_COMMENT_STUB_OUT="$tmp/repaired-body.txt" \
+    "$script" cover --repo owner/repo --pr 1 --comments "$tmp/repair-comments.json" \
+    --head "$lineage_b" --reason fix:all-eight --findings-file "$tmp/repairs.ndjson" \
+    --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
+make_comments "$tmp/repaired-comments.json" "$(cat "$tmp/repaired-body.txt")" 88
+resumed=$("$script" remediation --repo owner/repo --pr 1 --comments "$tmp/repaired-comments.json" \
+    --head "$lineage_b" --repo-root "$lineage_repo")
+assert_eq complete "$(jq -r .remediation <<<"$resumed")" 'durable remediation resumes to complete'
+assert_contains "$(cat "$tmp/repaired-body.txt")" 'original-attempt' 'repair resume retains canonical attempt provenance'
+head -n 7 "$tmp/repairs.ndjson" >"$tmp/dropped-repair.ndjson"
+assert_rc 1 'resume cannot omit an unresolved obligation' -- "$script" cover --repo owner/repo --pr 1 \
+    --comments "$tmp/repair-comments.json" --head "$lineage_b" --reason fix:missing \
+    --findings-file "$tmp/dropped-repair.ndjson" --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 788 ]] && printf yes || printf no)" \
-    'review-ledger.sh stays at or under 788 lines'
+: >"$tmp/empty-migration.ndjson"
+assert_rc 1 'legacy unknown cannot become resolved by supplying an empty ledger' -- "$script" cover \
+    --repo owner/repo --pr 1 --comments "$cover_base_comments" --head "$lineage_b" --reason fix:legacy \
+    --findings-file "$tmp/empty-migration.ndjson" --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 829 ]] && printf yes || printf no)" \
+    'review-ledger.sh stays at or under 829 lines'
 
 finish

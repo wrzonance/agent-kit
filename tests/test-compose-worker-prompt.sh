@@ -603,6 +603,14 @@ assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
 assert_contains "$pr_fix_prompt" 'untrusted data' \
     'pr-fix-batch labels finding text as untrusted data'
+printf '%s\n' '{"title":"Confirmed repair pending","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair required"}' > "$accepted_findings"
+open_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --findings-file "$accepted_findings")
+assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
+assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
+assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
+assert_contains "$open_fix_prompt" 'never purchase another review' 'repair resume preserves the one-review budget'
 assert_not_contains "$fix_prompt" '## Accepted findings' \
     'legacy fix-batch omits the accepted-findings section'
 

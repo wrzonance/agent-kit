@@ -166,9 +166,15 @@ its reviews live and consumes:
   `STALE_HEAD` (review for an earlier head) block.
 - `--human-items-decided yes|no` — `no` blocks.
 - `--adversarial-review-status covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required`
-  — the word `review-ledger.sh status` prints for this head. The three `covered-*` values pass;
+  — the word `review-ledger.sh status` prints for this head. The three `covered-*` values prove coverage;
   `stale`, `absent`, and `blocked` block; `not-required` is only ever passed through from a
   documented materiality skip.
+- `--adversarial-comments FILE [--repo-root DIR]` — the fetched issue comments holding the trusted
+  review ledger. Required for covered reviews: the gate independently reads remediation and blocks
+  open obligations, unknown legacy semantics, or invalid repair evidence. Its reasons name each
+  unresolved finding and the next repair action. Review execution alone never grants readiness.
+  Forward the same `--repo-root` and optional `--diff-payload` used for status; matching diffs
+  still require proven ancestry. Never infer missing repository context from the working directory.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or `--code-quality-state-file FILE`
   — from `code-quality-state.sh --head SHA --pr N` (its `--state-file` output is the file form;
   both must agree byte-for-byte). `pending` blocks; `complete` and `not-enabled` pass; an
@@ -194,15 +200,18 @@ Every block prints `blocked reason=…`; `scripts/merge-gate.sh --help` carries 
 # that file holds {head, findingsOnHead, repoWideOpen, timestamp}, not a
 # textual scan-state= line, and merge-gate.sh rejects it as malformed.
 
+coverage_args=(--repo-root "$repo_root")
+[[ -z ${diff_payload:-} ]] || coverage_args+=(--diff-payload "$diff_payload")
 adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" status \
   --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
-  --kind adversarial --repo-root "$repo_root") || true
+  --kind adversarial "${coverage_args[@]}") || true
 
 "$agentkit/pr-to-green/scripts/merge-gate.sh" \
   --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" \
   --pr-state-digest "$digest_file" --provider-result "$provider_result" \
   --human-items-decided yes \
   --adversarial-review-status "$adversarial_status" \
+  --adversarial-comments "$comments_file" "${coverage_args[@]}" \
   --code-quality-state-file "$work_dir/code-quality-scan-state.txt"
 ```
 
@@ -240,6 +249,11 @@ through. Deliberately best-effort and non-fatal, like the call above: a
 failed `cover` never blocks the merge-down or retarget itself, it only
 leaves the next `--adversarial-review-status`
 read at `stale` until retried.
+
+For a repair, also pass `--findings-file "$RUN_DIR/findings.ndjson"` to `cover` after updating
+each repaired finding with validated evidence. This updates the existing entry while retaining
+its original attempt and reviewer provenance. A plain coverage extension leaves unresolved
+findings unresolved. Refresh comments before the next gate read; never rerun the reviewer.
 
 Code-scanning completion is proven from `GET code-scanning/analyses`, never from a check-run's
 `app.slug`: an analysis on `refs/pull/N/merge` matching the head or the PR's `merge_commit_sha`, or

@@ -916,7 +916,8 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
 # #711 documents the run predicate and independently checked fix-push proof.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 22083 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 22083 bytes'
+# #727 adds finding obligations and validated repairs; exact combined size.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 23235 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 23235 bytes'
 
 # Invocation intent is independent from the live snapshot and remains bounded.
 write_confirmed

@@ -515,6 +515,7 @@ run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
     --agent-identity 'Claude Opus 5' >/dev/null
 skip_body=$(rendered_body)
+assert_contains "$skip_body" 'Execution: skipped' 'a verified skip does not claim review execution'
 mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
 assert_contains "$skip_body" 'Verified-skip rationale: comments/formatting only' \
     'publish body records the verified-skip rationale when given'
@@ -1128,7 +1129,9 @@ assert_eq 'yes' "$([[ $reviewed_at_value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}
 
 # Run the canonical recipe after a fix advances HEAD. The receipt describes
 # the original paid review; a descendant is not automatically reviewed coverage.
-git -C "$receipt_repo" -c user.name=test -c user.email=test@example.invalid commit -qm repaired --allow-empty
+printf 'repaired\n' >"$receipt_repo/repair.txt"
+git -C "$receipt_repo" add -- repair.txt
+git -C "$receipt_repo" -c user.name=test -c user.email=test@example.invalid commit -qm repaired
 repair_head=$(git -C "$receipt_repo" rev-parse HEAD)
 recipe=$(sed -n '/^rhs=/p' "$root/agentkit/skills/review-remote-pr/SKILL.md")
 postfix_comments="$tmp/postfix-unspent.json"
@@ -1164,6 +1167,39 @@ assert_rc 1 'an arbitrary descendant cannot replace the original reviewed head' 
     "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
     --comments "$head_comments" --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' --head-sha "$repair_head"
+
+# Validated repair B can complete remediation while the paid review remains A.
+fixed_comments="$tmp/fixed-unspent.json"
+printf '%s\n' '[]' >"$fixed_comments"
+repair_log="$tmp/repair-verification.log"
+printf '%s\n' '=== agent-run test repair.txt' '=== agent-run exited rc=0 after 1s' >"$repair_log"
+repair_digest=$(sha256sum "$repair_log"); repair_digest=${repair_digest%% *}
+original_attempt=$(jq -r .attemptId "$tmp/adversarial.result.json")
+jq -cn --arg sha "$repair_head" --arg log "$repair_log" --arg digest "$repair_digest" \
+    '{schemaVersion:2,title:"repair finding",severity:"P1",verdict:"fixed",sha:$sha,
+      evidence:{finding:"repair finding",repairSha:$sha,head:$sha,path:"repair.txt",
+        command:"test repair.txt",status:"passed",log:$log,logSha256:$digest}}' >"$findings_file"
+fixed_rc=0
+(
+    cd "$receipt_repo" || exit 1
+    GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
+        REVIEW_LEDGER_VIEWER=ledger-test-author AGENT_IDENTITY=claude \
+        "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+        --comments "$fixed_comments" --provider anthropic --model claude-opus-5 --effort high \
+        --mode cross-provider --mode-reason ok --p1 1 --p2 0 --agent-identity 'Claude Opus 5' \
+        --head-sha "$head_sha" --diff-payload "$diff_payload" --harness claude
+) >"$tmp/fixed.out" 2>"$tmp/fixed.err" || fixed_rc=$?
+[[ $fixed_rc == 0 ]] || cat "$tmp/fixed.err" >&2
+assert_eq 0 "$fixed_rc" 'validated descendant repair publishes against current checkout'
+fixed_body=$(jq -r '.body' "$head_gh_dir/payload-5.json" 2>/dev/null)
+assert_contains "$fixed_body" 'Remediation: complete' 'validated descendant repair completes remediation'
+assert_contains "$fixed_body" "- Reviewed head: $head_sha" 'repair receipt still names original reviewed head'
+# shellcheck disable=SC2016  # sed's end-of-file address is intentionally literal.
+fixed_entry=$(jq -r '.body' "$head_gh_dir/payload-6.json" 2>/dev/null | sed -n '/```json/,/```/p' | sed '1d;$d' | jq -c '.reviews[0]')
+assert_eq "$head_sha" "$(jq -r .head_sha <<<"$fixed_entry")" 'repair ledger keeps reviewed A distinct from repaired B'
+assert_eq "$original_attempt" "$(jq -r .attemptId <<<"$fixed_entry")" 'repair publication reuses the original attempt'
+assert_eq true "$(jq --arg sha "$repair_head" '.covered_heads | index($sha) != null' <<<"$fixed_entry")" \
+    'validated repair B receives explicit repair coverage'
 
 : >"$tmp/gh.log"
 : >"$head_gh_dir/count"
@@ -1371,4 +1407,18 @@ assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/po
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'
+reset_not_spent
+jq -cn 'range(1;9) | {title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,
+    verdict:"open",rationale:"dispatch repair"}' >"$findings_file"
+out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 8 --p2 0 --agent-identity 'Codex')
+assert_eq 0 "$?" 'eight confirmed open findings can publish review execution'
+body=$(rendered_body)
+assert_contains "$body" 'Remediation: incomplete' 'publication does not claim remediation completion'
+assert_contains "$body" 'verdict=open' 'receipt preserves actionable findings'
+assert_contains "$body" 'dispatch repair' 'receipt names next repair action'
+assert_rc 0 'open receipt still consumes exactly one review' -- "$script" precheck \
+    --issue-comments "$not_spent_comments"
+
 finish
