@@ -89,7 +89,16 @@ printf '#!/bin/sh\ntouch runner-was-used\n' > "$repo/runner"
 chmod +x "$repo/runner"
 out=$("$run" --dir "$repo" --cmd format --fix 2>&1)
 assert_contains "$out" 'AGENT_CMD_FORMAT_FIX' 'missing fix declaration names its key'
+assert_contains "$out" '#724' 'missing fix names the pending preflight/config follow-up'
 assert_eq no "$([[ -e $repo/runner-was-used ]] && printf yes || printf no)" 'missing fix never falls back to runner'
+
+printf 'AGENT_CMD_FORMAT=false\nAGENT_CMD_FORMAT_KIND=format\nAGENT_CMD_FORMAT_FIX=true\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd format 2>&1)
+assert_contains "$out" 'failure-v1 class=formatter-failure' 'formatter kind yields typed failure'
+assert_contains "$out" '--fix' 'formatter action uses declared fix interface'
+printf 'AGENT_CMD_FORMAT=false\nAGENT_CMD_FORMAT_KIND=format\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd format 2>&1)
+assert_contains "$out" '#724' 'formatter without pair routes to current config action'
 
 # Optional fix absence must skip before fallback and preserve the next link.
 for check_declared in no yes; do

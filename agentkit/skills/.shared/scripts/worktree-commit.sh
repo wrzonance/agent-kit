@@ -86,10 +86,26 @@ Output (stdout, on success -- one line):
 EOF
 }
 
+failure_class=usage
+failure_state=arguments
+failure_action=correct-arguments
+# Same versioned Bash %q fields as agent-run; consumers must not eval records.
+failure_result() {
+    local status=$?
+    if ((status != 0)); then
+        printf 'failure-v1 class=%q command=%q evidence=%q state=%q next_action=%q\n' \
+            "$failure_class" worktree-commit stderr "$failure_state" "$failure_action" >&2
+    fi
+    return "$status"
+}
+trap failure_result EXIT
+
 die() {
     local code="$1"
     shift
     printf '%s: %s\n' "$PROGNAME" "$*" >&2
+    failure_state=$*
+    [[ $failure_class != usage ]] || usage >&2
     exit "$code"
 }
 
@@ -202,6 +218,9 @@ staged_protected_paths() {
 
 park_inherited_paths() {
     local paths=$1
+    failure_class=permission-trust-refusal
+    failure_state=$paths
+    failure_action=hand-back-protected-paths-for-authorization
     printf '%s: merge-inherited protected paths parked/handed off (churn: merge-inherited):\n' \
         "$PROGNAME" >&2
     while IFS= read -r path; do
@@ -445,7 +464,11 @@ refuse_staged_outside_operands() {
                 "$PROGNAME" >&2
         fi
         printf '  %s\n' "${offending[@]}" >&2
-        die 1 'remove the foreign paths from the index or name each one with --allow-outside PATH'
+        failure_class=write-set-expansion
+        failure_state=$(printf '%s\n' "${offending[@]}")
+        failure_action=hand-back-unmet-write-set
+        printf '%s: hand back these exact paths for a scope decision; no scope was expanded.\n' "$PROGNAME" >&2
+        exit 1
     }
 }
 
@@ -482,8 +505,11 @@ config_operand_named() {
 refuse_unrequested_config() {
     local staged
     staged=$(git diff --cached --name-only --no-renames -- ':(top).agent/config.env')
-    [[ -z $staged ]] || config_operand_named || config_merge_authorized || die 1 \
-        'refusing unrequested .agent/config.env change; name .agent/config.env explicitly in the issue write set'
+    if [[ -n $staged ]] && ! config_operand_named && ! config_merge_authorized; then
+        failure_class=write-set-expansion
+        failure_action=hand-back-unmet-write-set
+        die 1 'refusing unrequested .agent/config.env change; name .agent/config.env explicitly in the issue write set'
+    fi
 }
 
 guard_exact_operand_scope() {
@@ -583,6 +609,9 @@ probe_writable() {
 
 report_unwritable() {
     local dir="$1" consequence="$2"
+    failure_class=permission-trust-refusal
+    failure_state=$dir
+    failure_action=hand-back-identical-command-until-metadata-path-is-writable
     printf '%s: git metadata directory is not writable: %s\n' "$PROGNAME" "$dir" >&2
     printf '%s: %s\n' "$PROGNAME" "$consequence" >&2
     printf '%s: nothing was staged. This workflow uses a designed handback: hand the identical command back to the top-level session for publication, then retry it there after the path is writable.\n' \
@@ -795,6 +824,8 @@ main() {
     parse_args "$@"
     validate_args
     resolve_trailers
+    failure_class=unknown
+    failure_action=inspect-diagnostics
     resolve_git_dirs
     require_writable_git_dirs
     refuse_trunk

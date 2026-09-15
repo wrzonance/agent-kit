@@ -11,6 +11,11 @@ source "$here/lib/assert.sh"
 real_run_sh="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 rc_sh="$root/agentkit/skills/.shared/scripts/repo-config.sh"
 
+out=$("$real_run_sh" --bogus 2>&1)
+assert_eq 1 "$?" 'typed usage preserves exit status'
+assert_contains "$out" 'failure-v1 class=usage' 'bad arguments carry typed usage'
+assert_contains "$out" 'Usage: agent-run.sh' 'bad arguments include the interface'
+
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -21,6 +26,28 @@ make_repo() {
     mkdir -p "$dir/.agent"
     printf '%s' "$dir"
 }
+
+repo=$(make_repo)
+printf '#!/bin/sh\necho permission-denied-formatter\nexit 7\n' > "$repo/fail"
+chmod +x "$repo/fail"
+printf 'AGENT_CMD_TEST=./fail\n' > "$repo/.agent/config.env"
+out=$("$real_run_sh" --dir "$repo" --cmd test 2>&1)
+assert_eq 7 "$?" 'typed test failure preserves command status'
+assert_contains "$out" 'failure-v1 class=test-failure' 'test context classifies failure'
+assert_contains "$out" 'next_action=inspect-log' 'ordinary failures retain an inspect transition'
+assert_contains "$out" 'evidence=' 'failure references retained evidence'
+out=$("$real_run_sh" --dir "$repo" -- sh -c 'echo formatter-permission-denied; exit 7' 2>&1)
+assert_contains "$out" 'failure-v1 class=unknown' 'literal log keywords do not classify failure'
+mkdir -p "$tmp/cache-target"
+cache_link="$tmp/agent-cache-$(id -u)"
+ln -s "$tmp/cache-target" "$cache_link"
+touch "$tmp/no-cache"
+out=$(env -u AGENT_CACHE_ROOT HOME="$tmp/missing-home" XDG_CACHE_HOME="$tmp/no-cache" TMPDIR="$tmp" "$real_run_sh" --dir "$repo" --cmd test 2>&1)
+assert_eq 1 "$?" 'unsafe cache retains refusal status'
+assert_contains "$out" 'failure-v1 class=permission-trust-refusal' 'cache symlink has a typed trust refusal'
+assert_contains "$out" "$cache_link" 'trust result names the exact unmet path'
+assert_contains "$out" 'next_action=hand-back-unmet-trust-boundary' 'trust classification does not expand privilege'
+rm "$cache_link"
 
 # Ordinary resolution preserves repo-config's established warn/drop/fall-through
 # contract: unrelated malformed, unknown, and invalid declarations do not stop a
@@ -713,7 +740,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1823 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1823 lines (issue #731 verification records)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1882 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1882 lines (issue #732 typed failures)'
 
 finish

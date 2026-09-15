@@ -24,11 +24,11 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
     [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
-    # #731: opt-in freshness fingerprints, durable results, and concurrent leases.
-    [skills/.shared/scripts/agent-run.sh]="1823:19656:800"
+    # #731/#732: verification query, durable fingerprints, and typed failure records.
+    [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
-    [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
+    [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1284:16983:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
@@ -62,10 +62,11 @@ readonly MAX_HELPER_TOKENS=10000
 # #727: confirmed open findings, validated repairs and independent readiness.
 # #727 review repairs: preserve coverage context and portable verification hashes.
 # #731: freshness fingerprints, durable results, and concurrent leases.
+# #732: typed failures and recovery actions.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# #722: activation receipt integration; exact tree bytes / 4: 1697825 / 4.
-readonly MAX_TREE_TOKENS=424456
+# #722/#732: activation and typed failure integration; exact bytes / 4: 1701763 / 4.
+readonly MAX_TREE_TOKENS=425440
 
 violations=0
 checked=0
