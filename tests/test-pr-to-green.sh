@@ -108,7 +108,8 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 19197 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 19197 bytes'
+# #725: exact coordinator size with the separately authorized admin boundary.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 19654 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 19654 bytes'
 
 finish

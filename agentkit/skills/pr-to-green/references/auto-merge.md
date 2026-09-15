@@ -13,6 +13,7 @@ whenever more than one independent root is being driven at once.
 - Consent and the ledger record
 - Mechanical queue advance without redisplay
 - The pre-merge review-completion gate
+- Narrow admin exception for an unsatisfiable review rule
 - Serialization protocol
 - Merge method and branch deletion
   - Dependents check before delete (issue #564)
@@ -239,10 +240,53 @@ all, so an advanced (workflow-based) CodeQL setup that has not yet uploaded
 its first SARIF result falls *inside* the exception rather than outside it —
 there is no evidence to miss yet, and the gate resumes blocking it the
 moment that first upload lands. `gate=PASS pr=N sha=<head>` is
-the only signal that authorizes `merge-pr.sh`, and it is bound to that exact
+the ordinary authorization signal for `merge-pr.sh`, and it is bound to that exact
 PR and head — save its verbatim stdout, because `merge-pr.sh` requires it.
 Re-run the gate after any push or base advance — a passed gate for an
 earlier head never carries forward.
+
+## Narrow admin exception for an unsatisfiable review rule
+
+Refuse admin by default. Unknown capability or protection evidence, an available reviewer,
+any unmet acceptance/CI/remediation gate, or absent exact operator consent blocks it.
+`--auto-merge`, queue grants, and workflow authorization never imply admin consent.
+The detector currently supports only active review-only rulesets, unrestricted merge methods,
+no required conversation-resolution rule, and positively absent classic protection. Other
+policies remain blocked; do not weaken them to qualify. Empty requested reviewers alone prove nothing.
+
+After the operator explicitly confirms the reviewer configuration for these exact heads,
+save an owned, non-symlink, non-group/world-writable capability JSON file:
+
+```json
+{"version":1,"repository":"OWNER/REPO","source":"operator-confirmed","queue":[
+  {"pr":9,"headSha":"HEAD_SHA40","base":"main","humanReviewers":"none","reviewProvider":"disabled"}
+]}
+```
+
+Pass it as `--review-capability-file FILE` to `pr-queue.sh` at dispatch (its stderr reports
+`review=unsatisfiable ... operator-command-required=yes`) and to `merge-gate.sh` with
+`--provider-result DISABLED`. The gate still checks every other surface, including negative
+readiness and every required acceptance execution: only `pass` qualifies; skipped/neutral
+or duplicate successes cannot hide an unmet execution. A clean review-only exception emits
+`gate=ADMIN_ELIGIBLE` and exits 1, never ordinary `gate=PASS`. Preserve its stdout verbatim.
+
+Only after explicit operator permission naming repository, PR, head, base, and merge method,
+record a separate protected admin authorization JSON:
+
+```json
+{"version":1,"kind":"admin-merge","operatorAuthorized":true,"repository":"OWNER/REPO",
+ "pr":9,"headSha":"HEAD_SHA40","base":"main","mergeMethod":"squash"}
+```
+
+Call `merge-pr.sh` with its ordinary confirmed queue authorization and the saved gate output,
+adding `--admin --admin-authorization-file FILE --review-capability-file FILE`.
+It independently rechecks live policy and capability before the head-bound mutation and
+records `admin=true bypass=unsatisfiable-review` with the exact merge identity in its receipt.
+Any forge refusal remains a named stop; never retry via another merge path.
+
+The implementation uses the [GitHub CLI admin and head-match options](https://cli.github.com/manual/gh_pr_merge)
+and the [active branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch).
+Local mocked tests exercise this path; they do not demonstrate a successful live admin merge.
 
 ## Serialization protocol
 
@@ -331,7 +375,7 @@ inspects only the agent's own command line, never a helper's internals, so its i
 
 ## Still forbidden
 
-Also forbidden: force-push, history rewrite, merging a `BLOCKED` item, bypassing branch protection, any
+Also forbidden: force-push, history rewrite, merging a `BLOCKED` item, bypassing protection outside the narrow exception above, any
 directly-typed merge form, merging outside the confirmed queue, and dispatching a workflow to manufacture
 gate evidence. `merge-pr.sh` never retries around a forge refusal (required-approval, stale-sha 409,
 not-mergeable 405): each is reported verbatim as a named stop.

@@ -278,8 +278,13 @@ dependency.
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head
 (["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) has the recipe —
-a formal provider approval requirement stays repository policy: a
-branch-protection refusal is a named stop, never a bypass). On `gate=PASS`,
+a formal provider approval requirement stays repository policy).
+For an explicitly attested absence of human reviewers with the review provider disabled,
+pass `--review-capability-file FILE` to queue discovery and the merge gate. Dispatch names
+the operator dependency. `ADMIN_ELIGIBLE` is not `PASS`: only the separately authorized,
+exact-merge admin procedure in `references/auto-merge.md` may consume it. Never infer
+admin consent from `--auto-merge`, queue confirmation, or workflow authorization.
+A branch-protection refusal is a named stop; never retry via another merge path. On `gate=PASS`,
 invoke `scripts/merge-pr.sh` with the Step 1 authorization file and the saved
 `gate=PASS` output — it refuses unless both bind to this exact repository/
 PR/head/base/method/delete-branch as a confirmed `RUNNABLE` queue member; the

@@ -915,9 +915,7 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
-# 2026-09-09 issue #607: +236 B, the persisted proof and the delete-on-merge
-# restore; measured (the plan estimated +237). Ceiling moves down to the
-# measured count, never above it.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 20571 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 20571 bytes'
+# #725: exact reference size with refusal conditions and separate admin consent.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 23239 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 23239 bytes'
 
 finish

@@ -27,8 +27,8 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-# 67 since issue #613 added .shared/scripts/run-state.sh.
-assert_eq 67 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# #725 adds the shared review-only capability detector.
+assert_eq 68 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
@@ -56,5 +56,12 @@ for helper in "${helpers[@]}"; do
         _pass "$(basename -- "$helper") accepts a trailing -- marker (rc=$rc)"
     fi
 done
+
+rc=0
+output=$("$root/agentkit/skills/pr-to-green/scripts/review-capability.sh" \
+    --repo owner/repo --pr 9 --head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --base main --capability-file "$tmp/missing" -- 2>&1) || rc=$?
+assert_eq 1 "$rc" 'review capability consumes trailing -- before checking evidence'
+assert_contains "$output" 'capability-untrusted' 'trailing marker reaches the named evidence refusal'
 
 finish

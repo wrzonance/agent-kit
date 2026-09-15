@@ -48,9 +48,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #727: confirmed open findings, validated repairs and independent readiness.
+# #725: required execution and explicit review-only admin authorization.
 # Exact measured tree / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=409960
+readonly MAX_TREE_TOKENS=412346
 
 violations=0
 checked=0

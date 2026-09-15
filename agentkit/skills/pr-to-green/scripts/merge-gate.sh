@@ -18,6 +18,8 @@ head_sha=''
 base=''
 digest_file=''
 provider_result=''
+review_capability_file=''
+review_capability=''
 human_decided=''
 adversarial_status=''
 adversarial_comments=''
@@ -71,6 +73,7 @@ usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        [--adversarial-comments FILE --repo-root DIR]
        [--code-quality-scan-state complete|pending|not-enabled]
        [--code-quality-state-file FILE]
+       [--review-capability-file FILE]
 
 At least one of --code-quality-scan-state or --code-quality-state-file is
 required. --code-quality-state-file names a code-quality-state.sh --head
@@ -101,6 +104,7 @@ while (($#)); do
         --base) (($# >= 2)) || usage; base=$2; shift 2 ;;
         --pr-state-digest) (($# >= 2)) || usage; digest_file=$2; shift 2 ;;
         --provider-result) (($# >= 2)) || usage; provider_result=$2; shift 2 ;;
+        --review-capability-file) (($# >= 2)) || usage; review_capability_file=$2; shift 2 ;;
         --human-items-decided) (($# >= 2)) || usage; human_decided=$2; shift 2 ;;
         --adversarial-review-status) (($# >= 2)) || usage; adversarial_status=$2; shift 2 ;;
         --adversarial-comments) (($# >= 2)) || usage; adversarial_comments=$2; shift 2 ;;
@@ -290,6 +294,16 @@ if grep -qE '^ci=[0-9]+/[0-9]+ [a-z]+ pending=[0-9]+ failing=[0-9]+$' "$digest_f
     [[ $ci_word == green && $ci_pending == 0 && $ci_failing == 0 ]] || block 'CI is not fully green'
 else
     block 'pr-state digest could not determine CI state'
+fi
+
+# Every declared execution must actually pass, independently of aggregate CI.
+# Read all records: a duplicate success must never hide an unmet execution.
+while IFS= read -r acceptance_line; do
+    [[ $acceptance_line == repo-verify=*' acceptance='*:* && ${acceptance_line##*:} == pass ]] ||
+        block "required acceptance execution is not pass: $acceptance_line"
+done < <(grep -E '^repo-verify=.* acceptance=' "$digest_file" || true)
+if grep -qE '^ready-eligible=no( |$)' "$digest_file"; then
+    block 'pr-state digest reports ready-eligible=no'
 fi
 
 if grep -qE '^threads: coderabbit=[0-9]+ unresolved  code-quality=[0-9]+ open  human=[0-9]+  generic=[0-9]+' "$digest_file"; then
@@ -746,11 +760,24 @@ case $cq_effective_state in
     *) block "github-code-quality scan state is unrecognized: $cq_effective_state" ;;
 esac
 
+if [[ -n $review_capability_file ]]; then
+    if review_capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "${BASH_SOURCE[0]%/*}/review-capability.sh" \
+        --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" --capability-file "$review_capability_file"); then
+        [[ $provider_result == DISABLED ]] || block 'review provider is not disabled'
+    else
+        block "review capability does not permit admin: $review_capability"
+    fi
+    printf '%s\n' "$review_capability"
+fi
 if ((${#reasons[@]} > 0)); then
     for reason in "${reasons[@]}"; do
         printf 'blocked reason=%s\n' "$reason"
     done
     printf 'gate=BLOCKED pr=%s\n' "$pr"
+    exit 1
+fi
+if [[ -n $review_capability_file ]]; then
+    printf 'gate=ADMIN_ELIGIBLE repo=%s pr=%s sha=%s base=%s review=unsatisfiable\n' "$repo" "$pr" "$head_sha" "$base"
     exit 1
 fi
 printf 'gate=PASS pr=%s sha=%s\n' "$pr" "$head_sha"
