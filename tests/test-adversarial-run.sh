@@ -23,11 +23,21 @@ printf '%s\n' base >"$repo/example.txt"
 git -C "$repo" add example.txt
 git -C "$repo" commit --quiet -m base
 git -C "$repo" push --quiet -u origin main
+historical_base_oid=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" switch --quiet -c feature
 printf '%s\n' changed >"$repo/example.txt"
 git -C "$repo" commit --quiet -am change
+git -C "$repo" switch --quiet main
+printf '%s\n' merged-743-change >"$repo/pr-743.txt"
+git -C "$repo" add pr-743.txt
+git -C "$repo" commit --quiet -m 'merged PR 743'
+git -C "$repo" push --quiet origin main
+git -C "$repo" switch --quiet feature
+git -C "$repo" merge --quiet --no-edit main
 head_oid=$(git -C "$repo" rev-parse HEAD)
 export FAKE_HEAD_OID=$head_oid
+FAKE_BASE_OID=$(git -C "$repo" rev-parse origin/main)
+export FAKE_BASE_OID
 
 mkdir -- "$repo/.agent"
 contract="$repo/.agent/env-contract.txt"
@@ -47,7 +57,7 @@ cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} == api && ${2:-} == repos/acme/widget/pulls/42 ]] || exit 1
-printf '%s\n' "{\"base\":{\"ref\":\"main\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
+printf '%s\n' "{\"base\":{\"ref\":\"main\",\"sha\":\"$FAKE_BASE_OID\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
 EOF
 chmod +x "$fake_bin/gh"
 
@@ -66,7 +76,15 @@ fi
 # blocks must leave no marker: absence of a result file alone would still pass
 # if a regression launched the provider and simply failed to publish.
 [[ -z ${FAKE_CLAUDE_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CLAUDE_CALLED"
+if [[ -n ${FAKE_CLAUDE_LIMITS:-} ]]; then
+    printf '%s\n' "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-unset}" >"$FAKE_CLAUDE_LIMITS"
+    printf '%s\n' "$@" >>"$FAKE_CLAUDE_LIMITS"
+fi
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5","tools":["StructuredOutput"],"mcp_servers":[]}'
+if [[ ${FAKE_PROVIDER_ERROR:-} == 1 ]]; then
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"terminal_reason":"budget_exhausted"}'
+    exit 1
+fi
 if [[ ${FAKE_INVALID:-} == 1 ]]; then
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[],"unexpected":true},"modelUsage":{"claude-opus-5":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
 else
@@ -85,6 +103,10 @@ if [[ ${1:-} == exec && ${2:-} == --help ]]; then
     exit 0
 fi
 [[ -z ${FAKE_CODEX_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CODEX_CALLED"
+if [[ ${FAKE_CODEX_PROVIDER_ERROR:-} == 1 ]]; then
+    printf '%s\n' '{"type":"result","is_error":true,"error":"fixture provider failure"}'
+    exit 1
+fi
 last_file=''
 while (($#)); do
     if [[ $1 == --output-last-message ]]; then last_file=$2; shift 2; else shift; fi
@@ -98,13 +120,15 @@ expected="$tmp/expected.diff"
 git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$expected"
 
 grant() {
-    local run_dir=$1 provider=$2 diff=${3:-$expected} payload
+    local run_dir=$1 provider=$2 diff=${3:-$expected} base_sha=${4:-} payload
     # Each grant below starts an independent scenario, with a fresh PR budget.
     rm -rf -- "$repo/.git/agentkit-review-attempts"
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
-    payload=$(/bin/bash "$consent" payload --worktree "$repo" --run-dir "$run_dir" \
+    local -a payload_args=(payload --worktree "$repo" --run-dir "$run_dir" \
         --repo acme/widget --pr 42 --diff "$diff")
+    [[ -z $base_sha ]] || payload_args+=(--base-sha "$base_sha")
+    payload=$(/bin/bash "$consent" "${payload_args[@]}")
     /bin/bash "$consent" grant --worktree "$repo" --run-dir "$run_dir" \
         --provider "$provider" --payload "$payload" --source interactive >/dev/null
 }
@@ -186,6 +210,108 @@ assert_contains "$(cat -- "$tmp/mismatch.err")" 'does not match PR head' \
 assert_eq no "$( [[ -e $mismatch_run/adversarial.diff ]] && printf yes || printf no )" \
     'checkout mismatch does not build a review diff'
 
+# Explicit canonical limits reach the provider boundary, with no second send.
+limits_run="$tmp/limits-run"
+grant "$limits_run" anthropic
+limits_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_LIMITS="$tmp/limits.args" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$limits_run" --max-budget-usd 10 --max-output-tokens 128000 \
+    --max-duration-seconds 1800) >"$tmp/limits.out" 2>"$tmp/limits.err" || limits_rc=$?
+assert_eq 0 "$limits_rc" 'canonical launcher accepts explicit review resource limits'
+assert_eq 128000 "$(head -n 1 "$tmp/limits.args" 2>/dev/null)" 'requested output limit reaches Claude'
+assert_contains "$(cat "$tmp/limits.args" 2>/dev/null)" $'--max-budget-usd\n10.00' 'requested dollar cap reaches Claude'
+for invalid_limit in 0 -1 128000.5 99999999999999999999999; do
+    invalid_limit_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+        FAKE_CLAUDE_CALLED="$tmp/invalid-limit.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$tmp/invalid-limit" --max-output-tokens "$invalid_limit") \
+        >"$tmp/invalid-limit.out" 2>"$tmp/invalid-limit.err" || invalid_limit_rc=$?
+    assert_eq 2 "$invalid_limit_rc" 'invalid output limit is a usage error'
+done
+assert_eq no "$([[ -e $tmp/invalid-limit.called ]] && printf yes || printf no)" 'invalid output limit never sends a review'
+
+# An explicitly authorized failed-attempt retry launches once and retains history.
+retry_failed="$tmp/retry-failed"
+grant "$retry_failed" anthropic
+retry_failed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_PROVIDER_ERROR=1 bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_failed") \
+    >"$tmp/retry-failed.out" 2>"$tmp/retry-failed.err" || retry_failed_rc=$?
+assert_eq 1 "$retry_failed_rc" 'a provider budget error records a failed canonical attempt'
+retry_ledger="$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh"
+prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" --entry-file "$retry_failed/state/review-attempt.json")
+prior_retry_id=$(jq -r .id <<<"$prior_record")
+prior_retry_hash=$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)
+retry_missing_limit="$tmp/retry-missing-limit"
+mkdir -m 700 "$retry_missing_limit"
+retry_missing_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_missing_limit" \
+    --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$retry_missing_limit" --provider anthropic \
+    --payload "$retry_missing_payload" --source interactive >/dev/null
+retry_missing_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/retry-missing-limit.calls" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$retry_missing_limit" --retry-attempt "$prior_retry_id" \
+    --retry-authorization 'Operator authorized one retry' --max-budget-usd 10) \
+    >"$tmp/retry-missing-limit.out" 2>"$tmp/retry-missing-limit.err" || retry_missing_rc=$?
+assert_eq 1 "$retry_missing_rc" 'Claude retry still requires its explicit output-token limit'
+assert_eq no "$( [[ -e $tmp/retry-missing-limit.calls ]] && printf yes || printf no )" \
+    'Claude retry without its required output-token limit never launches a provider'
+retry_run="$tmp/retry-success"
+mkdir -m 700 "$retry_run"
+retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_run" --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthropic \
+    --payload "$retry_payload" --source interactive >/dev/null
+retry_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/retry.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_run" \
+    --retry-attempt "$prior_retry_id" --retry-authorization 'Operator authorized one retry' \
+    --max-budget-usd 10 --max-output-tokens 128000 --max-duration-seconds 1800) \
+    >"$tmp/retry.out" 2>"$tmp/retry.err" || retry_rc=$?
+assert_eq 0 "$retry_rc" 'canonical authorized retry completes on the same reviewed head'
+assert_eq 1 "$(wc -l <"$tmp/retry.calls" 2>/dev/null)" 'authorized retry sends exactly once'
+retry_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" --entry-file "$retry_run/state/review-attempt.json")
+assert_eq "$prior_retry_id" "$(jq -r .retryOf <<<"$retry_record")" 'canonical retry binds the prior failed attempt'
+assert_eq "$prior_retry_hash" "$(jq -r '.previousAttempts[0].transcriptSha256' <<<"$retry_record")" 'canonical retry archives the original transcript digest'
+assert_eq "$prior_retry_hash" "$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)" 'canonical retry leaves prior transcript untouched'
+retry_validate_rc=0
+bash "$retry_ledger" attempt validate --repo-root "$repo" --entry-file "$retry_run/state/review-attempt.json" \
+    >"$tmp/retry-validate.out" 2>"$tmp/retry-validate.err" || retry_validate_rc=$?
+assert_eq 0 "$retry_validate_rc" 'completed retry retains valid canonical receipt provenance'
+
+# Codex retries have no Claude-specific dollar or output-token options.
+write_contract codex codex 'absent note="same-harness Codex retry fixture"'
+codex_retry_failed="$tmp/codex-retry-failed"
+grant "$codex_retry_failed" openai
+codex_retry_failed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_PROVIDER_ERROR=1 bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_retry_failed") \
+    >"$tmp/codex-retry-failed.out" 2>"$tmp/codex-retry-failed.err" || codex_retry_failed_rc=$?
+assert_eq 1 "$codex_retry_failed_rc" 'Codex provider failure records a terminal failed attempt'
+codex_prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" \
+    --entry-file "$codex_retry_failed/state/review-attempt.json")
+codex_prior_id=$(jq -r .id <<<"$codex_prior_record")
+codex_retry_run="$tmp/codex-retry-success"
+mkdir -m 700 "$codex_retry_run"
+codex_retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$codex_retry_run" \
+    --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$codex_retry_run" --provider openai \
+    --payload "$codex_retry_payload" --source interactive >/dev/null
+codex_retry_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_CALLED="$tmp/codex-retry.calls" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$codex_retry_run" --retry-attempt "$codex_prior_id" \
+    --retry-authorization 'Operator authorized one Codex retry') \
+    >"$tmp/codex-retry.out" 2>"$tmp/codex-retry.err" || codex_retry_rc=$?
+assert_eq 0 "$codex_retry_rc" 'Codex retry works without Claude-only resource flags'
+assert_eq 1 "$(wc -l <"$tmp/codex-retry.calls" 2>/dev/null)" 'authorized Codex retry sends exactly once'
+codex_retry_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" \
+    --entry-file "$codex_retry_run/state/review-attempt.json")
+assert_eq null "$(jq -c '.maxBudgetUsd' <<<"$codex_retry_record")" 'Codex retry does not claim a Claude dollar ceiling'
+assert_eq null "$(jq -c '.maxOutputTokens' <<<"$codex_retry_record")" 'Codex retry records no Claude output-token override'
+write_contract codex claude "present path=$tmp/fake-claude"
+
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
 claude_rc=0
@@ -228,11 +354,17 @@ mkdir -m 700 "$resume_run" "$resume_run/state"
 resume_payload=$(jq -r '.payload' "$claude_run/state/launch-attempted")
 "$consent" grant --worktree "$repo" --run-dir "$resume_run" --provider anthropic \
     --payload "$resume_payload" --source interactive >/dev/null
+# Simulate a completed pre-reviewBase record: it is semantically based on the
+# PR base and remains resumable without launching a second provider call.
+attempt_key=$(printf 'acme/widget:42' | sha256sum | cut -d' ' -f1)
+attempt_record_path="$repo/.git/agentkit-review-attempts/$attempt_key.json"
+jq 'del(.reviewBase)' "$attempt_record_path" >"$tmp/legacy-attempt.json"
+mv "$tmp/legacy-attempt.json" "$attempt_record_path"
 resume_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CLAUDE_CALLED="$tmp/canonical.calls" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$resume_run") >"$tmp/resume.out" 2>"$tmp/resume.err" || resume_rc=$?
-assert_eq 0 "$resume_rc" 'new run directory resumes the completed durable attempt'
-assert_eq 1 "$(wc -l <"$tmp/canonical.calls")" 'completed replay never invokes the provider again'
+assert_eq 0 "$resume_rc" 'new run directory resumes a legacy completed durable attempt'
+assert_eq 1 "$(wc -l <"$tmp/canonical.calls")" 'legacy completed replay never invokes the provider again'
 assert_eq "$(jq -r '.attemptId' "$claude_run/adversarial.result.json")" \
     "$(jq -r '.attemptId' "$resume_run/adversarial.result.json")" 'resume retains original attempt identity'
 assert_eq "$script" "$(jq -r '.launcher.path' "$claude_run/adversarial.result.json")" 'result names actual launcher path'
@@ -299,6 +431,118 @@ assert_eq 'operator explicitly selected Opus/xhigh' "$(jq -r '.overrideAuthoriza
 assert_rc 1 'override without authorization fails before launch' -- env PATH="$fake_bin:$PATH" \
     bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$tmp/unauthorized-override" \
     --reviewer claude-opus-5-xhigh
+
+# A combined review can intentionally start at a frozen ancestor of the PR's
+# current base so it includes a commit already merged into main. The consent
+# payload and attempt provenance must bind that historical base and the exact
+# combined diff while retaining the live PR base separately.
+combined_diff="$tmp/combined.diff"
+git -C "$repo" --no-pager diff --find-renames --unified=25 \
+    "$historical_base_oid...HEAD" -- ':/' >"$combined_diff"
+assert_rc 2 'short historical base SHA is rejected as usage' -- env PATH="$fake_bin:$PATH" \
+    bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$tmp/short-base" \
+        --review-base-sha "${historical_base_oid:0:12}"
+missing_base_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$tmp/missing-base" --review-base-sha 1111111111111111111111111111111111111111) \
+    >"$tmp/missing-base.out" 2>"$tmp/missing-base.err" || missing_base_rc=$?
+assert_eq 1 "$missing_base_rc" 'unknown historical base commit is rejected'
+assert_contains "$(cat "$tmp/missing-base.err")" 'does not resolve to a local commit' \
+    'missing historical base names the commit-resolution failure'
+nonancestor_base=$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse 'HEAD^{tree}')" -m unrelated-root)
+nonancestor_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$tmp/nonancestor-base" --review-base-sha "$nonancestor_base") \
+    >"$tmp/nonancestor-base.out" 2>"$tmp/nonancestor-base.err" || nonancestor_rc=$?
+assert_eq 1 "$nonancestor_rc" 'non-ancestor historical base is rejected'
+assert_contains "$(cat "$tmp/nonancestor-base.err")" 'ancestor of the observed PR base' \
+    'non-ancestor failure names the PR base boundary'
+
+# Historical rendering is permitted only when the current base and anchor use
+# the same generated-path exclusion policy; otherwise block before publishing
+# a diff or making a provider launch possible.
+exclusion_repo="$tmp/exclusion-repo"
+exclusion_origin="$tmp/exclusion-origin.git"
+git init --bare --quiet "$exclusion_origin"
+git init --quiet --initial-branch=main "$exclusion_repo"
+git -C "$exclusion_repo" config user.email test@example.invalid
+git -C "$exclusion_repo" config user.name test
+git -C "$exclusion_repo" remote add origin "$exclusion_origin"
+mkdir -- "$exclusion_repo/.agent"
+printf '%s\n' 'AGENT_GENERATED_PATHS=old-generated' >"$exclusion_repo/.agent/config.env"
+git -C "$exclusion_repo" add .agent/config.env
+git -C "$exclusion_repo" commit --quiet -m 'old exclusions'
+exclusion_anchor=$(git -C "$exclusion_repo" rev-parse HEAD)
+git -C "$exclusion_repo" push --quiet -u origin main
+git -C "$exclusion_repo" switch --quiet -c feature
+printf '%s\n' feature >"$exclusion_repo/source.txt"
+git -C "$exclusion_repo" add source.txt
+git -C "$exclusion_repo" commit --quiet -m feature
+git -C "$exclusion_repo" switch --quiet main
+printf '%s\n' 'AGENT_GENERATED_PATHS=new-generated' >"$exclusion_repo/.agent/config.env"
+git -C "$exclusion_repo" commit --quiet -am 'new exclusions'
+git -C "$exclusion_repo" push --quiet origin main
+git -C "$exclusion_repo" switch --quiet feature
+git -C "$exclusion_repo" merge --quiet --no-edit main
+exclusion_head=$(git -C "$exclusion_repo" rev-parse HEAD)
+exclusion_pr_base=$(git -C "$exclusion_repo" rev-parse origin/main)
+printf '%s\n' 'repo=acme/widget' \
+    'harness= name=codex trailer="Test <test@example.invalid>" other=claude' \
+    'peer-cli= claude present path=/bin/true' >"$exclusion_repo/.agent/env-contract.txt"
+chmod 600 "$exclusion_repo/.agent/env-contract.txt"
+exclusion_run="$tmp/exclusion-run"
+exclusion_rc=0
+(cd "$exclusion_repo" && PATH="$fake_bin:$PATH" FAKE_HEAD_OID="$exclusion_head" \
+    FAKE_BASE_OID="$exclusion_pr_base" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$exclusion_run" --review-base-sha "$exclusion_anchor") \
+    >"$tmp/exclusion.out" 2>"$tmp/exclusion.err" || exclusion_rc=$?
+assert_eq 1 "$exclusion_rc" 'historical base with changed generated exclusions is blocked'
+assert_contains "$(cat "$tmp/exclusion.err")" 'generated-path exclusions different' \
+    'exclusion-policy conflict identifies both base revisions'
+assert_eq no "$( [[ -e $exclusion_run/adversarial.diff ]] && printf yes || printf no )" \
+    'exclusion-policy conflict blocks before publishing a diff'
+assert_eq no "$( [[ -e $exclusion_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'exclusion-policy conflict blocks before provider launch'
+
+combined_run="$tmp/combined-run"
+grant "$combined_run" anthropic "$combined_diff" "$historical_base_oid"
+combined_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run" --review-base-sha "$historical_base_oid") \
+    >"$tmp/combined.out" 2>"$tmp/combined.err" || combined_rc=$?
+assert_eq 0 "$combined_rc" 'historical review base permits one combined PR review'
+assert_eq "$(sha256sum "$combined_diff" | awk '{print $1}')" \
+    "$(sha256sum "$combined_run/adversarial.diff" | awk '{print $1}')" \
+    'combined review sends the exact consented diff bytes'
+assert_contains "$(cat "$combined_run/adversarial.diff")" 'pr-743.txt' \
+    'combined diff includes already-merged PR 743 changes'
+assert_eq "$historical_base_oid" "$(jq -r '.reviewBase' "$combined_run/state/review-attempt.json")" \
+    'durable attempt records the historical review base'
+assert_eq "$FAKE_BASE_OID" "$(jq -r '.base' "$combined_run/state/review-attempt.json")" \
+    'existing base field retains its current PR base meaning'
+assert_eq "$(jq -r '.payload' "$combined_run/state/review-attempt.json")" \
+    "$(jq -r '.diffPayload' "$combined_run/adversarial.result.json")" \
+    'result binds the exact combined consent payload'
+assert_eq "$historical_base_oid" "$(jq -r '.reviewBase' "$combined_run/adversarial.result.json")" \
+    'result binds the historical review base'
+assert_eq "$FAKE_BASE_OID" "$(jq -r '.prBase' "$combined_run/adversarial.result.json")" \
+    'result binds the current PR base'
+same_base_resume_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run" --review-base-sha "$historical_base_oid") \
+    >"$tmp/combined-same.out" 2>"$tmp/combined-same.err" || same_base_resume_rc=$?
+assert_eq 0 "$same_base_resume_rc" 'resume with the original historical base preserves the completed review'
+combined_resume_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run") >"$tmp/combined-resume.out" 2>"$tmp/combined-resume.err" || combined_resume_rc=$?
+assert_eq 1 "$combined_resume_rc" 'resume without the original historical base is rejected'
+assert_contains "$(cat "$tmp/combined-resume.err")" 'review-base' \
+    'conflicting resume names the bound review base'
+assert_eq 1 "$(wc -l <"$tmp/combined.called")" \
+    'conflicting resume does not send a second review'
 
 # A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
 # rejected before the provider is ever launched -- not after paying for the
@@ -457,6 +701,7 @@ cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
 cp -- "$consent" "$malformed_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$malformed_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$malformed_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$malformed_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -522,6 +767,7 @@ cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
 cp -- "$consent" "$verdict_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$verdict_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$verdict_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$verdict_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -814,6 +1060,7 @@ cp -- "$script" "$noreceipt_script_dir/adversarial-run.sh"
 cp -- "$consent" "$noreceipt_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$noreceipt_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -1565,8 +1812,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1018 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1018 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1016 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1016 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

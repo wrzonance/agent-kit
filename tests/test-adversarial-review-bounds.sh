@@ -99,6 +99,28 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 EOF
 chmod +x "$tmp/fake-claude-success"
 
+cat >"$tmp/fake-claude-record" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --version ]]; then
+    printf '%s\n' 'claude 2.1.0'
+    exit 0
+fi
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
+    printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
+    printf '%s\n' '--strict-mcp-config --mcp-config --output-format'
+    printf '%s\n' '--include-partial-messages --json-schema --max-budget-usd --no-chrome --verbose'
+    exit 0
+fi
+[[ -z ${FAKE_CLAUDE_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CLAUDE_CALLED"
+[[ -z ${FAKE_CLAUDE_ARGV_FILE:-} ]] || printf '%s\n' "$@" >"$FAKE_CLAUDE_ARGV_FILE"
+[[ -z ${FAKE_CLAUDE_OUTPUT_ENV_FILE:-} ]] || printf '%s' "${CLAUDE_CODE_MAX_OUTPUT_TOKENS-unset}" >"$FAKE_CLAUDE_OUTPUT_ENV_FILE"
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"findings","findings":[{"priority":"P1","location":"probe.js:1","failureScenario":"The function authorizes every deletion.","smallestFix":"Check the requesting user and target user."}]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
+EOF
+chmod +x "$tmp/fake-claude-record"
+
 # Same success stream, but slow enough for a concurrent poller to observe the
 # helper mid-run (the PID-file liveness fixture below).
 cat >"$tmp/fake-claude-slow" <<'EOF'
@@ -313,6 +335,75 @@ assert_contains "$(cat "$claude_success_result")" '"verdict": {' \
     'Claude preserves the structured no-findings verdict'
 assert_contains "$(cat "$claude_success_result")" '"verdict": "no_findings"' \
     'Claude preserves the no-findings verdict value'
+
+# A caller-selected output ceiling is validated and confined to the provider
+# process. The inherited variable cannot silently change default behavior.
+requested_limit_result="$tmp/requested-limit.result.json"
+requested_limit_env="$tmp/requested-limit.env"
+requested_limit_argv="$tmp/requested-limit.argv"
+requested_limit_called="$tmp/requested-limit.called"
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=17 CLAUDE_EXECUTABLE="$tmp/fake-claude-record" \
+    FAKE_CLAUDE_OUTPUT_ENV_FILE="$requested_limit_env" \
+    FAKE_CLAUDE_ARGV_FILE="$requested_limit_argv" FAKE_CLAUDE_CALLED="$requested_limit_called" \
+    bash "$claude" --mode probe --no-payload --model claude-test \
+    --transcript "$private/requested-limit.jsonl" --poll-seconds 1 --max-duration-seconds 30 \
+    --max-output-tokens 128000 --max-budget-usd 10 >"$requested_limit_result"
+assert_eq 128000 "$(<"$requested_limit_env")" \
+    'Claude receives the requested output-token ceiling in its own environment'
+assert_contains "$(<"$requested_limit_argv")" $'--max-budget-usd\n10.00' \
+    'Claude receives the explicitly authorized ten-dollar ceiling'
+assert_eq 128000 "$(jq -r '.requestedMaxOutputTokens' "$requested_limit_result")" \
+    'Claude result records the requested output-token ceiling'
+assert_eq 10.00 "$(jq -r '.requestedMaxBudgetUsd' "$requested_limit_result")" \
+    'Claude result records the requested budget ceiling'
+
+default_limit_result="$tmp/default-limit.result.json"
+default_limit_env="$tmp/default-limit.env"
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=17 CLAUDE_EXECUTABLE="$tmp/fake-claude-record" \
+    FAKE_CLAUDE_OUTPUT_ENV_FILE="$default_limit_env" \
+    bash "$claude" --mode probe --no-payload --model claude-test \
+    --transcript "$private/default-limit.jsonl" --poll-seconds 1 --max-duration-seconds 30 \
+    >"$default_limit_result"
+assert_eq 17 "$(<"$default_limit_env")" \
+	'Claude preserves an inherited output-token override when the option is omitted'
+assert_eq null "$(jq -r '.requestedMaxOutputTokens' "$default_limit_result")" \
+    'default result records no output-token override'
+assert_eq 5.00 "$(jq -r '.requestedMaxBudgetUsd' "$default_limit_result")" \
+    'omitting a budget preserves the existing five-dollar ceiling'
+
+invalid_limit_called="$tmp/invalid-limit.called"
+invalid_limit_err="$tmp/invalid-limit.err"
+invalid_limit_rc=0
+CLAUDE_EXECUTABLE="$tmp/fake-claude-record" FAKE_CLAUDE_CALLED="$invalid_limit_called" \
+    bash "$claude" --mode probe --no-payload --model claude-test \
+    --transcript "$private/invalid-limit.jsonl" --max-output-tokens 128001 \
+    > /dev/null 2>"$invalid_limit_err" || invalid_limit_rc=$?
+assert_eq 1 "$invalid_limit_rc" 'Claude rejects output ceilings above the supported 128000 maximum'
+assert_contains "$(<"$invalid_limit_err")" '--max-output-tokens' \
+    'Claude names an invalid output-token ceiling'
+[[ ! -e $invalid_limit_called ]] || _fail 'an invalid output-token ceiling never launches Claude' \
+    "provider call marker exists: $invalid_limit_called"
+
+zero_limit_rc=0
+CLAUDE_EXECUTABLE="$tmp/fake-claude-record" FAKE_CLAUDE_CALLED="$invalid_limit_called" \
+    bash "$claude" --mode probe --no-payload --model claude-test \
+    --transcript "$private/zero-limit.jsonl" --max-output-tokens 0 \
+    > /dev/null 2>"$invalid_limit_err" || zero_limit_rc=$?
+assert_eq 1 "$zero_limit_rc" 'Claude rejects a zero output-token ceiling'
+[[ ! -e $invalid_limit_called ]] || _fail 'zero output-token ceiling never launches Claude' \
+    "provider call marker exists: $invalid_limit_called"
+
+malformed_limit_rc=0
+malformed_limit_value="12;touch $tmp/not-a-review-option"
+CLAUDE_EXECUTABLE="$tmp/fake-claude-record" FAKE_CLAUDE_CALLED="$invalid_limit_called" \
+    bash "$claude" --mode probe --no-payload --model claude-test \
+    --transcript "$private/malformed-limit.jsonl" --max-output-tokens "$malformed_limit_value" \
+    > /dev/null 2>"$invalid_limit_err" || malformed_limit_rc=$?
+assert_eq 1 "$malformed_limit_rc" 'Claude rejects nonnumeric output-token input'
+[[ ! -e $invalid_limit_called ]] || _fail 'malformed output-token input never launches Claude' \
+    "provider call marker exists: $invalid_limit_called"
+[[ ! -e $tmp/not-a-review-option ]] || _fail 'malformed output-token input is never evaluated' \
+    'the injected scratch marker was created'
 
 # Cross-cell heartbeat: a detached poller must observe a status artifact that
 # appears immediately, ticks while the producer runs, and disappears on cleanup.

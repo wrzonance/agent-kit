@@ -119,10 +119,10 @@ for bad in '2298:25215' 'foo:25215:800' '2298:08:800' '2298:1+1:800' '2298:25215
 done
 
 # --- tree total ---------------------------------------------------------
-# Forty-five helpers each under both per-file caps, together over the tree
+# Forty-six helpers each under both per-file caps, together over the tree
 # ceiling: diffuse growth must fail even when no single file does.
 root=$tmp/tree-total
-for ((n = 0; n < 45; n++)); do
+for ((n = 0; n < 46; n++)); do
     write_script "$root" "skills/x/scripts/part-$n.sh" 790 48
 done
 run_lint "$root"

@@ -276,17 +276,54 @@ the receipt visibly names both selections. No environment variable overrides sel
 provider/payload consent is checked against the selected provider; the override never grants
 disclosure consent or another review. With no override, the existing reviewer line is unchanged.
 
+To inspect model selectors and effort levels exposed by the current Claude Code session without
+submitting a prompt, run `node "$agentkit/review-remote-pr/scripts/claude-model-discovery.mjs"
+--list-models [--claude PATH] [--sdk-dir DIR]`. This optional diagnostic uses the Agent SDK's
+`supportedModels()` control query; it does not read PR content or select a model. If the SDK
+package is absent, the helper prints an opt-in install command. Automatic error diagnostics resolve the SDK only inside the helper scripts directory, never from the reviewed checkout. An explicit `--sdk-dir` must contain the resolved SDK entry point after resolving symlinks; parent-directory and symlink escapes are refused before import. The SDK may return session aliases
+such as `default`, `sonnet`, or `haiku`, and its list may omit canonical model IDs available by
+other routes. Use only the exact returned selector and a listed supported effort in
+`--reviewer MODEL-EFFORT`; never infer a selector from a display name. Anthropic's [Models API]
+(`GET /v1/models`) lists API model IDs, but requires API authentication and does not describe
+Claude Code OAuth availability or effort levels.
+
+[Models API]: https://platform.claude.com/docs/en/api/models/list
+
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                                [--provenance TEXT]
+                               [--review-base-sha SHA]
                                [--reviewer MODEL-EFFORT --override-authorization TEXT]
+                               [--max-budget-usd AMOUNT] [--max-output-tokens N]
+                               [--max-duration-seconds N]
+                               [--retry-attempt ID --retry-authorization TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
 publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
 post-receipt.sh publish. A provider failure, missing provider, or unparseable verdict is blocked
 and is never clean. The legacy invocation `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR`
 remains accepted for callers that already enter the PR worktree before launching.
+
+Use `--review-base-sha SHA` only when the review must include commits already merged into the
+current PR base. SHA must be a full local commit ID and an ancestor of both the observed PR base
+and checked-out head. The consent payload must be granted using that same `--base-sha`; the run
+records the current PR base, selected review base, and exact diff payload in its attempt and result.
+
+For Claude, `--max-budget-usd` defaults to `5.00`; `--max-output-tokens` is optional and
+sets the provider process's `CLAUDE_CODE_MAX_OUTPUT_TOKENS` value. Omitting it preserves the
+Claude Code setting. Accepted explicit values are 1–128000; the selected model's own cap still
+applies. Fable 5.1 supports 128000 output tokens, including thinking. `--max-duration-seconds`
+defaults to 900 for either provider. These are per-run limits, not repository-wide defaults.
+
+An operator can explicitly authorize another attempt after a failed review. Use a fresh run
+directory and pass `--retry-attempt ORIGINAL_ID --retry-authorization VERBATIM_AUTHORIZATION`.
+Recompute and grant consent for the exact new payload before launching. This exception requires
+a terminal failed canonical attempt, the named current attempt ID, the same provider/model/effort
+and review bases, and a head descending from the failed attempt. It preserves the prior record,
+result and transcript evidence while recording a new ID and the operator's authorization. A failed
+run, increased budget, or an earlier `--auto-review` flag alone never authorizes a retry. Running,
+unknown, and completed attempts cannot use this path; replaying the old ID cannot buy a third run.
 
 For detached executors only, use:
 
@@ -324,7 +361,8 @@ If a validated original result arrived after acknowledgement was lost, use
 `review-ledger.sh attempt reconcile --repo-root DIR --entry-file FILE --id ORIGINAL_ID`.
 This validates that attempt's original result and records completion without launching a provider.
 If evidence is missing, preserve the record and report the unresolved attempt. No command resets
-the budget. A repeated canonical invocation reuses a matching completed result; changed targets
+the budget. The explicit operator-authorized retry above preserves the failed attempt and creates
+a separately identified attempt; it never turns failed evidence into successful review evidence. A repeated canonical invocation reuses a matching completed result; changed targets
 require the existing mechanical-lineage workflow, not a new review.
 
 A `parser-rejected` preparation can recover the same attempt only when its complete event history

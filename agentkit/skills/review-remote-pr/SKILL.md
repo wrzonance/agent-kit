@@ -5,6 +5,19 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 # Review Remote PR
 
+## Step 0 prerequisite: verified activation
+
+Before other output, execute the boundary's exact `$agentkit/.shared/scripts/workflow-activation.sh ack`
+receipt command. Its first stdout line is
+`agentkit: skill=review-remote-pr version=<v> hash=<first12>`. It proves explicit
+session receipt, not native registry loading. Before guard-dependent work, use
+`workflow-activation.sh check --require pre-tool-use` with the boundary's exact
+`--repo-root`, `--session`, and `--skill` arguments. Pass that session to preflight
+with `--activation-session ID --workflow review-remote-pr`. Missing boundary evidence
+means `agentkit: activation-unavailable`: report once and stop without substituting
+a workflow. Resume revalidates durable receipt; rereading installed files does not
+prove what an earlier context loaded.
+
 Draft loop. **Phase A:** root owns CI/conflicts, materiality, fix delegation, adversarial review, publication. **Phase B:** user marks ready. **Phase C:** assess findings in one-push cycles. Human feedback is confirmation-gated.
 
 **Consent context rule:** consent-bearing sends run in the consent-holding context; typed approval is context-local. Dispatched loop agents never stall waiting for consent; root/holder launches.

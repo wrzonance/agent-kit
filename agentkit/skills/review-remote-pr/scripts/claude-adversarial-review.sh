@@ -52,6 +52,7 @@ OUTPUT_PATH=""
 OUTPUT_TMP=""
 POLL_SECONDS=120
 MAX_BUDGET_USD="5.00"
+MAX_OUTPUT_TOKENS=""
 MAX_DURATION_SECONDS=$DEFAULT_MAX_DURATION_SECONDS
 WORK_DIR=""
 POLLER_PID=""
@@ -95,6 +96,7 @@ Options:
   --effort <level>           low|medium|high|xhigh|max (default: $EFFORT).
   --poll-seconds <1-3600>    Progress-report interval (default: $POLL_SECONDS).
   --max-budget-usd <amount>  Hard API spend cap, 0.01-1000 (default: $MAX_BUDGET_USD).
+  --max-output-tokens <n>    Claude output-token ceiling, 1-128000. Unset preserves the CLI default.
   --max-duration-seconds <1-86400>
                              Hard wall-clock ceiling for the review (default: $MAX_DURATION_SECONDS).
   --output <path>            Also publish the single stdout JSON object here atomically
@@ -176,6 +178,8 @@ parse_args() {
 		--poll-seconds=*) POLL_SECONDS=${1#*=} && shift ;;
 		--max-budget-usd) require_value "$1" "${2:-}" && MAX_BUDGET_USD=$2 && shift 2 ;;
 		--max-budget-usd=*) MAX_BUDGET_USD=${1#*=} && shift ;;
+		--max-output-tokens) require_value "$1" "${2:-}" && MAX_OUTPUT_TOKENS=$2 && shift 2 ;;
+		--max-output-tokens=*) MAX_OUTPUT_TOKENS=${1#*=} && shift ;;
 		--max-duration-seconds) require_value "$1" "${2:-}" && MAX_DURATION_SECONDS=$2 && shift 2 ;;
 		--max-duration-seconds=*) MAX_DURATION_SECONDS=${1#*=} && shift ;;
 		--output) require_value "$1" "${2:-}" && OUTPUT_PATH=$2 && shift 2 ;;
@@ -196,6 +200,13 @@ validate_args() {
 		die "--max-budget-usd must be between 0.01 and 1000"
 	# Normalize away any locale-specific decimal handling before it reaches the CLI.
 	MAX_BUDGET_USD=$(LC_ALL=C printf '%.2f' "$MAX_BUDGET_USD")
+	if [[ -n $MAX_OUTPUT_TOKENS ]]; then
+		[[ $MAX_OUTPUT_TOKENS =~ ^[0-9]{1,6}$ ]] ||
+			die "--max-output-tokens must be a positive integer from 1 to 128000"
+		MAX_OUTPUT_TOKENS=$((10#$MAX_OUTPUT_TOKENS))
+		((MAX_OUTPUT_TOKENS >= 1 && MAX_OUTPUT_TOKENS <= 128000)) ||
+			die "--max-output-tokens must be a positive integer from 1 to 128000"
+	fi
 	review_validate_mode_args
 }
 
@@ -389,7 +400,11 @@ run_claude() {
 	# Blocking in `wait` lets the INT/TERM trap fire immediately and clean up.
 	local status=0
 	seconds=$(seconds_until_deadline) || return 124
-	(cd "$isolation_dir" && exec timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}") \
+	local -a provider_command=(timeout --signal=KILL "$seconds" "$CLAUDE_RESOLVED" "${args[@]}")
+	if [[ -n $MAX_OUTPUT_TOKENS ]]; then
+		provider_command=(env "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$MAX_OUTPUT_TOKENS" "${provider_command[@]}")
+	fi
+	(cd "$isolation_dir" && exec "${provider_command[@]}") \
 		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
 	review_register_pid "$CLAUDE_PID"
@@ -412,9 +427,6 @@ run_claude() {
 	return "$status"
 }
 
-# Best-effort human-readable reason for a nonzero exit. Claude Code reports most
-# failures (bad model, auth, budget) in the JSON stream rather than on stderr, so
-# fall back to the last result event before giving up.
 claude_failure_detail() {
 	local stderr_file=$1 detail
 	detail=$(cat -- "$stderr_file" 2>/dev/null || true)
@@ -425,12 +437,9 @@ claude_failure_detail() {
 	[[ -n ${detail//[[:space:]]/} ]] || detail="no diagnostic emitted"
 	printf '%s (transcript: %s)' "$detail" "$TRANSCRIPT_PATH"
 }
-
-# A nonzero Claude exit is either "this sandbox will never let the review run"
-# (exit 3, fall back) or a genuine failure (exit 1). Decide from what the CLI
-# reported, not from the exit status alone, which is 1 for both classes.
+# A blocked exit uses 3; other failures require distinguishing the reason.
 fail_claude_exit() {
-	local exit_code=$1 stderr_file=$2 detail reason
+	local exit_code=$1 stderr_file=$2 detail reason metadata helper="$SCRIPT_DIR/claude-model-discovery.mjs"
 	if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
 		die_duration
 	fi
@@ -439,6 +448,12 @@ fail_claude_exit() {
 	if [[ -n $reason ]]; then
 		die_blocked "$reason" "claude exited $exit_code: $detail"
 	fi
+	if command -v node >/dev/null 2>&1; then
+		metadata=$(timeout --signal=KILL 35s node "$helper" --for-error "$detail" --claude "$CLAUDE_RESOLVED" 2>&1) || true
+	else
+		metadata='model metadata unavailable: Node.js is missing; install Node.js and the optional Agent SDK to list models'
+	fi
+	[[ -z $metadata ]] || detail+="; $metadata"
 	die "Claude exited $exit_code: $detail"
 }
 
@@ -542,6 +557,8 @@ main() {
 	final_json=$(jq -n \
 		--argjson exitCode "$exit_code" \
 		--arg requestedModel "$MODEL" \
+		--arg requestedMaxBudgetUsd "$MAX_BUDGET_USD" \
+		--arg requestedMaxOutputTokens "$MAX_OUTPUT_TOKENS" \
 		--arg initModel "$init_model" \
 		--argjson canonicalModels "$(jq -c '(.modelUsage // {}) | keys' <<<"$result")" \
 		--argjson eventCount "$(transcript_event_count)" \
@@ -550,6 +567,8 @@ main() {
 		--argjson totalCostUsd "$(jq -c '.total_cost_usd // null' <<<"$result")" \
 		--argjson verdict "$verdict" \
 		'{status:"completed", exitCode:$exitCode, requestedModel:$requestedModel,
+		  requestedMaxBudgetUsd:$requestedMaxBudgetUsd,
+		  requestedMaxOutputTokens:(if $requestedMaxOutputTokens == "" then null else ($requestedMaxOutputTokens | tonumber) end),
 		  initModel:$initModel, canonicalModels:$canonicalModels, eventCount:$eventCount,
 		  transcript:$transcript, durationApiMs:$durationApiMs, totalCostUsd:$totalCostUsd,
 		  verdict:$verdict}')

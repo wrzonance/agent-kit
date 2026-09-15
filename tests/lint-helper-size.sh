@@ -23,7 +23,7 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
+    [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
     # #731/#732: verification query, durable fingerprints, and typed failure records.
     [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -37,7 +37,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1018:12770:800"
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
     # #728 separates optional CI outcomes from required acceptance execution.
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
@@ -65,8 +65,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #732: typed failures and recovery actions.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# Exact merged helper-tree bytes / 4: 1698823 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=424705
+# #739: retry limits and confirmed review repairs; exact bytes / 4: 1719272 / 4.
+readonly MAX_TREE_TOKENS=429818
 
 violations=0
 checked=0

@@ -132,9 +132,13 @@ assert_contains "$reference_text" 'never count against the one-review-per-PR bud
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/codex-adversarial-review.sh") -le 520 ]] && printf yes || printf no)" \
     'codex-adversarial-review.sh stays at or under 520 lines'
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh") -le 575 ]] && printf yes || printf no)" \
-    'claude-adversarial-review.sh stays at or under 575 lines'
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh") -le 310 ]] && printf yes || printf no)" \
-    'adversarial-review.sh (lib) stays at or under 310 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/claude-adversarial-review.sh") -le 592 ]] && printf yes || printf no)" \
+    'claude-adversarial-review.sh stays at or under 592 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh") -le 322 ]] && printf yes || printf no)" \
+    'adversarial-review.sh (lib) stays at or under 322 lines'
+
+activation_rc=0
+python3 "$here/probe/test-activation.py" || activation_rc=$?
+assert_eq 0 "$activation_rc" 'workflow activation boundary fixtures pass (not live acceptance)'
 
 finish

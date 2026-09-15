@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Documented common Codex/Claude UserPromptSubmit output: https://learn.chatgpt.com/docs/hooks and https://code.claude.com/docs/en/hooks. A schema fixture is not live acceptance.",
+  "title": "user-prompt-submit.command.output",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "continue": {"type": "boolean"},
+    "stopReason": {"type": "string"},
+    "systemMessage": {"type": "string"},
+    "suppressOutput": {"type": "boolean"},
+    "decision": {"enum": ["block"]},
+    "reason": {"type": "string"},
+    "hookSpecificOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hookEventName"],
+      "properties": {
+        "hookEventName": {"const": "UserPromptSubmit", "type": "string"},
+        "additionalContext": {"type": "string"}
+      }
+    }
+  }
+}

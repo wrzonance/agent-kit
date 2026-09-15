@@ -409,4 +409,10 @@ assert_eq '1' "$LINT_RC" 'a full resolver definition inside .shared fails'
 assert_contains "$LINT_OUT" 'EXPECTED zero full resolver definitions in reference file' \
     'the .shared resolver copy is named'
 
+for skill in parallel-issues pr-to-green review-remote-pr onboard-repo; do
+    skill_text=$(<"$here/../agentkit/skills/$skill/SKILL.md")
+    assert_contains "$skill_text" 'workflow-activation.sh' "$skill requires boundary receipt"
+    assert_contains "$skill_text" "agentkit: skill=$skill version=<v> hash=<first12>" "$skill specifies first identity output"
+done
+
 finish
