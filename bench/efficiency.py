@@ -128,11 +128,12 @@ def collect(records):
     return data
 
 
-def recovery(data, index):
+def recovery(data, index, model_turns_complete):
     boundaries = [i for i in data['compactions'] if i < index]
     boundary = max(boundaries, default=-1)
     turns = sum(boundary < t['index'] < index for t in data['model_turn'].values())
-    return boundary, boundary >= 0 and turns <= 2
+    known = boundary < 0 or (model_turns_complete and turns > 0)
+    return boundary, known and boundary >= 0 and turns <= 2, known
 
 
 def activity(payload, annotation):
@@ -146,7 +147,7 @@ def activity(payload, annotation):
     return 'unknown'
 
 
-def count_calls(data):
+def count_calls(data, model_turns_complete):
     counts, commands, reads = Counter(), set(), set()
     for identity, call in data['calls'].items():
         payload = call['payload']
@@ -158,11 +159,13 @@ def count_calls(data):
         counts['tool_calls'] += 1
         counts[activity(payload, annotation)] += 1
         counts[annotation.get('retry', 'unknown') + '_retry'] += 1
-        boundary, recovering = recovery(data, call['index'])
+        boundary, recovering, recovery_known = recovery(data, call['index'], model_turns_complete)
         exclusion = annotation.get('exclusion', 'none')
         if exclusion == 'none' and recovering:
             exclusion = 'compaction_recovery'
         tags = set(annotation.get('tags', []))
+        if exclusion == 'none' and not recovery_known and tags & DISCOVERY:
+            counts['uncertain_recovery'] += 1
         if exclusion != 'none' and tags & DISCOVERY:
             counts[exclusion] += 1
         for tag in tags:
@@ -231,7 +234,8 @@ def build_efficiency(records):
     complete = {g: meta['source'] == 'complete' and g in meta['coverage'] for g in GROUPS}
     complete['calls'] &= not data['missing_calls']
     complete['classifications'] &= complete['calls'] and set(data['calls']) == set(data['call'])
-    counts = count_calls(data)
+    counts = count_calls(data, complete['model_turns'])
+    complete['classifications'] &= not counts['uncertain_recovery']
     native = {'tool_calls', 'duplicate_commands', 'execution', 'polling', 'unknown'}
     classified = TAGS | {'duplicate_reads', 'duplicate_reference_reads', 'test_fixture',
                          'compaction_recovery', 'justified_transient', 'unchanged_deterministic'}

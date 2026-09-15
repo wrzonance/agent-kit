@@ -123,11 +123,49 @@ class Efficiency(unittest.TestCase):
     def test_compaction_and_test_help_excluded(self):
         events = [json.loads(json.dumps(r)) for r in FIXTURE]
         events[3]['payload']['exclusion'] = 'test_fixture'
-        events.insert(2, {'type': 'compacted', 'payload': {}})
+        events.insert(1, {'type': 'compacted', 'payload': {}})
         report = self.parse(events)
         self.assertEqual(report['metrics']['help']['value'], 0)
         self.assertEqual(report['metrics']['duplicate_reads']['value'], 0)
         self.assertGreater(report['metrics']['compaction_recovery']['value'], 0)
+
+    def test_compaction_without_turn_evidence_keeps_native_discovery(self):
+        commands = ['agentkit/skills/.shared/scripts/helper.sh --help',
+                    'cat agentkit/skills/.shared/scripts/helper.sh',
+                    'cat agentkit/skills/example/references/example.md',
+                    'cat agentkit/skills/example/references/example.md']
+        calls = [{'type': 'response_item', 'payload': {'type': 'function_call',
+                  'call_id': str(i), 'name': 'shell', 'arguments': json.dumps({'command': command})}}
+                 for i, command in enumerate(commands)]
+        for source, coverage in [('incomplete', []), ('complete', ['calls', 'classifications']),
+                                 ('sampled', ['calls', 'classifications', 'model_turns']),
+                                 ('complete', ['calls', 'classifications', 'model_turns'])]:
+            meta = {'type': 'bench_efficiency_meta', 'payload': {
+                    'schema_version': 1, 'role': 'root', 'source': source, 'coverage': coverage}}
+            metrics = self.parse([meta, {'type': 'compacted', 'payload': {}}] + calls)['metrics']
+            for name in ('help', 'source_read', 'duplicate_reference_reads'):
+                self.assertEqual(metrics[name]['value'], 1, (source, coverage, name))
+                self.assertEqual(metrics[name]['status'], 'incomplete', name)
+            self.assertEqual(metrics['compaction_recovery']['value'], 0)
+
+    def test_evidenced_compaction_recovery_expires_after_two_turns(self):
+        events = [FIXTURE[0], {'type': 'compacted', 'payload': {}}]
+        for number in range(1, 4):
+            events += [event('model_turn', id=f'recovery-{number}', tokens=10),
+                       {'type': 'response_item', 'payload': {'type': 'function_call',
+                        'call_id': f'help-{number}', 'name': 'shell',
+                        'arguments': json.dumps({'command': 'agentkit/skills/.shared/scripts/helper.sh --help'})}}]
+        metrics = self.parse(events)['metrics']
+        self.assertEqual(metrics['help']['value'], 1)
+        self.assertEqual(metrics['help']['status'], 'measured')
+        self.assertEqual(metrics['compaction_recovery']['value'], 2)
+
+    def test_explicit_recovery_exclusion_needs_no_turn_telemetry(self):
+        events = [FIXTURE[2], event('call', call_id='a', tags=['help'],
+                  exclusion='compaction_recovery', evidence='retained-recovery-receipt')]
+        metrics = self.parse(events)['metrics']
+        self.assertEqual(metrics['help']['value'], 0)
+        self.assertEqual(metrics['compaction_recovery']['value'], 1)
 
     def test_role_polling_retry_and_policy_outcomes(self):
         events = [json.loads(json.dumps(r)) for r in FIXTURE]
