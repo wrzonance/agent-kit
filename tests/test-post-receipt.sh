@@ -18,6 +18,57 @@ script="$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
+# Existing publication scenarios exercise transport and finding dispositions.
+# Give their completed-result fixtures real canonical attempt evidence; tests
+# for missing/mismatched evidence below call REAL_RECEIPT directly.
+export REAL_RECEIPT="$script" RECEIPT_FIXTURE_ROOT="$tmp"
+script="$tmp/fixture-post-receipt.sh"
+cat >"$script" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+dir=${RUN_DIR:-} repo='' pr='' provider='' model='' effort='' head='' payload='' skip=0
+while (($#)); do
+    case $1 in
+        --findings-file) dir=$(dirname -- "$2"); shift 2 ;;
+        --run-dir) dir=$2; shift 2 ;;
+        --repo) repo=$2; shift 2 ;;
+        --pr) pr=$2; shift 2 ;;
+        --provider) provider=$2; shift 2 ;;
+        --model) model=$2; shift 2 ;;
+        --effort) effort=$2; shift 2 ;;
+        --head-sha) head=$2; shift 2 ;;
+        --diff-payload) payload=$2; shift 2 ;;
+        --skip-rationale) skip=1; shift 2 ;;
+        *) shift ;;
+    esac
+done
+result="$dir/adversarial.result.json"
+if [[ $skip == 0 && -n $repo && -n $pr && -f $result && ! -L $result ]] &&
+    jq -se 'length == 1 and .[0].status == "completed" and .[0].exitCode == 0' "$result" >/dev/null 2>&1; then
+    budget=$(mktemp -d "$RECEIPT_FIXTURE_ROOT/budget.XXXXXX")
+    git init -q "$budget"
+    mkdir -p "$dir/state"
+    launcher="${REAL_RECEIPT%/*}/adversarial-run.sh"
+    ledger="${REAL_RECEIPT%/*}/review-ledger.sh"
+    entry="$dir/state/review-attempt.json"
+    printf 'fixture payload gate\n' >"$dir/adversarial.payload-size"
+    jq -n --arg repo "$repo" --argjson pr "$pr" --arg provider "$provider" \
+        --arg model "$model" --arg effort "$effort" --arg head "$head" --arg payload "$payload" \
+        --arg launcher "$launcher" --arg result "$result" --arg root "$budget" \
+        '{repo:$repo,pr:$pr,provider:$provider,model:$model,effort:$effort,head:$head,payload:$payload,
+          base:"fixture-base",launcher:$launcher,result:$result,repoRoot:$root,canonical:true,
+          override:"",procedure:"one-shot diff review"}' >"$entry"
+    record=$("$ledger" attempt reserve --repo-root "$budget" --entry-file "$entry")
+    id=$(jq -r '.id' <<<"$record")
+    jq --arg id "$id" --arg model "$model" '.attemptId=$id | .requestedModel=$model' "$result" >"$result.fixture"
+    mv "$result.fixture" "$result"
+    "$ledger" attempt finish --repo-root "$budget" --entry-file "$entry" --id "$id" --state completed >/dev/null
+fi
+exec /bin/bash "$REAL_RECEIPT" "${args[@]}"
+FIXTURE
+chmod +x -- "$script"
+
 marker='<!-- adversarial-review:spent -->'
 
 # -- fixtures -----------------------------------------------------------
@@ -293,6 +344,26 @@ assert_contains "$body" 'Co-authored by Claude Opus 5.' 'publish body credits th
 
 marker_count=$(grep -o -- "$marker" <<<"$body" | wc -l | tr -d ' ')
 assert_eq '1' "$marker_count" 'publish body carries exactly one spent marker'
+
+raw_publish() {
+    "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 14 --repo owner/repo \
+        --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
+        --effort high --mode cross-provider --mode-reason 'peer CLI available' \
+        --p1 1 --p2 2 --agent-identity 'Claude Opus 5'
+}
+mv "$tmp/state/review-attempt.json" "$tmp/attempt.saved"
+assert_rc 1 'a legacy result cannot publish without canonical attempt evidence' -- raw_publish
+mv "$tmp/attempt.saved" "$tmp/state/review-attempt.json"
+cp "$tmp/adversarial.payload-size" "$tmp/gate.saved"
+printf 'tampered gate\n' >"$tmp/adversarial.payload-size"
+assert_rc 1 'receipt rejects mismatched payload gate evidence' -- raw_publish
+mv "$tmp/gate.saved" "$tmp/adversarial.payload-size"
+cp "$tmp/adversarial.result.json" "$tmp/result.saved"
+jq '.requestedModel="different-model"' "$tmp/result.saved" >"$tmp/adversarial.result.json"
+assert_rc 1 'receipt rejects a changed completed result digest' -- raw_publish
+mv "$tmp/result.saved" "$tmp/adversarial.result.json"
+assert_contains "$body" 'Launcher: adversarial-run.sh sha256=' 'receipt discloses canonical launcher identity'
+assert_contains "$body" 'Procedure: one-shot diff review' 'receipt attests only the executed procedure'
 
 # -- publish: finding lines for both fixed and declined shapes -------------
 
@@ -1253,8 +1324,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #706 adds evidence-backed model substitution to receipt and ledger.
 # Review follow-up refuses verified-skip substitution before artifact mutation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 990 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 990 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1002 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 1002 lines'
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'

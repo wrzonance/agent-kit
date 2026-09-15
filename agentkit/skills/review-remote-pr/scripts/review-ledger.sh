@@ -20,6 +20,8 @@ readonly ROBOT
 
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-attempt.sh"
 readonly REPO_CONFIG_SH="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
 GH_BIN=${REVIEW_LEDGER_GH:-gh}
 
@@ -37,6 +39,9 @@ Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  --reason (fix:ID|merge-down:SHA|retarget:REF) \\
                  [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME] \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
+
+Local attempt accounting: $PROGNAME attempt --help (requires Python 3).
+reserve returns 20 for any prior attempt; read never authorizes a new launch.
 
 Trusted author (in order): --trusted-author; AGENT_LEDGER_AUTHOR from .agent/config.env
 (needs --repo-root); REVIEW_LEDGER_VIEWER; else the authenticated gh login. A fenced
@@ -763,6 +768,7 @@ main() {
     local sub=$1
     shift
     case $sub in
+        attempt) cmd_attempt "$@" ;;
         read) cmd_read "$@" ;;
         status) cmd_status "$@" ;;
         append) cmd_append "$@" ;;
