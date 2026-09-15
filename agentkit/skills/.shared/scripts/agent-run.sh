@@ -96,9 +96,35 @@ Examples:
 EOF
 }
 
+failure_class=usage
+failure_state=arguments
+failure_action=correct-arguments
+# Version 1 uses Bash %q fields: one physical line, no eval by consumers.
+# Class selection is control-flow evidence, never a search over arbitrary logs.
+# shellcheck disable=SC2329  # Invoked by EXIT, including early argument errors.
+failure_result() {
+    local status=$?
+    if ((status != 0)); then
+        printf 'failure-v1 class=%q command=%q evidence=%q state=%q next_action=%q\n' \
+            "$failure_class" "${cmd_str:-${resolved_command_key:-${cmd_name:-agent-run}}}" \
+            "${failure_evidence:-${log_file:-stderr}}" "$failure_state" "$failure_action" >&2
+    fi
+    if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
+    return "$status"
+}
+trap failure_result EXIT
+
 die() {
     printf 'agent-run: error: %s\n' "$1" >&2
+    failure_state=$1
+    [[ $failure_class != usage ]] || usage >&2
     exit 1
+}
+
+refuse_boundary() {
+    failure_class=permission-trust-refusal
+    failure_action=hand-back-unmet-trust-boundary
+    die "$1"
 }
 
 # `--cmd NAME [--if-declared] --cmd NAME2 ...` (issue #697) chains named
@@ -257,6 +283,8 @@ run_dir=${dir_opt:-$PWD}
 [[ -d $run_dir ]] || die "Working directory does not exist: $run_dir"
 run_dir=$(cd -- "$run_dir" && pwd -P)
 work_dir=$run_dir
+failure_class=unknown
+failure_action=inspect-diagnostics
 
 notes=()
 add_note() { notes+=("$1"); }
@@ -294,12 +322,12 @@ dir_writable() {
 # log. Refuse anything that is not a real directory this user owns.
 assert_private_dir() {
     local d=$1
-    [[ -L $d ]] && die "Refusing to use $d: it is a symlink."
+    [[ -L $d ]] && refuse_boundary "Refusing to use $d: it is a symlink."
     # -m with -p would only apply to the deepest component, so chmod explicitly.
-    mkdir -p -- "$d" 2>/dev/null || die "Cannot create directory: $d"
+    mkdir -p -- "$d" 2>/dev/null || refuse_boundary "Cannot create directory: $d"
     chmod 700 -- "$d" 2>/dev/null || true
     [[ -d $d && ! -L $d && -O $d ]] ||
-        die "Refusing to use $d: not a directory owned by this user."
+        refuse_boundary "Refusing to use $d: not a directory owned by this user."
 }
 
 # Respect a caller-provided value that still works; otherwise point at our root.
@@ -932,7 +960,10 @@ resolve_named_command() {
         return 0
     fi
 
-    ((fix_cmd == 0 || if_declared)) || die "--fix requires $key in .agent/config.env."
+    if ((fix_cmd && ! if_declared)); then
+        failure_action="declare $key in .agent/config.env through onboard-repo (preflight/config follow-up #724)"
+        die "--fix requires $key in .agent/config.env."
+    fi
 
     # A bespoke dispatcher IS the runner; `runner <name>` is how the runner
     # convention already invokes it, so this needs no special case.
@@ -955,6 +986,7 @@ resolve_named_command() {
     fi
     if [[ -n $resolve_name ]]; then
         printf 'unresolved\n'
+        trap - EXIT
         exit 3
     fi
     die "no command named '$name': declare $key in .agent/config.env, or add .agent/runner"
@@ -1073,7 +1105,7 @@ register_suite_run() {
 
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below.
 cleanup_suite_run() {
-    [[ -n $suite_marker ]] || return 0
+    [[ -n ${suite_marker:-} ]] || return 0
     rm -f -- "$suite_marker" 2> /dev/null || true
     suite_marker=''
 }
@@ -1372,14 +1404,25 @@ failure_excerpt() {
 
 report_failure() {
     local rc=$1 log=$2 excerpt formatter_paths
+    failure_class=unknown
+    failure_evidence=$log
+    failure_state="exit=$rc"
+    failure_action=inspect-log-tail-40-then-hand-back-if-unresolved
+    [[ $cmd_name != test && $cmd_name != *-test ]] || failure_class=test-failure
     printf 'FAIL(rc=%s): %s\n' "$rc" "$cmd_str"
     printf '  cwd=%s runner=none\n' "$work_dir"
     print_notes '  '
     if compose_dependency_start_collision "$log"; then
+        failure_class=environment-collision
+        failure_state=compose-dependency-start-collision
+        failure_action=retry-unchanged-once-after-conflicting-dependency-drains-or-is-isolated
         printf '  classification: environment-retry-eligible — Compose dependency-start collision; not a code regression.\n'
         printf '  retry guidance: rerun the unchanged declared command after the conflicting dependency has drained or been isolated.\n'
     fi
     if probe_timeout_load_flake "$log"; then
+        failure_class=environment-collision
+        failure_state=load-flake-retry-exhausted
+        failure_action=inspect-log
         printf '  classification: load-flake — probe timeout while concurrent-suites=%s; one retry was exhausted.\n' \
             "$concurrent_suites"
         printf '  retry guidance: the runner already retried this timeout once; inspect the probe failure if it persists.\n'
@@ -1389,6 +1432,16 @@ report_failure() {
             "$literal_token" "$literal_repository_base" "$literal_execution_base"
     fi
     if [[ $command_kind == format ]]; then
+        failure_class=formatter-failure
+        local fix_key="${resolved_command_key}_FIX" fix_declared=''
+        if [[ $cmd_name == format || $cmd_name == *-format ]]; then
+            fix_declared=$("$self_dir/repo-config.sh" --repo-root "$git_top" --get "$fix_key" 2>/dev/null || true)
+        fi
+        if [[ -n $fix_declared ]]; then
+            failure_action="agent-run.sh --dir $(printf %q "$run_dir") --cmd $cmd_name --fix"
+        else
+            failure_action="declare eligible FORMAT_FIX pair in .agent/config.env through onboard-repo (preflight/config follow-up #724)"
+        fi
         formatter_paths=$(format_failure_paths "$log" "$work_dir" "$git_top" 2>/dev/null || true)
         if [[ -n $formatter_paths ]]; then
             printf '  formatter failing paths: %s\n' "$(format_paths_csv "$formatter_paths")"
@@ -1556,14 +1609,20 @@ claim_verification() {
     assert_private_dir "$root"
     verification_handle=$root/$tree_hash
     assert_private_dir "$verification_handle"
-    [[ ! -L $verification_handle/lock ]] || die 'verification lock is a symlink'
-    [[ ! -L $verification_handle/running ]] || die 'verification running record is a symlink'
+    [[ ! -L $verification_handle/lock ]] || refuse_boundary "verification lock is a symlink: $verification_handle/lock"
+    [[ ! -L $verification_handle/running ]] || refuse_boundary "verification running record is a symlink: $verification_handle/running"
     exec {verification_fd}>"$verification_handle/lock"
     if ! flock -n "$verification_fd"; then
+        failure_evidence=$verification_handle
+        failure_state=verification-running
+        failure_action=inspect-running-handle-before-retry
         printf 'agent-run: verification running: handle=%s\n' "$verification_handle"
         finish 75
     fi
     if [[ -e $verification_handle/running ]] && ((force_cmd == 0)); then
+        failure_evidence=$verification_handle
+        failure_state=verification-unknown
+        failure_action=inspect-handle-log-before-force-recovery
         printf 'agent-run: verification unknown: handle=%s; inspect its log, then use --force to recover\n' "$verification_handle"
         finish 75
     fi
@@ -1635,7 +1694,7 @@ elif [[ -n $resolve_name ]]; then
     printf '%s\n' "$resolution_kind"
     case $resolution_kind in
         declared) exit 0 ;;
-        runner) exit 4 ;;
+        runner) trap - EXIT; exit 4 ;;
         *) die "unknown resolution kind: $resolution_kind" ;;
     esac
 fi
@@ -1710,7 +1769,7 @@ fi
 log_file=$(choose_log)
 [[ -z $verification_handle ]] || printf '%s\n' "$log_file" > "$verification_handle/running"
 register_suite_run
-trap cleanup_suite_run EXIT
+trap failure_result EXIT
 
 # Announced BEFORE the run, not only after it. Output is captured, so a long
 # command looks identical to a hung one until it exits -- and an agent watching

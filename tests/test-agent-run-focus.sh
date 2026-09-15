@@ -139,4 +139,15 @@ out=$(cd "$repo" && "$run_sh" --only '' --cmd test 2>&1) || rc=$?
 assert_eq '1' "$rc" 'empty --only is rejected'
 assert_contains "$out" 'non-empty' 'empty focus usage explains the required value'
 
+# Reused failures carry the retained log, never a newly invented evidence path.
+printf '#!/bin/sh\nexit 9\n' > "$repo/tools/full"
+out=$(run_test)
+assert_eq 9 "$?" 'fresh local failure preserves its status'
+failure_log=$(sed -n 's/^full log: //p' <<< "$out")
+out=$(run_test)
+assert_eq 9 "$?" 'reused local failure preserves its status'
+assert_contains "$out" 'verification reused: failure' 'the unchanged failure is reused'
+assert_contains "$out" "evidence=$failure_log" 'typed reuse points at the original retained log'
+assert_contains "$out" 'failure-v1 class=test-failure' 'reuse retains context classification'
+
 finish

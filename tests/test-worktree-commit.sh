@@ -9,6 +9,10 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/.shared/scripts/worktree-commit.sh"
+out=$("$script" --bogus 2>&1)
+assert_eq 1 "$?" 'typed commit usage preserves exit status'
+assert_contains "$out" 'failure-v1 class=usage' 'commit arguments have typed usage'
+assert_contains "$out" 'Usage: worktree-commit.sh' 'commit usage includes the interface'
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -222,6 +226,8 @@ assert_eq '1' "$config_guard_rc" \
     'include-staged refuses an unrequested .agent/config.env change'
 assert_contains "$config_guard_out" '.agent/config.env' \
     'config.env refusal names the unrequested protected path'
+assert_contains "$config_guard_out" 'failure-v1 class=write-set-expansion' 'config boundary has typed scope class'
+assert_contains "$config_guard_out" 'next_action=hand-back-unmet-write-set' 'scope refusal hands back boundary'
 assert_eq '1' "$(git -C "$config_guard_repo" rev-list --count HEAD)" \
     'config.env refusal creates no commit'
 
@@ -295,6 +301,8 @@ park_out=$(cd "$merge_repo" && "$script" --include-staged --message 'fix: park m
     --allow-base-inherited "$merged_base" -- change.txt 2>&1) || park_rc=$?
 assert_eq '3' "$park_rc" 'attended inherited protected content parks before commit'
 assert_contains "$park_out" '.github/workflows/ci.yml' 'park output names the inherited protected path'
+assert_contains "$park_out" 'failure-v1 class=permission-trust-refusal' 'park is a typed authorization refusal'
+assert_contains "$park_out" 'next_action=hand-back-protected-paths-for-authorization' 'park never grants authorization'
 assert_eq '.github/workflows/ci.yml' "$(git -C "$merge_repo" diff --cached --name-only | grep '^\.github/workflows/' || true)" \
     'parking preserves inherited protected content in the index'
 
@@ -1140,7 +1148,7 @@ assert_eq 'base.txt' "$(tail -n 1 -- "$mode_ledger" | jq -r '.paths_touched[]' 2
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 816 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 816 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 847 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 847 lines (issue #732 typed failures)'
 
 finish
