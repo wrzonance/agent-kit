@@ -218,17 +218,23 @@ root-owned worker ledger at `$repository_root/.agent/runs/active-workers.ndjson`
 shared across resumptions and invocation IDs so a new run cannot overlook a worker dispatched by
 an earlier run.
 
-The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Each row has
-exactly this durable evidence shape:
+The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Legacy
+version 1 rows remain readable:
 
 ```json
 {"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
 ```
 
-The latest valid row wins. Only root writes it (parent `0700`, ledger `0600`): `state=active` at spawn, another active row with a fresh
-`heartbeatEpoch` on reported progress, and `state=terminal` on completion, interruption, or park.
-`named-active-state.sh` enforces the `0600`/owner/non-symlink requirements; a malformed ledger is blocked
-evidence, never permission to dispatch.
+Use `.shared/spawn-contract.md`'s durable sole-writer gate for all new writes through
+`named-active-state.sh`. Version 2 adds `runId`, `attempt`, `workerId`, `disposition`, and
+`evidence`; `unknown` reserves before submission, `active` holds the returned ID, and only
+confirmed terminal evidence releases ownership. Neither interruption requests nor parking
+release a worker. Inventory selects the latest row per canonical worktree across runs.
+Version 2 unknown/active rows never expire and hold before legacy worktree/heartbeat checks.
+Malformed evidence blocks dispatch. Never append a legacy row over version 2 ownership.
+Legacy active rows lack attempt/worker identity: reservation fails closed even if legacy
+triage calls them stale. This helper cannot reconcile those identities; park and report that
+limitation. Existing legacy terminal rows permit a new reservation.
 
 Run the boundary helper for every operator-named triage record whose verdict is `active`:
 

@@ -133,9 +133,10 @@ assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' 
 # distinct exit-2 (declared-but-invalid) vs exit-1 (absent) so a malformed
 # AGENT_WORKER_MODELS/_FALLBACK roster degrades on its own message instead of
 # reading as silently unset (+618 bytes). Measured.
+# #726: exact size including the durable sole-writer lifecycle; no spare allowance.
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
-assert_eq yes "$([[ $spawn_contract_bytes -le 18888 ]] && printf yes || printf no)" \
-    "spawn contract stays at or under 18888 bytes including waiter caps (measured $spawn_contract_bytes)"
+assert_eq yes "$([[ $spawn_contract_bytes -le 21741 ]] && printf yes || printf no)" \
+    "spawn contract stays at or under 21741 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
 resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&

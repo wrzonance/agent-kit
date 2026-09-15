@@ -46,9 +46,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# Final #706 + #707 measured tree, plus selected #709 contract-cache.sh delta: 406 bytes.
-# Exact combined ceiling: (1598020 + 406) / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=399606
+# #726: atomic worker ownership and serialized run-state updates; exact final
+# helper tree, no spare allowance. Per-file limits remain unchanged.
+readonly MAX_TREE_TOKENS=401177
 
 violations=0
 checked=0
