@@ -23,11 +23,21 @@ printf '%s\n' base >"$repo/example.txt"
 git -C "$repo" add example.txt
 git -C "$repo" commit --quiet -m base
 git -C "$repo" push --quiet -u origin main
+historical_base_oid=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" switch --quiet -c feature
 printf '%s\n' changed >"$repo/example.txt"
 git -C "$repo" commit --quiet -am change
+git -C "$repo" switch --quiet main
+printf '%s\n' merged-743-change >"$repo/pr-743.txt"
+git -C "$repo" add pr-743.txt
+git -C "$repo" commit --quiet -m 'merged PR 743'
+git -C "$repo" push --quiet origin main
+git -C "$repo" switch --quiet feature
+git -C "$repo" merge --quiet --no-edit main
 head_oid=$(git -C "$repo" rev-parse HEAD)
 export FAKE_HEAD_OID=$head_oid
+FAKE_BASE_OID=$(git -C "$repo" rev-parse origin/main)
+export FAKE_BASE_OID
 
 mkdir -- "$repo/.agent"
 contract="$repo/.agent/env-contract.txt"
@@ -47,7 +57,7 @@ cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} == api && ${2:-} == repos/acme/widget/pulls/42 ]] || exit 1
-printf '%s\n' "{\"base\":{\"ref\":\"main\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
+printf '%s\n' "{\"base\":{\"ref\":\"main\",\"sha\":\"$FAKE_BASE_OID\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
 EOF
 chmod +x "$fake_bin/gh"
 
@@ -98,13 +108,15 @@ expected="$tmp/expected.diff"
 git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$expected"
 
 grant() {
-    local run_dir=$1 provider=$2 diff=${3:-$expected} payload
+    local run_dir=$1 provider=$2 diff=${3:-$expected} base_sha=${4:-} payload
     # Each grant below starts an independent scenario, with a fresh PR budget.
     rm -rf -- "$repo/.git/agentkit-review-attempts"
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
-    payload=$(/bin/bash "$consent" payload --worktree "$repo" --run-dir "$run_dir" \
+    local -a payload_args=(payload --worktree "$repo" --run-dir "$run_dir" \
         --repo acme/widget --pr 42 --diff "$diff")
+    [[ -z $base_sha ]] || payload_args+=(--base-sha "$base_sha")
+    payload=$(/bin/bash "$consent" "${payload_args[@]}")
     /bin/bash "$consent" grant --worktree "$repo" --run-dir "$run_dir" \
         --provider "$provider" --payload "$payload" --source interactive >/dev/null
 }
@@ -299,6 +311,118 @@ assert_eq 'operator explicitly selected Opus/xhigh' "$(jq -r '.overrideAuthoriza
 assert_rc 1 'override without authorization fails before launch' -- env PATH="$fake_bin:$PATH" \
     bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$tmp/unauthorized-override" \
     --reviewer claude-opus-5-xhigh
+
+# A combined review can intentionally start at a frozen ancestor of the PR's
+# current base so it includes a commit already merged into main. The consent
+# payload and attempt provenance must bind that historical base and the exact
+# combined diff while retaining the live PR base separately.
+combined_diff="$tmp/combined.diff"
+git -C "$repo" --no-pager diff --find-renames --unified=25 \
+    "$historical_base_oid...HEAD" -- ':/' >"$combined_diff"
+assert_rc 2 'short historical base SHA is rejected as usage' -- env PATH="$fake_bin:$PATH" \
+    bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$tmp/short-base" \
+        --review-base-sha "${historical_base_oid:0:12}"
+missing_base_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$tmp/missing-base" --review-base-sha 1111111111111111111111111111111111111111) \
+    >"$tmp/missing-base.out" 2>"$tmp/missing-base.err" || missing_base_rc=$?
+assert_eq 1 "$missing_base_rc" 'unknown historical base commit is rejected'
+assert_contains "$(cat "$tmp/missing-base.err")" 'does not resolve to a local commit' \
+    'missing historical base names the commit-resolution failure'
+nonancestor_base=$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse 'HEAD^{tree}')" -m unrelated-root)
+nonancestor_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$tmp/nonancestor-base" --review-base-sha "$nonancestor_base") \
+    >"$tmp/nonancestor-base.out" 2>"$tmp/nonancestor-base.err" || nonancestor_rc=$?
+assert_eq 1 "$nonancestor_rc" 'non-ancestor historical base is rejected'
+assert_contains "$(cat "$tmp/nonancestor-base.err")" 'ancestor of the observed PR base' \
+    'non-ancestor failure names the PR base boundary'
+
+# Historical rendering is permitted only when the current base and anchor use
+# the same generated-path exclusion policy; otherwise block before publishing
+# a diff or making a provider launch possible.
+exclusion_repo="$tmp/exclusion-repo"
+exclusion_origin="$tmp/exclusion-origin.git"
+git init --bare --quiet "$exclusion_origin"
+git init --quiet --initial-branch=main "$exclusion_repo"
+git -C "$exclusion_repo" config user.email test@example.invalid
+git -C "$exclusion_repo" config user.name test
+git -C "$exclusion_repo" remote add origin "$exclusion_origin"
+mkdir -- "$exclusion_repo/.agent"
+printf '%s\n' 'AGENT_GENERATED_PATHS=old-generated' >"$exclusion_repo/.agent/config.env"
+git -C "$exclusion_repo" add .agent/config.env
+git -C "$exclusion_repo" commit --quiet -m 'old exclusions'
+exclusion_anchor=$(git -C "$exclusion_repo" rev-parse HEAD)
+git -C "$exclusion_repo" push --quiet -u origin main
+git -C "$exclusion_repo" switch --quiet -c feature
+printf '%s\n' feature >"$exclusion_repo/source.txt"
+git -C "$exclusion_repo" add source.txt
+git -C "$exclusion_repo" commit --quiet -m feature
+git -C "$exclusion_repo" switch --quiet main
+printf '%s\n' 'AGENT_GENERATED_PATHS=new-generated' >"$exclusion_repo/.agent/config.env"
+git -C "$exclusion_repo" commit --quiet -am 'new exclusions'
+git -C "$exclusion_repo" push --quiet origin main
+git -C "$exclusion_repo" switch --quiet feature
+git -C "$exclusion_repo" merge --quiet --no-edit main
+exclusion_head=$(git -C "$exclusion_repo" rev-parse HEAD)
+exclusion_pr_base=$(git -C "$exclusion_repo" rev-parse origin/main)
+printf '%s\n' 'repo=acme/widget' \
+    'harness= name=codex trailer="Test <test@example.invalid>" other=claude' \
+    'peer-cli= claude present path=/bin/true' >"$exclusion_repo/.agent/env-contract.txt"
+chmod 600 "$exclusion_repo/.agent/env-contract.txt"
+exclusion_run="$tmp/exclusion-run"
+exclusion_rc=0
+(cd "$exclusion_repo" && PATH="$fake_bin:$PATH" FAKE_HEAD_OID="$exclusion_head" \
+    FAKE_BASE_OID="$exclusion_pr_base" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$exclusion_run" --review-base-sha "$exclusion_anchor") \
+    >"$tmp/exclusion.out" 2>"$tmp/exclusion.err" || exclusion_rc=$?
+assert_eq 1 "$exclusion_rc" 'historical base with changed generated exclusions is blocked'
+assert_contains "$(cat "$tmp/exclusion.err")" 'generated-path exclusions different' \
+    'exclusion-policy conflict identifies both base revisions'
+assert_eq no "$( [[ -e $exclusion_run/adversarial.diff ]] && printf yes || printf no )" \
+    'exclusion-policy conflict blocks before publishing a diff'
+assert_eq no "$( [[ -e $exclusion_run/state/launch-attempted ]] && printf yes || printf no )" \
+    'exclusion-policy conflict blocks before provider launch'
+
+combined_run="$tmp/combined-run"
+grant "$combined_run" anthropic "$combined_diff" "$historical_base_oid"
+combined_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run" --review-base-sha "$historical_base_oid") \
+    >"$tmp/combined.out" 2>"$tmp/combined.err" || combined_rc=$?
+assert_eq 0 "$combined_rc" 'historical review base permits one combined PR review'
+assert_eq "$(sha256sum "$combined_diff" | awk '{print $1}')" \
+    "$(sha256sum "$combined_run/adversarial.diff" | awk '{print $1}')" \
+    'combined review sends the exact consented diff bytes'
+assert_contains "$(cat "$combined_run/adversarial.diff")" 'pr-743.txt' \
+    'combined diff includes already-merged PR 743 changes'
+assert_eq "$historical_base_oid" "$(jq -r '.reviewBase' "$combined_run/state/review-attempt.json")" \
+    'durable attempt records the historical review base'
+assert_eq "$FAKE_BASE_OID" "$(jq -r '.base' "$combined_run/state/review-attempt.json")" \
+    'existing base field retains its current PR base meaning'
+assert_eq "$(jq -r '.payload' "$combined_run/state/review-attempt.json")" \
+    "$(jq -r '.diffPayload' "$combined_run/adversarial.result.json")" \
+    'result binds the exact combined consent payload'
+assert_eq "$historical_base_oid" "$(jq -r '.reviewBase' "$combined_run/adversarial.result.json")" \
+    'result binds the historical review base'
+assert_eq "$FAKE_BASE_OID" "$(jq -r '.prBase' "$combined_run/adversarial.result.json")" \
+    'result binds the current PR base'
+same_base_resume_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run" --review-base-sha "$historical_base_oid") \
+    >"$tmp/combined-same.out" 2>"$tmp/combined-same.err" || same_base_resume_rc=$?
+assert_eq 0 "$same_base_resume_rc" 'resume with the original historical base preserves the completed review'
+combined_resume_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/combined.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$combined_run") >"$tmp/combined-resume.out" 2>"$tmp/combined-resume.err" || combined_resume_rc=$?
+assert_eq 1 "$combined_resume_rc" 'resume without the original historical base is rejected'
+assert_contains "$(cat "$tmp/combined-resume.err")" 'review-base' \
+    'conflicting resume names the bound review base'
+assert_eq 1 "$(wc -l <"$tmp/combined.called")" \
+    'conflicting resume does not send a second review'
 
 # A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
 # rejected before the provider is ever launched -- not after paying for the
@@ -1565,8 +1689,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1018 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1018 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1083 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1083 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

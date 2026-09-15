@@ -276,10 +276,24 @@ the receipt visibly names both selections. No environment variable overrides sel
 provider/payload consent is checked against the selected provider; the override never grants
 disclosure consent or another review. With no override, the existing reviewer line is unchanged.
 
+To inspect model selectors and effort levels exposed by the current Claude Code session without
+submitting a prompt, run `node "$agentkit/review-remote-pr/scripts/claude-model-discovery.mjs"
+--list-models [--claude PATH] [--sdk-dir DIR]`. This optional diagnostic uses the Agent SDK's
+`supportedModels()` control query; it does not read PR content or select a model. If the SDK
+package is absent, the helper prints an opt-in install command. The SDK may return session aliases
+such as `default`, `sonnet`, or `haiku`, and its list may omit canonical model IDs available by
+other routes. Use only the exact returned selector and a listed supported effort in
+`--reviewer MODEL-EFFORT`; never infer a selector from a display name. Anthropic's [Models API]
+(`GET /v1/models`) lists API model IDs, but requires API authentication and does not describe
+Claude Code OAuth availability or effort levels.
+
+[Models API]: https://platform.claude.com/docs/en/api/models/list
+
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                                [--provenance TEXT]
+                               [--review-base-sha SHA]
                                [--reviewer MODEL-EFFORT --override-authorization TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
@@ -287,6 +301,11 @@ publication of adversarial.diff and adversarial.result.json. Its stdout receipt 
 post-receipt.sh publish. A provider failure, missing provider, or unparseable verdict is blocked
 and is never clean. The legacy invocation `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR`
 remains accepted for callers that already enter the PR worktree before launching.
+
+Use `--review-base-sha SHA` only when the review must include commits already merged into the
+current PR base. SHA must be a full local commit ID and an ancestor of both the observed PR base
+and checked-out head. The consent payload must be granted using that same `--base-sha`; the run
+records the current PR base, selected review base, and exact diff payload in its attempt and result.
 
 For detached executors only, use:
 

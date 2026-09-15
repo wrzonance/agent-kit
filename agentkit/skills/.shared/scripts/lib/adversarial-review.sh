@@ -262,11 +262,26 @@ review_validate_mode_args() {
 }
 
 verify_consent() {
-    local consent_script payload
+    local consent_script payload review_base=${AGENTKIT_REVIEW_BASE_SHA:-} pr_base=${AGENTKIT_REVIEW_PR_BASE_SHA:-} fetched_base
     consent_script="$SCRIPT_DIR/consent-record.sh"
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
-    if [[ -n $BASE_REF ]]; then
+    if [[ -n $review_base ]]; then
+        [[ $review_base =~ ^[0-9a-f]{40}$ ]] ||
+            die 'AGENTKIT_REVIEW_BASE_SHA must be a full 40-character lowercase commit SHA'
+        [[ -n $BASE_REF ]] || die 'a historical review base requires --base-ref'
+        git cat-file -e "$review_base^{commit}" 2>/dev/null ||
+            die 'AGENTKIT_REVIEW_BASE_SHA does not resolve to a local commit'
+        fetched_base=$(git rev-parse "origin/$BASE_REF") ||
+            die "could not resolve observed PR base origin/$BASE_REF"
+        [[ -z $pr_base || $pr_base == "$fetched_base" ]] ||
+            die 'observed PR base changed after the canonical launcher prepared the review'
+        git merge-base --is-ancestor "$review_base" "$fetched_base" ||
+            die 'AGENTKIT_REVIEW_BASE_SHA must be an ancestor of the observed PR base'
+        git merge-base --is-ancestor "$review_base" HEAD ||
+            die 'AGENTKIT_REVIEW_BASE_SHA must be an ancestor of the reviewed head'
+        payload_args+=(--base-sha "$review_base")
+    elif [[ -n $BASE_REF ]]; then
         payload_args+=(--base-ref "$BASE_REF")
     fi
     payload=$("$consent_script" "${payload_args[@]}") ||

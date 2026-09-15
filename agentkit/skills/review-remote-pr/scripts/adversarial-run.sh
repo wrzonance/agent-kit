@@ -106,6 +106,10 @@ PEER_CLI_NAME=''
 CONTRACT_ROOT=''
 BASE_CONFIG_FILE=''
 BASE_REF=''
+PR_BASE_SHA=''
+REVIEW_BASE_SHA=''
+REQUESTED_REVIEW_BASE_SHA=''
+REVIEW_BASE_OVERRIDE=0
 PROVIDER=''
 MODEL=''
 MODEL_SUBSTITUTED_FROM=''
@@ -124,6 +128,7 @@ ATTEMPT_RECOVERING=0
 usage() {
     cat <<EOF
 Usage: $PROGNAME --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                 [--review-base-sha SHA]
                  [--reaffirm-if-covered --comments FILE] [--provenance TEXT]
                  [--reviewer MODEL-EFFORT --override-authorization TEXT]
 
@@ -146,6 +151,12 @@ the call site; never compose it into shell source.
 This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
 the one-review-per-PR receipt budget.
+
+--review-base-sha SHA explicitly anchors a combined review at a full commit
+SHA that is an ancestor of both the observed PR base and checked-out PR head.
+The consent payload hashes the exact diff from that anchor; the attempt records
+both the current PR base and the selected review base. Omitting it preserves
+the ordinary current-base review.
 
 The consent record is always DIR/state/$CONSENT_STATE_FILENAME. There is no
 caller-supplied consent flag.
@@ -192,6 +203,8 @@ parse_args() {
             --repo=*) REPO=${1#*=}; shift ;;
             --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
             --run-dir=*) RUN_DIR=${1#*=}; shift ;;
+            --review-base-sha) require_value "$1" "${2:-}"; REQUESTED_REVIEW_BASE_SHA=$2; shift 2 ;;
+            --review-base-sha=*) REQUESTED_REVIEW_BASE_SHA=${1#*=}; shift ;;
             --peer-cli-absent) PEER_CLI_ABSENT=1; shift ;;
             --reaffirm-if-covered) REAFFIRM_IF_COVERED=1; shift ;;
             --comments) require_value "$1" "${2:-}"; LEDGER_COMMENTS=$2; shift 2 ;;
@@ -494,6 +507,9 @@ validate_args() {
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_usage '--repo must look like OWNER/REPO'
     [[ -n $RUN_DIR ]] || die_usage '--run-dir is required'
+    if [[ -n $REQUESTED_REVIEW_BASE_SHA && ! $REQUESTED_REVIEW_BASE_SHA =~ ^[0-9a-f]{40}$ ]]; then
+        die_usage '--review-base-sha must be a full 40-character lowercase commit SHA'
+    fi
     ((REAFFIRM_IF_COVERED == 0)) || [[ -n $LEDGER_COMMENTS ]] ||
         die_usage '--reaffirm-if-covered requires --comments'
     command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the pull request base'
@@ -528,6 +544,11 @@ resolve_base() {
         die "could not resolve the base branch for $REPO#$PR"
     BASE_REF=$(jq -er '.base.ref // empty' <<<"$pr_json" 2>/dev/null) ||
         die "could not resolve the base branch for $REPO#$PR"
+    PR_BASE_SHA=$(jq -er '.base.sha // empty' <<<"$pr_json" 2>/dev/null) ||
+        PR_BASE_SHA=''
+    if [[ -n $PR_BASE_SHA && ! $PR_BASE_SHA =~ ^[[:xdigit:]]{40}$ ]]; then
+        die "the pull request base OID is invalid: $PR_BASE_SHA"
+    fi
     [[ -n $BASE_REF ]] || die 'the pull request base branch is empty'
     git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 ||
         die "the pull request base branch is invalid: $BASE_REF"
@@ -541,12 +562,44 @@ resolve_base() {
 }
 
 build_diff() {
-    local diff_path=$RUN_DIR/adversarial.diff tmp="$RUN_DIR/adversarial.diff.tmp"
+    local diff_path=$RUN_DIR/adversarial.diff tmp="$RUN_DIR/adversarial.diff.tmp" fetched_base range i
+    local -a review_exclusions=() anchor_exclusions=()
     prepare_owned_artifact "$diff_path"
     [[ ! -L $tmp ]] || die "refusing to use an adversarial diff temp symlink: $tmp"
     git fetch --quiet origin "$BASE_REF" || die "could not fetch origin/$BASE_REF"
-    canonical_diff "$BASE_REF" >"$tmp" ||
-        die 'could not build the adversarial diff'
+    fetched_base=$(git rev-parse "origin/$BASE_REF") || die "could not resolve fetched origin/$BASE_REF"
+    if [[ -n $REQUESTED_REVIEW_BASE_SHA ]]; then
+        [[ -n $PR_BASE_SHA ]] || die 'GitHub pull request metadata has no observed base commit SHA'
+        [[ $fetched_base == "$PR_BASE_SHA" ]] ||
+            die "PR base moved during review preparation (observed $PR_BASE_SHA, fetched $fetched_base)"
+        REVIEW_BASE_SHA=$REQUESTED_REVIEW_BASE_SHA
+        git cat-file -e "$REVIEW_BASE_SHA^{commit}" 2>/dev/null ||
+            die "--review-base-sha does not resolve to a local commit: $REVIEW_BASE_SHA"
+        git merge-base --is-ancestor "$REVIEW_BASE_SHA" "$PR_BASE_SHA" ||
+            die '--review-base-sha must be an ancestor of the observed PR base'
+        git merge-base --is-ancestor "$REVIEW_BASE_SHA" HEAD ||
+            die '--review-base-sha must be an ancestor of the checked-out PR head'
+        mapfile -t review_exclusions < <(canonical_diff_exclusions "origin/$BASE_REF")
+        mapfile -t anchor_exclusions < <(canonical_diff_exclusions "$REVIEW_BASE_SHA")
+        ((${#review_exclusions[@]} == ${#anchor_exclusions[@]})) ||
+            die "historical review base $REVIEW_BASE_SHA has generated-path exclusions different from observed PR base $PR_BASE_SHA; reconcile the exclusion policy before review"
+        for ((i = 0; i < ${#review_exclusions[@]}; i++)); do
+            [[ ${review_exclusions[i]} == "${anchor_exclusions[i]}" ]] ||
+                die "historical review base $REVIEW_BASE_SHA has generated-path exclusions different from observed PR base $PR_BASE_SHA; reconcile the exclusion policy before review"
+        done
+        REVIEW_BASE_OVERRIDE=1
+    else
+        REVIEW_BASE_SHA=$fetched_base
+        PR_BASE_SHA=$fetched_base
+        canonical_diff "$BASE_REF" >"$tmp" || die 'could not build the adversarial diff'
+    fi
+    range="${REVIEW_BASE_SHA}...HEAD"
+    if ((REVIEW_BASE_OVERRIDE)); then
+        canonical_diff_range "$range" "origin/$BASE_REF" >"$tmp" ||
+            die 'could not build the adversarial diff'
+    else
+        range="origin/$BASE_REF...HEAD"
+    fi
     chmod 600 -- "$tmp" || die "could not secure the adversarial diff: $tmp"
     mv -f -- "$tmp" "$diff_path" || die "could not publish the adversarial diff: $diff_path"
     [[ -s $diff_path ]] || die 'the adversarial diff is empty; review is blocked'
@@ -559,7 +612,7 @@ build_diff() {
     prepare_owned_artifact "$RUN_DIR/adversarial.exclusions"
     (umask 077; printf '%s\n' "${EXCLUSION_SPECS[@]}" >"$RUN_DIR/adversarial.exclusions")
     prepare_owned_artifact "$RUN_DIR/adversarial.excluded.diff"
-    (umask 077; git --no-pager diff --find-renames --unified=25 "origin/$BASE_REF...HEAD" -- "${EXCLUSION_SPECS[@]/#:(exclude,top)/:(top)}" >"$RUN_DIR/adversarial.excluded.diff")
+    (umask 077; git --no-pager diff --find-renames --unified=25 "$range" -- "${EXCLUSION_SPECS[@]/#:(exclude,top)/:(top)}" >"$RUN_DIR/adversarial.excluded.diff")
     EXCLUDED_SHA256=$(sha256sum -- "$RUN_DIR/adversarial.excluded.diff" | awk '{print $1}')
 }
 
@@ -580,7 +633,9 @@ build_diff() {
 #     declared, so there is nothing to apply; silent, not a tampering signal.
 resolve_base_declared_config() {
     local touched base_config="$RUN_DIR/state/adversarial-review-base-config.env" tmp
-    touched=$(git diff --name-only "origin/$BASE_REF...HEAD" -- .agent/config.env 2>/dev/null) ||
+    local diff_range="origin/$BASE_REF...HEAD"
+    ((REVIEW_BASE_OVERRIDE == 0)) || diff_range="$REVIEW_BASE_SHA...HEAD"
+    touched=$(git diff --name-only "$diff_range" -- .agent/config.env 2>/dev/null) ||
         die 'could not determine whether the reviewed diff touches .agent/config.env'
     if [[ -n $touched ]]; then
         warn 'the reviewed diff changes .agent/config.env; ignoring any declared adversarial-reviewer settings for this review and using the pinned defaults'
@@ -632,11 +687,16 @@ compute_payload() {
     local consent_script=$SCRIPT_DIR/consent-record.sh
     [[ -x $consent_script ]] || die "consent record helper is missing: $consent_script"
     PAYLOAD_PATHS_FILE="$RUN_DIR/state/adversarial-payload-paths"
-    PAYLOAD=$(
-        "$consent_script" payload --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR" \
-            --repo "$REPO" --pr "$PR" --base-ref "$BASE_REF" \
-            --diff "$RUN_DIR/adversarial.diff" --emit-paths "$PAYLOAD_PATHS_FILE"
-    ) || die 'cannot derive the exact consent payload; refusing to launch review'
+    local -a payload_args=(payload --worktree "$CONTRACT_ROOT" --run-dir "$RUN_DIR"
+        --repo "$REPO" --pr "$PR" --diff "$RUN_DIR/adversarial.diff"
+        --emit-paths "$PAYLOAD_PATHS_FILE")
+    if ((REVIEW_BASE_OVERRIDE)); then
+        payload_args+=(--base-sha "$REVIEW_BASE_SHA")
+    else
+        payload_args+=(--base-ref "$BASE_REF")
+    fi
+    PAYLOAD=$("$consent_script" "${payload_args[@]}") ||
+        die 'cannot derive the exact consent payload; refusing to launch review'
 }
 
 verify_consent() {
@@ -914,9 +974,11 @@ guard_prior_launch_attempt() {
 run_provider() {
     local result=$RUN_DIR/adversarial.result.json transcript=$RUN_DIR/$TRANSCRIPT_NAME
     local stdout_path=$RUN_DIR/$PROVIDER.stdout stderr_path=$RUN_DIR/$PROVIDER.stderr rc=0
+    local pinned_review_base=''
     local -a helper_args=(
         --mode review --model "$MODEL" --effort "$EFFORT" --pr "$PR" --repo "$REPO"
         --consent-state "$RUN_DIR/state/$CONSENT_STATE_FILENAME"
+        --consent-payload "$PAYLOAD"
         --base-ref "$BASE_REF" --diff "$RUN_DIR/adversarial.diff"
         --transcript "$transcript" --output "$result"
         --max-duration-seconds 900
@@ -926,6 +988,7 @@ run_provider() {
     else
         helper_args+=(--max-tokens 400000)
     fi
+    ((REVIEW_BASE_OVERRIDE == 0)) || pinned_review_base=$REVIEW_BASE_SHA
     prepare_owned_artifact "$result"
     prepare_owned_artifact "$stdout_path"
     prepare_owned_artifact "$stderr_path"
@@ -935,6 +998,8 @@ run_provider() {
     # purely local abort must never leave one behind.
     write_launch_attempted
     AGENTKIT_REVIEW_ATTEMPT_ID="$ATTEMPT_ID" CONSENT_WORKTREE="$CONTRACT_ROOT" \
+        AGENTKIT_REVIEW_BASE_SHA="$pinned_review_base" \
+        AGENTKIT_REVIEW_PR_BASE_SHA="$PR_BASE_SHA" \
         "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 

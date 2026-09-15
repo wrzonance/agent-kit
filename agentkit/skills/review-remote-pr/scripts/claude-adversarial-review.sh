@@ -412,9 +412,6 @@ run_claude() {
 	return "$status"
 }
 
-# Best-effort human-readable reason for a nonzero exit. Claude Code reports most
-# failures (bad model, auth, budget) in the JSON stream rather than on stderr, so
-# fall back to the last result event before giving up.
 claude_failure_detail() {
 	local stderr_file=$1 detail
 	detail=$(cat -- "$stderr_file" 2>/dev/null || true)
@@ -425,12 +422,9 @@ claude_failure_detail() {
 	[[ -n ${detail//[[:space:]]/} ]] || detail="no diagnostic emitted"
 	printf '%s (transcript: %s)' "$detail" "$TRANSCRIPT_PATH"
 }
-
-# A nonzero Claude exit is either "this sandbox will never let the review run"
-# (exit 3, fall back) or a genuine failure (exit 1). Decide from what the CLI
-# reported, not from the exit status alone, which is 1 for both classes.
+# A blocked exit uses 3; other failures require distinguishing the reason.
 fail_claude_exit() {
-	local exit_code=$1 stderr_file=$2 detail reason
+	local exit_code=$1 stderr_file=$2 detail reason metadata helper="$SCRIPT_DIR/claude-model-discovery.mjs"
 	if ((exit_code == 124 || exit_code == 137)) && ! seconds_until_deadline >/dev/null; then
 		die_duration
 	fi
@@ -439,6 +433,12 @@ fail_claude_exit() {
 	if [[ -n $reason ]]; then
 		die_blocked "$reason" "claude exited $exit_code: $detail"
 	fi
+	if command -v node >/dev/null 2>&1; then
+		metadata=$(timeout --signal=KILL 35s node "$helper" --for-error "$detail" --claude "$CLAUDE_RESOLVED" --sdk-dir "$PWD/.agent/model-discovery" 2>&1) || true
+	else
+		metadata='model metadata unavailable: Node.js is missing; install Node.js and the optional Agent SDK to list models'
+	fi
+	[[ -z $metadata ]] || detail+="; $metadata"
 	die "Claude exited $exit_code: $detail"
 }
 

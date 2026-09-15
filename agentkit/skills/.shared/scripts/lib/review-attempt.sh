@@ -49,6 +49,9 @@ def safe_file(path):
     return pathlib.Path(path).read_bytes()
 def digest(path):
     return hashlib.sha256(safe_file(path)).hexdigest()
+def attempt_value(value, field):
+    if field == 'reviewBase': return value.get(field, value.get('base'))
+    return value.get(field)
 def unsent(record):
     return (record['state'] == 'parser-rejected' and not record.get('legacyEvidence')
         and not record.get('providerProcess')
@@ -69,6 +72,11 @@ def completed_result(record):
         raise ValueError('completed attempt requires a validated result for its model')
     if record.get('canonical') and result.get('attemptId') != record['id']:
         raise ValueError('canonical result is not bound to original attempt')
+    if record.get('canonical') and record.get('reviewBase') is not None and (
+            result.get('reviewBase') != record.get('reviewBase')
+            or result.get('prBase') != record.get('base')
+            or result.get('diffPayload') != record.get('payload')):
+        raise ValueError('canonical result does not bind its diff payload and base commits')
     record['resultSha256'] = digest(record['result'])
     record['completedResult'] = result
     transcript = result.get('transcript')
@@ -158,8 +166,8 @@ try:
     elif a.operation == 'recover':
         if record['id'] != a.id or not unsent(record):
             raise ValueError('only a provably unsent rejected preparation can recover')
-        for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'canonical', 'launcher'):
-            if record.get(field) != entry.get(field): raise ValueError('recovery input mismatch: ' + field)
+        for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'reviewBase', 'canonical', 'launcher'):
+            if attempt_value(record, field) != attempt_value(entry, field): raise ValueError('recovery input mismatch: ' + field)
         previous = {k: v for k, v in record.items() if k not in ('events', 'preparations')}
         if pathlib.Path(record['result']).exists():
             previous['resultBytes'] = safe_file(record['result']).decode()
@@ -179,8 +187,8 @@ try:
         if a.operation in ('attach', 'start'):
             if record['state'] != 'reserved' or (a.operation == 'attach' and record.get('attached')):
                 print(json.dumps(record)); sys.exit(20)
-            for field in ('payload', 'provider', 'model', 'effort', 'head', 'base'):
-                if record[field] != entry[field]: raise ValueError('attempt input mismatch: ' + field)
+            for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'reviewBase'):
+                if attempt_value(record, field) != attempt_value(entry, field): raise ValueError('attempt input mismatch: ' + field)
             if record.get('canonical') and record['launcherPid'] != a.parent_pid:
                 raise ValueError('canonical attempt is not owned by this helper parent')
             if record.get('attached') and record.get('helperPid') != a.pid:
@@ -214,8 +222,8 @@ try:
     elif a.operation == 'validate':
         if record['state'] != 'completed' or not record.get('canonical'):
             raise ValueError('attempt is not canonical and completed')
-        for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'launcher'):
-            if record[field] != entry[field]: raise ValueError('receipt attempt mismatch: ' + field)
+        for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'reviewBase', 'launcher'):
+            if attempt_value(record, field) != attempt_value(entry, field): raise ValueError('receipt attempt mismatch: ' + field)
         if record['launcherSha256'] != digest(entry['launcher']): raise ValueError('launcher provenance mismatch')
         if record['runtimeSha256'] != digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh'):
             raise ValueError('launcher runtime provenance mismatch')
@@ -248,20 +256,26 @@ review_attempt_prepare() {
     TRANSCRIPT_PATH=$(realpath -ms -- "$TRANSCRIPT_PATH")
     REVIEW_ATTEMPT_ROOT=${CONSENT_WORKTREE:-$(git rev-parse --show-toplevel)}
     REVIEW_ATTEMPT_ENTRY="$WORK_DIR/attempt.json"
-    local payload reservation base='' rc=0
+    local payload reservation base='' review_base='' pinned_base=${AGENTKIT_REVIEW_BASE_SHA:-} rc=0
     local -a payload_args=(payload --repo "$REPO_SLUG" --pr "$PR_NUMBER" --diff "$DIFF_PATH")
     if [[ -n $BASE_REF ]]; then
-        payload_args+=(--base-ref "$BASE_REF")
         base=$(git -C "$REVIEW_ATTEMPT_ROOT" rev-parse "origin/$BASE_REF") || die 'could not resolve review base'
+        if [[ -n $pinned_base ]]; then
+            payload_args+=(--base-sha "$pinned_base")
+            review_base=$pinned_base
+        else
+            payload_args+=(--base-ref "$BASE_REF")
+            review_base=$base
+        fi
     fi
     payload=$("$SCRIPT_DIR/consent-record.sh" "${payload_args[@]}") || die 'could not bind review attempt payload'
     jq -n --arg repo "$REPO_SLUG" --argjson pr "$PR_NUMBER" --arg payload "$payload" \
         --arg provider "$CONSENT_PROVIDER" --arg model "$MODEL" --arg effort "$EFFORT" \
         --arg head "$(git -C "$REVIEW_ATTEMPT_ROOT" rev-parse HEAD)" \
-        --arg base "$base" \
+        --arg base "$base" --arg review_base "$review_base" \
         --arg launcher "$(cd -- "$SCRIPT_DIR" && pwd -P)/${0##*/}" --arg result "$OUTPUT_PATH" \
         '{repo:$repo,pr:$pr,payload:$payload,provider:$provider,model:$model,effort:$effort,
-          head:$head,base:$base,launcher:$launcher,result:$result,canonical:false,
+          head:$head,base:$base,reviewBase:$review_base,launcher:$launcher,result:$result,canonical:false,
           enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted"}' >"$REVIEW_ATTEMPT_ENTRY"
     if [[ -z ${AGENTKIT_REVIEW_ATTEMPT_ID:-} ]]; then
         REVIEW_ATTEMPT_DIRECT=1
@@ -316,6 +330,7 @@ review_attempt_result() {
         die 'could not read original review attempt'
     jq --argjson attempt "$record" \
         '. + {attemptId:$attempt.id,launcher:{path:$attempt.launcher,sha256:$attempt.launcherSha256},
+          reviewBase:$attempt.reviewBase,prBase:$attempt.base,diffPayload:$attempt.payload,
           reviewProcedure:($attempt.procedure // "one-shot diff review"),
           configuredReviewer:($attempt.configuredReviewer // ""),
           reviewerOverride:($attempt.override // ""),overrideAuthorization:($attempt.overrideAuthorization // "")}
@@ -352,6 +367,10 @@ resume_existing_review_attempt() {
         ATTEMPT_RECOVERING=1
         return 1
     fi
+    jq -e --arg base "$REQUESTED_REVIEW_BASE_SHA" \
+        '((.reviewBaseOverride // false) == ($base != "")) and
+         ($base == "" or (.reviewBase // .base) == $base)' \
+        <<<"$record" >/dev/null || die 'requested --review-base-sha conflicts with the original review attempt'
     jq -e --arg head "$(git rev-parse HEAD)" --arg launcher "$LAUNCHER_PATH" \
         '.state == "completed" and .canonical == true and .head == $head and .launcher == $launcher' <<<"$record" >/dev/null ||
         die "preserving original review evidence; reconcile existing attempt: $(jq -c '{id,state,observedState,head}' <<<"$record")"
@@ -375,13 +394,15 @@ reserve_review_attempt() {
     jq -n --arg repo "$REPO" --argjson pr "$PR" --arg payload "$PAYLOAD" \
         --arg repo_root "$CONTRACT_ROOT" \
         --arg head "$(git rev-parse HEAD)" --arg base "$(git rev-parse "origin/$BASE_REF")" \
+        --arg review_base "$REVIEW_BASE_SHA" --arg review_base_override "$REVIEW_BASE_OVERRIDE" \
         --arg provider "$PROVIDER" --arg model "$MODEL" --arg effort "$EFFORT" --arg mode "$MODE" \
         --arg configured "$CONFIGURED_REVIEWER" --arg override "$REVIEWER_OVERRIDE" \
         --arg substituted "$MODEL_SUBSTITUTED_FROM" \
         --argjson exclusion_count "${#EXCLUSION_SPECS[@]}" --arg excluded_sha256 "$EXCLUDED_SHA256" \
         --arg authorization "$OVERRIDE_AUTHORIZATION" --argjson pid "$$" \
         --arg launcher "$LAUNCHER_PATH" --arg result "$RUN_DIR/adversarial.result.json" \
-        '{repo:$repo,pr:$pr,payload:$payload,head:$head,base:$base,provider:$provider,repoRoot:$repo_root,
+        '{repo:$repo,pr:$pr,payload:$payload,head:$head,base:$base,reviewBase:$review_base,
+          reviewBaseOverride:($review_base_override == "1"),provider:$provider,repoRoot:$repo_root,
           model:$model,effort:$effort,mode:$mode,configuredReviewer:$configured,override:$override,
           modelSubstitutedFrom:$substituted,
           exclusionCount:$exclusion_count,excludedSha256:$excluded_sha256,
@@ -402,9 +423,11 @@ reserve_review_attempt() {
         fi
         # Read/reconcile the original attempt; never replace it with a new run.
         if jq -e --arg payload "$PAYLOAD" --arg model "$MODEL" --arg effort "$EFFORT" \
-            --arg head "$(git rev-parse HEAD)" --arg base "$(git rev-parse "origin/$BASE_REF")" --arg launcher "$LAUNCHER_PATH" \
+            --arg head "$(git rev-parse HEAD)" --arg base "$(git rev-parse "origin/$BASE_REF")" \
+            --arg review_base "$REVIEW_BASE_SHA" --arg launcher "$LAUNCHER_PATH" \
             '.state == "completed" and .canonical == true and .payload == $payload and
              .model == $model and .effort == $effort and .head == $head and .base == $base and
+             .reviewBase == $review_base and
              .launcher == $launcher' <<<"$ATTEMPT_RECORD" >/dev/null; then
             jq '.completedResult' <<<"$ATTEMPT_RECORD" >"$RUN_DIR/adversarial.result.json"
             "$SCRIPT_DIR/review-ledger.sh" attempt validate --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY" >/dev/null ||
@@ -423,7 +446,8 @@ finish_review_attempt() {
     local state=$1 result="$RUN_DIR/adversarial.result.json" tmp="$RUN_DIR/adversarial.result.json.tmp"
     if [[ $state == completed ]]; then
         jq --arg id "$ATTEMPT_ID" --argjson attempt "$ATTEMPT_RECORD" --arg substituted "$MODEL_SUBSTITUTED_FROM" \
-            '. + {attemptId:$id,launcher:{path:$attempt.launcher,sha256:$attempt.launcherSha256},
+            '. + {attemptId:$id,reviewBase:$attempt.reviewBase,prBase:$attempt.base,diffPayload:$attempt.payload,
+              launcher:{path:$attempt.launcher,sha256:$attempt.launcherSha256},
               reviewProcedure:$attempt.procedure,configuredReviewer:$attempt.configuredReviewer,
               reviewerOverride:$attempt.override,overrideAuthorization:$attempt.overrideAuthorization}
               + (if $substituted == "" then {} else {modelSubstitutedFrom:$substituted} end)' \

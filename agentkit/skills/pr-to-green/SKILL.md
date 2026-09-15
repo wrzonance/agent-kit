@@ -70,8 +70,7 @@ agentkit_provenance=ok; : "$agentkit_provenance"
 
 #### THE CACHE REHYDRATION
 
-Fresh standalone command blocks rehydrate the validated data record with the
-trusted reader, never by sourcing it:
+Rehydrate standalone commands with the trusted reader; never source the record:
 
 ```bash
 agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || exit 1
@@ -138,8 +137,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 | `--auto-merge` verified serial merge | `$agentkit/pr-to-green/scripts/merge-pr.sh` |
 | Board `Done` move after a merge | `$agentkit/parallel-issues/scripts/move-github-project-item.sh` |
 
-Read `../review-remote-pr/SKILL.md` once when entering Phase A. Read its provider
-rules once only if findings exist, and reuse that content through Phase C.
+Read `../review-remote-pr/SKILL.md` for Phase A; load provider rules once if findings exist.
 
 ## State machine
 
@@ -159,11 +157,9 @@ Automatic discovery selects drafts; an explicitly named ready PR may resume.
 States are `RUNNABLE`,
 `WAITING_FOR_MERGE`, `RETARGET_REQUIRED`, or `BLOCKED`; ambiguous topology fails closed.
 
-`ISSUE` is the plan's issue number for `source=plan`. Forge rows do not derive
-issues, even with valid closing references: JSON `null`, records `issue=null`,
-table `-` mean unknown, never a broken link or merge blocker. Reserve numeric
-`0` for proven absence (not currently derived). PR/head/base/state checks still
-apply; resolve closing linkage separately for board moves.
+`ISSUE` comes from `source=plan`. Forge rows use JSON `null`/`issue=null`/table `-`
+for unknown, not a merge blocker; `0` is reserved for proven absence. PR/head/base/state
+checks still apply. Resolve closing linkage separately for board moves.
 
 Show the human table and the exact provider records, and for every declared
 trigger-capable provider state the per-run action it will be authorized for:
@@ -175,10 +171,9 @@ naming the merge method and delete-branch setting. Without `--fast-mode --yolo`,
 wait for confirmation of this exact plan. With it, emit the plan as a receipt
 and pass both flags to `authorize-queue.sh`; never ask the same question again.
 
-After confirmation, derive the owner-only authorization JSON with
-`scripts/authorize-queue.sh`, passing the same repository, merge plan or PR selectors, and provider
-decisions the displayed queue used; it re-reads the live queue, requires it to equal the displayed
-snapshot (any drift fails closed → redisplay/reconfirm), and copies the queue fields from that live result.
+After confirmation, `scripts/authorize-queue.sh` re-reads the live queue using the
+displayed repository, selectors and provider decisions. It writes owner-only
+authorization only when that queue matches the display; drift requires redisplay/reconfirmation.
 Pass `--confirmed-queue-file`, `--ready-transition`, every displayed
 `--provider NAME:ACTION:SOURCE` (or `--no-providers`), and `--no-auto-merge` unless
 the invocation included `--auto-merge`. Merging also requires `--merge-method METHOD`
@@ -210,13 +205,11 @@ adversarial receipt settled (including its same-harness blind fallback), and
 every observed human item decided. Consolidate accepted changes into
 the existing one-push fix batch. A blocked check is named evidence, never green.
 
-A declared-verification failure whose failing paths are all provably unchanged from base and outside
-this PR's diff is `baseline-red` — classified by review-remote-pr Step 2's
-`$agentkit/review-remote-pr/scripts/verification-baseline.sh`, never re-derived here. It is published
-evidence (`$agentkit/parallel-issues/scripts/compose-pr-body.sh --baseline-file`, every skipped check marked SKIPPED), never a passing
-check: proceed through commit, push, adversarial review, and receipt — never park on it, and never reformat
-unrelated paths just to force a clean run — but ready-flip and merge stay blocked as on any other red (Step 4).
-Any other declared-verification failure is `change-caused-red`: fix it.
+Only `$agentkit/review-remote-pr/scripts/verification-baseline.sh` may classify
+failures on unchanged paths outside this diff as `baseline-red`. Publish them with
+`$agentkit/parallel-issues/scripts/compose-pr-body.sh --baseline-file`, marking skipped checks
+SKIPPED. Continue commit, push, review and receipt; ready-flip and merge remain blocked.
+Do not reformat unrelated paths. Other failures are `change-caused-red`: fix them.
 
 After a Phase A or C fix push, retain the run's receipt and invoke
 `authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.
@@ -292,10 +285,8 @@ block evidence-green.
 
 ### 5. Advance stacks, merging only under `--auto-merge`
 
-After a predecessor becomes evidence-green, mark its open descendants
-`WAITING_FOR_MERGE`. Without `--auto-merge`, never merge it — continue other
-independent roots while the chain waits, and report the exact human merge
-dependency.
+Mark an evidence-green predecessor's open descendants `WAITING_FOR_MERGE`.
+Without `--auto-merge`, report the human merge dependency and continue independent roots.
 
 With `--auto-merge`, an evidence-green item merges only after
 `scripts/merge-gate.sh` reports `gate=PASS` for its exact confirmed head
@@ -308,11 +299,9 @@ exact-merge admin procedure in `references/auto-merge.md` may consume it. Never 
 admin consent from `--auto-merge`, queue confirmation, or workflow authorization.
 A branch-protection refusal is a named stop; never retry via another merge path. On `gate=PASS`,
 invoke `scripts/merge-pr.sh` with the Step 1 authorization file and the saved
-`gate=PASS` output — it refuses unless both bind to this exact repository/
-PR/head/base/method/delete-branch as a confirmed `RUNNABLE` queue member; the
-guard lives at that point of mutation, not just in the calling order. On its
-success, move that issue's board item to `Done`. No merge starts while a
-predecessor's post-merge revalidation is outstanding.
+`gate=PASS` output. Both must bind to the exact repository/PR/head/base/method/delete-branch
+as a confirmed `RUNNABLE` queue member. After success, move its board item to `Done`.
+Finish predecessor post-merge revalidation before another merge.
 
 After predecessor merge, make the direct successor `RETARGET_REQUIRED`; run
 `chain-advance.sh` against the default branch and refresh its diff, ancestry,

@@ -99,6 +99,8 @@ It prepares a session-only plugin and synthetic workflow; it launches no agent a
 changes no global registration. A root/operator launches the supported harness with
 that plugin, the generated empty settings/MCP files, native Read and the acknowledgement
 shell command allowed, a 120-second process bound, and the generated `prompt.txt` as input.
+For Claude Code, absolute Read permission patterns start with `//`, for example
+`Read(//absolute/path/to/plugin/**)`; a single slash anchors at the settings source.
 Capture structured hook/tool events and stderr beside the fixture. The synthetic
 workflow only acknowledges receipt and prints `ACTIVATION-LIVE-RECEIPT`.
 
@@ -149,7 +151,7 @@ probes or cached-contract reuse. SessionStart revalidates durable evidence on re
 and compaction without inventing receipt for the current context. It re-arms the
 PreToolUse capability to unknown until the resumed harness emits that event again.
 
-### Live acceptance status: blocked (2026-09-15 UTC)
+### Live acceptance evidence (2026-09-15 UTC)
 
 Three root-operated Claude Code 2.1.271 / `claude-sonnet-5` attempts used isolated session-only
 plugins and synthetic workflow text. All processes exited 0; none acknowledged
@@ -163,8 +165,33 @@ the hook instructions without using tools. Its record remains `status=pending`,
 Local immutable evidence is retained under `.agent/live-activation-probe`,
 `.agent/live-activation-probe-v2`, and `.agent/live-activation-probe-v3`, each with
 `events.ndjson` and `launch.json`. Fixture checks do not override these results.
-Successful live activation remains unproven; Codex runtime acceptance was not run.
-Dependent unattended workflows must remain blocked pending a successful live run.
+A fresh consolidated candidate probe using Claude Code 2.1.272 and
+`claude-fable-5-1` at `xhigh` succeeded. Its first turn exposed an incorrectly
+anchored Read permission rule and did not acknowledge. A second user turn in the
+same session supplied the exact command captured from UserPromptSubmit and
+explicitly authorized the local test. The Bash tool executed that command,
+returned the identity line, and the assistant printed `ACTIVATION-LIVE-RECEIPT`.
+The durable record became active with `receiptSource=session-acknowledgement`
+and both `user-prompt-submit` and `pre-tool-use` observed.
+
+Evidence is retained under `.agent/live-activation-consolidated`: `events.ndjson`,
+`user-messages.ndjson`, `launch.json`, and independently derived `acceptance.json`.
+The transcript SHA-256 is
+`394ae3030e5e2a5bb9f8648442c44cf7b6e5c5485828be2b530c540292c0467c`.
+This proves the synthetic Claude receipt boundary with an explicit follow-up;
+it does not by itself prove first-turn unattended activation or actual issue dispatch.
+
+After correcting the Read rule to `//absolute/path`, the fresh
+`.agent/live-activation-first-turn` probe passed in one user turn on the same
+CLI/model/effort. Claude inspected the wrapper, its libraries and Python helper,
+then executed the exact hook-delivered acknowledgement. All inspections succeeded,
+the command exited zero, the receipt became active with both hooks observed, and
+the assistant printed the completion marker. Its independently checked
+`acceptance.json` binds transcript SHA-256
+`bcc33c6cd2881a4573584c7a3792960574d23ea590dc09ba3cc0552312b7b7e5`.
+This establishes first-turn synthetic Claude activation. Codex runtime acceptance
+and actual issue dispatch were not run. Callers still require their own session's
+active receipt and observed guard capability before dispatch.
 
 The installed digest describes the tree serving the boundary/helper. No independent
 latest-install inventory is queried: an unchanged old cached hook cannot discover
