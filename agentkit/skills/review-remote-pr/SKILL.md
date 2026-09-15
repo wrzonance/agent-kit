@@ -161,7 +161,8 @@ PHASE C — REVIEW (when provider findings land)
 
 **Exit condition:** all CI green; all CodeRabbit/generic/Code Quality threads resolved or
 auto-cleared/dismissed; all body nitpicks fixed or declined+documented; every confirmed adversarial
-finding fixed or declined with a PR comment; every human-lane item has an explicit decision
+finding has validated repair or explicit adjudication evidence and `$agentkit/review-remote-pr/scripts/review-ledger.sh remediation`
+reports `complete` (open findings and legacy unknown semantics block); every human-lane item has an explicit decision
 (replies posted+verified, threads left unresolved). A deferred item blocks `Ready to merge` unless
 the user says otherwise. After exit, run **Backlog grooming** before handing back; a `stale` base
 line means checks are not green, and a pre-retarget approval must surface as knowing acceptance,
@@ -349,9 +350,9 @@ Follow [wait-discipline](../.shared/wait-discipline.md): root spawns its fresh w
 
 ### Adversarial-review receipt:
 
-After all confirmed adversarial findings are fixed or explicitly declined, push those fixes; the receipt publishes **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment — required for a material review or a verified trivial-diff skip. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`), or the `verified-skip rationale` + oracle.
+Record confirmed unfixed findings as `open` with a next repair action. A receipt may publish execution evidence while remediation is incomplete; it does not authorize draft-phase completion or readiness. When fixes exist, publish **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (open next action, validated `fix commit`, or evidenced `decline rationale`), or the `verified-skip rationale` + oracle.
 Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
-`post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Run it (only after the finding-fix push — the final Phase A action):
+`post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Terminal evidence and later resume follow [the evidence contract](references/adversarial-review.md#terminal-evidence-and-resume); never use a pending repair as a terminal decline.
 
 ```bash
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
@@ -360,11 +361,12 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
+# After repair, update the same title with --verdict fixed --sha FULL_SHA --evidence FILE
+# --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
 publish_rc=0
 # --head-sha/--diff-payload/--harness unlock post-receipt.sh's own ledger write-back (issue #486 item 4).
-rhs=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha') || rhs=''
+rhs=$(jq -er '.head | select(type == "string" and length > 0)' "$RUN_DIR/state/review-attempt.json") || exit 1
 rh=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.name 2>/dev/null) || rh=''
 rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH" --diff "$RUN_DIR/adversarial.diff" 2>/dev/null) || rdp=''
 rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")

@@ -311,6 +311,7 @@ run_codex() {
         <"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
     CODEX_PID=$!
     review_register_pid "$CODEX_PID"
+    review_attempt_process "$CODEX_PID"
     monitor_token_limit &
     LIMIT_PID=$!
     review_register_pid "$LIMIT_PID"
@@ -410,7 +411,7 @@ main() {
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-adversarial-XXXXXXXXXX")
     chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
     HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
-    trap review_cleanup EXIT
+    trap review_attempt_cleanup EXIT
     trap 'exit 130' INT TERM
     local isolation_dir=$WORK_DIR/cwd
     local input_file=$WORK_DIR/input.txt
@@ -421,6 +422,8 @@ main() {
     : >"$LIMIT_REASON_FILE"
     mkdir -p -- "$isolation_dir"
 
+    [[ $MODE != review || -n $OUTPUT_PATH ]] || OUTPUT_PATH="$WORK_DIR/result.json"
+    review_attempt_prepare
     review_prepare_transcript
     review_prepare_output
     record_helper_pid
@@ -433,6 +436,7 @@ main() {
     POLLER_PID=$!
     review_register_pid "$POLLER_PID"
 
+    review_attempt_start
     run_codex "$input_file" "$stderr_file" "$isolation_dir" "$schema_file" "$final_file" ||
         exit_code=$?
 
@@ -497,6 +501,7 @@ main() {
           verdict: $verdict}')
     # Durable first: publish_output can die, and emitting stdout before it
     # would hand the caller a verdict that was never published.
+    final_json=$(review_attempt_result "$final_json")
     review_publish_output "$final_json"
     printf '%s\n' "$final_json"
 }
@@ -505,6 +510,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-attempt.sh"
 die_blocked() {
     review_die_blocked "$1" "$2" "cross-harness-reviewer" "cross-harness adversarial reviewer"
 }

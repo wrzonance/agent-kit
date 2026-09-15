@@ -24,20 +24,27 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
     [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
-    # #731/#732: combined cache fixes and typed failure records; exact caps.
-    [skills/.shared/scripts/agent-run.sh]="1859:20058:800"
+    # #731/#732: verification query, durable fingerprints, and typed failure records.
+    [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1284:16983:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
+    # #711: predicate receipts and independently checked self-authored advances.
+    [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
+    # #717: durable reservation and canonical resume integration; exact size.
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1018:12770:800"
+    # #728 separates optional CI outcomes from required acceptance execution.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
+    # #717: validated attempt provenance in receipts and remote ledger entries.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
+    # #727: independently validated remediation and repair resume.
+    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10180:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -46,8 +53,18 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #731/#732: exact combined tree after cache fixes and typed failure records.
-readonly MAX_TREE_TOKENS=402430
+# #731: verification records and declarations.
+# #726: atomic worker ownership and serialized run-state updates.
+# #711: bounded invocation authorization and independent fix-push evidence.
+# #729: structured handback schema and independently pinned completion evidence.
+# #728: optional CI outcomes separated from required acceptance execution.
+# #717: durable review attempts and validated receipt provenance.
+# #727: confirmed open findings, validated repairs and independent readiness.
+# #727 review repairs: preserve coverage context and portable verification hashes.
+# #731: freshness fingerprints, durable results, and concurrent leases.
+# #732: typed failures and recovery actions.
+# Exact merged helper-tree bytes / 4: 1689210 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=422302
 
 violations=0
 checked=0

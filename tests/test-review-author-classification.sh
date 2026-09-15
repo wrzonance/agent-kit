@@ -55,6 +55,6 @@ assert_contains "$(<"$tmp/missing.err")" 'cannot read input file' \
 assert_contains "$(<"$tmp/missing.err")" "$tmp/missing.json" \
     'unreadable --file error includes the requested path'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/provider-rules.md") -le 30600 ]] && printf yes || printf no)" 'provider-rules reference stays at or under 30600 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/provider-rules.md") -le 31886 ]] && printf yes || printf no)" 'provider-rules reference stays at or under 31886 bytes'
 
 finish

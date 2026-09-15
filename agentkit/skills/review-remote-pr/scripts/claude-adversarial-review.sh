@@ -393,6 +393,7 @@ run_claude() {
 		<"$input_file" >>"$TRANSCRIPT_PATH" 2>"$stderr_file" &
 	CLAUDE_PID=$!
 	review_register_pid "$CLAUDE_PID"
+	review_attempt_process "$CLAUDE_PID"
 	while kill -0 "$CLAUDE_PID" 2>/dev/null; do
 		if [[ -s $HEARTBEAT_FAILURE_FILE ]]; then
 			kill -TERM -- -"$CLAUDE_PID" 2>/dev/null ||
@@ -477,13 +478,15 @@ main() {
 	WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-adversarial-XXXXXXXXXX")
 	chmod 700 -- "$WORK_DIR" || die "Cannot secure review work directory: $WORK_DIR"
 	HEARTBEAT_FAILURE_FILE="$WORK_DIR/heartbeat.failure"
-	trap review_cleanup EXIT
+	trap review_attempt_cleanup EXIT
 	trap 'exit 130' INT TERM
 	local isolation_dir=$WORK_DIR/cwd
 	local input_file=$WORK_DIR/input.txt
 	local stderr_file=$WORK_DIR/stderr.log
 	mkdir -p -- "$isolation_dir"
 
+	[[ $MODE != review || -n $OUTPUT_PATH ]] || OUTPUT_PATH="$WORK_DIR/result.json"
+	review_attempt_prepare
 	review_prepare_transcript
 	review_prepare_output
 	record_helper_pid
@@ -498,6 +501,7 @@ main() {
 	POLLER_PID=$!
 	review_register_pid "$POLLER_PID"
 
+	review_attempt_start
 	run_claude "$input_file" "$stderr_file" "$isolation_dir" "$schema" "$prompt" || exit_code=$?
 
 	kill "$POLLER_PID" 2>/dev/null || true
@@ -551,6 +555,7 @@ main() {
 		  verdict:$verdict}')
 	# Durable first: publish_output can die, and emitting stdout before it
 	# would hand the caller a verdict that was never published.
+	final_json=$(review_attempt_result "$final_json")
 	review_publish_output "$final_json"
 	printf '%s\n' "$final_json"
 }
@@ -559,6 +564,8 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/adversarial-review.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-attempt.sh"
 die_blocked() {
 	review_die_blocked "$1" "$2" "blind-codex-agent" "blind-Codex adversarial-reviewer fallback"
 }

@@ -6,7 +6,8 @@
 # Blocks are fragments: they routinely reference variables established in a
 # neighbouring block, so SC2154 is excluded. Every other check stays on, and
 # inline `# shellcheck disable=` directives already present in the markdown are
-# honored because each block is checked verbatim.
+# honored because each block is checked verbatim. Explicit Bash heredocs are
+# also checked as scripts: ShellCheck otherwise treats their bodies as data.
 set -euo pipefail
 
 skills_dir=${1:?usage: lint-markdown-blocks.sh SKILLS_DIR}
@@ -25,6 +26,70 @@ extract() {
     ' "$file"
 }
 
+# Like the recipe safety scanner, inspect command positions rather than words
+# in prose, comments, or printf arguments. This is a bounded builtin check,
+# not a claim that every other shell construct is portable.
+bash_only_commands() {
+    awk '
+        # Mask quoted text before splitting commands, so a semicolon in a
+        # printed negative example never turns its text into a command.
+        function command_text(line, result, j, c) {
+            result = ""
+            for (j = 1; j <= length(line); j++) {
+                c = substr(line, j, 1)
+                if (quote != sprintf("%c", 39) && c == "\\") { j++; result = result "Q"; continue }
+                if (quote != "") {
+                    if (c == quote) quote = ""
+                    continue
+                }
+                if (c == "\"" || c == sprintf("%c", 39)) { quote = c; result = result "Q"; continue }
+                if (c == "#" && (j == 1 || substr(line, j - 1, 1) ~ /[[:space:];&|]/)) break
+                result = result c
+            }
+            return result
+        }
+        {
+            count = split(command_text($0), segments, /[;&|]+/)
+            for (i = 1; i <= count; i++) {
+                segment = segments[i]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
+                sub(/^(if|then|do|while|until)[[:space:]]+/, "", segment)
+                n = split(segment, words, /[[:space:]]+/)
+                p = 1
+                while (p <= n && words[p] ~ /^[[:alnum:]_]+=/) p++
+                while (words[p] ~ /^(!|command|builtin)$/) p++
+                command = words[p]
+                found = (command == "mapfile" || command == "readarray")
+                if (command == "read") {
+                    for (p++; p <= n && words[p] !~ /^[<>]/; p++)
+                        if (words[p] ~ /^-[[:alpha:]]*a[[:alpha:]]*$/) found = 1
+                }
+                if (found) print "line " NR ": Bash-only builtin outside explicit Bash boundary: " $0
+            }
+        }
+    ' "$1"
+}
+
+# A boundary may return data through command substitution and pass literal
+# arguments after the heredoc. Never hide subsequent parent-shell commands.
+extract_body() {
+    local block=$1 delimiter=$2
+    : > "$block.body"
+    : > "$block.outer"
+    awk -v delimiter="$delimiter" -v body="$block.body" -v outer="$block.outer" '
+        NR == 1 { next }
+        !closed && $0 == delimiter { closed=1; next }
+        !closed { print > body; next }
+        closed == 1 {
+            if ($0 !~ /^\)"/) exit 1
+            sub(/^\)"/, "")
+            closed=2
+        }
+        { print > outer }
+        END { if (closed != 2) exit 1 }
+    ' "$block"
+}
+boundary_pattern='^([A-Za-z_][A-Za-z0-9_]*=\$\()?bash -c "\$\(cat <<'\''([A-Za-z_][A-Za-z0-9_]*)'\''$'
 while IFS= read -r skill_file; do
     rel=${skill_file#"$skills_dir"/}
     out="$work/${rel//\//__}"
@@ -33,13 +98,29 @@ while IFS= read -r skill_file; do
     for block in "$out"/block-*.sh; do
         [[ -e $block ]] || continue
         total=$((total + 1))
+        scan_block=$block
+        first_line=$(head -n 1 "$block")
+        if [[ $first_line =~ $boundary_pattern ]] &&
+            extract_body "$block" "${BASH_REMATCH[2]}"; then
+            # Retain every inner byte, including ShellCheck directives. Check
+            # the outer wrapper below as well so malformed quoting stays red.
+            scan_block="$block.outer"
+            if ! shellcheck -S style -e SC2154 -s bash "$block.body"; then
+                failed=$((failed + 1))
+                printf 'FAILED: %s block %s body\n' "$skill_file" "$(basename "$block")" >&2
+            fi
+        fi
+        findings=$(bash_only_commands "$scan_block")
+        if [[ -n $findings ]]; then
+            failed=$((failed + 1))
+            printf 'FAILED: %s block %s\n%s\n' "$skill_file" "$(basename "$block")" "$findings" >&2
+        fi
         if ! shellcheck -S style -e SC2154 -s bash "$block"; then
             failed=$((failed + 1))
             printf 'FAILED: %s block %s\n' "$skill_file" "$(basename "$block")" >&2
         fi
     done
-done < <(find "$skills_dir" -maxdepth 3 \
-    \( -name SKILL.md -o -path '*/references/*.md' -o -path '*/.shared/*.md' \) \
+done < <(find "$skills_dir" -type f -name '*.md' \
     -not -path '*/.system/*' | sort)
 
 printf 'markdown blocks: %d checked, %d failed\n' "$total" "$failed"

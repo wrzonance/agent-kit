@@ -11,6 +11,8 @@ STACKED_CI_DIR=${BASH_SOURCE[0]%/*}
 [[ $STACKED_CI_DIR != "${BASH_SOURCE[0]}" ]] || STACKED_CI_DIR=.
 # shellcheck disable=SC1091
 source "$STACKED_CI_DIR/../../.shared/scripts/lib/stacked-ci.sh"
+# shellcheck disable=SC1091
+source "$STACKED_CI_DIR/../../.shared/scripts/lib/review-attempt.sh"
 umask 077
 
 readonly PROGNAME=${0##*/}
@@ -380,6 +382,7 @@ HEAD_SHA=''
 DIFF_PAYLOAD=''
 HARNESS=''
 REVIEW_LEDGER_SCRIPT=''
+REMEDIATION=''
 # Global, not local to cmd_publish: an EXIT trap fires after the function that
 # set it has returned, so a deferred '"$var"' expansion in the trap needs the
 # variable to still be in scope at that point.
@@ -501,6 +504,7 @@ validate_runner_provenance() {
             (.verdict.findings | type) == "array")
     ' "$result" >/dev/null 2>&1 ||
         evidence_unavailable "adversarial review result is not a completed validated result: $result"
+    validate_receipt_attempt "$run_dir"
     # Old results have no substitution field. New evidence is authoritative:
     # omission by an old caller must not hide it, nor may a flag overwrite it.
     local recorded
@@ -611,25 +615,10 @@ validate_findings_file() {
     [[ -f $FINDINGS_FILE && ! -L $FINDINGS_FILE && -O $FINDINGS_FILE && -r $FINDINGS_FILE ]] ||
         evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE${expected}"
     command -v jq >/dev/null 2>&1 || evidence_unavailable 'jq is not installed'
-    jq -s -e --arg receipt "$RECEIPT_MARKER" --arg doc "$DOC_MARKER" '
-        all(.[];
-          type == "object" and
-          ((keys - ["title", "severity", "verdict", "sha", "rationale"]) | length == 0) and
-          (.severity == "P1" or .severity == "P2") and
-          (.title | type == "string") and
-          (.title | length > 0) and
-          (.title | test("[\\r\\n]") | not) and
-          (.title | contains($receipt) | not) and
-          (.title | contains($doc) | not) and
-          ((.verdict == "fixed" and has("sha") and (has("rationale") | not) and
-              (.sha | type == "string" and test("^[[:xdigit:]]{7,64}(,[[:xdigit:]]{7,64})*$"))) or
-           (.verdict == "declined" and has("rationale") and (has("sha") | not) and
-              (.rationale | type == "string") and (.rationale | length > 0) and
-              (.rationale | test("[\\r\\n]") | not) and
-              (.rationale | contains($receipt) | not) and
-              (.rationale | contains($doc) | not)))
-        )
-    ' "$FINDINGS_FILE" >/dev/null 2>&1 ||
+    # Repairs advance the checkout; HEAD_SHA remains the original paid review.
+    REMEDIATION=$("$STACKED_CI_DIR/finding-ledger.sh" status --file "$FINDINGS_FILE" \
+        --repo-root "$(git rev-parse --show-toplevel 2>/dev/null || true)" \
+        --head "$(git rev-parse --verify HEAD 2>/dev/null || true)") ||
         evidence_unavailable 'findings file must not contain a line break; it must not contain the receipt marker; it must match the ledger schema'
 
     local finding_count total
@@ -728,22 +717,27 @@ append_ledger_entry() {
     chmod 600 -- "$entry_file" 2>/dev/null || true
     local covered_heads='[]'
     covered_heads=$(jq -c -s \
-        '[.[] | select(.verdict == "fixed") | .sha | split(",")[]] | unique' \
+        '[.[] | select(.verdict == "fixed" and .schemaVersion == 2) | .sha] | unique' \
         "$FINDINGS_FILE" 2>/dev/null) || covered_heads='[]'
     if ! jq -cn \
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
         --arg substituted_from "$MODEL_SUBSTITUTED_FROM" \
+        --arg attempt_id "${RECEIPT_ATTEMPT_ID:-}" --arg launcher "${LAUNCHER_PROVENANCE:-}" \
+        --arg procedure "${REVIEW_PROCEDURE:-}" --arg reviewer_override "${REVIEW_OVERRIDE:-}" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
         --argjson covered_heads "$covered_heads" \
+        --slurpfile findings "$FINDINGS_FILE" \
         --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
+         + (if $attempt_id == "" then {} else {attemptId:$attempt_id,launcherSha256:$launcher,
+            procedure:$procedure,reviewerOverride:$reviewer_override} end)
          + (if $substituted_from == "" then {} else {modelSubstitutedFrom:$substituted_from} end)
          + (if $harness == "" then {} else {harness:$harness} end)
          + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}
          + (if $diff_payload == "" then {} else {diff_payload:$diff_payload} end)
-         + {counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
+         + {findings:$findings, counts:{p1:$p1, p2:$p2}, reviewed_at:$reviewed_at}' >"$entry_file" 2>/dev/null; then
         printf '%s: could not encode a ledger entry; ledger entry not recorded\n' "$PROGNAME" >&2
         rm -f -- "$entry_file"
         return 0
@@ -776,6 +770,8 @@ render_findings_block() {
       .[] |
       if .verdict == "fixed" then
         "- Confirmed finding: \(.title) \u2014 verdict=fixed; fix commit SHA(s)=\(.sha)"
+      elif .verdict == "open" then
+        "- Confirmed finding: \(.title) \u2014 verdict=open; next repair=\(.rationale)"
       else
         "- Confirmed finding: \(.title) \u2014 verdict=declined; decline rationale=\(.rationale)"
       end
@@ -804,7 +800,8 @@ render_supersedes_line() {
 }
 
 render_body() {
-    local total=$((P1 + P2)) model_note=''
+    local total=$((P1 + P2)) model_note='' execution=performed
+    [[ -z $SKIP_RATIONALE ]] || execution=skipped
     [[ -z $MODEL_SUBSTITUTED_FROM ]] ||
         model_note=" (configured $MODEL_SUBSTITUTED_FROM was invalid and dropped; see repo-config warning)"
     printf 'This was written agentically; verify its assertions:\n'
@@ -812,11 +809,18 @@ render_body() {
     printf '## Adversarial review receipt\n'
     printf -- '- Reviewer: provider=%s; model=%s%s; effort=%s; mode=%s (reason: %s)\n' \
         "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$MODE_REASON"
+    if [[ -n ${LAUNCHER_PROVENANCE:-} ]]; then
+        printf -- '- Launcher: adversarial-run.sh sha256=%s; attempt=%s\n' "$LAUNCHER_PROVENANCE" "$RECEIPT_ATTEMPT_ID"
+        printf -- '- Procedure: %s\n' "$REVIEW_PROCEDURE"
+        [[ -z $REVIEW_OVERRIDE ]] || printf -- '- Reviewer override: %s\n' "$REVIEW_OVERRIDE"
+    fi
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_head_lines
     render_ci_verification
     render_supersedes_line
     render_findings_block
+    printf -- '- Execution: %s; adjudication=%s\n' "$execution" "$(jq -r .adjudication <<<"$REMEDIATION")"
+    printf -- '- Remediation: %s\n' "$(jq -r .remediation <<<"$REMEDIATION")"
     render_skip_line
     printf '%s\n' "$RECEIPT_MARKER"
     printf '%s Co-authored by %s.\n' "$ROBOT" "$AGENT_IDENTITY"

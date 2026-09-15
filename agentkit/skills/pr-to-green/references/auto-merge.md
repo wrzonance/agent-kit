@@ -12,6 +12,7 @@ whenever more than one independent root is being driven at once.
 - Concurrency admission and revalidation
 - Consent and the ledger record
 - Mechanical queue advance without redisplay
+- Self-authored fix advances
 - The pre-merge review-completion gate
 - Serialization protocol
 - Merge method and branch deletion
@@ -40,7 +41,8 @@ and the transition/settlement steps do not re-check it for you.
 
 `--auto-merge` is valid only on the invocation line — never inferred from a
 prior session, a comment, or issue prose. It is covered by the same single
-displayed-queue confirmation Step 1 already requires; the displayed plan must
+displayed-queue authorization Step 1 requires (invocation intent under
+`--fast-mode --yolo`, otherwise explicit confirmation); the displayed plan must
 say plainly that confirmed merges are included before that confirmation is
 asked for. Record the grant in the session ledger exactly like the ready-
 transition grant, on receipt, before it is exercised.
@@ -67,6 +69,45 @@ to false at the skill invocation boundary, authorization derivation requires
 the confirmed choice to be restated explicitly as `--keep-branch` or
 `--delete-branch`; it never infers the flag. Worktrees stay preserved either
 way — deletion only ever touches the remote branch ref.
+
+## Self-authored fix advances
+
+Use the same `--run-id ID --write-set-file FILE` from the initial authorization,
+with `--self-authored-proof PR:FILE` after a successful remediation push. This
+works with attended confirmation as well as `--fast-mode --yolo`. The latter
+requires both flags; neither grants merges or cross-provider consent.
+
+The run receipt preserves the selector and initial PR ceiling, provider decisions,
+merge choices, explicit write-set paths, and last authorized head/base snapshot.
+Keep it for the entire run. A refreshed display cannot replace that snapshot.
+Changed repository/providers/selector/merge policy/write set or added PRs require
+redisplay and confirmation under a new run ID; never generate that ID automatically.
+
+The coordinator writes the private proof from its own successful push results:
+
+```json
+{"runId":"run-1","repository":"owner/repo","pr":14,"base":"main",
+ "from":"<previous authorized SHA>","to":"<new SHA>",
+ "findingLedger":"<owned saved review-ledger JSON>",
+ "commits":[{"sha":"<full SHA>","pushed":true,"finding":"fix:F1"}]}
+```
+
+Include **every** intervening commit this run created and successfully pushed;
+never infer run authorship from a Git author name or a live branch tip. Save the
+review-ledger JSON after `review-ledger.sh cover --reason fix:ID` records each
+commit's finding. Its `repo`, `pr`, and `reviews[].coverage[]` SHA/reason must match.
+Run authorization in the worktree holding the helper's
+`.agent/evidence/paths-touched.ndjson`; the owned records must corroborate each
+commit's actual paths. Keep the proof, ledger snapshot and receipt as run evidence.
+
+The helper independently verifies live **and** local ancestry, same PR/base,
+exact commit-set equality, and every commit's paths against the initial write set.
+It checks individual commits, so touching then reverting an outside path is still
+rejected. Merge commits use the existing mechanical path instead. Missing evidence,
+outside pushes, force pushes or scope escapes fail closed. Successful proofs add
+`kind: self-authored` advances to the run receipt without another prompt; consumer
+authorization stays pinned to the newly read live head. CI, review-completion and
+pre-merge gates must all be refreshed for that head.
 
 ## Mechanical queue advance without redisplay
 
@@ -125,9 +166,15 @@ its reviews live and consumes:
   `STALE_HEAD` (review for an earlier head) block.
 - `--human-items-decided yes|no` — `no` blocks.
 - `--adversarial-review-status covered-head|covered-diff|covered-lineage|stale|absent|blocked|not-required`
-  — the word `review-ledger.sh status` prints for this head. The three `covered-*` values pass;
+  — the word `review-ledger.sh status` prints for this head. The three `covered-*` values prove coverage;
   `stale`, `absent`, and `blocked` block; `not-required` is only ever passed through from a
   documented materiality skip.
+- `--adversarial-comments FILE [--repo-root DIR]` — the fetched issue comments holding the trusted
+  review ledger. Required for covered reviews: the gate independently reads remediation and blocks
+  open obligations, unknown legacy semantics, or invalid repair evidence. Its reasons name each
+  unresolved finding and the next repair action. Review execution alone never grants readiness.
+  Forward the same `--repo-root` and optional `--diff-payload` used for status; matching diffs
+  still require proven ancestry. Never infer missing repository context from the working directory.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or `--code-quality-state-file FILE`
   — from `code-quality-state.sh --head SHA --pr N` (its `--state-file` output is the file form;
   both must agree byte-for-byte). `pending` blocks; `complete` and `not-enabled` pass; an
@@ -153,15 +200,18 @@ Every block prints `blocked reason=…`; `scripts/merge-gate.sh --help` carries 
 # that file holds {head, findingsOnHead, repoWideOpen, timestamp}, not a
 # textual scan-state= line, and merge-gate.sh rejects it as malformed.
 
+coverage_args=(--repo-root "$repo_root")
+[[ -z ${diff_payload:-} ]] || coverage_args+=(--diff-payload "$diff_payload")
 adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" status \
   --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
-  --kind adversarial --repo-root "$repo_root") || true
+  --kind adversarial "${coverage_args[@]}") || true
 
 "$agentkit/pr-to-green/scripts/merge-gate.sh" \
   --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" \
   --pr-state-digest "$digest_file" --provider-result "$provider_result" \
   --human-items-decided yes \
   --adversarial-review-status "$adversarial_status" \
+  --adversarial-comments "$comments_file" "${coverage_args[@]}" \
   --code-quality-state-file "$work_dir/code-quality-scan-state.txt"
 ```
 
@@ -199,6 +249,11 @@ through. Deliberately best-effort and non-fatal, like the call above: a
 failed `cover` never blocks the merge-down or retarget itself, it only
 leaves the next `--adversarial-review-status`
 read at `stale` until retried.
+
+For a repair, also pass `--findings-file "$RUN_DIR/findings.ndjson"` to `cover` after updating
+each repaired finding with validated evidence. This updates the existing entry while retaining
+its original attempt and reviewer provenance. A plain coverage extension leaves unresolved
+findings unresolved. Refresh comments before the next gate read; never rerun the reviewer.
 
 Code-scanning completion is proven from `GET code-scanning/analyses`, never from a check-run's
 `app.slug`: an analysis on `refs/pull/N/merge` matching the head or the PR's `merge_commit_sha`, or

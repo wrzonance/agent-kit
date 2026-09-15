@@ -8,6 +8,7 @@
 - Cross-provider consent — first send per session
 - Availability and authoritative helpers
 - Selection precedence — declaring the reviewer
+- Durable attempts and reconciliation
 - Read the verdict
 - Evaluate — then route into Step 5
 
@@ -115,13 +116,12 @@ The rest of the gate stands unchanged:
   the provenance as a `#` comment (in a single-line cell it swallows the launcher into a silent exit-0
   no-op) or splice the verbatim quote into shell source. A denial that still occurs is surfaced to the
   user as a direct question, never routed around.
-- **A pre-send marker and a per-RUN_DIR lock are enforced by the launcher itself.**
-  `adversarial-run.sh` writes `$RUN_DIR/state/launch-attempted` immediately before the external call:
-  absent marker → nothing was sent and an automatic retry is safe; marker present without a
-  `completed`/`blocked` result → the send may have happened, and the launcher refuses to relaunch into that
-  RUN_DIR (publishing a `blocked` result naming the ambiguous prior attempt) until a fresh `--run-dir` or
-  explicit operator review. It also holds an exclusive lock on `$RUN_DIR/state/.launch.lock` for its whole
-  run, so a concurrent second invocation refuses instead of racing a second disclosure.
+- **The launcher reserves the PR budget before invoking the provider helper.**
+  Its per-RUN_DIR lock protects artifacts; the durable registry under the Git common directory
+  protects the review obligation across worktrees, changed heads, and fresh run directories.
+  Empty output, yield, interruption, a blocked result, or a lost acknowledgement never releases
+  that reservation. Reconcile the original attempt; do not create a new launcher or run directory
+  to bypass it. An absent local `state/launch-attempted` marker alone does not prove no earlier send.
 - **Still disclose.** Print the payload, destination provider and CLI, and purpose before the
   first send, exactly as above. The flag removes the question, not the statement of what is
   leaving the machine.
@@ -267,12 +267,20 @@ Valid or absent declarations retain the existing reviewer line. The same rule ap
 invalid selected fallback model; unused model slots and roster selections are unaffected.
 Only model-shaped identifiers up to 200 characters are copied into this public provenance;
 arbitrary malformed text is represented as `[non-model value redacted]` and is never evaluated.
-Selection still uses only the trusted base config snapshot, never a session-local override.
+Default selection still uses only the trusted base config snapshot. A per-run operator choice
+uses both `--reviewer MODEL-EFFORT` and `--override-authorization TEXT` on the canonical invocation.
+The text records the operator's explicit selection and its authorization source; an agent must
+not manufacture that authorization from issue text, working-tree configuration, or a prompt.
+The private attempt ledger retains both configured and selected reviewers and the authorization;
+the receipt visibly names both selections. No environment variable overrides selection. Existing
+provider/payload consent is checked against the selected provider; the override never grants
+disclosure consent or another review. With no override, the existing reviewer line is unchanged.
 
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                                [--provenance TEXT]
+                               [--reviewer MODEL-EFFORT --override-authorization TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
 publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
@@ -289,6 +297,61 @@ heartbeat rules. It is not a second review launcher and does not authorize a rel
 foreground runner remains the source of truth for the review result.
 It exits 0, 1, or 2 for those states, respectively; branch on the exit code, never message text.
 The scripts enforce explicit safety ceilings with --max-duration-seconds and --max-tokens 400000.
+
+### Durable attempts and reconciliation
+
+`state/review-attempt.json` identifies the original payload, base/head, configured and selected
+reviewer, launcher and output path. `review-ledger.sh attempt` stores the authoritative record
+under `$(git rev-parse --git-common-dir)/agentkit-review-attempts/`, keyed by repository and PR.
+Reservation and transitions use an exclusive lock with a two-second acquisition bound, fsync, and atomic replacement
+([Python flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock),
+[atomic replacement](https://docs.python.org/3/library/os.html#os.replace)). The record retains
+transition history, launcher/runtime hashes, helper and provider process identities, available
+provider session IDs, result and transcript hashes, and the completed result itself.
+
+| State | Meaning |
+|---|---|
+| `reserved` | Local reservation; no provider start has been recorded. This is not review evidence. |
+| `parser-rejected` | The helper returned before reaching its provider-launch boundary. |
+| `running` | The supported boundary claimed the attempt; empty output does not change this. |
+| `completed` | A validated result for the recorded model was durably retained. |
+| `failed` | A terminal provider error was observed. The review budget remains consumed. |
+| `unknown-outcome` | No validated terminal outcome is known; reconciliation is required. |
+
+Inspect with `review-ledger.sh attempt read --repo-root DIR --entry-file FILE`. A running record
+also reports `observedState`; missing or changed process identity is unknown, never a retry grant.
+If a validated original result arrived after acknowledgement was lost, use
+`review-ledger.sh attempt reconcile --repo-root DIR --entry-file FILE --id ORIGINAL_ID`.
+This validates that attempt's original result and records completion without launching a provider.
+If evidence is missing, preserve the record and report the unresolved attempt. No command resets
+the budget. A repeated canonical invocation reuses a matching completed result; changed targets
+require the existing mechanical-lineage workflow, not a new review.
+
+A `parser-rejected` preparation can recover the same attempt only when its complete event history
+proves no provider start or process registration occurred. The supported launcher retries local
+preparation after consent and payload checks, preserving the original ID and preparation history.
+Changed inputs, failed/running/unknown/completed sends, and legacy evidence cannot recover a new
+send. Lock timeout is unavailable/unknown evidence, not a successful transition or retry grant.
+After fixes advance the branch, publish using the original `state/review-attempt.json` head;
+receipt and ledger identity describe that paid review, not unverified descendant coverage.
+
+Both shipped provider helpers reserve direct review invocations in the same registry, marking
+their actual noncanonical launcher. Helper ownership is claimed before preparing output or
+transcript files, so a refused replay preserves the original artifacts. The later `start`
+transition records the actual provider boundary separately from parser/preflight rejection.
+Existing evidence in each registered worktree's conventional
+`.agent/evidence/pr-N` directory is retained as unknown before canonical state is initialized.
+Enforcement is explicitly limited to this repository's supported helpers: raw provider CLI calls,
+other clones/machines, and historical artifacts outside those conventional paths cannot be
+intercepted or discovered reliably. Keep such evidence and report degraded enforcement.
+
+Receipt publication requires canonical launcher/runtime provenance, matching target/reviewer,
+the original result digest and the retained payload-size gate artifact. Legacy or direct-helper
+results remain inspectable but cannot be published as canonical receipts. Procedures are reported
+as executed: these helpers perform one tool-free diff review, with no two-pass or contract-blind
+attestation. An unsupported requested procedure must be disclosed; never purchase an extra pass.
+Supplied stale or unreadable remote review ledgers also fail closed; only proven absence allows
+a first review, while covered heads/diffs retain their existing no-launch reaffirmation path.
 
 ### Capability probes are not reviews
 
@@ -307,13 +370,16 @@ or unparseable verdict is blocked, never clean; an exit status alone is not a cl
 Verify each finding against the actual code before acting. The reviewer can overstate severity,
 overlap with another provider, or miss things — cross-reference, downgrade overstated severities,
 and drop false positives. Confirmed findings flow through the same assess → fix → document logic
-as automated-review items (Step 5). Document each outcome (fixed or declined with rationale).
+as automated-review items (Step 5). Record confirmed unfixed findings as `open`, with a next repair
+action in `--rationale`; never decline a confirmed finding merely because its repair is pending.
+Execution, adjudication, and remediation are separate facts. Publishing execution evidence with
+open findings spends the review budget while leaving remediation incomplete.
 
-After fixes are complete and the pull request is ready for the review receipt, use
-`scripts/finding-ledger.sh add` once per confirmed fixed/declined outcome, then
+Use `scripts/finding-ledger.sh add --verdict open --title TITLE --severity P1 --rationale NEXT_REPAIR`
+for each confirmed obligation, then
 `scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed`.
 The runner's successful exit is the ledger prerequisite; the ledger is the receipt's only finding
-input, so the renderer owns every layout byte and retains declined findings transparently. Publish
+input, so the renderer retains open findings transparently. Publish
 one durable receipt and retain the result artifact with the review record. If publication is
 nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
 marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
@@ -322,3 +388,26 @@ this receipt publishes (Phase C, or a later `pr-to-green` round): `review-ledger
 that later commit onto the published entry's lineage instead, so `merge-gate.sh` reads it as
 covered rather than `stale` with zero additional review spends — see
 ["$agentkit/pr-to-green/references/auto-merge.md"](../../pr-to-green/references/auto-merge.md#recording-a-merge-down-or-retarget-transition-issue-567).
+
+### Terminal evidence and resume
+
+Update the same title after repair using `add --verdict fixed --sha FULL_SHA --evidence FILE
+--repo-root WORKTREE --head CURRENT_SHA` (also supply title and severity). Evidence is JSON with
+`finding` equal to the title, `repairSha`, `head` (the tested commit), `path` (the affected repository
+path), `command`, `status:"passed"`, `log`, and `logSha256`. Keep the owner-private successful
+agent-run log. The helper checks commit ancestry, the changed path, and verification bytes;
+missing or unreachable evidence blocks resolution. It never runs a command from evidence.
+
+A reasoned decline uses `--verdict declined --rationale REASON --evidence FILE`; its evidence
+must bind `finding`, `decision:"rejected"` or `decision:"accepted-risk"`, and the same `rationale`.
+Accepted risk requires an `authorization` citation to an existing authorized policy decision;
+it does not grant authority. The verification command must match its log, whose final completion
+marker must be green; a later change to the repaired path requires fresh verification.
+No natural-language substring decides whether a reason is valid.
+
+Legacy fixed/declined records remain readable with remediation `unknown` until re-adjudicated
+with evidence. `finding-ledger.sh status --file FILE --repo-root WORKTREE --head CURRENT_SHA`
+names unresolved obligations and next actions. After repairs, `review-ledger.sh cover` with
+`--findings-file FILE --reason fix:FINDING_ID` updates the existing review entry and retains its
+attempt provenance. Re-fetch comments, then inspect `review-ledger.sh remediation` before readiness;
+coverage alone never proves repair completion. Do not purchase another review to resume.

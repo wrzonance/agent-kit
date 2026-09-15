@@ -54,6 +54,7 @@ chmod +x "$fake_bin/gh"
 cat >"$tmp/fake-claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ ${1:-} == --version ]]; then printf 'fixture Claude version\n'; exit 0; fi
 if [[ ${1:-} == --help ]]; then
     printf '%s\n' '--print --model --effort --system-prompt --tools --permission-mode'
     printf '%s\n' '--no-session-persistence --safe-mode --disable-slash-commands'
@@ -98,6 +99,8 @@ git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"
 
 grant() {
     local run_dir=$1 provider=$2 diff=${3:-$expected} payload
+    # Each grant below starts an independent scenario, with a fresh PR budget.
+    rm -rf -- "$repo/.git/agentkit-review-attempts"
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
     payload=$(/bin/bash "$consent" payload --worktree "$repo" --run-dir "$run_dir" \
@@ -186,7 +189,7 @@ assert_eq no "$( [[ -e $mismatch_run/adversarial.diff ]] && printf yes || printf
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
 claude_rc=0
-(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CLAUDE_CALLED="$tmp/canonical.calls" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
     >"$tmp/claude.out" 2>"$tmp/claude.err" || claude_rc=$?
 assert_eq 0 "$claude_rc" 'consented Claude review completes'
@@ -219,6 +222,83 @@ assert_eq true "$(jq -r '(.payload | type == "string" and length > 0)' <"$claude
     'the launch-attempted marker records a non-empty payload id'
 assert_eq true "$(jq -r '(.timestamp | type == "string" and length > 0)' <"$claude_run/state/launch-attempted")" \
     'the launch-attempted marker records a timestamp'
+
+resume_run="$tmp/resumed-run"
+mkdir -m 700 "$resume_run" "$resume_run/state"
+resume_payload=$(jq -r '.payload' "$claude_run/state/launch-attempted")
+"$consent" grant --worktree "$repo" --run-dir "$resume_run" --provider anthropic \
+    --payload "$resume_payload" --source interactive >/dev/null
+resume_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CLAUDE_CALLED="$tmp/canonical.calls" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$resume_run") >"$tmp/resume.out" 2>"$tmp/resume.err" || resume_rc=$?
+assert_eq 0 "$resume_rc" 'new run directory resumes the completed durable attempt'
+assert_eq 1 "$(wc -l <"$tmp/canonical.calls")" 'completed replay never invokes the provider again'
+assert_eq "$(jq -r '.attemptId' "$claude_run/adversarial.result.json")" \
+    "$(jq -r '.attemptId' "$resume_run/adversarial.result.json")" 'resume retains original attempt identity'
+assert_eq "$script" "$(jq -r '.launcher.path' "$claude_run/adversarial.result.json")" 'result names actual launcher path'
+same_dir_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
+    >"$tmp/same-dir.out" 2>"$tmp/same-dir.err" || same_dir_rc=$?
+assert_eq 0 "$same_dir_rc" 'same-directory resume validates the original completed attempt'
+assert_eq "$(cat "$tmp/claude.out")" "$(cat "$tmp/same-dir.out")" \
+    'same-directory resume reports the original exclusions and checksum'
+
+relative_run="$repo/.agent/relative-run"
+mkdir -m 700 "$relative_run" "$relative_run/state"
+"$consent" grant --worktree "$repo" --run-dir "$relative_run" --provider anthropic \
+    --payload "$resume_payload" --source interactive >/dev/null
+relative_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir .agent/relative-run) \
+    >"$tmp/relative.out" 2>"$tmp/relative.err" || relative_rc=$?
+assert_eq 0 "$relative_rc" 'relative run path can resume an existing canonical review'
+assert_eq "$relative_run/adversarial.result.json" "$(jq -r '.result' "$relative_run/state/review-attempt.json")" \
+    'durable artifact paths remain usable after the caller changes directory'
+
+override_run="$tmp/override-run"
+for recovery_dir in same new; do
+    rejected="$tmp/rejected-$recovery_dir"
+    grant "$rejected" anthropic
+    rejected_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE=/definitely/missing/claude \
+        bash "$script" --pr 42 --repo acme/widget --run-dir "$rejected") \
+        >"$tmp/rejected.out" 2>"$tmp/rejected.err" || rejected_rc=$?
+    assert_eq 3 "$rejected_rc" 'unavailable provider preflight rejects without sending'
+    rejection=$("${script%/*}/review-ledger.sh" attempt read --repo-root "$repo" --entry-file "$rejected/state/review-attempt.json")
+    recovered="$rejected"
+    if [[ $recovery_dir == new ]]; then
+        recovered="$tmp/recovered-new"
+        mkdir -m 700 "$recovered" "$recovered/state"
+        "$consent" grant --worktree "$repo" --run-dir "$recovered" --provider anthropic \
+            --payload "$(jq -r '.payload' <<<"$rejection")" --source interactive >/dev/null
+    fi
+    recovery_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+        FAKE_CLAUDE_CALLED="$tmp/recovery-$recovery_dir.calls" \
+        bash "$script" --pr 42 --repo acme/widget --run-dir "$recovered") \
+        >"$tmp/recovered.out" 2>"$tmp/recovered.err" || recovery_rc=$?
+    assert_eq 0 "$recovery_rc" "$recovery_dir run-directory resumes after repairing an unsent preflight rejection"
+    assert_eq "$(jq -r '.id' <<<"$rejection")" "$(jq -r '.attemptId' "$recovered/adversarial.result.json")" \
+        'environment repair preserves original review obligation identity'
+    assert_eq 1 "$(wc -l <"$tmp/recovery-$recovery_dir.calls" 2>/dev/null)" 'unsent recovery buys exactly one actual review'
+done
+grant "$override_run" anthropic
+override_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$override_run" \
+        --reviewer claude-opus-5-xhigh --override-authorization 'operator explicitly selected Opus/xhigh') \
+    >"$tmp/override.out" 2>"$tmp/override.err" || override_rc=$?
+assert_eq 0 "$override_rc" 'explicit authorized override still follows canonical launch'
+assert_eq claude-opus-5-high "$(jq -r '.configuredReviewer' "$override_run/adversarial.result.json")" \
+    'override retains base-configured selection'
+assert_eq claude-opus-5-xhigh "$(jq -r '.reviewerOverride' "$override_run/adversarial.result.json")" \
+    'result records operator-selected reviewer'
+assert_eq 'operator explicitly selected Opus/xhigh' "$(jq -r '.overrideAuthorization' "$override_run/state/review-attempt.json")" \
+    'durable attempt records the override authorization'
+assert_rc 1 'override without authorization fails before launch' -- env PATH="$fake_bin:$PATH" \
+    bash "$script" --worktree "$repo" --pr 42 --repo acme/widget --run-dir "$tmp/unauthorized-override" \
+    --reviewer claude-opus-5-xhigh
 
 # A leftover findings ledger from a prior attempt in a reused RUN_DIR must be
 # rejected before the provider is ever launched -- not after paying for the
@@ -375,6 +455,8 @@ malformed_script_dir="$malformed_root/skills/review-remote-pr/scripts"
 mkdir -p -- "$malformed_script_dir" "$malformed_root/skills/.shared/scripts/lib"
 cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
 cp -- "$consent" "$malformed_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$malformed_script_dir/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$malformed_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -438,6 +520,8 @@ verdict_script_dir="$verdict_root/skills/review-remote-pr/scripts"
 mkdir -p -- "$verdict_script_dir" "$verdict_root/skills/.shared/scripts/lib"
 cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
 cp -- "$consent" "$verdict_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$verdict_script_dir/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$verdict_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -728,6 +812,8 @@ noreceipt_script_dir="$noreceipt_root/skills/review-remote-pr/scripts"
 mkdir -p -- "$noreceipt_script_dir" "$noreceipt_root/skills/.shared/scripts/lib"
 cp -- "$script" "$noreceipt_script_dir/adversarial-run.sh"
 cp -- "$consent" "$noreceipt_script_dir/consent-record.sh"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$noreceipt_script_dir/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -813,6 +899,13 @@ assert_eq no "$( [[ -e $reaffirm_run/adversarial.result.json ]] && printf yes ||
 assert_contains "$(cat -- "$tmp/reaffirm-covered.err")" 'could not append a reaffirmed-from ledger entry' \
     'a failed audit-trail append is surfaced as a warning, not hidden'
 
+covered_lineage_comments="$tmp/covered-lineage-comments.json"
+make_ledger_comments "$covered_lineage_comments" \
+    "[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"0000000000000000000000000000000000000f\",\"covered_heads\":[\"$head_oid\"]}]"
+assert_rc 0 'explicit mechanical coverage reaffirms without repurchasing a review' -- \
+    env PATH="$fake_bin:$PATH" bash "$script" --worktree "$repo" --pr 42 --repo acme/widget \
+    --run-dir "$tmp/covered-lineage-run" --reaffirm-if-covered --comments "$covered_lineage_comments"
+
 # -- a malformed ledger fence (blocks, per rule 1) is never treated as
 #    covered: the review always runs -------------------------------------
 
@@ -829,12 +922,11 @@ malformed_rc=0
     bash "$script" --pr 42 --repo acme/widget --run-dir "$malformed_run" \
         --reaffirm-if-covered --comments "$malformed_comments") \
     >"$tmp/reaffirm-malformed.out" 2>"$tmp/reaffirm-malformed.err" || malformed_rc=$?
-assert_eq 0 "$malformed_rc" \
-    'a malformed ledger falls back to running a real review rather than failing the whole run'
-assert_eq yes "$( [[ -e $tmp/reaffirm-malformed.called ]] && printf yes || printf no )" \
-    'a malformed (blocked) ledger still launches the reviewer CLI -- it is never read as covered'
-assert_eq yes "$( [[ -s $malformed_run/adversarial.result.json ]] && printf yes || printf no )" \
-    'the fallback review publishes a real result artifact'
+assert_eq 1 "$malformed_rc" 'a malformed ledger blocks a potentially duplicate review'
+assert_eq no "$( [[ -e $tmp/reaffirm-malformed.called ]] && printf yes || printf no )" \
+    'a malformed ledger never launches the reviewer CLI'
+assert_eq no "$( [[ -s $malformed_run/adversarial.result.json ]] && printf yes || printf no )" \
+    'unavailable ledger evidence never produces a review result'
 
 # -- a stale ledger (different head, no matching diff payload) never
 #    short-circuits: the review always runs -----------------------------
@@ -851,9 +943,9 @@ stale_rc=0
     bash "$script" --pr 42 --repo acme/widget --run-dir "$stale_run" \
         --reaffirm-if-covered --comments "$stale_comments") \
     >"$tmp/reaffirm-stale.out" 2>"$tmp/reaffirm-stale.err" || stale_rc=$?
-assert_eq 0 "$stale_rc" 'a stale ledger entry never blocks the review from running'
-assert_eq yes "$( [[ -e $tmp/reaffirm-stale.called ]] && printf yes || printf no )" \
-    'a stale ledger entry still launches the reviewer CLI'
+assert_eq 1 "$stale_rc" 'a changed head never resets an existing remote review budget'
+assert_eq no "$( [[ -e $tmp/reaffirm-stale.called ]] && printf yes || printf no )" \
+    'a stale ledger entry requires reconciliation without another provider invocation'
 assert_not_contains "$(cat -- "$tmp/reaffirm-stale.out")" 'reaffirmed-from-ledger' \
     'a stale ledger entry is never reported as a reaffirmed run'
 
@@ -900,6 +992,22 @@ assert_contains "$(cat -- "$tmp/prior-launch.out")" 'verdict=blocked' \
     'a marker with no terminal result is never reported as a completed review'
 
 # The complementary case: a marker alongside an already-VALID completed
+legacy_run="$tmp/legacy-completed"
+grant "$legacy_run" anthropic
+cp "$claude_run/state/launch-attempted" "$legacy_run/state/launch-attempted"
+jq 'del(.attemptId, .launcher)' "$claude_run/adversarial.result.json" >"$legacy_run/adversarial.result.json"
+legacy_bytes=$(sha256sum "$legacy_run/adversarial.result.json" | cut -d' ' -f1)
+legacy_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    ATTEMPT_RECOVERING=1 FAKE_CLAUDE_CALLED="$tmp/legacy.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$legacy_run") \
+    >"$tmp/legacy.out" 2>"$tmp/legacy.err" || legacy_rc=$?
+assert_eq 1 "$legacy_rc" 'legacy completed review requires explicit evidence reconciliation'
+assert_eq "$legacy_bytes" "$(sha256sum "$legacy_run/adversarial.result.json" | cut -d' ' -f1)" \
+    'legacy completed result is preserved byte-for-byte'
+assert_contains "$(cat "$tmp/legacy.err")" 'legacy' 'legacy refusal names the preserved evidence'
+assert_eq no "$([[ -e $tmp/legacy.calls ]] && printf yes || printf no)" 'legacy completion never triggers a replacement review'
+
+# The complementary case: a marker alongside an already-VALID completed
 # result is left to the existing (unchanged) findings-ledger/result-clearing
 # flow -- the new guard must not add a fresh refusal there. Reuses the
 # already-completed claude_run RUN_DIR from earlier in this suite, which has
@@ -911,10 +1019,10 @@ terminal_rc=0
     FAKE_CLAUDE_CALLED="$tmp/terminal-reuse.called" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
     >"$tmp/terminal-reuse.out" 2>"$tmp/terminal-reuse.err" || terminal_rc=$?
-assert_eq 0 "$terminal_rc" \
-    'a marker alongside an already-valid completed result is not blocked by the new guard'
-assert_eq yes "$( [[ -e $tmp/terminal-reuse.called ]] && printf yes || printf no )" \
-    "the guard defers to today's unchanged existing-run-dir behaviour for a terminal result"
+assert_eq 1 "$terminal_rc" \
+    'a result whose original durable reservation was removed requires reconciliation'
+assert_eq no "$( [[ -e $tmp/terminal-reuse.called ]] && printf yes || printf no )" \
+    'a missing reservation never authorizes repurchasing an old completed review'
 
 # --- #473 follow-up (F2, PR #479 adversarial review): the launch-attempted
 # marker must only be written after every local output-path preparation
@@ -1457,8 +1565,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1007 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1007 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1018 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1018 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

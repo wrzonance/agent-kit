@@ -111,9 +111,12 @@ neutral_prompt=${neutral_prompt//"$(printf %q "$repo")"/<worktree-shell>}
 assert_not_contains "$neutral_prompt" "$tmp" 'the path-neutral prompt carries no fixture temp path'
 assert_not_contains "$neutral_prompt" "$root" 'the path-neutral prompt carries no checkout path'
 # #612 adds paired formatting and conditional full-log guidance (298 bytes).
-assert_eq yes "$([[ ${#neutral_prompt} -le 19053 ]] && printf yes || printf no)" \
-    "issue-lead prompt stays at or under 19053 path-neutral bytes (measured ${#neutral_prompt})"
+# #729 adds the structured artifact and explicit unknown-evidence fallback.
+assert_eq yes "$([[ ${#neutral_prompt} -le 19700 ]] && printf yes || printf no)" \
+    "issue-lead prompt stays at or under 19700 path-neutral bytes (measured ${#neutral_prompt})"
 assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the paired formatter fix'
+assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
+assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
 assert_contains "$prompt" 'when the summary is insufficient' 'full log reads depend on summary sufficiency'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
@@ -600,6 +603,14 @@ assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
 assert_contains "$pr_fix_prompt" 'untrusted data' \
     'pr-fix-batch labels finding text as untrusted data'
+printf '%s\n' '{"title":"Confirmed repair pending","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair required"}' > "$accepted_findings"
+open_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --findings-file "$accepted_findings")
+assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
+assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
+assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
+assert_contains "$open_fix_prompt" 'never purchase another review' 'repair resume preserves the one-review budget'
 assert_not_contains "$fix_prompt" '## Accepted findings' \
     'legacy fix-batch omits the accepted-findings section'
 
