@@ -333,6 +333,15 @@ elif [[ $in_repo -eq 0 ]]; then
 guards and the end-of-turn verification check are inert.'
 fi
 
+if [[ -e $root/.agent/activation || -L $root/.agent/activation ]]; then
+    activation_output=$("$self_dir/../skills/.shared/scripts/workflow-activation.sh" hook <<< "$input") ||
+        activation_output='{"systemMessage":"agentkit: activation-unavailable: resume validation failed"}'
+    activation_context=$(jq -r '.hookSpecificOutput.additionalContext // .systemMessage // empty' <<< "$activation_output")
+    [[ -z $activation_context ]] || context+=$'\n\n'"$activation_context"
+    activation_warning=$(jq -r '.systemMessage // empty' <<< "$activation_output")
+    [[ -z $activation_warning ]] || human+=$'\n'"$activation_warning"
+fi
+
 [[ -n $context$human ]] || emit_empty
 
 jq -nc --arg ctx "$context" --arg msg "$human" \

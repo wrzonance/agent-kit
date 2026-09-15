@@ -1,0 +1,290 @@
+"""Session receipt protocol, not a native registry attestation.
+
+UserPromptSubmit delivers a random challenge together with workflow bytes.
+Only the response promotes pending delivery to acknowledged session receipt.
+Capabilities describe observed hook events, never inferred registration.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+
+WORKFLOWS = {"parallel-issues", "pr-to-green", "review-remote-pr", "onboard-repo"}
+
+
+class Unavailable(Exception):
+    pass
+
+
+def fail(reason):
+    raise Unavailable("agentkit: " + reason)
+
+
+def checked(path, directory=False):
+    info = path.lstat()
+    if (stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o022
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))):
+        fail("activation-unavailable: unsafe evidence path " + str(path))
+
+
+class Evidence:
+    def __init__(self, root, session, create=False):
+        if not session or len(session) > 256:
+            fail("activation-unavailable: missing session identity")
+        self.root = Path(root).resolve(strict=True)
+        self.session = session
+        # Explicit repository scope, no search through home or sibling trees.
+        result = subprocess.run(["git", "-C", str(self.root), "rev-parse", "--show-toplevel"],
+                                capture_output=True, text=True, check=False)
+        if result.returncode or not result.stdout.strip():
+            fail("activation-unavailable: cwd must be in a repository")
+        self.root = Path(result.stdout.strip()).resolve(strict=True)
+        directory = self.root / ".agent"
+        for part in (directory, directory / "activation"):
+            if create and not part.exists() and not part.is_symlink():
+                part.mkdir(mode=0o700)
+            checked(part, directory=True)
+        self.path = directory / "activation" / (hashlib.sha256(session.encode()).hexdigest() + ".json")
+        tracked = subprocess.run(["git", "-C", str(self.root), "ls-files", "--", str(self.path)],
+                                 capture_output=True, text=True, check=False)
+        if tracked.returncode or tracked.stdout:
+            fail("activation-unavailable: evidence must be untracked")
+
+    def read(self):
+        checked(self.path)
+        record = json.loads(self.path.read_text())
+        if (record.get("schemaVersion") != 1 or record.get("session") != self.session
+                or record.get("repoRoot") != str(self.root)):
+            fail("activation-unavailable: evidence identity mismatch")
+        return record
+
+    def write(self, record):
+        if self.path.exists() or self.path.is_symlink():
+            checked(self.path)
+        fd, name = tempfile.mkstemp(prefix=".activation-", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(record, handle, sort_keys=True)
+                handle.write("\n")
+            os.replace(name, self.path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+
+def identity(args):
+    manifest = Path(args.skills).parent / ".claude-plugin/plugin.json"
+    version = json.loads(manifest.read_text())["version"]
+    if not re.fullmatch(r"[A-Za-z0-9.+_-]+", version) or not re.fullmatch(r"[0-9a-f]{64}", args.digest):
+        fail("activation-unavailable: invalid installed identity")
+    return version
+
+
+def validate(args, record, skill=None, require=()):
+    version = identity(args)
+    if record.get("installedDigest") != args.digest or record.get("version") != version:
+        fail(f"activation-mismatch: installed {version} ({args.digest[:12]}) but this session received "
+             f"{record.get('version', 'unknown')} ({str(record.get('installedDigest', 'unknown'))[:12]})"
+             f" — restart the session to use {version}")
+    if record.get("skillsRoot") != args.skills:
+        fail("activation-mismatch: installed skill path changed; restart the session")
+    workflow = record.get("workflow")
+    if workflow not in WORKFLOWS:
+        fail("activation-unavailable: unknown workflow identity")
+    body = (Path(args.skills) / workflow / "SKILL.md").read_bytes()
+    if record.get("deliveredDigest") != hashlib.sha256(body).hexdigest():
+        fail("activation-mismatch: delivered workflow bytes differ from installed workflow; restart the session")
+    if skill and record.get("workflow") != skill:
+        fail("competing-workflow: requested " + skill + "; session workflow=" + str(record.get("workflow")))
+    if record.get("status") != "active" or record.get("receiptSource") != "session-acknowledgement":
+        fail("activation-unavailable: workflow delivery is pending session acknowledgement")
+    for capability in require:
+        if record.get("capabilities", {}).get(capability) != "observed":
+            fail("capability-unavailable: " + capability + " is unknown; do not dispatch guard-dependent work")
+
+
+def ack_command(args, record):
+    return shlex.join([str(Path(args.skills) / ".shared/scripts/workflow-activation.sh"), "ack",
+                       "--repo-root", record["repoRoot"], "--session", record["session"],
+                       "--skill", record["workflow"], "--nonce", record["nonce"]])
+
+
+def inspection(args, tool, tool_input):
+    """Permit a bounded file inspection, never a general shell expression."""
+    if tool == "Read":
+        paths = [tool_input.get("file_path", "")]
+    elif tool in ("Bash", "exec_command"):
+        command = tool_input.get("command", tool_input.get("cmd", ""))
+        # shlex splits words but does not model shell substitutions or operators.
+        if re.search(r"[;&|<>`$\n\r]", command):
+            return False
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            return False
+        if not words:
+            return False
+        if words[0] == "cat":
+            paths = words[2:] if words[1:2] == ["--"] else words[1:]
+        elif (len(words) == 4 and words[0] in ("head", "tail") and words[1] == "-n"
+              and re.fullmatch(r"[1-9][0-9]{0,2}", words[2])):
+            paths = words[3:]
+        elif (len(words) == 4 and words[:2] == ["sed", "-n"]
+              and re.fullmatch(r"[1-9][0-9]{0,3}(,[1-9][0-9]{0,3})?p", words[2])):
+            paths = words[3:]
+        else:
+            return False
+    else:
+        return False
+    if not 1 <= len(paths) <= 4:
+        return False
+    for value in paths:
+        path = Path(value)
+        if not path.is_absolute() or not path.is_file() or not path.resolve().is_relative_to(Path(args.skills)):
+            return False
+    return True
+
+
+def hook(args):
+    payload = json.load(sys.stdin)
+    event = payload.get("hook_event_name", "UserPromptSubmit")
+    root, session = payload.get("cwd", ""), payload.get("session_id", "")
+    if event == "UserPromptSubmit":
+        prompt = payload.get("prompt", "")
+        match = re.match(r"^\s*[$/]((?:agentkit:)?[a-z][a-z0-9-]*)(?=\s|$)", prompt)
+        if not match:
+            return {}
+        token = match[1]
+        if not token.startswith("agentkit:"):
+            if token in WORKFLOWS:
+                fail("standalone-registration: bare workflow identity is unverified; invoke $agentkit:" + token)
+            return {}
+        workflow = token.split(":", 1)[1]
+        skill = Path(args.skills) / workflow / "SKILL.md"
+        if workflow not in WORKFLOWS or not skill.is_file() or skill.is_symlink():
+            fail("workflow-unavailable: " + token + "; install/register the current plugin and restart")
+        body = skill.read_bytes()
+        evidence = Evidence(root, session, create=True)
+        try:
+            previous = evidence.read()
+        except FileNotFoundError:
+            previous = None
+        if previous and previous.get("status") == "active":
+            validate(args, previous)
+            if previous.get("workflow") == workflow:
+                return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                        "agentkit activation unchanged: acknowledged workflow=" + workflow
+                        + "; reuse durable session receipt; do not repeat discovery."}}
+        record = {"schemaVersion": 1, "session": session, "repoRoot": str(evidence.root),
+                  "workflow": workflow, "skillsRoot": args.skills, "version": identity(args),
+                  "installedDigest": args.digest, "deliveredDigest": hashlib.sha256(body).hexdigest(),
+                  "deliverySource": "UserPromptSubmit.additionalContext", "receiptSource": "unknown",
+                  "status": "pending", "nonce": secrets.token_hex(24),
+                  "capabilities": {"user-prompt-submit": "observed", "pre-tool-use": "unknown"}}
+        evidence.write(record)
+        context = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
+                   "Before any dispatch, edits, or other workflow, run this exact receipt command. "
+                   "You may inspect the installed helper first; its first receipt stdout line is the workflow identity:\n"
+                   + ack_command(args, record)
+                   + "\nMissing capability remains unknown. Do not substitute another workflow.\n"
+                   + "Installed skills root: " + args.skills + "\n\n" + body.decode())
+        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
+    try:
+        evidence = Evidence(root, session)
+        record = evidence.read()
+    except FileNotFoundError:
+        return {}
+    if event == "PreToolUse":
+        record["capabilities"]["pre-tool-use"] = "observed"
+        evidence.write(record)
+        tool = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input", {})
+        # The challenge response must remain reachable while delivery is pending.
+        command = tool_input.get("command", tool_input.get("cmd", ""))
+        if tool in ("Bash", "exec_command") and command.strip() == ack_command(args, record):
+            return {}
+        if inspection(args, tool, tool_input):
+            return {}
+        validate(args, record)
+        if tool == "Skill" and tool_input.get("skill") != "agentkit:" + record["workflow"]:
+            fail("competing-workflow: active workflow=" + record["workflow"])
+        return {}
+    if event == "SessionStart":
+        # Revalidation preserves historical receipt; never creates one for a compacted context.
+        if record.get("status") == "active":
+            validate(args, record)
+        record["capabilities"]["pre-tool-use"] = "unknown"
+        evidence.write(record)
+        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                "agentkit durable activation: " + json.dumps(record, sort_keys=True)
+                + "; historical session receipt only, not proof of this context's native registry. "
+                + ("" if record.get("status") == "active" else "Run: " + ack_command(args, record))}}
+    return {}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skills", required=True)
+    parser.add_argument("--digest", required=True)
+    parser.add_argument("action", choices=("hook", "ack", "check", "identity"))
+    parser.add_argument("--repo-root")
+    parser.add_argument("--session")
+    parser.add_argument("--skill", choices=sorted(WORKFLOWS))
+    parser.add_argument("--nonce")
+    parser.add_argument("--require", action="append", default=[])
+    args = parser.parse_args()
+    event = "UserPromptSubmit"
+    try:
+        if args.action == "hook":
+            # Preserve event for the correct denial schema, without treating malformed input as allow.
+            raw = sys.stdin.read()
+            import io
+            sys.stdin = io.StringIO(raw)
+            event = json.loads(raw).get("hook_event_name", event)
+            print(json.dumps(hook(args)))
+            return 0
+        if args.action == "identity":
+            print(f"agentkit: skill={args.skill} version={identity(args)} hash={args.digest[:12]}")
+            return 0
+        if not args.repo_root or not args.session or not args.skill:
+            fail("activation-unavailable: --repo-root, --session and --skill are required")
+        evidence = Evidence(args.repo_root, args.session)
+        record = evidence.read()
+        if args.action == "ack":
+            if not args.nonce or not secrets.compare_digest(args.nonce, record.get("nonce", "")):
+                fail("activation-unavailable: session receipt challenge mismatch")
+            record["status"], record["receiptSource"] = "active", "session-acknowledgement"
+            validate(args, record, args.skill)
+            evidence.write(record)
+            print(f"agentkit: skill={args.skill} version={identity(args)} hash={args.digest[:12]}")
+        else:
+            validate(args, record, args.skill, args.require)
+            print(json.dumps(record, sort_keys=True))
+        return 0
+    except (Unavailable, OSError, ValueError, KeyError, TypeError) as error:
+        reason = str(error) if isinstance(error, Unavailable) else "agentkit: activation-unavailable: " + str(error)
+        if args.action == "hook":
+            if event == "PreToolUse":
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": event,
+                      "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+            elif event == "SessionStart":
+                print(json.dumps({"systemMessage": reason, "hookSpecificOutput": {
+                    "hookEventName": event, "additionalContext": reason + "; do not dispatch."}}))
+            else:
+                print(json.dumps({"decision": "block", "reason": reason}))
+            return 0
+        print(reason, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

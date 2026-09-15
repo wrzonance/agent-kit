@@ -23,7 +23,7 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
+    [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
     # #731: opt-in freshness fingerprints, durable results, and concurrent leases.
     [skills/.shared/scripts/agent-run.sh]="1823:19656:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -64,8 +64,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #731: freshness fingerprints, durable results, and concurrent leases.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# Exact merged helper-tree bytes / 4: 1694885 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=423721
+# #722: activation receipt integration; exact tree bytes / 4: 1697825 / 4.
+readonly MAX_TREE_TOKENS=424456
 
 violations=0
 checked=0

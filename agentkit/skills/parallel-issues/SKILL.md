@@ -12,6 +12,20 @@ description: >-
 
 # Parallel Issues
 
+## Step 0 prerequisite: verified activation
+
+Before other output, execute the exact session receipt command supplied by the
+UserPromptSubmit boundary (`$agentkit/.shared/scripts/workflow-activation.sh ack`). Its first stdout line is
+`agentkit: skill=parallel-issues version=<v> hash=<first12>`. This acknowledges
+explicit delivery, not native registry loading. Require `pre-tool-use` through
+`workflow-activation.sh check --require pre-tool-use` with the boundary's exact
+`--repo-root`, `--session`, and `--skill` arguments before dispatch. Pass the same
+session to preflight with `--activation-session ID --workflow parallel-issues`.
+If that boundary/challenge is absent, report `agentkit: activation-unavailable`
+once and stop; do not invent an acknowledgement or substitute another workflow.
+Resume revalidates durable receipt and installed content; rereading files cannot
+retroactively prove earlier activation.
+
 Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 
 Coordinate independent issues through Project validation, conflict analysis, user brainstorm (unless `--no-brainstorm`), isolated worktrees, one issue lead per worktree, and parallel draft-phase CI/conflict/review loops. PRs remain drafts until the user marks them ready. Never trigger provider review or post `@coderabbitai review`/`full review`.

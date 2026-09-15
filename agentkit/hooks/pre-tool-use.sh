@@ -53,6 +53,18 @@ session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 tool_call_id=$(jq -r '.tool_use_id // .tool_call_id // .id // empty' <<< "$input" 2> /dev/null || true)
 ADVISORY_CONTEXT=''
 
+# An explicit invocation arms a durable receipt gate outside the skill body.
+# Never turn a helper failure into allow while that gate exists.
+activation_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -e $activation_root/.agent/activation || -L $activation_root/.agent/activation ]]; then
+    activation_output=$("$self_dir/../skills/.shared/scripts/workflow-activation.sh" hook <<< "$input") ||
+        deny 'agentkit: activation-unavailable: cannot validate the invocation boundary'
+    if [[ $(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$activation_output") == deny ]]; then
+        printf '%s\n' "$activation_output"
+        exit 0
+    fi
+fi
+
 # Files that decide whether other checks run. This hook used to see shell
 # commands only, so an agent could edit a CI workflow -- or the hook config
 # itself -- entirely unobserved.

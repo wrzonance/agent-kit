@@ -10,6 +10,19 @@ description: >-
 
 # PR to green
 
+## Step 0 prerequisite: verified activation
+
+Before other output, execute the boundary's exact `$agentkit/.shared/scripts/workflow-activation.sh ack`
+receipt command. Its first stdout line is
+`agentkit: skill=pr-to-green version=<v> hash=<first12>`. It proves explicit
+session receipt, not native registry loading. Before guard-dependent work, use
+`workflow-activation.sh check --require pre-tool-use` with the boundary's exact
+`--repo-root`, `--session`, and `--skill` arguments. Pass that session to preflight
+with `--activation-session ID --workflow pr-to-green`. Missing boundary evidence
+means `agentkit: activation-unavailable`: report once and stop without substituting
+a workflow. Resume revalidates durable receipt; rereading installed files does not
+prove what an earlier context loaded.
+
 Coordinate parallel reviews and serial merges.
 
 Paths and purposes: `"$agentkit/references.md"`. Open `"$agentkit/<path>"`; do not search.

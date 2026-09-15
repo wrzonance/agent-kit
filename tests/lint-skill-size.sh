@@ -28,9 +28,9 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     # #727: open obligations and terminal evidence in the canonical recipe.
-    [review-remote-pr]="461:8087:450"
+    [review-remote-pr]="474:8289:450"
     # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="946:18122:900"
+    [parallel-issues]="960:18351:900"
 )
 
 readonly MAX_BODY_LINES=500
