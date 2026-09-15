@@ -48,9 +48,10 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #711 adds bounded invocation authorization and independent fix-push evidence.
-# Exact final helper-tree bytes / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=402075
+# #726: atomic worker ownership and serialized run-state updates.
+# #711: bounded invocation authorization and independent fix-push evidence.
+# Exact merged helper-tree bytes / 4: 1614585 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=403646
 
 violations=0
 checked=0
