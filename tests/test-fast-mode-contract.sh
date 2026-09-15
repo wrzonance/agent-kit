@@ -124,8 +124,10 @@ assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
     'fast mode example prints held-active issue identity'
 assert_contains "$triage_text" '.agent/runs/active-workers.ndjson' \
     'named active adjudication names one repository-wide durable ledger'
-assert_contains "$triage_text" 'state=terminal' \
-    'named active ledger releases completed, interrupted, and parked workers'
+assert_contains "$triage_text" 'confirmed terminal evidence releases ownership' \
+    'named active ledger releases only confirmed terminal workers'
+assert_contains "$triage_text" 'Neither interruption requests nor parking' \
+    'interruption requests and parking do not release ownership'
 assert_contains "$triage_text" 'named-active-state.sh' \
     'named active adjudication invokes the executable boundary helper'
 assert_contains "$named_active_text" 'git -C "$repo_root" worktree list --porcelain' \
@@ -164,8 +166,8 @@ done <<< "$canonical_funnels"
 assert_eq '0' "$canonical_mismatches" \
     'every canonical funnel example satisfies the accounting invariant'
 
-# issue #610: the dependency-signal recipe and the validator's manifest completion.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38157 ]] && printf yes || printf no)" \
-    'triage-and-selection reference stays at or under 38157 bytes'
+# #726: exact reference size including durable ownership and legacy limitations.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38642 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 38642 bytes'
 
 finish

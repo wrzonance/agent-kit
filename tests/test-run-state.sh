@@ -102,4 +102,14 @@ assert_rc 0 '--run-id resolves the file through run-dir.sh' -- \
 assert_eq '1' "$(jq -r '.redrive["7"]' "$repo/.agent/evidence/run-wave4-run/run-state.json")" \
     'the run-scoped state lives at <run dir>/run-state.json'
 
+# Independent successful workers must not overwrite each other's bookkeeping.
+pids=()
+for n in {1..12}; do
+    "$script" set --file "$state" --path "workers.$n" --value "worker-$n" &
+    pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+assert_eq 12 "$(jq '.workers | length' "$state")" 'concurrent updates retain every successful worker ID'
+assert_rc 11 'get keeps absent semantics when the parent directory is missing' -- \
+    "$script" get --file "$tmp/missing/run-state.json" --path absent
 finish

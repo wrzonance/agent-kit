@@ -51,7 +51,12 @@ repos/owner/repo/pulls/14/reviews*)
         printf 'injected evidence failure\n' >&2
         exit 1
     fi
-    if [[ ${REVIEW_ACTIVITY:-none} == current ]]; then
+    if [[ ${REVIEW_ACTIVITY:-none} == flipping ]]; then
+        count=$(grep -c 'pulls/14/reviews' "$TRANSITION_LOG")
+        state=COMMENTED
+        ((count < 2)) || state=APPROVED
+        printf '[{"id":1,"user":{"login":"coderabbitai[bot]"},"state":"%s","submitted_at":"2026-08-22T07:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]\n' "$state"
+    elif [[ ${REVIEW_ACTIVITY:-none} == current ]]; then
         printf '%s\n' '[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]'
     elif [[ ${REVIEW_ACTIVITY:-none} == old ]]; then
         printf '%s\n' '[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]'
@@ -470,6 +475,8 @@ out=$(REVIEW_ACTIVITY=chat-reply \
     run_observe '2026-08-28T23:32:00Z')
 assert_contains "$out" 'provider=coderabbit result=TRIGGER_MISPARSED' \
     'a CodeRabbit chat reply with no review classifies as TRIGGER_MISPARSED, not PENDING (agent-kit#552 shape)'
+assert_contains "$out" 'source=issue-comments-api head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa read=' \
+    'comment-derived provider outcomes carry their own source and read provenance'
 assert_not_contains "$out" 'result=PENDING' \
     'a misparsed trigger is never reported as plain PENDING'
 
@@ -615,5 +622,49 @@ assert_contains "$out" 'provider=coderabbit result=LANDED' \
 assert_eq '0' "$rc" 'a failed ledger append never turns LANDED into a non-zero exit'
 assert_contains "$out" 'ledger=unrecorded' \
     'a failed write-back reports ledger=unrecorded on stdout, not just on stderr (root review finding)'
+
+: >"$tmp/transition.log"
+out=$(TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" REVIEW_ACTIVITY=flipping \
+    bash "$transition" --observe --repo owner/repo --pr 14 --since 2026-08-22T06:30:00Z \
+    --settle-after 2026-08-22T06:45:00Z --rounds 2 --interval 1)
+assert_contains "$out" 'result=LANDED state=APPROVED' 'post-settlement observation includes approval that follows COMMENTED'
+assert_contains "$out" 'source=reviews-api head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa read=' 'terminal review claim carries head and read provenance'
+assert_contains "$out" 'action=2026-08-22T06:45:00Z' 'settled report names the last thread action'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" 'settling never triggers a provider'
+observed_read=$(sed -n 's/.* read=\([^ ]*\).*/\1/p' <<<"$out")
+[[ $observed_read > 2026-08-22T06:45:00Z ]] && after_action=yes || after_action=no
+assert_eq yes "$after_action" 'settled read is timestamped after the last thread action'
+: >"$tmp/transition.log"
+out=$(TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" REVIEW_ACTIVITY=landed \
+    OBSERVE_REVIEWS_JSON='[{"id":1,"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","submitted_at":"2026-08-22T07:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]' \
+    bash "$transition" --observe --repo owner/repo --pr 14 --since 2026-08-22T06:30:00Z \
+    --settle-after 2026-08-22T06:45:00Z --rounds 2 --interval 1)
+assert_contains "$out" 'result=LANDED state=COMMENTED' 'expired window reports the actual observed state'
+assert_eq '2' "$(grep -c 'pulls/14/reviews' "$tmp/transition.log")" 'unchanged COMMENTED state consumes only the bounded window'
+
+# BSD date rejects GNU -d and requires -j (never set the system clock) with -f.
+mkdir -p "$tmp/bsd-bin"
+cat >"$tmp/bsd-bin/date" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    '-u -d '*) exit 1 ;;
+    '-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-22T06:45:00Z +%s') printf '1787381100\n' ;;
+    '-u -j -f '*) exit 1 ;;
+    '-u +%s') printf '1787382000\n' ;;
+    '-u +%Y-%m-%dT%H:%M:%SZ') printf '2026-08-22T07:00:00Z\n' ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/bsd-bin/date"
+bsd_observe() {
+    PATH="$tmp/bsd-bin:$PATH" TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
+        bash "$transition" --observe --repo owner/repo --pr 14 --since 2026-08-22T06:30:00Z \
+        --settle-after "$1" --rounds 1 --interval 1
+}
+rc=0
+out=$(bsd_observe 2026-08-22T06:45:00Z) || rc=$?
+assert_eq 0 "$rc" 'BSD date accepts a valid settlement timestamp'
+assert_contains "$out" 'action=2026-08-22T06:45:00Z elapsed=900s' 'BSD parsing preserves settlement provenance and elapsed time'
+assert_rc 1 'both date parsers rejecting the timestamp still fails closed' -- bsd_observe 2026-99-22T06:45:00Z
 
 finish

@@ -35,12 +35,8 @@ readonly AGENT_DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
 # U+1F9F9 BROOM, spelled as a codepoint so this file stays ASCII and the match
 # needs no regex-engine support for \x{...}.
 readonly BROOM_CP=129529
-# GitHub's "compare two commits" REST endpoint returns at most this many
-# entries in `.files` on a single (unpaginated) page; a response carrying
-# this many or more cannot prove the full file list was read, only that at
-# least this many files changed. base_advance_is_automation_only treats that
-# as unreadable evidence and fails closed rather than risk missing an
-# out-of-page file outside the declared paths.
+# The compare API caps .files at 300; reaching the cap cannot prove that
+# every changed file falls within generated paths. Fail the exemption closed.
 readonly COMPARE_FILES_PAGE_CAP=300
 
 PR=""
@@ -61,6 +57,8 @@ PRESERVE_WORK_DIR=0
 WORK_DIR=""
 HEAD_REF=""
 HEAD_SHA=""
+PROVIDER_READ_AT=""
+CI_READ_AT=""
 # The PR's own updated_at (bumped by GitHub on reviews, comments, and label
 # changes -- not only on a head push), read from the same pulls/N response
 # fetch_meta already fetches. The --full cache's staleness check keys off
@@ -361,23 +359,13 @@ fetch_meta() {
         preserve_raw_and_die "could not normalize REST pull-request metadata for $REPO#$PR"
     fi
     HEAD_SHA=$head_sha
+    CI_READ_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     PR_UPDATED_AT=$(jq -r '.updatedAt // ""' <"$WORK_DIR/pr.json" 2>/dev/null) || PR_UPDATED_AT=""
     return 0
 }
 
-# Lightweight refresh for --wait-ci rounds after the first. A bare re-read of
-# check-runs/status against the round-1 head silently settles on a stale
-# commit if the PR advances mid-wait (agent-kit#475 review finding F2), so
-# this first spends one cheap REST call re-reading pulls/N and comparing its
-# head SHA to what fetch_meta last established:
-#   - unchanged: fold a fresh check-runs+status read into the existing pr.json
-#     in place (draft/mergeable/base stay as round 1 reported them) -- 3 REST
-#     calls this round (pulls, check-runs, status), one more than a bare
-#     check-runs+status read, in exchange for never settling on a stale head.
-#   - changed: log one note line and re-run the full fetch_meta +
-#     fetch_base_state for the new head, so the rest of this round (and every
-#     round after it) evaluates the PR the wait is actually supposed to be
-#     watching, never the one it started with.
+# Reread the PR head each round. A push refreshes full metadata/base state;
+# otherwise refresh only checks/statuses, never settling against the old head.
 fetch_ci_only() {
     local previous_head=$HEAD_SHA current_head
     gh api "repos/$REPO/pulls/$PR" \
@@ -407,6 +395,7 @@ fetch_ci_only() {
         preserve_raw_and_die "could not normalize refreshed check-run evidence for $REPO#$PR"
     fi
     mv -f -- "$WORK_DIR/pr.json.tmp" "$WORK_DIR/pr.json"
+    CI_READ_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     return 0
 }
 
@@ -580,6 +569,7 @@ fetch_threads() {
 }
 
 fetch_all() {
+    PROVIDER_READ_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     fetch_list "repos/$REPO/pulls/$PR/reviews" "$WORK_DIR/reviews.json"
     fetch_list "repos/$REPO/pulls/$PR/comments" "$WORK_DIR/comments.json"
     fetch_list "repos/$REPO/issues/$PR/comments" "$WORK_DIR/issue_comments.json"
@@ -603,13 +593,8 @@ full_cache_path() {
     printf '%s/pr-state-full.%s.%s.%s.json' "$OUT_DIR" "$repo_slug" "$PR" "$HEAD_SHA"
 }
 
-# Loads a same-repo/PR/head, not-stale cache entry into the WORK_DIR files
-# fetch_all would have produced, plus THREADS_AVAILABLE and ALERTS_VALUE.
-# Returns 1 (nothing loaded) on any absence, symlink, non-owned file, parse
-# failure, identity mismatch, or updated_at staleness -- a caller that gets 1
-# back must fall through to a fresh fetch_all, never treat a cache miss as
-# evidence of anything. Sets CACHE_MISS_REASON=updated only for the
-# staleness case, so the digest can name why a same-head entry still missed.
+# Only owned, regular, parseable evidence with matching repo/PR/head and
+# updated_at can load. Misses fall through to fetch_all; never infer zero.
 full_cache_load() {
     local cache cached_repo cached_pr cached_updated
     CACHE_MISS_REASON=""
@@ -625,6 +610,7 @@ full_cache_load() {
     cached_repo=$(jq -r '.repo' "$cache" 2>/dev/null) || return 1
     cached_pr=$(jq -r '.pr' "$cache" 2>/dev/null) || return 1
     cached_updated=$(jq -r '.updatedAt' "$cache" 2>/dev/null) || return 1
+    PROVIDER_READ_AT=$(jq -er '.providerReadAt | select(type == "string" and length > 0)' "$cache" 2>/dev/null) || return 1
     [[ $cached_repo == "$REPO" && $cached_pr == "$PR" ]] || return 1
     if [[ $cached_updated != "$PR_UPDATED_AT" ]]; then
         CACHE_MISS_REASON=updated
@@ -658,8 +644,9 @@ full_cache_save() {
         --slurpfile cq "$WORK_DIR/code_quality_comments.json" \
         --argjson threadsAvailable "$([[ $THREADS_AVAILABLE == 1 ]] && printf true || printf false)" \
         --arg alerts "$ALERTS_VALUE" \
+        --arg providerReadAt "$PROVIDER_READ_AT" \
         --arg repo "$REPO" --argjson pr "$PR" --arg updatedAt "$PR_UPDATED_AT" '
-        {repo: $repo, pr: $pr, updatedAt: $updatedAt,
+        {repo: $repo, pr: $pr, updatedAt: $updatedAt, providerReadAt: $providerReadAt,
          reviews: $reviews[0], comments: $comments[0], issueComments: $issue_comments[0],
          threads: $threads[0], codeQualityComments: $cq[0],
          threadsAvailable: $threadsAvailable, alerts: $alerts}' >"$staged" 2>/dev/null; then
@@ -681,8 +668,9 @@ ci_counts() {
         def bucket:
           if (has("status") or has("conclusion")) then
             if ((.status // "") | ascii_upcase) != "COMPLETED" then "pending"
+            elif ((.conclusion // "") | ascii_upcase) == "SUCCESS" then "pass"
             elif ((.conclusion // "") | ascii_upcase
-                  | . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "pass"
+                  | . == "NEUTRAL" or . == "SKIPPED") then "optional"
             else "fail" end
           else
             if ((.state // "") | ascii_upcase) == "SUCCESS" then "pass"
@@ -719,17 +707,25 @@ acceptance_status() {
                    or (.name // .context // "") == $token
                    or ((.name // .context // "") | endswith("/" + $token)))
           | if (has("status") or has("conclusion")) then
-              if ((.status // "") | ascii_upcase) != "COMPLETED" then "not-run"
-              elif ((.conclusion // "") | ascii_upcase
-                    | . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "pass"
-              else "fail" end
+              if ((.status // "") | ascii_upcase) != "COMPLETED" then "pending"
+              else ((.conclusion // "") | ascii_upcase) as $c
+                | if $c == "SUCCESS" then "pass"
+                  elif $c == "SKIPPED" then "skipped"
+                  elif $c == "NEUTRAL" then "neutral"
+                  elif (["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"] | index($c)) != null then "fail"
+                  else "unavailable" end end
             elif ((.state // "") | ascii_upcase) == "SUCCESS" then "pass"
             elif ((.state // "") | ascii_upcase
-                  | . == "PENDING" or . == "EXPECTED" or . == "") then "not-run"
-            else "fail" end ]
+                  | . == "PENDING" or . == "EXPECTED") then "pending"
+            elif ((.state // "") | ascii_upcase
+                  | . == "FAILURE" or . == "ERROR") then "fail"
+            else "unavailable" end ]
         | if length == 0 then "not-run"
           elif any(.[]; . == "fail") then "fail"
-          elif any(.[]; . == "not-run") then "not-run"
+          elif any(.[]; . == "unavailable") then "unavailable"
+          elif any(.[]; . == "pending") then "pending"
+          elif any(.[]; . == "skipped") then "skipped"
+          elif any(.[]; . == "neutral") then "neutral"
           else "pass" end' <"$WORK_DIR/pr.json"
 }
 
@@ -908,6 +904,7 @@ wait_for_ci() {
             fetch_ci_only
         fi
         IFS=$'\t' read -r total pass pending fail pending_nb _failing_checks < <(ci_counts)
+        note "ci-evidence: head=$HEAD_SHA read=$(date -u +%Y-%m-%dT%H:%M:%SZ) round=$round/$ROUNDS"
         if ((total == 0)); then
             ((++zero_rounds))
             prev_total=0
@@ -980,6 +977,7 @@ save_artifacts() {
 }
 
 print_ci_line() {
+    note "ci-evidence: head=$HEAD_SHA read=$CI_READ_AT"
     local total pass pending fail pending_nb failing_checks word
     IFS=$'\t' read -r total pass pending fail pending_nb failing_checks < <(ci_counts)
     local coverage coverage_state
@@ -995,7 +993,7 @@ print_ci_line() {
         word=failing
     elif ((pending > 0)); then
         word=pending
-    elif [[ $BASE_STATUS == stale && $pass -gt 0 ]]; then
+    elif [[ $BASE_STATUS == stale ]]; then
         word=stale
     else
         word=green
@@ -1010,6 +1008,9 @@ print_ci_line() {
     else
         printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
     fi
+    jq -r '[.statusCheckRollup[]? | select(((.status // "") | ascii_upcase) == "COMPLETED")
+            | (.conclusion // "" | ascii_upcase)]
+        | "ci-outcomes: skipped=\([.[] | select(. == "SKIPPED")] | length) neutral=\([.[] | select(. == "NEUTRAL")] | length)"' <"$WORK_DIR/pr.json"
     stacked_ci_lines "$coverage"
 }
 
@@ -1104,7 +1105,7 @@ print_issue_comment_findings_line() {
 }
 
 print_digest() {
-    local alerts provider
+    local alerts provider source=reviews-api
     # The full head SHA, never a 7-char abbreviation: merge-gate.sh consumes
     # this as merge-authorization evidence bound to the head being merged, and
     # every other identity on that path (--head-sha, the authorization record,
@@ -1118,7 +1119,12 @@ print_digest() {
     print_ci_line
     print_acceptance_lines
     provider=$(provider_state)
-    printf 'provider: coderabbit=%s\n' "$provider"
+    [[ $provider != rate-limited ]] || source=issue-comments-api
+    if [[ $provider == none ]]; then
+        printf 'provider: coderabbit=none\n'
+    else
+        printf 'provider: coderabbit=%s source=%s head=%s read=%s\n' "$provider" "$source" "$HEAD_SHA" "$PROVIDER_READ_AT"
+    fi
     print_thread_lines
     print_issue_comment_findings_line
     alerts=$ALERTS_VALUE

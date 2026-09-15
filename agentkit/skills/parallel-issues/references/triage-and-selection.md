@@ -1,24 +1,22 @@
 # Triage adjudication and set selection
 
 ## Contents
-- [Bulk mutation discipline: ledger, chunks, and resource budget](#bulk-mutation-discipline-ledger-chunks-and-resource-budget) — the resumable-ledger recipe for any batch of 2+ forge writes
-- [Prior-art adjudication (only for merged-ref, in-flight, and attempted)](#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted) — reading the referenced PR and applying the ADR rules
-- [Work-shape verdict](#work-shape-verdict) — classifying implementation vs. no-code/research before Step 5 ever creates a worktree
-- [Conflict analysis and dispatch-plan write sets](#conflict-analysis-and-dispatch-plan-write-sets) — pinning predicted operands and recording revisions
-- [Board adjudication](#board-adjudication) — same-board STOP rationale, the `--fast-mode` decision rule, and pickup order
-- [Optional: fuzzy prior art](#optional-fuzzy-prior-art) — the opt-in low-yield search
-- [Step 2b: Choose the set yourself](#step-2b-choose-the-set-yourself) — the mechanical selection procedure for a thin Ready column, `--fast-mode`, and thematic Backlog matching, in place of the approval gate
+- [Bulk mutation discipline: ledger, chunks, and resource budget](#bulk-mutation-discipline-ledger-chunks-and-resource-budget) — resumable ledger for 2+ forge writes
+- [Prior-art adjudication (only for merged-ref, in-flight, and attempted)](#prior-art-adjudication-only-for-merged-ref-in-flight-and-attempted) — referenced PR and ADR rules
+- [Work-shape verdict](#work-shape-verdict) — implementation vs. no-code/research before Step 5
+- [Conflict analysis and dispatch-plan write sets](#conflict-analysis-and-dispatch-plan-write-sets) — predicted operands and revisions
+- [Board adjudication](#board-adjudication) — same-board STOP, `--fast-mode`, and pickup order
+- [Optional: fuzzy prior art](#optional-fuzzy-prior-art) — opt-in search
+- [Step 2b: Choose the set yourself](#step-2b-choose-the-set-yourself) — Ready-set selection, `--fast-mode`, and thematic Backlog matching without an approval gate
 
-This is the detail behind SKILL.md's Step 2 triage digest: read the section you were pointed at
-for the verdict(s) the digest actually flagged, or the `--fast-mode` set-selection procedure when
-that flag is in play. A `clean` verdict needs none of this file.
+For Step 2, read only the section named by the digest or the `--fast-mode` selection
+procedure when requested. A `clean` verdict needs none of this file.
 
 ## Bulk mutation discipline: ledger, chunks, and resource budget
 
-Any batch that creates or edits more than one forge object carries a resumable apply ledger: the
-planning ID is the stable key, and every successful mutation is followed immediately by one `record` call
-with the returned number and URL. The ledger and plan live in the private run directory `run-dir.sh
---run-id "$RUN_ID"` addresses (never a bare repository-relative path):
+For 2+ forge mutations, use a resumable apply ledger keyed by planning ID. Record
+each success immediately with its returned number and URL. Store ledger and plan
+in the private `run-dir.sh --run-id "$RUN_ID"` directory, never a bare repository-relative path:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
@@ -30,15 +28,22 @@ apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 "$apply_ledger" init --ledger "$ledger" --plan "$plan"
 ```
 
-`record`'s `--number` is the mutation's subject issue/PR number (the created number, or the existing
-number a comment/close/reopen/board move acted on); `--url` embeds that same number — `.../issues/N` or
-`.../pull/N`, plus the `#issuecomment-<id>` fragment for a created comment.
+`record` takes the subject issue/PR `--number` (created or acted on). Its `--url`
+embeds that number as `.../issues/N` or `.../pull/N`, with `#issuecomment-<id>` for
+a created comment.
 
-Before every mutation, consume only the IDs from `pending --ids`; never retry
-an ID present in `applied`. Keep chunks bounded (the default recipe is 20
-objects), and persist after every success:
+Before each mutation, use only `pending --ids`; never retry an `applied` ID.
+Bound chunks (default 20 objects) and persist after each success:
+
+`perform_rest_mutation` must be a trusted Bash-compatible function using the
+ledger/plan/run inputs passed below. Pass any extra dependencies explicitly;
+never substitute issue text for callback code. Missing inputs fail closed.
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
+set -u
+# shellcheck disable=SC2034  # callback context
+apply_ledger=$1 ledger=$2 plan=$3 agentkit=$4 repository_root=$5 RUN_ID=$6 bulk_dir=$7
 report_batch_failure() {
     local reason=$1 evidence
     printf 'bulk batch stopped: %s\n' "$reason" >&2
@@ -49,9 +54,11 @@ report_batch_failure() {
     fi
     exit 1
 }
+# shellcheck source=/dev/null
+source <(printf '%s\n' "$8") || report_batch_failure 'invalid mutation callback'
+declare -F perform_rest_mutation >/dev/null || report_batch_failure 'missing mutation callback'
 
 while :; do
-    # Budget FIRST: an unreadable or exhausted artifact fails closed before any mutation.
     if [[ -e .resources.graphql ]]; then
         if [[ ! -r .resources.graphql ]]; then
             report_batch_failure 'budget artifact exists but is unreadable'
@@ -61,17 +68,16 @@ while :; do
             report_batch_failure 'GraphQL budget exhausted before this chunk'
         fi
     fi
-    # Status-checked, not a process substitution: a failed pending lookup must never read as "batch complete".
+    # Status-check pending: lookup failure is not batch completion.
     if ! pending_ids=$("$apply_ledger" pending --ledger "$ledger" --ids); then
         report_batch_failure 'pending lookup failed'
     fi
     mapfile -t chunk <<<"$(printf '%s\n' "$pending_ids" | head -n 20)"
     [[ ${chunk[0]:-} ]] || break
     for planning_id in "${chunk[@]}"; do
-        # perform_rest_mutation is a `gh-body pr|issue create --body-file ... --json` call; read its one JSON object verbatim.
+        # Callback returns gh-body --json output, including nonzero closing checks.
         mutation_rc=0
         mutation_json=$(perform_rest_mutation "$planning_id") || mutation_rc=$?
-        # A non-empty object is meaningful even on nonzero exit (only the closing-issue verification failed).
         if [[ -z $mutation_json ]]; then
             report_batch_failure "mutation failed for $planning_id"
         fi
@@ -81,7 +87,7 @@ while :; do
         if ! created_url=$(jq -er '.html_url' <<<"$mutation_json"); then
             report_batch_failure "mutation response omitted URL for $planning_id"
         fi
-        # Record-before-verify: the object already exists on the forge.
+        # Record before checking closing-issue failure.
         if ! "$apply_ledger" record --ledger "$ledger" --id "$planning_id" \
             --number "$created_number" --url "$created_url"; then
             report_batch_failure "ledger record failed for $planning_id"
@@ -91,13 +97,14 @@ while :; do
             report_batch_failure "recorded #$created_number for $planning_id, but its closing-issue verification did not pass (state=$closing_state); resolve the linkage manually, then resume -- the ledger already excludes it from a retry"
         fi
     done
-    # The next iteration's budget check is the inspection point between chunks.
 done
+BASH_RECIPE
+)" _ "$apply_ledger" "$ledger" "${plan:-}" "${agentkit:-}" "${repository_root:-}" "${RUN_ID:-}" "${bulk_dir:-}" "$(typeset -f perform_rest_mutation)" || exit $?
 ```
 
-On exhaustion, retain the ledger and report its `applied`/`remaining` split; never retry an empty pending
-pool or claim unrecorded mutations succeeded. A rerun starts from the same ledger (zero duplicates); its
-`idMap` feeds a dependent batch.
+On exhaustion, retain the ledger and report `applied`/`remaining`; never retry an empty
+pool or claim unrecorded success. Rerun from that ledger to avoid duplicates;
+its `idMap` feeds dependent batches.
 
 REST routing is equally strict: issue/PR bodies, labels, state, comments,
 reviews, sub-issues, dependencies, and cross-references use
@@ -218,17 +225,23 @@ root-owned worker ledger at `$repository_root/.agent/runs/active-workers.ndjson`
 shared across resumptions and invocation IDs so a new run cannot overlook a worker dispatched by
 an earlier run.
 
-The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Each row has
-exactly this durable evidence shape:
+The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Legacy
+version 1 rows remain readable:
 
 ```json
 {"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
 ```
 
-The latest valid row wins. Only root writes it (parent `0700`, ledger `0600`): `state=active` at spawn, another active row with a fresh
-`heartbeatEpoch` on reported progress, and `state=terminal` on completion, interruption, or park.
-`named-active-state.sh` enforces the `0600`/owner/non-symlink requirements; a malformed ledger is blocked
-evidence, never permission to dispatch.
+Use `.shared/spawn-contract.md`'s durable sole-writer gate for all new writes through
+`named-active-state.sh`. Version 2 adds `runId`, `attempt`, `workerId`, `disposition`, and
+`evidence`; `unknown` reserves before submission, `active` holds the returned ID, and only
+confirmed terminal evidence releases ownership. Neither interruption requests nor parking
+release a worker. Inventory selects the latest row per canonical worktree across runs.
+Version 2 unknown/active rows never expire and hold before legacy worktree/heartbeat checks.
+Malformed evidence blocks dispatch. Never append a legacy row over version 2 ownership.
+Legacy active rows lack attempt/worker identity: reservation fails closed even if legacy
+triage calls them stale. This helper cannot reconcile those identities; park and report that
+limitation. Existing legacy terminal rows permit a new reservation.
 
 Run the boundary helper for every operator-named triage record whose verdict is `active`:
 
@@ -436,6 +449,8 @@ or worker prompt cycle.
 The root-side round trip is data-only and atomic:
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
+raw_report=$1 dispatch_plan=$2 issue_number=$3
 mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
 (( ${#needs_lines[@]} == 1 )) || exit 1
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
@@ -449,6 +464,8 @@ jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
    .conflictMap.revisions += [{issues: [$issue], paths: $paths,
      reason: "worker requested missing write-set paths (prediction expansion)"}]' \
   "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
+BASH_RECIPE
+)" _ "$raw_report" "$dispatch_plan" "$issue_number" || exit $?
 ```
 
 Re-run the chain-base validator on the updated plan, then call `followup_task`
