@@ -157,7 +157,9 @@ if ((observe)); then
     [[ $interval =~ ^[1-9][0-9]*$ && $interval -le 3600 ]] || die '--interval must be 1-3600'
     if [[ -n $settle_after ]]; then
         [[ $settle_after =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die '--settle-after must be a UTC timestamp'
-        action_epoch=$(date -u -d "$settle_after" +%s) || die 'invalid --settle-after timestamp'
+        action_epoch=$(date -u -d "$settle_after" +%s 2>/dev/null) ||
+            action_epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$settle_after" +%s 2>/dev/null) ||
+            die 'invalid --settle-after timestamp'
         ((action_epoch <= $(date -u +%s))) || die '--settle-after is in the future'
         printf 'Waiting for agents: post-settlement review observation\n' >&2
     else

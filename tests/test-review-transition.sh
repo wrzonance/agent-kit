@@ -642,4 +642,29 @@ out=$(TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" REVIEW
 assert_contains "$out" 'result=LANDED state=COMMENTED' 'expired window reports the actual observed state'
 assert_eq '2' "$(grep -c 'pulls/14/reviews' "$tmp/transition.log")" 'unchanged COMMENTED state consumes only the bounded window'
 
+# BSD date rejects GNU -d and requires -j (never set the system clock) with -f.
+mkdir -p "$tmp/bsd-bin"
+cat >"$tmp/bsd-bin/date" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    '-u -d '*) exit 1 ;;
+    '-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-22T06:45:00Z +%s') printf '1787381100\n' ;;
+    '-u -j -f '*) exit 1 ;;
+    '-u +%s') printf '1787382000\n' ;;
+    '-u +%Y-%m-%dT%H:%M:%SZ') printf '2026-08-22T07:00:00Z\n' ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/bsd-bin/date"
+bsd_observe() {
+    PATH="$tmp/bsd-bin:$PATH" TRANSITION_LOG="$tmp/transition.log" REVIEW_TRANSITION_GH="$tmp/gh" \
+        bash "$transition" --observe --repo owner/repo --pr 14 --since 2026-08-22T06:30:00Z \
+        --settle-after "$1" --rounds 1 --interval 1
+}
+rc=0
+out=$(bsd_observe 2026-08-22T06:45:00Z) || rc=$?
+assert_eq 0 "$rc" 'BSD date accepts a valid settlement timestamp'
+assert_contains "$out" 'action=2026-08-22T06:45:00Z elapsed=900s' 'BSD parsing preserves settlement provenance and elapsed time'
+assert_rc 1 'both date parsers rejecting the timestamp still fails closed' -- bsd_observe 2026-99-22T06:45:00Z
+
 finish
