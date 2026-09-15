@@ -20,6 +20,11 @@ merge_method=''
 branch_choice=''
 no_providers=0
 allow_mechanical_advance=0
+fast_mode=0
+yolo=0
+run_id=''
+write_set_file=''
+declare -A self_proof_file=()
 declare -a providers=()
 declare -a prs=()
 requested_prs_json='[]'
@@ -106,6 +111,8 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
        (--provider NAME:ACTION:SOURCE ... | --no-providers)
        --confirmed-queue-file FILE [--merge-plan FILE] [--pr N ...]
        [--allow-mechanical-advance [--retarget-proof PR:FILE ...]]
+       [--fast-mode --yolo] [--run-id ID --write-set-file FILE]
+       [--self-authored-proof PR:FILE ...]
 
 Derives .agent/pr-to-green-auth.json from fresh pr-queue.sh JSON. ACTION is
 trigger, observe, or disabled. FILE is the owner-only snapshot written by the
@@ -123,6 +130,19 @@ naming that exact PR/base/head line, or a confirmed PR's disappearance from
 the live queue independently verified as merged. Repository, provider
 decisions, and any PR the live queue adds are never covered by this and
 always require redisplay and reconfirmation.
+
+--fast-mode requires --yolo and --run-id. Display the plan as a receipt;
+the run records its predicate and last authorized snapshot in an owner-only
+.agent/pr-to-green-run-ID.json. --write-set-file lists explicit relative
+paths (expand declared globs before the initial grant). A new run id is a
+new authorization, never an automatic retry around drift.
+
+--self-authored-proof requires an existing --run-id receipt. Its owned JSON
+records runId, repository, pr, base, from, to, and commits [{sha,pushed:true,
+finding:"fix:ID"}]. Record it only after this run successfully pushes its
+own remediation commits. findingLedger names an owned saved review-ledger
+JSON whose fix coverage corroborates each commit. Local paths and live ancestry are
+independently verified; it never covers a new PR, base, or outside push.
 EOF
     exit "${1:-2}"
 }
@@ -179,6 +199,18 @@ while (($#)); do
             shift
             ;;
         --allow-mechanical-advance) allow_mechanical_advance=1; shift ;;
+        --fast-mode) fast_mode=1; shift ;;
+        --yolo) yolo=1; shift ;;
+        --run-id) (($# >= 2)) || usage; run_id=$2; shift 2 ;;
+        --write-set-file) (($# >= 2)) || usage; write_set_file=$2; shift 2 ;;
+        --self-authored-proof)
+            (($# >= 2)) || usage
+            proof_pr=${2%%:*}; proof_path=${2#*:}
+            [[ $proof_pr =~ ^[1-9][0-9]*$ && $proof_path != "$2" && -n $proof_path ]] ||
+                die '--self-authored-proof requires PR:FILE'
+            [[ -z ${self_proof_file[$proof_pr]+set} ]] || die 'duplicate self-authored proof'
+            self_proof_file[$proof_pr]=$proof_path
+            shift 2 ;;
         --retarget-proof)
             (($# >= 2)) || usage
             retarget_pr=${2%%:*}
@@ -194,6 +226,17 @@ while (($#)); do
         *) usage ;;
     esac
 done
+
+((fast_mode == 0 || yolo)) || die '--fast-mode requires --yolo'
+if ((fast_mode || ${#self_proof_file[@]})); then
+    [[ -n $run_id ]] || die '--fast-mode and --self-authored-proof require --run-id'
+    allow_mechanical_advance=1
+fi
+[[ -z $run_id || $run_id =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] || die 'invalid --run-id'
+private_file() {
+    [[ -f $1 && ! -L $1 && -O $1 ]] || die "untrusted evidence file: $1"
+    reject_writable_by_others "$1" evidence
+}
 
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     die '--repo must have the form OWNER/REPO'
@@ -355,6 +398,39 @@ fi
 requested_argv=$(jq -cn --arg plan "$merge_plan" --argjson prs "$requested_prs_json" '
   {plan:(if $plan == "" then null else {flag:"merge-plan",path:$plan} end),prs:$prs}
 ')
+receipt=''
+if [[ -n $run_id ]]; then
+    [[ -n $write_set_file ]] || die '--run-id requires --write-set-file'
+    private_file "$write_set_file"
+    jq -Rn '[inputs | select(length > 0)] | unique' <"$write_set_file" >"$work_dir/paths.json"
+    jq -e 'length > 0 and all(.[]; (startswith("/") | not) and
+      (split("/") | all(.[]; . != ".." and . != "." and . != "")) and
+      (explode | all(.[]; . >= 32 and . != 127 and . != 42 and . != 63 and . != 91 and . != 93)))' "$work_dir/paths.json" >/dev/null ||
+        die 'write set must contain explicit repository-relative paths, one per line'
+    receipt=$repo_root/.agent/pr-to-green-run-$run_id.json
+    jq -n --arg repo "$repo" --argjson argv "$requested_argv" \
+      --slurpfile providers "$work_dir/providers.json" --slurpfile paths "$work_dir/paths.json" \
+      --slurpfile snapshot "$confirmed_queue_file" --arg auto "$auto_merge_choice" \
+      --arg method "$merge_method" --arg branch "$branch_choice" '
+      {repository:$repo,selector:$argv,providers:$providers[0],writeSet:$paths[0],
+       autoMerge:$auto,mergeMethod:$method,branch:$branch,prs:($snapshot[0].queue | map(.pr) | sort)}
+    ' >"$work_dir/predicate.json"
+    if [[ -e $receipt || -L $receipt ]]; then
+        private_file "$receipt"
+        jq -e --arg run "$run_id" --slurpfile p "$work_dir/predicate.json" \
+          '.runId == $run and (.predicate | del(.prs)) == ($p[0] | del(.prs)) and
+           (($p[0].prs - .predicate.prs) == []) and (.advances | type == "array")' "$receipt" >/dev/null ||
+            die 'run predicate changed; redisplay and reconfirm under a new run id'
+        jq -e --slurpfile p "$work_dir/predicate.json" \
+          '.repository == $p[0].repository and
+           (.providers | sort_by(.name)) == ($p[0].providers | sort_by(.name))' "$confirmed_queue_file" >/dev/null ||
+            die 'displayed repository or provider decisions changed; redisplay and reconfirm'
+        # A fresh display cannot replace the last authorized head. Reconcile
+        # against the run receipt even if the caller rewrote the display.
+        jq '.snapshot' "$receipt" >"$work_dir/prior-snapshot.json"
+        confirmed_queue_file=$work_dir/prior-snapshot.json
+    fi
+fi
 argv_diff=$(jq -r --argjson requested "$requested_argv" '
   if (.argv | type) != "object" then "argv"
   elif .argv.plan != $requested.plan then "plan"
@@ -512,7 +588,8 @@ if ((full_match_ok == 0)); then
     # MERGEABLE_UNKNOWN to RUNNABLE with nothing else changed -- matches
     # neither bucket below and falls through to "fail", exactly like any
     # other unproven drift.
-    jq -n --slurpfile confirmed "$confirmed_queue_file" --slurpfile live "$work_dir/queue.json" '
+    jq -n --slurpfile confirmed "$confirmed_queue_file" --slurpfile live "$work_dir/queue.json" \
+      --argjson self "$(printf '%s\n' "${!self_proof_file[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" '
       ($confirmed[0].queue) as $confirmed |
       ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $live |
       {
@@ -531,6 +608,10 @@ if ((full_match_ok == 0)); then
           elif ($l.state == $c.state and $l.headSha == $c.headSha and
                 $l.base == $c.base and $l.diffFingerprint == $c.diffFingerprint) then
             {pr:$c.pr, verdict:"unchanged",
+             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          elif ($c.state == "RUNNABLE" and $l.state == "RUNNABLE" and
+                $l.base == $c.base and $l.headSha != $c.headSha and ($self | index($c.pr)) != null) then
+            {pr:$c.pr, verdict:"self-authored",
              confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
           elif ($c.state == "RUNNABLE" and $l.state == "RUNNABLE" and
                 $l.base == $c.base and $l.headSha != $c.headSha and
@@ -587,6 +668,52 @@ if ((full_match_ok == 0)); then
                 ;;
             merge-down)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
+                ;;
+            self-authored)
+                [[ -f $receipt ]] || die 'self-authored advance requires an existing run receipt'
+                verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
+                proof=${self_proof_file[$recon_pr]}
+                private_file "$proof"
+                touched=$repo_root/.agent/evidence/paths-touched.ndjson
+                [[ -d $repo_root/.agent/evidence && ! -L $repo_root/.agent/evidence && -O $repo_root/.agent/evidence ]] ||
+                    die 'untrusted paths evidence directory'
+                private_file "$touched"
+                git -C "$repo_root" merge-base --is-ancestor "$recon_confirmed_sha" "$recon_live_sha" ||
+                    die 'self-authored local ancestry failed; redisplay and reconfirm'
+                git -C "$repo_root" rev-list "$recon_confirmed_sha..$recon_live_sha" >"$work_dir/commits" ||
+                    die 'could not enumerate self-authored commits'
+                jq -Rn '[inputs] | sort' <"$work_dir/commits" >"$work_dir/commits.json"
+                jq -e --arg run "$run_id" --arg repo "$repo" --argjson pr "$recon_pr" \
+                  --arg base "$recon_live_base" --arg old "$recon_confirmed_sha" --arg new "$recon_live_sha" \
+                  --slurpfile commits "$work_dir/commits.json" '
+                  .runId == $run and .repository == $repo and .pr == $pr and .base == $base and
+                  .from == $old and .to == $new and (.commits | length > 0) and
+                  ([.commits[].sha] | sort) == $commits[0] and
+                  all(.commits[]; .pushed == true and (.finding | test("^fix:[A-Za-z0-9._/-]+$")))
+                ' "$proof" >/dev/null || die 'self-authored push/finding evidence incomplete; redisplay and reconfirm'
+                finding_ledger=$(jq -er '.findingLedger | select(type == "string" and length > 0)' "$proof") ||
+                    die 'self-authored finding ledger missing; redisplay and reconfirm'
+                private_file "$finding_ledger"
+                jq -e --arg repo "$repo" --argjson pr "$recon_pr" --slurpfile proof "$proof" '
+                  [.reviews[].coverage[]?] as $coverage | .repo == $repo and .pr == $pr and
+                  all($proof[0].commits[]; . as $commit |
+                    any($coverage[]; .sha == $commit.sha and .reason == $commit.finding))
+                ' "$finding_ledger" >/dev/null || die 'self-authored finding coverage missing; redisplay and reconfirm'
+                while IFS= read -r commit; do
+                    parents=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") || die 'commit unreadable'
+                    [[ $(wc -w <<<"$parents") == 2 ]] || die 'self-authored merge commit requires mechanical proof'
+                    git -C "$repo_root" diff-tree --no-commit-id --no-renames --name-only -r -z "$commit" \
+                        >"$work_dir/commit-paths" || die 'commit paths unreadable'
+                    jq -Rs 'split("\u0000") | map(select(length > 0)) | unique' \
+                        <"$work_dir/commit-paths" >"$work_dir/commit-paths.json"
+                    jq -e --slurpfile allowed "$work_dir/paths.json" \
+                        '(. - $allowed[0]) == []' "$work_dir/commit-paths.json" >/dev/null ||
+                        die 'self-authored path outside declared write set; redisplay and reconfirm'
+                    jq -se --arg sha "$commit" --slurpfile paths "$work_dir/commit-paths.json" \
+                      'any(.[]; .tool == "worktree-commit" and .commit == $sha and
+                        (.paths_touched | sort | unique) == $paths[0])' "$touched" >/dev/null ||
+                        die 'self-authored paths-touched evidence missing; redisplay and reconfirm'
+                done <"$work_dir/commits"
                 ;;
             retarget)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
@@ -694,6 +821,26 @@ jq -n --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" \
 output=$repo_root/.agent/pr-to-green-auth.json
 if [[ -e $output && ( ! -f $output || -L $output || ! -O $output ) ]]; then
     die 'authorization output must be an owned regular file, not a symlink'
+fi
+if [[ -n $receipt ]]; then
+    if [[ -f $receipt ]]; then
+        cp -- "$receipt" "$work_dir/receipt.json"
+    else
+        jq -n --arg run "$run_id" --arg source "$([[ $fast_mode == 1 ]] && printf predicate || printf interactive)" \
+          --slurpfile predicate "$work_dir/predicate.json" \
+          '{runId:$run,source:$source,predicate:$predicate[0],advances:[]}' >"$work_dir/receipt.json"
+    fi
+    [[ -f $work_dir/reconcile.json ]] || printf '{"perPr":[]}' >"$work_dir/reconcile.json"
+    jq --slurpfile reconciliation "$work_dir/reconcile.json" --slurpfile auth "$work_dir/authorization.json" \
+      --slurpfile snapshot "$confirmed_queue_file" --slurpfile queue "$work_dir/queue.json" \
+      '.advances += [$reconciliation[0].perPr[] | select(.verdict != "unchanged") |
+        {pr,kind:.verdict,from:.confirmedHeadSha,to:.liveHeadSha,base:.liveBase}] | .authorization=$auth[0] |
+       .snapshot=($snapshot[0] | .queue=($queue[0] | map({pr,state,headSha:.sha,base,diffFingerprint})))' \
+      "$work_dir/receipt.json" >"$work_dir/new-receipt.json" || die 'could not record authorization receipt'
+    output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-receipt.XXXXXX")
+    cp -- "$work_dir/new-receipt.json" "$output_tmp"
+    mv -f -- "$output_tmp" "$receipt"
+    output_tmp=''
 fi
 output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-auth.XXXXXX") ||
     die 'could not create authorization output'
