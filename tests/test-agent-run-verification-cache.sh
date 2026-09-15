@@ -32,6 +32,7 @@ make_repo() {
         'exit "${RESULT:-0}"' > "$dir/tools/run"
     chmod +x "$dir/tools/run"
     printf 'AGENT_CMD_TEST=tools/run\n' > "$dir/.agent/config.env"
+    printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$dir/.agent/config.env"
     printf '.agent/*\n!.agent/config.env\n' > "$dir/.gitignore"
     printf 'base\n' > "$dir/tracked.txt"
     git -C "$dir" add -- .agent/config.env .gitignore tools/run tracked.txt
@@ -94,9 +95,9 @@ assert_eq '1' "$rc" 'a failing command returns its failure status'
 assert_contains "$out" 'FAIL(rc=1)' 'a failing command reports failure'
 assert_eq '6' "$(count "$counter")" 'the failing command executes'
 
-out=$(run_test)
-assert_contains "$out" 'PASS: tools/run' 'a run after failure is not served by a stale cache entry'
-assert_eq '7' "$(count "$counter")" 'a failing run is never cached'
+out=$(cd "$repo" && COUNT_FILE="$counter" "$real_run_sh" --force --cmd test 2>&1)
+assert_contains "$out" 'PASS: tools/run' 'an explicit fresh run after failure executes'
+assert_eq '7' "$(count "$counter")" 'fresh execution bypasses prior failure evidence'
 
 out=$(cd "$repo" && COUNT_FILE="$counter" \
     "$real_run_sh" --force --cmd test 2>&1)
@@ -111,6 +112,7 @@ assert_eq '8' "$(count "$counter")" '--force executes the command'
 # queued link too.
 force_chain_repo=$(make_repo)
 printf 'AGENT_CMD_LINT=true\nAGENT_CMD_TEST=tools/run\n' > "$force_chain_repo/.agent/config.env"
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$force_chain_repo/.agent/config.env"
 git -C "$force_chain_repo" add -- .agent/config.env
 git -C "$force_chain_repo" commit -qm 'declare lint alongside test'
 force_chain_counter="$tmp/force-chain-count"
@@ -183,6 +185,7 @@ assert_not_contains "$build_cache" 'cmd=build ' 'a build command is never record
 focus_repo=$(make_repo)
 printf 'AGENT_CMD_TEST=tools/run\nAGENT_CMD_TEST_FOCUS=tools/run %%s\n' \
     > "$focus_repo/.agent/config.env"
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$focus_repo/.agent/config.env"
 git -C "$focus_repo" add -- .agent/config.env
 git -C "$focus_repo" commit -qm 'declare focused test command'
 focus_counter="$tmp/focus-count"
@@ -479,5 +482,114 @@ assert_contains "$env_output" 'baseline-excluded test=env-test' \
     'sanitized baseline state still permits an identical failure exclusion'
 assert_not_contains "$env_output" 'FAIL(rc=2)' \
     'head-root runtime state is absent from the baseline child'
+
+# Explicit local verification reuses deterministic failures and durable handles.
+local_repo=$(make_repo)
+local_count=$tmp/local-count
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$local_repo/.agent/config.env"
+printf '\nexit 7\n' > "$local_repo/result"
+printf '%s\n' '#!/bin/sh' 'echo run >> "$COUNT_FILE"' '. ./result' > "$local_repo/tools/run"
+local_run() { COUNT_FILE="$local_count" "$real_run_sh" --dir "$local_repo" --cmd test "$@" 2>&1; }
+first=$(local_run); first_rc=$?
+second=$(local_run); second_rc=$?
+assert_eq '7' "$first_rc" 'local failure returns original status'
+assert_eq '7' "$second_rc" 'reused local failure preserves status'
+assert_contains "$second" 'verification reused: failure' 'unchanged local failure is reused'
+assert_contains "$second" 'inspect:' 'reused failure gives a concrete inspection action'
+assert_eq '1' "$(wc -l < "$local_count" | tr -d ' ')" 'local failure executes only once'
+first_log=$(printf '%s\n' "$first" | sed -n 's/^full log: //p')
+assert_contains "$second" "$first_log" 'failure reuse points at original log'
+printf 'exit 0\n' > "$local_repo/result"
+out=$(local_run)
+assert_contains "$out" 'PASS:' 'changed relevant untracked content executes afresh'
+out=$(local_run)
+assert_contains "$out" 'reused evidence' 'success reuse is explicitly not fresh verification'
+success_log=$(printf '%s\n' "$out" | sed -n 's/^agent-run: verification current: //p')
+assert_eq yes "$([[ -f $success_log ]] && printf yes)" 'existing success line still contains exactly the log path'
+
+# Commands without a local declaration always execute, including successes.
+printf 'AGENT_CMD_TEST=tools/run\n' > "$local_repo/.agent/config.env"
+out=$(local_run)
+out=$(local_run)
+assert_contains "$out" 'verification bypass: not-declared-local' 'external/default state bypasses reuse'
+assert_contains "$out" 'PASS:' 'default command is freshly executed'
+
+# Scoped content plus an explicit ignored dependency receipt.
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_INPUTS=tools,result,.agent/dependencies\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$local_repo/.agent/config.env"
+printf 'version 1\n' > "$local_repo/.agent/dependencies"
+out=$(local_run)
+printf 'unrelated\n' > "$local_repo/notes.txt"
+out=$(local_run)
+assert_contains "$out" 'verification current:' 'unrelated content does not invalidate scoped evidence'
+printf 'version 2\n' > "$local_repo/.agent/dependencies"
+out=$(local_run)
+assert_contains "$out" 'PASS:' 'ignored dependency freshness receipt invalidates evidence'
+printf 'AGENT_VERIFY_TEST_TOOLCHAIN=missing-issue731-tool\nAGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\n' > "$local_repo/.agent/config.env"
+out=$(local_run)
+assert_contains "$out" 'verification miss: inputs-unavailable' 'unavailable toolchain gives a named miss'
+
+# A held lease returns its durable handle; an abandoned running record never passes.
+printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' > "$local_repo/.agent/config.env"
+printf '%s\n' '#!/bin/sh' 'echo run >> "$COUNT_FILE"' 'sleep 2' 'exit 0' > "$local_repo/tools/run"
+local_run > "$tmp/owner-output" & owner=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    [[ -d $local_repo/.agent/verification-records ]] &&
+        find "$local_repo/.agent/verification-records" -name running -print | grep -q . && break
+    sleep 0.05
+done
+out=$(local_run); local_rc=$?
+assert_eq '75' "$local_rc" 'running identical command returns non-success status'
+assert_contains "$out" 'verification running: handle=' 'running identical command returns existing handle'
+running_handle=$(printf '%s\n' "$out" | sed -n 's/^agent-run: verification running: handle=//p')
+wait "$owner"
+out=$(local_run)
+assert_contains "$out" 'verification current:' 'a completed concurrent owner is reusable'
+record=$running_handle/result
+if [[ -f $record ]]; then
+    rm -- "$record"
+    printf 'interrupted\n' > "${record%/*}/running"
+    out=$(local_run); local_rc=$?
+    assert_eq '75' "$local_rc" 'unknown result does not blindly restart'
+    assert_contains "$out" 'verification unknown:' 'unknown record has a named outcome'
+    out=$(local_run --force)
+    assert_contains "$out" 'PASS:' 'explicit fresh run recovers unknown evidence'
+else
+    assert_eq 'durable result' '' 'completed owner persisted its result'
+fi
+
+# A damaged completed log is a named miss; a signal result remains unknown.
+if [[ -f $record ]]; then
+    completed_log=$(sed -n '2p' "$record")
+    printf 'damaged\n' >> "$completed_log"
+    out=$(local_run)
+    assert_contains "$out" 'verification miss: invalid-evidence' 'corrupt log cannot reuse success'
+    assert_contains "$out" 'PASS:' 'invalid completed evidence triggers fresh execution'
+fi
+printf '%s\n' '#!/bin/sh' 'exit 130' > "$local_repo/tools/run"
+out=$(local_run); local_rc=$?
+assert_eq '130' "$local_rc" 'signal-like outcome preserves its status'
+out=$(local_run); local_rc=$?
+assert_eq '75' "$local_rc" 'signal-like outcome is not blindly restarted'
+assert_contains "$out" 'verification unknown:' 'interrupted outcome retains its handle'
+
+# Toolchain bytes outside the checkout participate, even when the path is stable.
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/issue731-tool"
+chmod +x "$tmp/bin/issue731-tool"
+printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash,issue731-tool\n' > "$local_repo/.agent/config.env"
+printf '#!/bin/sh\nexit 0\n' > "$local_repo/tools/run"
+out=$(PATH="$tmp/bin:$PATH" local_run)
+out=$(PATH="$tmp/bin:$PATH" local_run)
+assert_contains "$out" 'verification current:' 'declared external executable can supply freshness'
+printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/issue731-tool"
+out=$(PATH="$tmp/bin:$PATH" local_run)
+assert_contains "$out" 'PASS:' 'same-path toolchain byte changes invalidate reuse'
+
+printf '# fixture\n' > "$local_repo/compose.yaml"
+printf '%s\n' '#!/bin/sh' 'echo "port is already allocated"' 'exit 1' > "$local_repo/tools/run"
+out=$(PATH="$tmp/bin:$PATH" local_run)
+out=$(PATH="$tmp/bin:$PATH" local_run)
+assert_contains "$out" 'running:' 'permitted Compose transient failure executes again'
+assert_contains "$out" 'environment-retry-eligible' 'transient classification survives reuse guard'
 
 finish

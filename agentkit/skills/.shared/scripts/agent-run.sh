@@ -25,7 +25,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  --repo-root PATH is a silent alias, accepted for
                  compatibility with the kit's other checkout-path helpers.
   --label NAME   Label used in the log file name (default: the command's basename).
-  --force        Execute a named command even when green evidence is current.
+  --force        Require fresh execution, including recovery of unknown evidence.
+                 An identical in-flight local command still returns its handle.
   --fix          With --cmd [COMPONENT-]format, run its declared *_FORMAT_FIX
                  pair. Applies to that link only; never falls back to a runner.
   --only NAME[,NAME...]  For --cmd test, use the repository's
@@ -65,11 +66,27 @@ Repository declarations (<git-toplevel>/.agent/config.env):
                       is exec'd directly, never through a shell. A path-shaped
                       first token must resolve inside the repository.
   AGENT_REPO_RUNNER   Runner to delegate to, as a repository-relative path.
+  AGENT_VERIFY_<NAME>_MODE  local opts read-only deterministic verification into
+                      reuse; external (the default) always executes. local is
+                      an assertion that outcomes do not depend on credentials,
+                      ambient environment, network, clock, or concurrent services.
+  AGENT_VERIFY_<NAME>_INPUTS  Comma-separated repository paths, default '.'.
+                      Tracked and non-ignored untracked files are fingerprinted.
+                      Explicit files also include ignored dependency receipts;
+                      ignored directory contents require individual receipts.
+                      Include every dependency/config freshness input; bypass
+                      reuse when that complete local contract cannot be made.
+  AGENT_VERIFY_<NAME>_TOOLCHAIN  Required comma-separated executable names,
+                      including interpreters and transitive tools. Resolved paths
+                      and executable bytes are fingerprinted. No secret values
+                      or ambient environment dumps enter the fingerprint.
 
 Output:
   PASS: <cmd> (N lines suppressed -> LOG)
   BASELINE-EXCLUDED: <test/base/log> (exit 0, not green evidence)
   FAIL(rc=N): <cmd>  + context notes + up to 20 error lines + 'full log: LOG'
+  verification current/reused: prior evidence, never a fresh PASS
+  verification running/unknown: durable handle and exit 75; inspect before retry
 
 Examples:
   agent-run.sh --cmd test
@@ -104,6 +121,7 @@ build_chain_argv() {
 
 finish() {
     local rc=$1
+    [[ -z ${verification_fd:-} ]] || exec {verification_fd}>&-
     if ((rc == 0)) && ((${#remaining_queue[@]})); then
         build_chain_argv
         exec "$0" "${chain_argv[@]}"
@@ -705,6 +723,9 @@ declare -A resolved_config_values=() resolved_config_present=()
 declare -a resolved_command_argv=() resolved_focus_argv=()
 resolved_command_key=''
 command_kind=generic
+verification_mode=external verification_tools=''
+verification_paths=(.)
+verification_handle='' verification_fd=''
 
 relevant_config_add() {
     local key=$1 existing
@@ -870,9 +891,13 @@ resolve_named_command() {
     resolved_command_key=$key
     relevant_config_add "$key"
     local -a resolve_keys=("$key" "AGENT_RUNDIR_$upper" "$kind_key")
+    resolve_keys+=("AGENT_VERIFY_${upper}_MODE" "AGENT_VERIFY_${upper}_INPUTS" "AGENT_VERIFY_${upper}_TOOLCHAIN")
     ((focus_requested)) && resolve_keys+=(AGENT_CMD_TEST_FOCUS)
     [[ -z ${AGENT_REPO_RUNNER:-} ]] && resolve_keys+=(AGENT_REPO_RUNNER)
     repo_config_resolve_keys "${resolve_keys[@]}" || die "cannot resolve repository declarations for $key"
+    verification_mode=${resolved_config_values[AGENT_VERIFY_${upper}_MODE]:-external}
+    verification_tools=${resolved_config_values[AGENT_VERIFY_${upper}_TOOLCHAIN]:-}
+    IFS=, read -ra verification_paths <<< "${resolved_config_values[AGENT_VERIFY_${upper}_INPUTS]:-.}"
     declared=${resolved_config_values[$key]:-}
     if [[ -n ${resolved_config_present[$key]+yes} && -n $declared ]]; then
         # The runner was parsed in the same resolver pass to close the
@@ -1384,46 +1409,49 @@ report_failure() {
 # green evidence. State-producing commands must run again when their ignored
 # outputs disappear, even when the checkout bytes are unchanged.
 verification_cache_eligible() {
+    [[ $cmd_declared == yes && $verification_mode == local && -n $verification_tools && -z $baseline_ref ]] || return 1
     case ${cmd_name:-} in
-        test|lint|typecheck|coverage|verify|check) return 0 ;;
+        test|lint|typecheck|coverage|verify|check|*-test|*-lint|*-typecheck|*-check) return 0 ;;
         *) return 1 ;;
     esac
 }
 
 hash_untracked_files() {
-    local paths path file digest link
+    local paths path file digest resolved
     paths=$(mktemp "${TMPDIR:-/tmp}/agent-run-untracked.XXXXXX") || return 1
-    if ! git -C "$git_top" ls-files --others --exclude-standard -z >"$paths"; then
+    if ! git -C "$git_top" ls-files --cached --others --exclude-standard -z -- "${verification_paths[@]}" >"$paths"; then
         rm -f -- "$paths"
         return 1
     fi
 
+    # Explicit ignored files are dependency/config freshness receipts. Never
+    # follow repository symlinks into an undeclared external input tree.
+    for path in "${verification_paths[@]}"; do
+        [[ -d $git_top/$path ]] || printf '%s\0' "$path" >> "$paths"
+    done
     exec 3<"$paths" || {
         rm -f -- "$paths"
         return 1
     }
     while IFS= read -r -d '' path <&3; do
         file=$git_top/$path
-        if [[ ! -e $file && ! -L $file ]]; then
+        resolved=$(realpath -m -- "$file") || return 1
+        if [[ $resolved != "$git_top/"* || -L $file || (-e $file && ! -f $file) ]]; then
             exec 3<&-
             rm -f -- "$paths"
             return 1
         fi
-        printf 'untracked\0path\0%s\0' "$path"
-        if [[ -L $file ]]; then
-            if ! link=$(readlink -- "$file"); then
-                exec 3<&-
-                rm -f -- "$paths"
-                return 1
-            fi
-            printf 'symlink\0%s\0' "$link"
+        printf 'input\0path\0%s\0' "$path"
+        if [[ ! -e $file ]]; then
+            printf 'missing\0'
         elif digest=$(sha256sum -- "$file" | awk '{print $1}'); then
             if [[ ! $digest =~ ^[[:xdigit:]]{64}$ ]]; then
                 exec 3<&-
                 rm -f -- "$paths"
                 return 1
             fi
-            printf 'file\0%s\0' "$digest"
+            printf 'file\0%s\0executable\0' "$digest"
+            if [[ -x $file ]]; then printf 'yes\0'; else printf 'no\0'; fi
         else
             exec 3<&-
             rm -f -- "$paths"
@@ -1434,13 +1462,32 @@ hash_untracked_files() {
     rm -f -- "$paths"
 }
 
-# Green evidence is keyed to the complete checkout state a caller can observe:
-# git status (untracked paths) + diff HEAD (tracked content) + a NUL-delimited
-# manifest of untracked file bytes, so same-path edits and unusual filenames
-# can't reuse stale evidence. The resolved argv is folded in too -- .agent/
-# config.env is gitignored, so only the resolved argv sees a changed
-# AGENT_CMD_<NAME> value; without it, editing AGENT_CMD_TEST from `true` to
-# `false` left the tree hash unchanged and served stale green evidence (#287).
+# Hash only declared non-secret inputs, never arbitrary environment values.
+hash_verification_toolchain() {
+    local tool executable key
+    local -a tool_names=()
+    IFS=, read -ra tool_names <<< "$verification_tools"
+    for key in "${relevant_config_keys[@]}"; do
+        printf 'config\0%s\0%s\0' "$key" "${resolved_config_values[$key]:-}"
+    done
+    tool_names+=("${cmd[0]}" "$BASH" "$0")
+    for tool in "${tool_names[@]}"; do
+        if [[ $tool == */* ]]; then
+            executable=$tool
+            [[ $executable == /* ]] || executable=$work_dir/$executable
+        else
+            executable=$(cd -- "$work_dir" && type -P -- "$tool") || return 1
+        fi
+        [[ $executable == /* ]] || executable=$work_dir/$executable
+        executable=$(realpath -e -- "$executable") || return 1
+        [[ -f $executable && -x $executable ]] || return 1
+        printf 'tool\0%s\0' "$executable"
+        sha256sum -- "$executable" || return 1
+    done
+}
+
+# HEAD is conservative; scoped bytes, ignored receipts, command/config, cwd,
+# and declared executable bytes also participate. HEAD alone is insufficient.
 compute_tree_hash() {
     local hash_input digest
     [[ -n ${git_top:-} ]] || return 1
@@ -1451,11 +1498,12 @@ compute_tree_hash() {
         ! printf 'command\0%s\0kind\0%s\0focus\0%s\0' "$cmd_name" "$command_kind" "$focus_opt" >>"$hash_input" ||
         ! printf 'resolved\0' >>"$hash_input" ||
         ! printf '%s\0' "${cmd[@]}" >>"$hash_input" ||
-        ! git -C "$git_top" diff HEAD >>"$hash_input" ||
+        ! git -C "$git_top" diff HEAD -- "${verification_paths[@]}" >>"$hash_input" ||
         ! printf '\0' >>"$hash_input" ||
-        ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all >>"$hash_input" ||
+        ! git -C "$git_top" status --porcelain=v2 -z --untracked-files=all -- "${verification_paths[@]}" >>"$hash_input" ||
         ! printf '\0work-dir\0%s\0' "$work_dir" >>"$hash_input" ||
-        ! hash_untracked_files >>"$hash_input"; then
+        ! hash_untracked_files >>"$hash_input" ||
+        ! hash_verification_toolchain >>"$hash_input"; then
         rm -f -- "$hash_input"
         return 1
     fi
@@ -1473,36 +1521,96 @@ verification_cache_path() {
     printf '%s/.agent/verification-cache' "$git_top"
 }
 
-# A cache line is evidence only while its referenced log still has the exact
-# completion marker. This prevents an interrupted or hand-written line from
-# becoming a green result.
+# The legacy green index remains an output interface. Reuse requires the new
+# durable record plus the exact log digest and final completion marker.
 verification_cache_hit() {
-    local tree_hash=$1 cache line log
-    ((force_cmd)) && return 1
-    verification_cache_eligible || return 1
-    cache=$(verification_cache_path 2>/dev/null || true)
-    [[ -n $cache && -r $cache ]] || return 1
-    while IFS= read -r line; do
-        [[ $line == "$tree_hash cmd=$cmd_name log="* ]] || continue
-        [[ $line == *" focus="* ]] || continue
-        log=${line#* log=}
-        log=${log% at=*}
-        [[ -f $log ]] || continue
-        grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || continue
-        printf 'agent-run: verification current: %s\n' "$log"
+    local result=$verification_handle/result prior_rc log digest actual
+    ((force_cmd == 0)) || return 1
+    [[ -f $result && ! -L $result && -O $result ]] || return 1
+    {
+        IFS= read -r prior_rc && IFS= read -r log && IFS= read -r digest
+    } < "$result" || return 1
+    [[ $prior_rc =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    ((prior_rc < 128)) || return 1
+    [[ $log == "$git_top/.agent/logs/"* && -f $log && ! -L $log && -O $log ]] || return 1
+    actual=$(sha256sum -- "$log" | awk '{print $1}') || return 1
+    [[ $digest =~ ^[[:xdigit:]]{64}$ && $digest == "$actual" ]] || return 1
+    [[ $(tail -n 1 -- "$log") =~ ^===\ agent-run\ exited\ rc=$prior_rc\ after\ [0-9]+s$ ]] || return 1
+    if ((prior_rc == 0)); then
+        printf 'agent-run: verification current: %s\n  reused evidence; not fresh\n' "$log"
+    else
+        printf 'agent-run: verification reused: failure rc=%s\n' "$prior_rc"
+        printf '  inspect: tail -n 40 -- %q\n' "$log"
+        report_failure "$prior_rc" "$log"
+    fi
+    finish "$prior_rc"
+}
+
+# A nonblocking lease is inherited by the child: killing only the wrapper must
+# not release the lease while its command is still executing. No PID guessing,
+# sleeps, or stale-lock deletion. An abandoned running record needs --force.
+claim_verification() {
+    local root=$git_top/.agent/verification-records
+    command -v flock >/dev/null || { printf 'agent-run: verification bypass: lock-unavailable\n'; return 1; }
+    [[ ! -L $git_top/.agent ]] || return 1
+    assert_private_dir "$root"
+    verification_handle=$root/$tree_hash
+    assert_private_dir "$verification_handle"
+    [[ ! -L $verification_handle/lock ]] || die 'verification lock is a symlink'
+    [[ ! -L $verification_handle/running ]] || die 'verification running record is a symlink'
+    exec {verification_fd}>"$verification_handle/lock"
+    if ! flock -n "$verification_fd"; then
+        printf 'agent-run: verification running: handle=%s\n' "$verification_handle"
+        finish 75
+    fi
+    if [[ -e $verification_handle/running ]] && ((force_cmd == 0)); then
+        printf 'agent-run: verification unknown: handle=%s; inspect its log, then use --force to recover\n' "$verification_handle"
+        finish 75
+    fi
+    verification_cache_hit || true
+    if [[ -e $verification_handle/result ]] && ((force_cmd == 0)); then
+        printf 'agent-run: verification miss: invalid-evidence handle=%s\n' "$verification_handle"
+    else
+        printf 'agent-run: verification miss: %s\n' "$([[ $force_cmd == 1 ]] && printf fresh-required || printf no-record)"
+    fi
+    rm -f -- "$verification_handle/result"
+    printf 'claimed pid=%s\n' "$$" > "$verification_handle/running"
+    return 0
+}
+
+complete_verification() {
+    [[ -n $verification_handle && -n $verification_fd ]] || return 0
+    ((rc < 128)) || return 0
+    # Baseline exclusions, signals, and permitted transient retries never enter
+    # the reusable result store, even when their public return code is zero.
+    if [[ $baseline_excluded == yes ]] || ((load_flake_retry)) ||
+        compose_dependency_start_collision "$log_file" || probe_timeout_load_flake "$log_file" ||
+        [[ $(compute_tree_hash 2>/dev/null || true) != "$tree_hash" ]]; then
+        rm -f -- "$verification_handle/running"
+        printf 'agent-run: verification miss: nonreusable-outcome-or-changed-inputs\n'
         return 0
-    done < "$cache"
-    return 1
+    fi
+    local temp digest
+    digest=$(sha256sum -- "$log_file" | awk '{print $1}') || return 0
+    temp=$(mktemp "$verification_handle/.result.XXXXXX") || return 0
+    printf '%s\n%s\n%s\n' "$rc" "$log_file" "$digest" > "$temp"
+    mv -f -- "$temp" "$verification_handle/result"
+    rm -f -- "$verification_handle/running"
+    ((rc != 0)) || record_verification "$tree_hash" "$log_file"
+    return 0
 }
 
 record_verification() {
-    local tree_hash=$1 log=$2 cache temp
+    local tree_hash=$1 log=$2 cache temp index_fd
     [[ -n ${git_top:-} ]] || return 0
     verification_cache_eligible || return 0
     grep -qE '^=== agent-run exited rc=0([[:space:]]|$)' "$log" || return 0
     cache=$(verification_cache_path 2>/dev/null || true)
     [[ -n $cache && ! -L $cache ]] || return 0
     mkdir -p -- "${cache%/*}" 2>/dev/null || return 0
+    [[ ! -L $cache.lock ]] || return 0
+    exec {index_fd}>"$cache.lock"
+    flock -w 5 "$index_fd" || { exec {index_fd}>&-; return 0; }
     temp=$cache.$$
     {
         [[ ! -e $cache ]] || cat -- "$cache"
@@ -1510,10 +1618,12 @@ record_verification() {
             "$tree_hash" "$cmd_name" "$log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$focus_opt"
     } > "$temp" 2>/dev/null || {
         rm -f -- "$temp" 2>/dev/null || true
+        exec {index_fd}>&-
         return 0
     }
     chmod 600 -- "$temp" 2>/dev/null || true
     mv -f -- "$temp" "$cache" 2>/dev/null || rm -f -- "$temp" 2>/dev/null || true
+    exec {index_fd}>&-
 }
 
 # --------------------------------------------------------------------- main ---
@@ -1546,9 +1656,13 @@ configure_compose_project
 tree_hash=''
 if verification_cache_eligible; then
     tree_hash=$(compute_tree_hash 2>/dev/null || true)
-    if [[ -n $tree_hash ]] && verification_cache_hit "$tree_hash"; then
-        finish 0
+    if [[ -n $tree_hash ]]; then
+        claim_verification || { tree_hash=''; verification_handle=''; }
+    else
+        printf 'agent-run: verification miss: inputs-unavailable\n'
     fi
+elif [[ -n $cmd_name ]]; then
+    printf 'agent-run: verification bypass: not-declared-local\n'
 fi
 
 select_caches
@@ -1594,6 +1708,7 @@ if [[ $cmd_declared == no ]] && resolve_runner; then
 fi
 
 log_file=$(choose_log)
+[[ -z $verification_handle ]] || printf '%s\n' "$log_file" > "$verification_handle/running"
 register_suite_run
 trap cleanup_suite_run EXIT
 
@@ -1667,6 +1782,7 @@ if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
     printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
 fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
+complete_verification
 
 if ((rc == 0)); then
     if [[ $baseline_excluded == yes ]]; then
@@ -1676,7 +1792,6 @@ if ((rc == 0)); then
             printf 'load-flake: probe timeout under concurrent-suites=%s; retried 1/1\n' \
                 "$concurrent_suites"
         fi
-        [[ -n $tree_hash ]] && record_verification "$tree_hash" "$log_file"
         printf 'PASS: %s (%s lines suppressed -> %s)\n' "$cmd_str" "$lines" "$log_file"
     fi
 else

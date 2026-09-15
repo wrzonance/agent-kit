@@ -28,7 +28,7 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [review-remote-pr]="459:7974:450"
-    [parallel-issues]="946:18030:900"
+    [parallel-issues]="946:18047:900"
 )
 
 readonly MAX_BODY_LINES=500

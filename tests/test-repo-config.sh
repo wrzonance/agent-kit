@@ -740,7 +740,17 @@ assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds
 # reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
 # model_family itself recognizes but adversarial-run.sh cannot launch (+4
 # lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1123 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1123 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1134 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1134 lines (issue #731 verification declarations)'
+
+verify_repo=$(mktemp -d "$tmp/verification.XXXXXX")
+mkdir -p "$verify_repo/.agent"
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_INPUTS=src,dependency.lock\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,python3\n' > "$verify_repo/.agent/config.env"
+out=$("$rc_sh" --repo-root "$verify_repo" --list 2>&1)
+assert_contains "$out" 'AGENT_VERIFY_TEST_MODE=local' 'local reuse policy is accepted'
+assert_contains "$out" 'AGENT_VERIFY_TEST_INPUTS=src,dependency.lock' 'verification input paths are accepted'
+assert_contains "$out" 'AGENT_VERIFY_TEST_TOOLCHAIN=sh,python3' 'verification toolchain names are accepted'
+printf 'AGENT_VERIFY_TEST_MODE=always\nAGENT_VERIFY_TEST_INPUTS=../outside\nAGENT_VERIFY_TEST_TOOLCHAIN=sh;echo\n' > "$verify_repo/.agent/config.env"
+assert_rc 1 'invalid reuse declarations are rejected' -- "$rc_sh" --repo-root "$verify_repo" --validate
 
 finish
