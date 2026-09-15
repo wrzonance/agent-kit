@@ -515,6 +515,7 @@ run_publish --pr 16 --repo owner/repo --comments "$not_spent_comments" \
     --skip-rationale 'comments/formatting only' --oracle 'diff --stat parity check' \
     --agent-identity 'Claude Opus 5' >/dev/null
 skip_body=$(rendered_body)
+assert_contains "$skip_body" 'Execution: skipped' 'a verified skip does not claim review execution'
 mv -- "$tmp/adversarial.result.json.hidden" "$tmp/adversarial.result.json"
 assert_contains "$skip_body" 'Verified-skip rationale: comments/formatting only' \
     'publish body records the verified-skip rationale when given'
@@ -1329,4 +1330,18 @@ assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/po
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'
+reset_not_spent
+jq -cn 'range(1;9) | {title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,
+    verdict:"open",rationale:"dispatch repair"}' >"$findings_file"
+out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 8 --p2 0 --agent-identity 'Codex')
+assert_eq 0 "$?" 'eight confirmed open findings can publish review execution'
+body=$(rendered_body)
+assert_contains "$body" 'Remediation: incomplete' 'publication does not claim remediation completion'
+assert_contains "$body" 'verdict=open' 'receipt preserves actionable findings'
+assert_contains "$body" 'dispatch repair' 'receipt names next repair action'
+assert_rc 0 'open receipt still consumes exactly one review' -- "$script" precheck \
+    --issue-comments "$not_spent_comments"
+
 finish

@@ -30,14 +30,16 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1123:11566:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1284:16983:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1013:12712:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
     # #717: validated attempt provenance in receipts and remote ledger entries.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="1002:11415:800"
+    [skills/review-remote-pr/scripts/post-receipt.sh]="992:11317:800"
+    # #727: independently validated remediation and repair resume.
+    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10180:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -46,9 +48,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #717: durable attempt library and supported-boundary wiring, 1624599 bytes.
+# #727: confirmed open findings, validated repairs and independent readiness.
 # Exact measured tree / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=406149
+readonly MAX_TREE_TOKENS=408995
 
 violations=0
 checked=0

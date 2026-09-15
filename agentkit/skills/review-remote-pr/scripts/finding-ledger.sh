@@ -16,11 +16,22 @@ SEVERITY=''
 SHA=''
 RATIONALE=''
 DETAIL_KIND=''
+EVIDENCE_FILE=''
+REPO_ROOT=''
+HEAD=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME add --title TITLE --severity P1|P2 --verdict fixed --sha SHA
        $PROGNAME add --title TITLE --severity P1|P2 --verdict declined --rationale RATIONALE
+       $PROGNAME add --title TITLE --severity P1|P2 --verdict open --rationale NEXT_REPAIR
+       $PROGNAME status|validate --file FILE [--repo-root DIR --head SHA]
+
+Terminal evidence: --evidence FILE --repo-root DIR --head SHA. Evidence JSON
+binds finding (title) to decision rejected|accepted-risk and rationale, or to
+repairSha, head, path, command, status=passed, log and logSha256. Legacy adds
+remain readable but have unknown remediation semantics. Repeated titles update
+one finding, retaining disposition history; open findings require terminal evidence.
 
 Appends one validated JSON record to \$RUN_DIR/findings.ndjson. RUN_DIR must
 be the private run directory containing a completed adversarial.result.json.
@@ -51,6 +62,9 @@ parse_add_args() {
     shift
     while (($#)); do
         case $1 in
+            --evidence) require_value "$1" "${2-}"; EVIDENCE_FILE=$2; shift 2 ;;
+            --repo-root) require_value "$1" "${2-}"; REPO_ROOT=$2; shift 2 ;;
+            --head) require_value "$1" "${2-}"; HEAD=$2; shift 2 ;;
             --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --title)
                 require_value "$1" "${2-}"
@@ -190,7 +204,7 @@ validate_completed_review() {
 }
 
 validate_existing_ledger() {
-    local ledger=$RUN_DIR/findings.ndjson
+    local ledger=${1:-$RUN_DIR/findings.ndjson}
     [[ ! -L $ledger ]] || die_evidence "findings ledger is a symlink: $ledger"
     [[ ! -e $ledger ]] && return 0
     [[ -f $ledger && -O $ledger && -r $ledger ]] ||
@@ -200,19 +214,31 @@ validate_existing_ledger() {
         --arg sha_re "$SHA_RE" '
         all(.[];
           type == "object" and
-          ((keys - ["title", "severity", "verdict", "sha", "rationale"]) | length == 0) and
+          ((keys - ["title", "severity", "verdict", "sha", "rationale", "schemaVersion", "evidence", "history"]) | length == 0) and
           (.severity == "P1" or .severity == "P2") and
-          (.title | type == "string") and
+          (.title | type == "string" and length > 0) and
           (.title | test("[\\r\\n]") | not) and
           (.title | contains($receipt) | not) and
           (.title | contains($doc) | not) and
           ((.verdict == "fixed" and has("sha") and (has("rationale") | not) and
               (.sha | type == "string" and test($sha_re))) or
-           (.verdict == "declined" and has("rationale") and (has("sha") | not) and
+           ((.verdict == "declined" or (.verdict == "open" and .schemaVersion == 2)) and has("rationale") and (has("sha") | not) and
               (.rationale | type == "string" and length > 0) and
               (.rationale | test("[\\r\\n]") | not) and
               (.rationale | contains($receipt) | not) and
-              (.rationale | contains($doc) | not)))
+              (.rationale | contains($doc) | not))) and
+          ((has("schemaVersion") | not) or .schemaVersion == 2) and
+          ((has("history") | not) or (.history | type == "array")) and
+          (if .schemaVersion == 2 and .verdict != "open" then
+             . as $f | (.evidence | type == "object") and .evidence.finding == .title and
+             (if .verdict == "fixed" then
+                .evidence.repairSha == .sha and .evidence.status == "passed" and
+                all([.evidence.head,.evidence.path,.evidence.command,.evidence.log,.evidence.logSha256][];
+                    type == "string" and length > 0)
+              else (.evidence.decision == "rejected" or
+                    (.evidence.decision == "accepted-risk" and (.evidence.authorization | type == "string" and length > 0))) and
+                   .evidence.rationale == $f.rationale end)
+           else true end)
         )
     ' "$ledger" >/dev/null 2>&1 ||
         die_evidence "findings ledger is invalid: $ledger"
@@ -222,8 +248,8 @@ validate_add_args() {
     validate_run_dir
     validate_completed_review
     [[ -n $TITLE ]] || die_usage '--title is required'
-    [[ $VERDICT == fixed || $VERDICT == declined ]] ||
-        die_usage '--verdict must be fixed or declined'
+    [[ $VERDICT == fixed || $VERDICT == declined || $VERDICT == open ]] ||
+        die_usage '--verdict must be fixed, declined, or open'
     # The receipt reports separate P1 and P2 counts. Without a severity on each
     # record those counts are unverifiable caller assertions: one finding equally
     # supports P1=1,P2=0 or P1=0,P2=1.
@@ -236,7 +262,7 @@ validate_add_args() {
         fixed:sha)
             [[ $SHA =~ $SHA_RE ]] || die_usage '--sha (SHA) must be hexadecimal (or comma-separated hexadecimal)'
             ;;
-        declined:rationale)
+        declined:rationale|open:rationale)
             reject_unsafe_text '--rationale' "$RATIONALE"
             ;;
         fixed:rationale)
@@ -245,6 +271,7 @@ validate_add_args() {
         declined:sha)
             die_usage 'declined findings require --rationale'
             ;;
+        open:sha) die_usage 'open findings require --rationale naming the next repair' ;;
     esac
 }
 
@@ -254,18 +281,96 @@ append_record() {
         entry=$(jq -cn --arg title "$TITLE" --arg sha "$SHA" --arg severity "$SEVERITY" \
             '{title:$title,severity:$severity,verdict:"fixed",sha:$sha}')
     else
-        entry=$(jq -cn --arg title "$TITLE" --arg rationale "$RATIONALE" --arg severity "$SEVERITY" \
-            '{title:$title,severity:$severity,verdict:"declined",rationale:$rationale}')
+        entry=$(jq -cn --arg title "$TITLE" --arg rationale "$RATIONALE" --arg severity "$SEVERITY" --arg verdict "$VERDICT" \
+            '{title:$title,severity:$severity,verdict:$verdict,rationale:$rationale}')
     fi
-    printf '%s\n' "$entry" >>"$ledger" ||
-        die_evidence "could not append to findings ledger: $ledger"
+    local prior='null' staged
+    if [[ -f $ledger ]]; then
+        prior=$(jq -cs --arg title "$TITLE" '[.[] | select(.title == $title)] | last // null' "$ledger")
+    fi
+    if [[ $VERDICT != open && -z $EVIDENCE_FILE ]] &&
+        jq -e '.schemaVersion == 2' <<<"$prior" >/dev/null; then
+        die_usage 'open findings require explicit terminal adjudication or repair evidence'
+    fi
+    if [[ $VERDICT == open ]]; then
+        entry=$(jq -c '.schemaVersion=2' <<<"$entry")
+    elif [[ -n $EVIDENCE_FILE ]]; then
+        [[ -f $EVIDENCE_FILE && ! -L $EVIDENCE_FILE && -O $EVIDENCE_FILE ]] || die_evidence 'invalid evidence file'
+        entry=$(jq -c --slurpfile evidence "$EVIDENCE_FILE" \
+            'if ($evidence|length)!=1 then error("one evidence object required") else .schemaVersion=2 | .evidence=$evidence[0] end' <<<"$entry") || die_evidence 'invalid evidence JSON'
+    fi
+    staged=$(mktemp "$RUN_DIR/findings.XXXXXXXX")
+    printf '%s\n' "$entry" >"$staged"
+    validate_existing_ledger "$staged"
+    validate_repairs "$staged" "$REPO_ROOT" "$HEAD"
+    if [[ -f $ledger ]]; then
+        jq -cs --argjson entry "$entry" '
+            map(select(.title == $entry.title)) as $old |
+            map(select(.title != $entry.title)) +
+            [$entry + (if ($old|length)==0 then {} else
+             {history:(($old[-1].history // []) + [($old[-1] | del(.history))])} end)] | .[]' "$ledger" >"$staged"
+    fi
+    mv -- "$staged" "$ledger" || die_evidence "could not update findings ledger: $ledger"
     chmod 600 -- "$ledger" || die_evidence "could not secure findings ledger: $ledger"
     printf 'added finding verdict=%s title=%s\n' "$VERDICT" "$TITLE"
+}
+
+# Verify repair evidence at every trust boundary, including publication and
+# readiness. A hexadecimal string alone never proves a repair was committed.
+validate_repairs() {
+    local file=$1 root=$2 head=$3 row sha tested path log digest actual command
+    while IFS= read -r row; do
+        [[ -n $root && -n $head ]] || die_evidence 'repair verification requires --repo-root and --head'
+        sha=$(jq -r .sha <<<"$row")
+        tested=$(jq -r .evidence.head <<<"$row")
+        path=$(jq -r .evidence.path <<<"$row")
+        log=$(jq -r .evidence.log <<<"$row")
+        digest=$(jq -r .evidence.logSha256 <<<"$row")
+        command=$(jq -r .evidence.command <<<"$row")
+        [[ $head =~ ^[0-9a-f]{40}$ && $sha =~ ^[0-9a-f]{40}$ && $tested =~ ^[0-9a-f]{40}$ && $digest =~ ^[0-9a-f]{64}$ ]] ||
+            die_evidence 'repair evidence requires full commit and log hashes'
+        if ! git -C "$root" merge-base --is-ancestor "$sha" "$tested" 2>/dev/null ||
+            ! git -C "$root" merge-base --is-ancestor "$tested" "$head" 2>/dev/null; then
+            die_evidence "repair or verification head is unreachable: $sha"
+        fi
+        [[ $path != /* && $path != -* && $path != *'..'* ]] || die_evidence 'repair path must be repository relative'
+        git -C "$root" diff-tree --root --no-commit-id --name-only -r "$sha" -- "$path" |
+            grep -Fxq -- "$path" || die_evidence "repair commit does not change finding path: $path"
+        git -C "$root" diff --quiet "$tested" "$head" -- "$path" ||
+            die_evidence "repair verification is stale for changed path: $path"
+        [[ -f $log && ! -L $log && -O $log ]] || die_evidence 'verification log is unavailable'
+        actual=$(sha256sum -- "$log"); actual=${actual%% *}
+        [[ $actual == "$digest" ]] || die_evidence 'verification log digest mismatch'
+        grep -Fxq -- "=== agent-run $command" "$log" || die_evidence 'verification command does not match its log'
+        [[ $(tail -n 1 -- "$log") == '=== agent-run exited rc=0 '* ]] ||
+            die_evidence 'verification log has no final successful agent-run result'
+    done < <(jq -cs '.[] | select(.schemaVersion == 2 and .verdict == "fixed")' "$file")
+}
+
+cmd_status() {
+    local file='' mode=$1 root='' head=''
+    shift
+    while (($#)); do
+        case $1 in
+            --file) require_value "$1" "${2-}"; file=$2; shift 2 ;;
+            --repo-root) (($# >= 2)) || die_usage '--repo-root requires a value'; root=$2; shift 2 ;;
+            --head) (($# >= 2)) || die_usage '--head requires a value'; head=$2; shift 2 ;;
+            *) die_usage "unknown argument: $1" ;;
+        esac
+    done
+    [[ -f $file ]] || die_evidence 'findings file is missing'
+    validate_existing_ledger "$file"
+    validate_repairs "$file" "$root" "$head"
+    [[ $mode != validate ]] || return 0
+    jq -cs '{execution:"performed", adjudication:(if any(.[];.verdict=="open") then "confirmed-open" else "recorded" end),
+        remediation:(if any(.[];.verdict=="open") then "incomplete" elif any(.[];.schemaVersion!=2) then "unknown" else "complete" end),
+        unresolved:map(select(.verdict=="open" or .schemaVersion!=2)|{title,nextAction:(if .verdict=="open" then .rationale else "validate legacy repair or adjudication evidence" end)})}' "$file"
 }
 
 main() {
     (($#)) || die_usage 'a subcommand is required: add'
     case $1 in
+        status|validate) cmd_status "$@" ;;
         add)
             parse_add_args "$@"
             validate_add_args

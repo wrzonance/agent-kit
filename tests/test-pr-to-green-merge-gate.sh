@@ -183,23 +183,32 @@ alerts: code-scanning open=0
 EOF
 }
 
+write_adversarial_comments() {
+    jq -n --arg head "$HEAD_SHA" --argjson findings "$1" '
+      {version:1,repo:"owner/repo",pr:9,reviews:[{kind:"adversarial",provider:"openai",head_sha:$head,findings:$findings}]} |
+      [{id:1,user:{login:"trusted"},body:("<!-- review-ledger:v1 -->\n```json\n" + tojson + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$tmp/adversarial-comments.json"
+}
+write_adversarial_comments '[]'
+
 run_gate() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
         --head-sha "$HEAD_SHA" --base "${GATE_BASE:-main}" --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
         --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         --code-quality-scan-state "${GATE_CQ_STATE:-complete}"
 }
 
 # Bare invocation with no fixed --code-quality-scan-state default, so
 # --code-quality-state-file tests can supply their own combination of flags.
 run_gate_raw() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo --pr 9 \
         --head-sha "$HEAD_SHA" --base main --pr-state-digest "$tmp/digest.txt" \
         --provider-result "${GATE_PROVIDER_RESULT:-AUTO_REVIEW}" \
         --human-items-decided "${GATE_HUMAN_DECIDED:-yes}" \
         --adversarial-review-status "${GATE_ADVERSARIAL_STATUS:-covered-head}" \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         "$@"
 }
 
@@ -212,6 +221,14 @@ write_cq_state_file() {
 good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
+
+write_adversarial_comments "$(jq -cn '[range(1;9)|{title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,verdict:"open",rationale:"dispatch repair"}]')"
+rc=0
+out=$(run_gate) || rc=$?
+assert_eq 1 "$rc" 'coverage with eight unresolved findings blocks readiness'
+assert_contains "$out" 'confirmed-8' 'readiness names unresolved findings'
+assert_contains "$out" 'dispatch repair' 'readiness names the next action'
+write_adversarial_comments '[]'
 
 for ci_word in none none-configured; do
     sed -i "s/^ci=.*/ci=0\/0 $ci_word pending=0 failing=0/" "$tmp/digest.txt"
@@ -251,12 +268,13 @@ assert_eq '- RUNNABLE forge main feat/demo' "$(awk '$1 == "#9" {print $2, $3, $4
     'the underived table marker preserves the remaining columns'
 assert_not_contains "$forge_table" '#0' 'a linked forge PR never renders ISSUE #0'
 run_queue_gate() {
-    MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo \
+    REVIEW_LEDGER_VIEWER=trusted MERGE_GATE_GH="$tmp/gh" bash "$gate" --repo owner/repo \
         --pr "$(jq -r '.[0].pr' <<<"$forge_queue")" \
         --head-sha "$(jq -r '.[0].sha' <<<"$forge_queue")" \
         --base "$(jq -r '.[0].base' <<<"$forge_queue")" \
         --pr-state-digest "$tmp/digest.txt" --provider-result AUTO_REVIEW \
         --human-items-decided yes --adversarial-review-status covered-head \
+        --adversarial-comments "$tmp/adversarial-comments.json" \
         --code-quality-scan-state complete
 }
 out=$(run_queue_gate)

@@ -29,6 +29,7 @@ usage() {
     cat <<EOF
 Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  [--trusted-author LOGIN] [--repo-root DIR]
+       $PROGNAME remediation (same arguments as status; JSON execution/adjudication/remediation)
        $PROGNAME status --repo OWNER/REPO --pr N --comments FILE --head SHA
                  [--diff-payload ID] [--kind adversarial|bot] [--provider NAME]
                  [--trusted-author LOGIN] [--repo-root DIR]
@@ -36,7 +37,7 @@ Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  --entry-file FILE --agent-identity NAME \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
        $PROGNAME cover  --repo OWNER/REPO --pr N --comments FILE --head SHA \\
-                 --reason (fix:ID|merge-down:SHA|retarget:REF) \\
+                 --reason (fix:ID|merge-down:SHA|retarget:REF) [--findings-file FILE] \\
                  [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME] \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
 
@@ -321,6 +322,9 @@ cmd_read() {
     fi
     local id json
     IFS=$'\t' read -r id json <<<"$out"
+
+    [[ $(jq -r '.repo' <<<"$json") == "$repo" && $(jq -r '.pr' <<<"$json") == "$pr" ]] ||
+        evidence_unavailable 'existing ledger repo/pr does not match this call'
     printf 'comment_id=%s\n' "$id"
     printf '%s\n' "$json"
 }
@@ -394,6 +398,8 @@ cmd_status() {
     local id json
     IFS=$'\t' read -r id json <<<"$out"
 
+    [[ $(jq -r '.repo' <<<"$json") == "$repo" && $(jq -r '.pr' <<<"$json") == "$pr" ]] ||
+        evidence_unavailable 'existing ledger repo/pr does not match this call'
     local candidates
     candidates=$(jq -c --arg kind "$kind" --arg provider "$provider" '
       [.reviews[] |
@@ -404,6 +410,24 @@ cmd_status() {
     if [[ $(jq 'length' <<<"$candidates") == 0 ]]; then
         printf 'absent\n'
         exit 11
+    fi
+
+    if [[ ${REMEDIATION_MODE:-0} == 1 ]]; then
+        local findings_file state
+        jq -e 'all(.[]; (has("findings")|not) or (.findings|type)=="array")' <<<"$candidates" >/dev/null ||
+            evidence_unavailable 'malformed remediation findings'
+        findings_file=$(mktemp "${TMPDIR:-/tmp}/review-findings.XXXXXXXX")
+        jq -c '.[] | select(.kind=="adversarial") |
+            if has("findings") then .findings[] else
+            {title:"legacy review",severity:"P1",verdict:"declined",rationale:"validate legacy repair or adjudication evidence"} end' \
+            <<<"$candidates" >"$findings_file"
+        state=$("$SCRIPT_DIR/finding-ledger.sh" status --file "$findings_file" --repo-root "$repo_root" --head "$head") || {
+            rm -f -- "$findings_file"
+            evidence_unavailable 'remediation evidence could not be validated'
+        }
+        rm -f -- "$findings_file"
+        jq -c --arg head "$head" '. + {head:$head}' <<<"$state"
+        return 0
     fi
 
     if jq -e --arg head "$head" 'any(.[]; .head_sha == $head)' <<<"$candidates" >/dev/null 2>&1; then
@@ -625,10 +649,12 @@ cmd_cover() {
     # cmd_append's own body_file: the EXIT trap fires after this function
     # returns and needs the variable to still be in scope then.
     body_file=''
+    local findings_file='' findings='null'
     local repo='' pr='' comments='' head='' reason='' kind='' provider='' \
         agent_identity='' repo_root='' trusted_author_flag='' gh_comment_override=''
     while (($#)); do
         case $1 in
+            --findings-file) [[ ${2-} ]] || die_usage '--findings-file requires a path'; findings_file=$2; shift 2 ;;
             --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --repo) [[ ${2-} ]] || die_usage '--repo requires a value'; repo=$2; shift 2 ;;
             --pr) [[ ${2-} ]] || die_usage '--pr requires a value'; pr=$2; shift 2 ;;
@@ -701,6 +727,21 @@ cmd_cover() {
     target_index=$(jq -r '.index' <<<"$target")
     target_head=$(jq -r '.head_sha' <<<"$target")
 
+    if [[ -n $findings_file ]]; then
+        "$SCRIPT_DIR/finding-ledger.sh" validate --file "$findings_file" \
+            --repo-root "$repo_root" --head "$head" || evidence_unavailable 'invalid remediation evidence'
+        findings=$(jq -cs '.' "$findings_file")
+        jq -e --argjson idx "$target_index" --argjson findings "$findings" '
+            .reviews[$idx] as $review |
+            (.reviews[$idx].findings // []) as $old |
+            (($review | has("findings")) or
+             ($review.counts.p1 == ([$findings[] | select(.severity=="P1")]|length) and
+              $review.counts.p2 == ([$findings[] | select(.severity=="P2")]|length))) and
+            ([$old[].title] - [$findings[].title] | length)==0 and
+            all($old[]; . as $prior | any($findings[]; .title==$prior.title and .severity==$prior.severity))
+        ' <<<"$ledger_json" >/dev/null || evidence_unavailable 'remediation update drops or changes an existing obligation'
+    fi
+
     # Idempotence keys on the (sha, reason) PAIR (fix batch #2 F2): a retarget
     # covers an UNCHANGED head under a NEW base, so a sha already recorded under
     # a reason not yet logged still gets its coverage event (covered_heads stays
@@ -715,7 +756,7 @@ cmd_cover() {
         <<<"$target" >/dev/null 2>&1; then
         reason_recorded=1
     fi
-    if ((sha_covered)) && ((reason_recorded)); then
+    if ((sha_covered)) && ((reason_recorded)) && [[ -z $findings_file ]]; then
         printf 'already-covered\n'
         exit 0
     fi
@@ -750,6 +791,10 @@ cmd_cover() {
       .reviews[$idx].coverage =
         ((.reviews[$idx].coverage // []) + [{sha: $head, reason: $reason, covered_at: $at}])
     ' <<<"$ledger_json") || evidence_unavailable 'could not encode the extended ledger entry'
+    if [[ -n $findings_file ]]; then
+        updated_json=$(jq -c --argjson idx "$target_index" --argjson findings "$findings" \
+            '.reviews[$idx].findings=$findings' <<<"$updated_json")
+    fi
     jq -e "$LEDGER_SCHEMA_JQ" <<<"$updated_json" >/dev/null 2>&1 ||
         evidence_unavailable 'extended ledger does not match the ledger schema'
 
@@ -771,6 +816,9 @@ main() {
         attempt) cmd_attempt "$@" ;;
         read) cmd_read "$@" ;;
         status) cmd_status "$@" ;;
+        remediation)
+            "$SCRIPT_DIR/review-ledger.sh" status "$@" >/dev/null || exit $?
+            REMEDIATION_MODE=1 cmd_status "$@" ;;
         append) cmd_append "$@" ;;
         cover) cmd_cover "$@" ;;
         -h|--help) usage; exit 0 ;;

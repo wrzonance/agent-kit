@@ -169,4 +169,80 @@ assert_eq 2 "$mismatch2_rc" 'a declined verdict cannot be evidenced by a SHA'
 assert_contains "$(cat -- "$tmp/mismatch2.err")" 'declined findings require --rationale' \
     'the mismatch refusal names the missing rationale, not some earlier gate'
 
+# Confirmed findings remain actionable while execution evidence is retained.
+open_run="$tmp/open-findings"
+mkdir -m 700 "$open_run"
+cp "$run_dir/adversarial.result.json" "$open_run/adversarial.result.json"
+for n in {1..8}; do
+    assert_rc 0 "confirmed finding $n stays open" -- run_ledger_at "$open_run" add \
+        --title "confirmed-$n" --severity P1 --verdict open --rationale 'repair required'
+done
+open_state=$("$script" status --file "$open_run/findings.ndjson")
+assert_eq 'incomplete' "$(jq -r .remediation <<<"$open_state")" 'eight open findings block completion'
+assert_eq '8' "$(jq '.unresolved | length' <<<"$open_state")" 'status names all eight repair obligations'
+assert_contains "$open_state" 'repair' 'status supplies next repair action'
+assert_rc 2 'pending repair cannot become a terminal decline without adjudication' -- \
+    run_ledger_at "$open_run" add --title confirmed-1 --severity P1 --verdict declined --rationale 'later'
+legacy_state=$("$script" status --file "$run_dir/findings.ndjson")
+assert_eq 'unknown' "$(jq -r .remediation <<<"$legacy_state")" 'legacy SHA and rationale are not resolution evidence'
+
+repair_repo="$tmp/repair-repo"
+git init -q "$repair_repo"
+git -C "$repair_repo" config user.name Test
+git -C "$repair_repo" config user.email test@example.invalid
+printf 'broken\n' >"$repair_repo/affected.sh"
+git -C "$repair_repo" add affected.sh
+git -C "$repair_repo" commit -qm baseline
+base_sha=$(git -C "$repair_repo" rev-parse HEAD)
+printf 'repaired\n' >"$repair_repo/affected.sh"
+git -C "$repair_repo" commit -qam repair
+repair_sha=$(git -C "$repair_repo" rev-parse HEAD)
+printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/verification.log"
+log_hash=$(sha256sum "$tmp/verification.log"); log_hash=${log_hash%% *}
+for n in {1..8}; do
+    jq -n --arg finding "confirmed-$n" --arg sha "$repair_sha" --arg log "$tmp/verification.log" --arg digest "$log_hash" \
+        '{finding:$finding,repairSha:$sha,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
+    if [[ $n == 1 ]]; then
+        assert_rc 1 'syntactic repair SHA cannot resolve a finding on an unrelated head' -- \
+            run_ledger_at "$open_run" add --title confirmed-1 --severity P1 --verdict fixed \
+            --sha "$repair_sha" --evidence "$tmp/repair.json" --repo-root "$repair_repo" --head "$base_sha"
+    fi
+    assert_rc 0 "reachable verified repair resolves finding $n" -- \
+        run_ledger_at "$open_run" add --title "confirmed-$n" --severity P1 --verdict fixed \
+        --sha "$repair_sha" --evidence "$tmp/repair.json" --repo-root "$repair_repo" --head "$repair_sha"
+done
+repaired=$("$script" status --file "$open_run/findings.ndjson" --repo-root "$repair_repo" --head "$repair_sha")
+assert_eq complete "$(jq -r .remediation <<<"$repaired")" 'eight repairs resume to complete without another review'
+assert_eq 8 "$(jq -s length "$open_run/findings.ndjson")" 'updates preserve eight findings rather than inflating counts'
+assert_eq open "$(jq -sr '.[0].history[0].verdict' "$open_run/findings.ndjson")" 'repair retains original open disposition'
+jq -c '.evidence.command="unrelated-command"' "$open_run/findings.ndjson" >"$tmp/wrong-command.ndjson"
+assert_rc 1 'unrelated successful command cannot certify a repair' -- "$script" status \
+    --file "$tmp/wrong-command.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
+printf 'regressed\n' >"$repair_repo/affected.sh"
+git -C "$repair_repo" commit -qam regression
+regressed_sha=$(git -C "$repair_repo" rev-parse HEAD)
+assert_rc 1 'verification cannot survive later changes to the repaired path' -- "$script" status \
+    --file "$open_run/findings.ndjson" --repo-root "$repair_repo" --head "$regressed_sha"
+printf 'tampered\n' >>"$tmp/verification.log"
+assert_rc 1 'changed verification bytes invalidate repair completion' -- "$script" status \
+    --file "$open_run/findings.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
+
+decline_run="$tmp/decline"
+mkdir -m 700 "$decline_run"
+cp "$run_dir/adversarial.result.json" "$decline_run/adversarial.result.json"
+jq -n '{finding:"false-positive",decision:"rejected",rationale:"boundary already validates input"}' >"$tmp/decline.json"
+assert_rc 0 'reasoned rejection remains supported with adjudication evidence' -- \
+    run_ledger_at "$decline_run" add --title false-positive --severity P2 --verdict declined \
+    --rationale 'boundary already validates input' --evidence "$tmp/decline.json"
+declined=$("$script" status --file "$decline_run/findings.ndjson")
+assert_eq complete "$(jq -r .remediation <<<"$declined")" 'evidenced rejection is terminal'
+jq -n '{finding:"accepted risk",decision:"accepted-risk",rationale:"authorized exception"}' >"$tmp/risk.json"
+assert_rc 1 'accepted risk must cite explicit authorization evidence' -- \
+    run_ledger_at "$decline_run" add --title 'accepted risk' --severity P2 --verdict declined \
+    --rationale 'authorized exception' --evidence "$tmp/risk.json"
+jq '.authorization="operator decision recorded in issue 727"' "$tmp/risk.json" >"$tmp/authorized-risk.json"
+assert_rc 0 'an explicitly authorized risk remains supported' -- \
+    run_ledger_at "$decline_run" add --title 'accepted risk' --severity P2 --verdict declined \
+    --rationale 'authorized exception' --evidence "$tmp/authorized-risk.json"
+
 finish

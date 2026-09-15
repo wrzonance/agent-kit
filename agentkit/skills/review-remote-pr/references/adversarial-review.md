@@ -362,13 +362,16 @@ or unparseable verdict is blocked, never clean; an exit status alone is not a cl
 Verify each finding against the actual code before acting. The reviewer can overstate severity,
 overlap with another provider, or miss things — cross-reference, downgrade overstated severities,
 and drop false positives. Confirmed findings flow through the same assess → fix → document logic
-as automated-review items (Step 5). Document each outcome (fixed or declined with rationale).
+as automated-review items (Step 5). Record confirmed unfixed findings as `open`, with a next repair
+action in `--rationale`; never decline a confirmed finding merely because its repair is pending.
+Execution, adjudication, and remediation are separate facts. Publishing execution evidence with
+open findings spends the review budget while leaving remediation incomplete.
 
-After fixes are complete and the pull request is ready for the review receipt, use
-`scripts/finding-ledger.sh add` once per confirmed fixed/declined outcome, then
+Use `scripts/finding-ledger.sh add --verdict open --title TITLE --severity P1 --rationale NEXT_REPAIR`
+for each confirmed obligation, then
 `scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed`.
 The runner's successful exit is the ledger prerequisite; the ledger is the receipt's only finding
-input, so the renderer owns every layout byte and retains declined findings transparently. Publish
+input, so the renderer retains open findings transparently. Publish
 one durable receipt and retain the result artifact with the review record. If publication is
 nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
 marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
@@ -377,3 +380,26 @@ this receipt publishes (Phase C, or a later `pr-to-green` round): `review-ledger
 that later commit onto the published entry's lineage instead, so `merge-gate.sh` reads it as
 covered rather than `stale` with zero additional review spends — see
 ["$agentkit/pr-to-green/references/auto-merge.md"](../../pr-to-green/references/auto-merge.md#recording-a-merge-down-or-retarget-transition-issue-567).
+
+### Terminal evidence and resume
+
+Update the same title after repair using `add --verdict fixed --sha FULL_SHA --evidence FILE
+--repo-root WORKTREE --head CURRENT_SHA` (also supply title and severity). Evidence is JSON with
+`finding` equal to the title, `repairSha`, `head` (the tested commit), `path` (the affected repository
+path), `command`, `status:"passed"`, `log`, and `logSha256`. Keep the owner-private successful
+agent-run log. The helper checks commit ancestry, the changed path, and verification bytes;
+missing or unreachable evidence blocks resolution. It never runs a command from evidence.
+
+A reasoned decline uses `--verdict declined --rationale REASON --evidence FILE`; its evidence
+must bind `finding`, `decision:"rejected"` or `decision:"accepted-risk"`, and the same `rationale`.
+Accepted risk requires an `authorization` citation to an existing authorized policy decision;
+it does not grant authority. The verification command must match its log, whose final completion
+marker must be green; a later change to the repaired path requires fresh verification.
+No natural-language substring decides whether a reason is valid.
+
+Legacy fixed/declined records remain readable with remediation `unknown` until re-adjudicated
+with evidence. `finding-ledger.sh status --file FILE --repo-root WORKTREE --head CURRENT_SHA`
+names unresolved obligations and next actions. After repairs, `review-ledger.sh cover` with
+`--findings-file FILE --reason fix:FINDING_ID` updates the existing review entry and retains its
+attempt provenance. Re-fetch comments, then inspect `review-ledger.sh remediation` before readiness;
+coverage alone never proves repair completion. Do not purchase another review to resume.

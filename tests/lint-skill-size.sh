@@ -27,7 +27,8 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # Exact measured body sizes; ratchet history lives in `git blame`, not here.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [review-remote-pr]="459:7974:450"
+    # #727: open obligations and terminal evidence in the canonical recipe.
+    [review-remote-pr]="461:8075:450"
     [parallel-issues]="946:18030:900"
 )
 
