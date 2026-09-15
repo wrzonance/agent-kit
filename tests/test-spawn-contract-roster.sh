@@ -20,10 +20,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 # Extract the sole ```bash ... ``` fenced block containing resolve_worker_slot.
-# Exercise the resolver and its assertions inside the same Bash process;
-# recipe-safety separately checks the outer boundary and its inner ShellCheck.
-block=$(awk '/^```bash$/{flag=1; next} /^```$/{flag=0} flag' "$contract_md" |
-    sed '1d;$d' | sed '$d')
+block=$(awk '/^```bash$/{flag=1; next} /^```$/{flag=0} flag' "$contract_md")
 assert_contains "$block" 'resolve_worker_slot' 'extracted the resolver block from spawn-contract.md'
 printf '%s\n' "$block" > "$tmp/resolver.sh"
 
@@ -64,17 +61,18 @@ printf '%s\n' "$STUB_HARNESS"
 HELPER
 chmod +x "$tmp/agentkit/.shared/scripts/contract-read.sh"
 
+# shellcheck disable=SC2034  # ordinary inputs consumed by the sourced whole recipe
 run_resolver() {
     local config=$1 harness=$2 yolo=${3:-}
     (
         set -e
-        export agentkit="$tmp/agentkit"
-        export agentkit_provenance=ok
-        export repository_root="$tmp"
+        agentkit="$tmp/agentkit"
+        agentkit_provenance=ok
+        repository_root="$tmp"
         export STUB_CONFIG_FILE="$config"
         export STUB_HARNESS="$harness"
         export REAL_REPO_CONFIG="$root/agentkit/skills/.shared/scripts/repo-config.sh"
-        [[ -n $yolo ]] && export yolo_invocation="$yolo"
+        [[ -n $yolo ]] && yolo_invocation="$yolo"
         # shellcheck source=/dev/null
         source "$tmp/resolver.sh"
         # shellcheck disable=SC2154  # worker_model/_fallback/model_pivot_note are set by the sourced resolver block
@@ -83,6 +81,8 @@ run_resolver() {
         printf 'worker_model_fallback=%s\n' "$worker_model_fallback"
         # shellcheck disable=SC2154
         printf 'model_pivot_note=%s\n' "$model_pivot_note"
+        # shellcheck disable=SC2154  # returned by the complete resolver fence
+        printf 'worker_effort=%s\n' "$worker_effort"
     )
 }
 
@@ -96,6 +96,7 @@ assert_contains "$out" 'worker_model_fallback=claude-opus-5' \
     'a Claude session picks the claude-* fallback roster entry'
 assert_contains "$out" 'model_pivot_note=' \
     'a roster-resolved value carries no pivot note'
+assert_contains "$out" 'worker_effort=high' 'the complete resolver returns effort to its parent'
 
 out=$(run_resolver "$tmp/roster.env" codex 2>/dev/null)
 assert_contains "$out" 'worker_model=gpt-5.6-luna' \

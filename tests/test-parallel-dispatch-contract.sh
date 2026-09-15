@@ -599,8 +599,7 @@ handoff_retrieval=$(awk '
     capture && /^```$/ { exit }
     capture { print }
 ' <<< "$text")
-# The outer harness supplies inputs to the explicit Bash child via its environment.
-durable_handoff=$(bash -c "export dispatch_plan=\$1
+durable_handoff=$(bash -c "dispatch_plan=\$1
 $handoff_retrieval" _ "$durable_plan")
 assert_eq "$second_report"$'\n'"$first_report" "$durable_handoff" \
     'a fresh final-handoff process retrieves both exact composition reports'
@@ -1678,10 +1677,7 @@ assert_contains "$spawn_contract_flat" \
 # Execute the actual extracted fence against real fixtures so that class of
 # bug fails a test, not just a live spike.
 spawn_fence="$tmp/spawn-contract-fence.sh"
-# Keep resolver assertions in the inner Bash process. The recipe safety
-# suite verifies the outer boundary independently.
-awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$spawn_contract" |
-    sed '1d;$d' | sed '$d' > "$spawn_fence"
+awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$spawn_contract" > "$spawn_fence"
 
 run_spawn_fence() {
     # $1=harness $2=config.env contents
@@ -1699,7 +1695,7 @@ run_spawn_fence() {
         cat "$spawn_fence"
         printf 'printf "%%s %%s %%s\\n" "$worker_model" "$worker_model_fallback" "$model_pivot_note"\n'
     } > "$tmp/fence-run.sh"
-    bash "$tmp/fence-run.sh" 2>/dev/null
+    "${3:-bash}" -f "$tmp/fence-run.sh" 2>/dev/null
 }
 
 # Mirrors the "During capability selection" bullet in spawn-contract.md's
@@ -1758,6 +1754,17 @@ assert_eq 1 "$typo_rc" \
     'an unsanctioned same-harness fallback (AGENT_WORKER_MODEL_FALLBACK validated) actually stops the script'
 assert_eq '' "$typo_out" \
     'a stopped resolution prints nothing further -- the exit is real, not confined to a subshell'
+if command -v zsh >/dev/null; then
+    zsh_out=$(run_spawn_fence claude "$codex_declared_config" zsh)
+    assert_eq 0 "$?" 'zsh runs the complete resolver with ordinary parent assignments'
+    assert_contains "$zsh_out" 'claude-sonnet-5 claude-sonnet-5' 'zsh receives resolver model outputs'
+    assert_contains "$zsh_out" "pivoted from cross-harness declaration 'gpt-5.6-luna'" 'zsh receives the resolver pivot note'
+    zsh_out=$(run_spawn_fence codex "$typo_config" zsh)
+    assert_eq 1 "$?" 'zsh stops after an unsanctioned resolver result'
+    assert_eq '' "$zsh_out" 'zsh does not dispatch after failed resolution'
+else
+    printf 'SKIP: zsh resolver runtime checks (shell unavailable)\n'
+fi
 
 # A foreign-family value is only a pivot candidate when it is ITSELF the
 # sanctioned worker tier on its own harness. claude-opus-5 is a real Claude

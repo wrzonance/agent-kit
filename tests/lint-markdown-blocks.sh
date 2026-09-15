@@ -70,7 +70,26 @@ bash_only_commands() {
     ' "$1"
 }
 
-boundary_pattern='^bash -c "\$\(cat <<'\''([A-Za-z_][A-Za-z0-9_]*)'\''$'
+# A boundary may return data through command substitution and pass literal
+# arguments after the heredoc. Never hide subsequent parent-shell commands.
+extract_body() {
+    local block=$1 delimiter=$2
+    : > "$block.body"
+    : > "$block.outer"
+    awk -v delimiter="$delimiter" -v body="$block.body" -v outer="$block.outer" '
+        NR == 1 { next }
+        !closed && $0 == delimiter { closed=1; next }
+        !closed { print > body; next }
+        closed == 1 {
+            if ($0 !~ /^\)"/) exit 1
+            sub(/^\)"/, "")
+            closed=2
+        }
+        { print > outer }
+        END { if (closed != 2) exit 1 }
+    ' "$block"
+}
+boundary_pattern='^([A-Za-z_][A-Za-z0-9_]*=\$\()?bash -c "\$\(cat <<'\''([A-Za-z_][A-Za-z0-9_]*)'\''$'
 while IFS= read -r skill_file; do
     rel=${skill_file#"$skills_dir"/}
     out="$work/${rel//\//__}"
@@ -79,22 +98,22 @@ while IFS= read -r skill_file; do
     for block in "$out"/block-*.sh; do
         [[ -e $block ]] || continue
         total=$((total + 1))
+        scan_block=$block
         first_line=$(head -n 1 "$block")
         if [[ $first_line =~ $boundary_pattern ]] &&
-            [[ $(tail -n 2 "$block") == "${BASH_REMATCH[1]}"$'\n'")\"" ]]; then
+            extract_body "$block" "${BASH_REMATCH[2]}"; then
             # Retain every inner byte, including ShellCheck directives. Check
             # the outer wrapper below as well so malformed quoting stays red.
-            sed '1d;$d' "$block" | sed '$d' > "$block.body"
+            scan_block="$block.outer"
             if ! shellcheck -S style -e SC2154 -s bash "$block.body"; then
                 failed=$((failed + 1))
                 printf 'FAILED: %s block %s body\n' "$skill_file" "$(basename "$block")" >&2
             fi
-        else
-            findings=$(bash_only_commands "$block")
-            if [[ -n $findings ]]; then
-                failed=$((failed + 1))
-                printf 'FAILED: %s block %s\n%s\n' "$skill_file" "$(basename "$block")" "$findings" >&2
-            fi
+        fi
+        findings=$(bash_only_commands "$scan_block")
+        if [[ -n $findings ]]; then
+            failed=$((failed + 1))
+            printf 'FAILED: %s block %s\n%s\n' "$skill_file" "$(basename "$block")" "$findings" >&2
         fi
         if ! shellcheck -S style -e SC2154 -s bash "$block"; then
             failed=$((failed + 1))

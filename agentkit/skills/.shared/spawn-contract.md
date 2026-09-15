@@ -21,7 +21,8 @@ allowed implementation exceptions: a genuinely spawn unavailable degraded path (
 or a qualifying bounded inline correction.
 
 ```bash
-bash -c "$(cat <<'BASH_RECIPE'
+worker_resolution=$(bash -c "$(cat <<'BASH_RECIPE'
+agentkit=$1 agentkit_provenance=$2 repository_root=$3 yolo_invocation=$4
 worker_model_default='gpt-5.6-luna'
 worker_model_fallback_default='gpt-5.6-terra'
 worker_effort_default='high'
@@ -31,7 +32,7 @@ worker_effort_default='high'
     exit 1
 }
 
-# Roster keys: one candidate per harness family, picked by the contract's harness= name; a declared entry is sanctioned by declaration and wins over the singular keys.
+# Roster: one candidate per harness family; declared entries override singular keys.
 roster_entry_for_family() {
     local csv=$1 family=$2 item
     [ -n "$csv" ] || return 1
@@ -43,7 +44,6 @@ roster_entry_for_family() {
 }
 
 worker_config_value() {
-    # shellcheck disable=SC2034  # values are consumed by the dispatch block below
     local key=$1 default=$2 value
     if value=$("$agentkit/.shared/scripts/repo-config.sh" \
         --repo-root "$repository_root" --get "$key") && [[ -n $value ]]; then
@@ -55,12 +55,9 @@ worker_config_value() {
     fi
 }
 
-# shellcheck disable=SC2034  # values are consumed by the spawn shape below
 worker_model=$(worker_config_value AGENT_WORKER_MODEL "$worker_model_default")
-# shellcheck disable=SC2034  # values are consumed by the spawn shape below
 worker_model_fallback=$(worker_config_value AGENT_WORKER_MODEL_FALLBACK \
     "$worker_model_fallback_default")
-# shellcheck disable=SC2034  # values are consumed by the spawn shape below
 worker_effort=$(worker_config_value AGENT_WORKER_EFFORT "$worker_effort_default")
 
 # Unsuffixed keys are Codex-shaped by convention; re-resolve them for the running harness.
@@ -100,11 +97,11 @@ model_home_provider() {
     esac
 }
 
-# Resolves one declaration slot for the running harness; sets $resolved_value/$pivot_note as globals and exits 1 on an unsanctioned model -- call as a plain statement, never inside $(...) (a subshell exit would not stop the script).
+# Sets resolved_value/pivot_note; call directly so an unsanctioned model exits this Bash process.
 resolve_worker_slot() {
     local base=$1 native_default=$2 roster_key=$3 value family roster_csv roster_value roster_get_rc=0
-    # A declared roster is authoritative: no entry for the running harness is a configuration error, never a silent fallback to the singular key or built-in default.
-    # --get exits 2, not the absent-key 1, when the roster line IS declared but rejected by validate() -- captured below so a malformed roster degrades on its own message, not as silently-unset (issue #606 round 3).
+    # Missing harness in a declared roster is an error. --get returns 2 for
+    # invalid declarations, versus 1 for absent keys; retain that distinction.
     roster_csv=$("$agentkit/.shared/scripts/repo-config.sh" \
         --repo-root "$repository_root" --get "$roster_key" 2> /dev/null) || roster_get_rc=$?
     if [ -n "$roster_csv" ]; then
@@ -152,17 +149,24 @@ resolve_worker_slot() {
 }
 
 resolve_worker_slot AGENT_WORKER_MODEL "$native_model_default" AGENT_WORKER_MODELS
-# shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
 worker_model=$resolved_value
-# shellcheck disable=SC2034  # consumed by the completion-table record below
 model_pivot_note=$pivot_note
 resolve_worker_slot AGENT_WORKER_MODEL_FALLBACK "$native_fallback_default" AGENT_WORKER_MODELS_FALLBACK
-# shellcheck disable=SC2034  # consumed by the spawn shape and completion-table record below
 worker_model_fallback=$resolved_value
-# shellcheck disable=SC2034  # consumed by the completion-table record below
 fallback_pivot_note=$pivot_note
+printf '%s\n' "$worker_model" "$worker_model_fallback" "$worker_effort" "$model_pivot_note" "$fallback_pivot_note" resolution-end
 BASH_RECIPE
-)"
+)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${repository_root:-}" "${yolo_invocation:-false}") || exit $?
+# Read data in the parent; the sentinel preserves trailing empty pivot notes.
+# shellcheck disable=SC2034  # consumed by dispatch and completion reporting
+{
+    IFS= read -r worker_model && IFS= read -r worker_model_fallback &&
+    IFS= read -r worker_effort && IFS= read -r model_pivot_note &&
+    IFS= read -r fallback_pivot_note && IFS= read -r resolution_end &&
+    [ "$resolution_end" = resolution-end ]
+} <<WORKER_RESOLUTION || exit 1
+$worker_resolution
+WORKER_RESOLUTION
 ```
 
 On Codex, the sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
