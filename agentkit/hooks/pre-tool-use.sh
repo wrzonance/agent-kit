@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# PreToolUse: destructive denials and bounded diagnostics; rewrite gate stays off.
+# PreToolUse -> two denials and nothing else: work-destroying commands (refused
+# every time) and a bare helper name (refused once; the message says the retry
+# is allowed). Everything else is taught by PostToolUse after the command
+# returned real data, so this hook cannot halt autonomous work. Never exit 2,
+# never updatedInput.
 set -uo pipefail
 
-# No opinion: schema support did not prevent codex 0.147 rejecting allow at runtime.
+# Allow == say nothing: codex 0.147 rejects permissionDecision:allow at runtime
+# (PreToolUse hook returned unsupported permissionDecision:allow) although its
+# embedded schema lists it; an empty object is "no opinion". Proved in a live
+# session, not from the schema fixtures.
 allow() { printf '{}\n'; exit 0; }
 GUARD_HOOK_NAME=pre-tool-use
 trap 'guard_log_error $? 2>/dev/null || true; allow' ERR
@@ -127,13 +134,6 @@ fi
 if reason=$(guard_destructive_reason "$command_line" "$cwd"); then
     deny "Refused -- $reason
 This denial does not lift on a retry; if the task genuinely needs it, the user runs it."
-fi
-
-if [[ $tool_name == Bash && $command_line == 'agent-run.sh --cmd test' ]]; then
-    # shellcheck source=lib/tool-input-rewrite.sh
-    if source "$self_dir/lib/tool-input-rewrite.sh" 2>/dev/null && tool_rewrite_pre "$input"; then
-        exit 0
-    fi
 fi
 
 # A bare helper invocation cannot succeed (nothing is on PATH), so denying it is

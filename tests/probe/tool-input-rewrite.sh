@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Candidate previews are not execution evidence or hook permission decisions.
+# Test-only previews; no production callers, execution proof, or permissions.
 
 tool_rewrite_capability() {
     jq -nc --arg adapter "${1:-unknown}" --arg version "${2:-unknown}" \
@@ -8,18 +8,7 @@ tool_rewrite_capability() {
           status:"unavailable",reason:"live-execution-unproven"}'
 }
 
-tool_rewrite_pre() {
-    # Release-owned accepted adapter/version/tool catalog: EMPTY. Activation
-    # receipts, schema support and environment flags cannot populate it. Before
-    # enabling, prove actual execution, declaration/helper trust, unchanged shell
-    # resolution, permissions, result correlation, and measured turn savings.
-    # No runtime probes, subprocesses, telemetry, or additional model context.
-    return 1
-}
-
-# Pure preview only; intentionally unreachable from the production gate above.
-# The caller supplies a resolved helper; stdout is proposed tool_input, not a
-# hook response. No arbitrary shell parsing, declaration wrapping, or execution.
+# Pure preview: supplied helper to proposed tool_input, never a hook response.
 tool_rewrite_candidate() {
     local input=$1 helper=$2 quoted
     [[ $helper == /*/agent-run.sh && $helper != *[[:cntrl:]]* &&

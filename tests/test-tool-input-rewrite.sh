@@ -6,13 +6,13 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
-module="$root/agentkit/hooks/lib/tool-input-rewrite.sh"
+module="$here/probe/tool-input-rewrite.sh"
 if [[ ! -f $module ]]; then
     _fail 'rewrite capability boundary exists' "missing $module"
     finish
     exit 1
 fi
-# shellcheck source=../agentkit/hooks/lib/tool-input-rewrite.sh
+# shellcheck source=probe/tool-input-rewrite.sh
 source "$module"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -92,8 +92,6 @@ printf '%s\n' '{"capabilities":{"pre-tool-use":"observed","updatedInput":"observ
     > "$repo/.agent/rewrite-capability.json"
 export AGENTKIT_REWRITE_ENABLED=1
 export AGENTKIT_REWRITE_CAPABILITY="$repo/.agent/rewrite-capability.json"
-assert_rc 1 'local claims cannot arm the production gate' -- tool_rewrite_pre "$input"
-assert_eq '' "$(tool_rewrite_pre "$input")" 'unsupported gate emits no tool update or telemetry'
 out=$("$root/agentkit/hooks/pre-tool-use.sh" <<< "$input")
 assert_eq deny "$(jq -r '.hookSpecificOutput.permissionDecision' <<< "$out")" \
     'unsupported runtime retains first helper-path denial'
@@ -102,14 +100,5 @@ out=$("$root/agentkit/hooks/pre-tool-use.sh" <<< "$input")
 assert_not_contains "$out" updatedInput 'retry remains unchanged, with no silent rewrite'
 assert_not_contains "$out" 'private fixture description' 'fallback does not log input metadata'
 
-# Local disabled-seam timing only; no model/harness saving can be inferred.
-started=${EPOCHREALTIME/./}
-for ((iteration=0; iteration<1000; iteration++)); do
-    # shellcheck source=../agentkit/hooks/lib/tool-input-rewrite.sh
-    source "$module"
-    tool_rewrite_pre "$input" || :
-done
-elapsed=$(( ${EPOCHREALTIME/./} - started ))
-printf 'rewrite-fixture: disabled_source_gate_mean_us=%s iterations=1000 live_saved_turns=unavailable live_false_transformations=unavailable\n' \
-    "$((elapsed / 1000))"
+printf 'rewrite-fixture: live_execution=unavailable live_saved_turns=unavailable live_false_transformations=unavailable\n'
 finish
