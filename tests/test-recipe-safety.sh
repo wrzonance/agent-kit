@@ -82,4 +82,55 @@ assert_not_contains "$(cat "$provider_rules")" '`python3 -c "..."` fails' \
 assert_not_contains "$(cat "$provider_rules")" '`cmd | python3`' \
     'provider rules do not duplicate the moved pipe-plus-heredoc hazard'
 
+# Exercise the actual lint entry point: a fence label alone cannot select Bash.
+lint="$here/lint-markdown-blocks.sh"
+mkdir -p "$tmp/skills/example"
+for recipe in 'mapfile -t items' 'readarray -t items' 'read -a items' \
+    'IFS=, read -ra items' 'read -r -a items' \
+    'read -d "" -ra items' \
+    'true; mapfile -t items'; do
+    printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
+    output=$("$lint" "$tmp/skills" 2>&1)
+    assert_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+        "lint rejects unwrapped $recipe"
+done
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -c "$(cat <<'FIXTURE_RECIPE'
+mapfile -t items
+printf '%s\n' "${items[@]}"
+FIXTURE_RECIPE
+)"
+```
+MARKDOWN
+assert_rc 0 'lint accepts explicit Bash boundary with alternate delimiter' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -c "$(cat <<'FIXTURE_RECIPE'
+printf '%s\n' $unquoted
+FIXTURE_RECIPE
+)"
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'SC2086' 'lint still ShellChecks the wrapped recipe body'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+# mapfile -t items is a deliberately negative example.
+printf '%s\n' 'readarray -t items'
+printf '%s\n' 'bad; mapfile -t items'
+printf '%s\n' "bad; read -ra items"
+true # bad; readarray -t items
+```
+MARKDOWN
+assert_rc 0 'lint leaves comment and quoted negative examples alone' -- \
+    "$lint" "$tmp/skills"
+output=$("$lint" "$root/agentkit/skills" 2>&1)
+assert_not_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+    'all shipped recipes put Bash-only builtins behind a Bash boundary'
+
 finish

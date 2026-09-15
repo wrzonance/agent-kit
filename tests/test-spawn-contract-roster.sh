@@ -20,7 +20,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 # Extract the sole ```bash ... ``` fenced block containing resolve_worker_slot.
-block=$(awk '/^```bash$/{flag=1; next} /^```$/{flag=0} flag' "$contract_md")
+# Exercise the resolver and its assertions inside the same Bash process;
+# recipe-safety separately checks the outer boundary and its inner ShellCheck.
+block=$(awk '/^```bash$/{flag=1; next} /^```$/{flag=0} flag' "$contract_md" |
+    sed '1d;$d' | sed '$d')
 assert_contains "$block" 'resolve_worker_slot' 'extracted the resolver block from spawn-contract.md'
 printf '%s\n' "$block" > "$tmp/resolver.sh"
 

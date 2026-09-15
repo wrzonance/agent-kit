@@ -727,16 +727,13 @@ Then root must open a DRAFT PR with the canonical body composer: Why, What, Deci
 checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
 feeds Collect and Step 3a.
 
-**Environment-refusal fallback only** — two shapes. A post-commit **push refusal**: the worker
-reports the commit SHA and push command; root verifies the SHA exists in the worktree and pushes. A
-**commit refusal** (`worktree-commit.sh` exit 2): the worker returns the publication handback and
-root preserves the raw command text for audit. Validator: parse into validated arguments without eval;
-validate the expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every
-explicit path inside the worktree and allowed, and every staged path declared and unprotected; emit NUL
-argv naming the canonical helper. Invoke returned argv once, then push the branch. Only after
-publication does the root inspect `base...HEAD`; never validate a base diff.
+**Environment-refusal fallback only** — **push refusal**: root verifies the reported commit SHA exists in the worktree and pushes.
+**Commit refusal** (`worktree-commit.sh` exit 2): root preserves the raw command text for audit. Validator: parse into validated arguments without eval;
+validate the expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected; emit NUL argv naming the canonical helper.
+Invoke returned argv once, then push the branch. Only after publication does the root inspect `base...HEAD`; never validate a base diff.
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
@@ -746,13 +743,14 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 # Validator-proved staged paths are published.
 validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
+BASH_RECIPE
+)"
 ```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full for the composer recipe and stacked retarget/linkage proof before opening any draft PR — it is dispatch-*output* content, read at publication rather than pasted in advance.
 
-The worker commits and pushes its own branch and returns a completion report; root reviews
-the pushed diff and opens the DRAFT PR; root handles CI state/verification, forge conflicts,
-adversarial review, consent, replies, and publication.
+The worker commits and pushes its own branch and returns a completion report; root reviews the pushed diff and opens the DRAFT PR;
+root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication.
 
 ### Polling discipline (applies to every wait in this skill)
 
@@ -932,6 +930,7 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 
 **Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff plus shared `requests_per_wait_minute` metrics. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
 [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
 dispatch_report_files=("$dispatch_reports_dir"/issue-*.report); ((${#dispatch_report_files[@]} > 0)) || exit 1
@@ -941,6 +940,8 @@ for dispatch_report in "$dispatch_reports_dir"/issue-*.report; do
     printf '%s\n' "${dispatch_report_lines[0]}"
 done
 shopt -u nullglob
+BASH_RECIPE
+)"
 ```
 Cleanup requires user request after merge.
 

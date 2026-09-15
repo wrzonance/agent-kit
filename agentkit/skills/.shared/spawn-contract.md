@@ -3,9 +3,8 @@
 Read this before dispatching any implementation worker — issue leads in `parallel-issues`
 Phase 2's Dispatch step, and mechanical fix-batch workers in `review-remote-pr`'s
 Implementation-worker gate.
-It is the single detailed home for model/effort selection, spawn policy, and
-the degraded no-spawn path. The dispatching skill's own body states only that the gate is
-mandatory and names this file for the detail.
+This file owns model/effort selection, spawn policy, and the degraded no-spawn path.
+Dispatching skills mark the gate mandatory and link here.
 
 ## Model/effort selection (MANDATORY before dispatch)
 
@@ -22,6 +21,7 @@ allowed implementation exceptions: a genuinely spawn unavailable degraded path (
 or a qualifying bounded inline correction.
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
 worker_model_default='gpt-5.6-luna'
 worker_model_fallback_default='gpt-5.6-terra'
 worker_effort_default='high'
@@ -161,6 +161,8 @@ resolve_worker_slot AGENT_WORKER_MODEL_FALLBACK "$native_fallback_default" AGENT
 worker_model_fallback=$resolved_value
 # shellcheck disable=SC2034  # consumed by the completion-table record below
 fallback_pivot_note=$pivot_note
+BASH_RECIPE
+)"
 ```
 
 On Codex, the sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and

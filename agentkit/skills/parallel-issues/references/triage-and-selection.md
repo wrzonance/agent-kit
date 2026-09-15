@@ -34,11 +34,11 @@ apply_ledger="$agentkit/.shared/scripts/apply-ledger.sh"
 number a comment/close/reopen/board move acted on); `--url` embeds that same number — `.../issues/N` or
 `.../pull/N`, plus the `#issuecomment-<id>` fragment for a created comment.
 
-Before every mutation, consume only the IDs from `pending --ids`; never retry
-an ID present in `applied`. Keep chunks bounded (the default recipe is 20
-objects), and persist after every success:
+Before each mutation, use only `pending --ids`; never retry an `applied` ID.
+Bound chunks (default 20 objects) and persist after each success:
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
 report_batch_failure() {
     local reason=$1 evidence
     printf 'bulk batch stopped: %s\n' "$reason" >&2
@@ -93,11 +93,13 @@ while :; do
     done
     # The next iteration's budget check is the inspection point between chunks.
 done
+BASH_RECIPE
+)"
 ```
 
-On exhaustion, retain the ledger and report its `applied`/`remaining` split; never retry an empty pending
-pool or claim unrecorded mutations succeeded. A rerun starts from the same ledger (zero duplicates); its
-`idMap` feeds a dependent batch.
+On exhaustion, retain the ledger and report `applied`/`remaining`; never retry an empty
+pool or claim unrecorded success. Rerun from that ledger to avoid duplicates;
+its `idMap` feeds dependent batches.
 
 REST routing is equally strict: issue/PR bodies, labels, state, comments,
 reviews, sub-issues, dependencies, and cross-references use
@@ -436,6 +438,7 @@ or worker prompt cycle.
 The root-side round trip is data-only and atomic:
 
 ```bash
+bash -c "$(cat <<'BASH_RECIPE'
 mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
 (( ${#needs_lines[@]} == 1 )) || exit 1
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
@@ -449,6 +452,8 @@ jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
    .conflictMap.revisions += [{issues: [$issue], paths: $paths,
      reason: "worker requested missing write-set paths (prediction expansion)"}]' \
   "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
+BASH_RECIPE
+)"
 ```
 
 Re-run the chain-base validator on the updated plan, then call `followup_task`

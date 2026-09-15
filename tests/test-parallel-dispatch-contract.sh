@@ -599,7 +599,8 @@ handoff_retrieval=$(awk '
     capture && /^```$/ { exit }
     capture { print }
 ' <<< "$text")
-durable_handoff=$(bash -c "dispatch_plan=\$1
+# The outer harness supplies inputs to the explicit Bash child via its environment.
+durable_handoff=$(bash -c "export dispatch_plan=\$1
 $handoff_retrieval" _ "$durable_plan")
 assert_eq "$second_report"$'\n'"$first_report" "$durable_handoff" \
     'a fresh final-handoff process retrieves both exact composition reports'
@@ -1677,7 +1678,10 @@ assert_contains "$spawn_contract_flat" \
 # Execute the actual extracted fence against real fixtures so that class of
 # bug fails a test, not just a live spike.
 spawn_fence="$tmp/spawn-contract-fence.sh"
-awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$spawn_contract" > "$spawn_fence"
+# Keep resolver assertions in the inner Bash process. The recipe safety
+# suite verifies the outer boundary independently.
+awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$spawn_contract" |
+    sed '1d;$d' | sed '$d' > "$spawn_fence"
 
 run_spawn_fence() {
     # $1=harness $2=config.env contents
