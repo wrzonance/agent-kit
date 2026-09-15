@@ -280,7 +280,7 @@ To inspect model selectors and effort levels exposed by the current Claude Code 
 submitting a prompt, run `node "$agentkit/review-remote-pr/scripts/claude-model-discovery.mjs"
 --list-models [--claude PATH] [--sdk-dir DIR]`. This optional diagnostic uses the Agent SDK's
 `supportedModels()` control query; it does not read PR content or select a model. If the SDK
-package is absent, the helper prints an opt-in install command. The SDK may return session aliases
+package is absent, the helper prints an opt-in install command. Automatic error diagnostics resolve the SDK only inside the helper scripts directory, never from the reviewed checkout. An explicit `--sdk-dir` must contain the resolved SDK entry point after resolving symlinks; parent-directory and symlink escapes are refused before import. The SDK may return session aliases
 such as `default`, `sonnet`, or `haiku`, and its list may omit canonical model IDs available by
 other routes. Use only the exact returned selector and a listed supported effort in
 `--reviewer MODEL-EFFORT`; never infer a selector from a display name. Anthropic's [Models API]

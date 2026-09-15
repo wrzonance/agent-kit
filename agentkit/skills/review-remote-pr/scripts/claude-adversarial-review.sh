@@ -449,7 +449,7 @@ fail_claude_exit() {
 		die_blocked "$reason" "claude exited $exit_code: $detail"
 	fi
 	if command -v node >/dev/null 2>&1; then
-		metadata=$(timeout --signal=KILL 35s node "$helper" --for-error "$detail" --claude "$CLAUDE_RESOLVED" --sdk-dir "$PWD/.agent/model-discovery" 2>&1) || true
+		metadata=$(timeout --signal=KILL 35s node "$helper" --for-error "$detail" --claude "$CLAUDE_RESOLVED" 2>&1) || true
 	else
 		metadata='model metadata unavailable: Node.js is missing; install Node.js and the optional Agent SDK to list models'
 	fi

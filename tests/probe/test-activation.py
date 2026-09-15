@@ -53,6 +53,41 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("activation-unavailable", result.stderr)
 
+    def test_failed_activation_helper_does_not_block_ordinary_prompt(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        self.payload["prompt"] = "hello"
+        result = subprocess.run([str(self.hook)], input=json.dumps(self.payload),
+                                text=True, capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {})
+
+    def test_failed_activation_helper_blocks_workflow_invocation(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        self.payload["prompt"] = "  $agentkit:parallel-issues 722"
+        result = subprocess.run([str(self.hook)], input=json.dumps(self.payload),
+                                text=True, capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("activation-unavailable", output["reason"])
+
+    def test_failed_activation_helper_blocks_native_and_unregistered_agentkit_forms(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        for prompt in ("/pr-to-green --auto-merge", "$agentkit:unknown"):
+            with self.subTest(prompt=prompt):
+                result = subprocess.run([str(self.hook)], input=json.dumps(dict(self.payload, prompt=prompt)),
+                                        text=True, capture_output=True, cwd=self.repo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["decision"], "block")
+
+    def test_malformed_hook_input_fails_closed_as_unknown(self):
+        result = subprocess.run([str(self.hook)], input="{", text=True,
+                                capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("could not be classified safely", output["reason"])
+
     def test_delivery_intent_requires_session_receipt(self):
         output = self.prompt()
         self.assertIn("parallel-issues", output["hookSpecificOutput"]["additionalContext"])

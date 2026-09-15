@@ -103,6 +103,10 @@ if [[ ${1:-} == exec && ${2:-} == --help ]]; then
     exit 0
 fi
 [[ -z ${FAKE_CODEX_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CODEX_CALLED"
+if [[ ${FAKE_CODEX_PROVIDER_ERROR:-} == 1 ]]; then
+    printf '%s\n' '{"type":"result","is_error":true,"error":"fixture provider failure"}'
+    exit 1
+fi
 last_file=''
 while (($#)); do
     if [[ $1 == --output-last-message ]]; then last_file=$2; shift 2; else shift; fi
@@ -239,6 +243,21 @@ retry_ledger="$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh"
 prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" --entry-file "$retry_failed/state/review-attempt.json")
 prior_retry_id=$(jq -r .id <<<"$prior_record")
 prior_retry_hash=$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)
+retry_missing_limit="$tmp/retry-missing-limit"
+mkdir -m 700 "$retry_missing_limit"
+retry_missing_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_missing_limit" \
+    --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$retry_missing_limit" --provider anthropic \
+    --payload "$retry_missing_payload" --source interactive >/dev/null
+retry_missing_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/retry-missing-limit.calls" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$retry_missing_limit" --retry-attempt "$prior_retry_id" \
+    --retry-authorization 'Operator authorized one retry' --max-budget-usd 10) \
+    >"$tmp/retry-missing-limit.out" 2>"$tmp/retry-missing-limit.err" || retry_missing_rc=$?
+assert_eq 1 "$retry_missing_rc" 'Claude retry still requires its explicit output-token limit'
+assert_eq no "$( [[ -e $tmp/retry-missing-limit.calls ]] && printf yes || printf no )" \
+    'Claude retry without its required output-token limit never launches a provider'
 retry_run="$tmp/retry-success"
 mkdir -m 700 "$retry_run"
 retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_run" --repo acme/widget --pr 42 --diff "$expected")
@@ -260,6 +279,38 @@ retry_validate_rc=0
 bash "$retry_ledger" attempt validate --repo-root "$repo" --entry-file "$retry_run/state/review-attempt.json" \
     >"$tmp/retry-validate.out" 2>"$tmp/retry-validate.err" || retry_validate_rc=$?
 assert_eq 0 "$retry_validate_rc" 'completed retry retains valid canonical receipt provenance'
+
+# Codex retries have no Claude-specific dollar or output-token options.
+write_contract codex codex 'absent note="same-harness Codex retry fixture"'
+codex_retry_failed="$tmp/codex-retry-failed"
+grant "$codex_retry_failed" openai
+codex_retry_failed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_PROVIDER_ERROR=1 bash "$script" --pr 42 --repo acme/widget --run-dir "$codex_retry_failed") \
+    >"$tmp/codex-retry-failed.out" 2>"$tmp/codex-retry-failed.err" || codex_retry_failed_rc=$?
+assert_eq 1 "$codex_retry_failed_rc" 'Codex provider failure records a terminal failed attempt'
+codex_prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" \
+    --entry-file "$codex_retry_failed/state/review-attempt.json")
+codex_prior_id=$(jq -r .id <<<"$codex_prior_record")
+codex_retry_run="$tmp/codex-retry-success"
+mkdir -m 700 "$codex_retry_run"
+codex_retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$codex_retry_run" \
+    --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$codex_retry_run" --provider openai \
+    --payload "$codex_retry_payload" --source interactive >/dev/null
+codex_retry_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CODEX_EXECUTABLE="$tmp/fake-codex" \
+    FAKE_CODEX_CALLED="$tmp/codex-retry.calls" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$codex_retry_run" --retry-attempt "$codex_prior_id" \
+    --retry-authorization 'Operator authorized one Codex retry') \
+    >"$tmp/codex-retry.out" 2>"$tmp/codex-retry.err" || codex_retry_rc=$?
+assert_eq 0 "$codex_retry_rc" 'Codex retry works without Claude-only resource flags'
+assert_eq 1 "$(wc -l <"$tmp/codex-retry.calls" 2>/dev/null)" 'authorized Codex retry sends exactly once'
+codex_retry_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" \
+    --entry-file "$codex_retry_run/state/review-attempt.json")
+assert_eq null "$(jq -c '.maxBudgetUsd' <<<"$codex_retry_record")" 'Codex retry does not claim a Claude dollar ceiling'
+assert_eq null "$(jq -c '.maxOutputTokens' <<<"$codex_retry_record")" 'Codex retry records no Claude output-token override'
+write_contract codex claude "present path=$tmp/fake-claude"
 
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
@@ -303,11 +354,17 @@ mkdir -m 700 "$resume_run" "$resume_run/state"
 resume_payload=$(jq -r '.payload' "$claude_run/state/launch-attempted")
 "$consent" grant --worktree "$repo" --run-dir "$resume_run" --provider anthropic \
     --payload "$resume_payload" --source interactive >/dev/null
+# Simulate a completed pre-reviewBase record: it is semantically based on the
+# PR base and remains resumable without launching a second provider call.
+attempt_key=$(printf 'acme/widget:42' | sha256sum | cut -d' ' -f1)
+attempt_record_path="$repo/.git/agentkit-review-attempts/$attempt_key.json"
+jq 'del(.reviewBase)' "$attempt_record_path" >"$tmp/legacy-attempt.json"
+mv "$tmp/legacy-attempt.json" "$attempt_record_path"
 resume_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CLAUDE_CALLED="$tmp/canonical.calls" \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$resume_run") >"$tmp/resume.out" 2>"$tmp/resume.err" || resume_rc=$?
-assert_eq 0 "$resume_rc" 'new run directory resumes the completed durable attempt'
-assert_eq 1 "$(wc -l <"$tmp/canonical.calls")" 'completed replay never invokes the provider again'
+assert_eq 0 "$resume_rc" 'new run directory resumes a legacy completed durable attempt'
+assert_eq 1 "$(wc -l <"$tmp/canonical.calls")" 'legacy completed replay never invokes the provider again'
 assert_eq "$(jq -r '.attemptId' "$claude_run/adversarial.result.json")" \
     "$(jq -r '.attemptId' "$resume_run/adversarial.result.json")" 'resume retains original attempt identity'
 assert_eq "$script" "$(jq -r '.launcher.path' "$claude_run/adversarial.result.json")" 'result names actual launcher path'

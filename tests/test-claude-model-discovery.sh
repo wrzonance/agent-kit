@@ -63,14 +63,27 @@ node "$fixture/scripts/claude-model-discovery.mjs" --for-error 'authentication f
 assert_eq no "$([[ -e $fixture/node_modules/@anthropic-ai/claude-agent-sdk/calls.json ]] && printf yes || printf no)" \
     'ordinary authentication failures do not query model metadata'
 
+local_sdk="$tmp/local-sdk"
+mkdir -p "$local_sdk/scripts/node_modules/@anthropic-ai/claude-agent-sdk"
+cp "$fixture/scripts/claude-model-discovery.mjs" "$local_sdk/scripts/"
+cp "$fixture/node_modules/@anthropic-ai/claude-agent-sdk/package.json" \
+    "$fixture/node_modules/@anthropic-ai/claude-agent-sdk/index.mjs" \
+    "$local_sdk/scripts/node_modules/@anthropic-ai/claude-agent-sdk/"
+local_out=$(node "$local_sdk/scripts/claude-model-discovery.mjs" --list-models 2>"$tmp/local.err") || {
+    _fail 'default SDK discovery is bounded to the helper scripts directory' "$(<"$tmp/local.err")"; exit 1;
+}
+assert_contains "$local_out" 'sonnet' 'SDK installed beside the helper is discoverable by default'
+
 missing="$tmp/missing"
 mkdir -p "$missing/scripts"
 cp "$root/agentkit/skills/review-remote-pr/scripts/claude-model-discovery.mjs" "$missing/scripts/"
 rc=0
 node "$missing/scripts/claude-model-discovery.mjs" --list-models >/dev/null 2>"$tmp/missing.err" || rc=$?
 assert_eq 1 "$rc" 'missing optional SDK reports model discovery unavailable'
+assert_contains "$(<"$tmp/missing.err")" 'operator-controlled SDK directory' \
+    'missing SDK output explains the explicit operator-controlled install path'
 assert_contains "$(<"$tmp/missing.err")" 'npm install --ignore-scripts --no-save' \
-    'missing SDK output gives an opt-in install command'
+    'missing SDK output gives a safe opt-in installation command'
 
 integration="$tmp/integration"
 scripts="$integration/agentkit/skills/review-remote-pr/scripts"
@@ -84,6 +97,11 @@ cp "$root/agentkit/skills/.shared/scripts/lib/adversarial-review.sh" \
 cp "$fixture/node_modules/@anthropic-ai/claude-agent-sdk/package.json" \
     "$fixture/node_modules/@anthropic-ai/claude-agent-sdk/index.mjs" \
     "$integration/node_modules/@anthropic-ai/claude-agent-sdk/"
+cat >"$integration/node_modules/@anthropic-ai/claude-agent-sdk/index.mjs" <<'EOF'
+import { writeFileSync } from 'node:fs';
+if (process.env.SDK_EXEC_MARKER) writeFileSync(process.env.SDK_EXEC_MARKER, 'executed');
+export function query() { throw new Error('must not query this untrusted SDK'); }
+EOF
 cat >"$tmp/fake-claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -103,17 +121,29 @@ run_dir="$tmp/review"
 mkdir -m 700 "$run_dir"
 rc=0
 cd "$integration"
-CLAUDE_EXECUTABLE="$tmp/fake-claude" bash \
+SDK_EXEC_MARKER="$tmp/workspace-sdk-executed" CLAUDE_EXECUTABLE="$tmp/fake-claude" bash \
     "$scripts/claude-adversarial-review.sh" --mode probe --no-payload \
     --model claude-fable-5.1 --transcript "$run_dir/transcript" \
     >"$tmp/rejection.out" 2>"$tmp/rejection.err" || rc=$?
 assert_eq 1 "$rc" 'invalid model remains a failed review, not an automatic fallback'
 diagnostic=$(<"$tmp/rejection.err")
-assert_contains "$diagnostic" 'sonnet' \
-    'invalid-model diagnostic lists the exact session selector'
-assert_contains "$diagnostic" 'effort: low, medium, high, xhigh, max' \
-    'invalid-model diagnostic lists exact effort levels'
-assert_contains "$diagnostic" 'no prompt submitted' \
-    'invalid-model diagnostic identifies metadata-only model discovery'
+assert_contains "$diagnostic" 'resolves outside its authorized directory' \
+    'invalid-model diagnostic refuses a model SDK found only in a worktree ancestor'
+assert_eq no "$([[ -e $tmp/workspace-sdk-executed ]] && printf yes || printf no)" \
+    'invalid-model diagnostics never import an SDK found under the review worktree'
+
+escape_root="$tmp/authorized-sdk"
+mkdir -p "$escape_root/node_modules/@anthropic-ai" "$tmp/untrusted-sdk"
+ln -s "$integration/node_modules/@anthropic-ai/claude-agent-sdk" \
+    "$escape_root/node_modules/@anthropic-ai/claude-agent-sdk"
+escape_marker="$tmp/escaped-sdk-executed"
+rc=0
+SDK_EXEC_MARKER="$escape_marker" node "$scripts/claude-model-discovery.mjs" --list-models \
+    --sdk-dir "$escape_root" >"$tmp/escape.out" 2>"$tmp/escape.err" || rc=$?
+assert_eq 1 "$rc" 'explicit SDK directories reject package symlinks escaping their authorized root'
+assert_contains "$(<"$tmp/escape.err")" 'resolves outside its authorized directory' \
+    'explicit SDK escape is rejected before import'
+assert_eq no "$([[ -e $escape_marker ]] && printf yes || printf no)" \
+    'SDK package code outside the explicit root is not executed'
 
 finish

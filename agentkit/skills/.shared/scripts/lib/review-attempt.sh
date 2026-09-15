@@ -4,7 +4,8 @@
 # Durable review-attempt state and canonical launch integration.
 # Local reservations are independent of the remote completed-review ledger.
 # The git common directory shares the budget across worktrees and run dirs.
-# No operation deletes a reservation or grants another provider invocation.
+# Only an explicitly authorized retry of the current failed canonical attempt
+# may reserve another provider invocation; all other reservations stay one-shot.
 validate_receipt_attempt() {
     local run_dir=$1
     local entry="$run_dir/state/review-attempt.json" attempt_root launcher attempt script_dir
@@ -190,10 +191,16 @@ try:
             raise ValueError('retry requires a fresh result path')
         budget = entry.get('maxBudgetUsd')
         tokens = entry.get('maxOutputTokens')
-        if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0:
-            raise ValueError('retry requires a positive maxBudgetUsd')
-        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
-            raise ValueError('retry requires a positive integer maxOutputTokens')
+        if record.get('provider') == 'anthropic':
+            if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0:
+                raise ValueError('Claude retry requires a positive maxBudgetUsd')
+            if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+                raise ValueError('Claude retry requires a positive integer maxOutputTokens')
+        else:
+            if budget is not None and (not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0):
+                raise ValueError('optional retry maxBudgetUsd must be positive')
+            if tokens is not None and (not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0):
+                raise ValueError('optional retry maxOutputTokens must be a positive integer')
         old_result = pathlib.Path(record['result'])
         result_value = json.loads(safe_file(old_result))
         transcript = result_value.get('transcript')
@@ -445,8 +452,10 @@ reserve_review_attempt() {
     local retry_id=${RETRY_ATTEMPT_ID:-} budget=${MAX_BUDGET_USD:-5.00}
     local tokens=${MAX_OUTPUT_TOKENS:-} duration=${MAX_DURATION_SECONDS:-900}
     if [[ -n $retry_id || -n ${RETRY_AUTHORIZATION:-} ]]; then
-        [[ -n $retry_id && -n ${RETRY_AUTHORIZATION:-} && -n $tokens ]] ||
-            die 'retry requires paired attempt/authorization and an explicit output-token limit'
+        [[ -n $retry_id && -n ${RETRY_AUTHORIZATION:-} ]] ||
+            die 'retry requires paired attempt and authorization'
+        [[ $PROVIDER != anthropic || -n $tokens ]] ||
+            die 'Claude retry requires an explicit output-token limit'
     fi
     jq -n --arg repo "$REPO" --argjson pr "$PR" --arg payload "$PAYLOAD" \
         --arg repo_root "$CONTRACT_ROOT" \
@@ -468,8 +477,8 @@ reserve_review_attempt() {
         overrideAuthorization:$authorization,launcher:$launcher,launcherPid:$pid,result:$result,
         canonical:true,procedure:"one-shot diff review; no contract-blind or two-pass attestation",
           enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted"}
-        + {maxBudgetUsd:($budget|tonumber),
-            maxOutputTokens:(if $tokens == "" then null else ($tokens|tonumber) end),
+        + {maxBudgetUsd:(if $provider == "anthropic" then ($budget|tonumber) else null end),
+            maxOutputTokens:(if $provider == "anthropic" and $tokens != "" then ($tokens|tonumber) else null end),
             maxDurationSeconds:($duration|tonumber)}' >"$ATTEMPT_ENTRY"
     local rc=0
     if [[ -n $retry_id ]]; then
@@ -495,7 +504,7 @@ reserve_review_attempt() {
             --arg review_base "$REVIEW_BASE_SHA" --arg launcher "$LAUNCHER_PATH" \
             '.state == "completed" and .canonical == true and .payload == $payload and
              .model == $model and .effort == $effort and .head == $head and .base == $base and
-             .reviewBase == $review_base and
+             (.reviewBase // .base) == $review_base and
              .launcher == $launcher' <<<"$ATTEMPT_RECORD" >/dev/null; then
             jq '.completedResult' <<<"$ATTEMPT_RECORD" >"$RUN_DIR/adversarial.result.json"
             "$SCRIPT_DIR/review-ledger.sh" attempt validate --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY" >/dev/null ||
