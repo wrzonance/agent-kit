@@ -20,6 +20,10 @@ class Activation(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.plugin = self.root / "plugin"
         shutil.copytree(ROOT / "agentkit", self.plugin)
+        manifest = self.plugin / ".claude-plugin/plugin.json"
+        data = json.loads(manifest.read_text())
+        data["version"] = "0.8.1"
+        manifest.write_text(json.dumps(data))
         self.helper = self.plugin / "skills/.shared/scripts/workflow-activation.sh"
         self.hook = self.plugin / "hooks/user-prompt-submit.sh"
         self.payload = {"cwd": str(self.repo), "session_id": "test-session",
