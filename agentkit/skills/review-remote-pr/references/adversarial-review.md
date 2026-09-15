@@ -303,7 +303,7 @@ The scripts enforce explicit safety ceilings with --max-duration-seconds and --m
 `state/review-attempt.json` identifies the original payload, base/head, configured and selected
 reviewer, launcher and output path. `review-ledger.sh attempt` stores the authoritative record
 under `$(git rev-parse --git-common-dir)/agentkit-review-attempts/`, keyed by repository and PR.
-Reservation and transitions use an exclusive nonblocking lock, fsync, and atomic replacement
+Reservation and transitions use an exclusive lock with a two-second acquisition bound, fsync, and atomic replacement
 ([Python flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock),
 [atomic replacement](https://docs.python.org/3/library/os.html#os.replace)). The record retains
 transition history, launcher/runtime hashes, helper and provider process identities, available
@@ -326,6 +326,14 @@ This validates that attempt's original result and records completion without lau
 If evidence is missing, preserve the record and report the unresolved attempt. No command resets
 the budget. A repeated canonical invocation reuses a matching completed result; changed targets
 require the existing mechanical-lineage workflow, not a new review.
+
+A `parser-rejected` preparation can recover the same attempt only when its complete event history
+proves no provider start or process registration occurred. The supported launcher retries local
+preparation after consent and payload checks, preserving the original ID and preparation history.
+Changed inputs, failed/running/unknown/completed sends, and legacy evidence cannot recover a new
+send. Lock timeout is unavailable/unknown evidence, not a successful transition or retry grant.
+After fixes advance the branch, publish using the original `state/review-attempt.json` head;
+receipt and ledger identity describe that paid review, not unverified descendant coverage.
 
 Both shipped provider helpers reserve direct review invocations in the same registry, marking
 their actual noncanonical launcher. Helper ownership is claimed before preparing output or

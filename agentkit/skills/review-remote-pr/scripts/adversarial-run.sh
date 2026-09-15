@@ -119,6 +119,7 @@ CONFIGURED_REVIEWER=''
 ATTEMPT_ENTRY=''
 ATTEMPT_RECORD=''
 ATTEMPT_ID=''
+ATTEMPT_RECOVERING=0
 
 usage() {
     cat <<EOF
@@ -897,8 +898,12 @@ write_provenance_record() {
 guard_prior_launch_attempt() {
     local marker=$RUN_DIR/state/launch-attempted result=$RUN_DIR/adversarial.result.json
     [[ -e $marker ]] || return 0
+    [[ ${ATTEMPT_RECOVERING:-0} != 1 ]] || return 0
     if valid_completed_result "$result" && jq -e '.attemptId | type == "string"' "$result" >/dev/null; then
         return 0
+    fi
+    if valid_completed_result "$result"; then
+        die "preserving completed legacy/noncanonical review at $result; reconcile its original evidence"
     fi
     write_blocked_result prior-launch-unconfirmed \
         "a previous launch attempt recorded at $marker has no completed or blocked result; treating this as a possible undisclosed send and refusing to relaunch automatically"

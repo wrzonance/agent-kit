@@ -366,7 +366,7 @@ RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --
 # --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
 publish_rc=0
 # --head-sha/--diff-payload/--harness unlock post-receipt.sh's own ledger write-back (issue #486 item 4).
-rhs=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha') || rhs=''
+rhs=$(jq -er '.head | select(type == "string" and length > 0)' "$RUN_DIR/state/review-attempt.json") || exit 1
 rh=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.name 2>/dev/null) || rh=''
 rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH" --diff "$RUN_DIR/adversarial.diff" 2>/dev/null) || rdp=''
 rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")

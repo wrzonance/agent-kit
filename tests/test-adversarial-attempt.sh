@@ -27,7 +27,7 @@ mv "$tmp/change" "$entry"
 assert_rc 1 'wrong attempt identity cannot claim reservation' -- attempt start --id wrong
 assert_rc 0 'original reservation can transition to running' -- attempt start --id "$id" --pid "$$"
 assert_rc 20 'replayed provider start cannot launch twice' -- attempt start --id "$id" --pid "$$"
-assert_rc 0 'uncertain completion is retained' -- attempt finish --id "$id" --state unknown-outcome
+assert_rc 0 'uncertain completion is retained' -- attempt finish --id "$id" --pid "$$" --state unknown-outcome
 attempt read >"$tmp/read"
 assert_eq unknown-outcome "$(jq -r '.state' "$tmp/read")" 'unknown outcome remains distinct'
 assert_eq 3 "$(jq '.events | length' "$tmp/read")" 'lifecycle events are retained'
@@ -84,4 +84,53 @@ for state in parser-rejected failed; do
     assert_eq "$state" "$(jq -r '.state' <<<"$record")" "$state remains observable on resume"
     assert_rc 20 "$state does not silently reset budget" -- attempt reserve
 done
+record=$(attempt read)
+assert_rc 1 'failed provider outcome cannot recover an unsent preparation' -- attempt recover --id "$(jq -r '.id' <<<"$record")"
+jq '.pr += 1' "$entry" >"$tmp/change"
+mv "$tmp/change" "$entry"
+record=$(attempt reserve)
+unsent_id=$(jq -r '.id' <<<"$record")
+assert_rc 0 'preparation can attach before failing preflight' -- attempt attach --id "$unsent_id" --pid "$$"
+assert_rc 0 'owned pre-provider rejection is terminal evidence of no send' -- attempt finish --id "$unsent_id" --pid "$$" --state parser-rejected
+assert_rc 0 'the same obligation can recover a proven unsent preparation' -- attempt recover --id "$unsent_id"
+record=$(attempt read)
+assert_eq "$unsent_id" "$(jq -r '.id' <<<"$record")" 'unsent recovery retains the original attempt ID'
+assert_eq 1 "$(jq '.preparations | length' <<<"$record")" 'unsent recovery retains preparation history'
+assert_rc 1 'stale helper cannot finalize the recovered reservation before its new attachment' -- attempt finish --id "$unsent_id" --pid "$$" --state parser-rejected
+assert_rc 0 'recovered preparation claims its only provider invocation' -- attempt start --id "$unsent_id" --pid "$$"
+assert_rc 1 'a started invocation cannot be mislabeled as pre-provider rejection' -- attempt finish --id "$unsent_id" --pid "$$" --state parser-rejected
+assert_rc 1 'a started invocation cannot recover another send' -- attempt recover --id "$unsent_id"
+
+# A reader holding the short registry lock must not break lifecycle updates.
+lock_path="$tmp/repo/.git/agentkit-review-attempts/$(printf 'acme/widget:%s' "$(jq -r '.pr' "$entry")" | sha256sum | cut -d' ' -f1).lock"
+python3 - "$lock_path" "$tmp/locked" <<'PY' &
+import fcntl, pathlib, sys, time
+with open(sys.argv[1], 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    pathlib.Path(sys.argv[2]).touch()
+    time.sleep(0.4)
+PY
+holder=$!
+for _ in {1..100}; do [[ -e $tmp/locked ]] && break; sleep 0.01; done
+assert_rc 0 'transient inspection lock contention does not lose process registration' -- attempt process --id "$unsent_id" --pid "$$"
+wait "$holder"
+assert_rc 0 'a sent attempt records unknown outcome' -- attempt finish --id "$unsent_id" --pid "$$" --state unknown-outcome
+assert_rc 1 'unknown actual-send outcome cannot recover' -- attempt recover --id "$unsent_id"
+before_timeout=$(attempt read)
+rm "$tmp/locked"
+python3 - "$lock_path" "$tmp/locked" <<'PY' &
+import fcntl, pathlib, sys, time
+with open(sys.argv[1], 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    pathlib.Path(sys.argv[2]).touch()
+    time.sleep(3)
+PY
+holder=$!
+for _ in {1..100}; do [[ -e $tmp/locked ]] && break; sleep 0.01; done
+lock_rc=0
+timeout 4 "$script" attempt read --repo-root "$tmp/repo" --entry-file "$entry" >"$tmp/lock.out" 2>"$tmp/lock.err" || lock_rc=$?
+assert_eq 1 "$lock_rc" 'long lock contention fails within a bounded acquisition window'
+assert_contains "$(cat "$tmp/lock.err")" 'outcome unknown' 'lock timeout reports unavailable evidence explicitly'
+wait "$holder"
+assert_eq "$before_timeout" "$(attempt read)" 'lock timeout never mutates or finalizes the attempt'
 finish
