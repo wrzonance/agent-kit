@@ -242,6 +242,18 @@ out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state compl
 assert_eq 1 "$rc" 'an unsatisfiable review requirement is not ordinary PASS'
 assert_contains "$out" 'review=unsatisfiable' 'review-only rule and explicit capability evidence classify structurally'
 assert_contains "$out" 'gate=ADMIN_ELIGIBLE' 'other clean gates yield only admin eligibility'
+
+# Both sibling helpers must resolve when bash receives a filename without a slash.
+rc=0
+out=$(cd "${gate%/*}" && gate=merge-gate.sh run_gate 2>&1) || rc=$?
+assert_eq 0 "$rc" 'bare filename invocation validates covered remediation'
+assert_contains "$out" 'gate=PASS pr=9' 'bare filename preserves the ordinary clean gate'
+rc=0
+out=$(cd "${gate%/*}" && gate=merge-gate.sh GATE_PROVIDER_RESULT=DISABLED \
+    run_gate_raw --code-quality-scan-state complete --review-capability-file "$tmp/capability.json" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'bare filename admin eligibility remains distinct from PASS'
+assert_contains "$out" 'gate=ADMIN_ELIGIBLE' 'bare filename resolves review capability and covered remediation'
+assert_not_contains "$out" 'gate=BLOCKED' 'clean bare filename admin invocation has no spurious denial'
 write_adversarial_comments '[{"title":"still-open","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair"}]'
 rc=0
 out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \

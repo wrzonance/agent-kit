@@ -8,6 +8,8 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM=${0##*/}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 GH_BIN=${MERGE_GATE_GH:-gh}
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
@@ -738,7 +740,7 @@ if [[ $adversarial_status == covered-* ]]; then
     remediation=''
     root_args=(); [[ -z $repo_root ]] || root_args=(--repo-root "$repo_root")
     [[ -z $diff_payload ]] || root_args+=(--diff-payload "$diff_payload")
-    ledger_script=${BASH_SOURCE[0]%/*}/../../review-remote-pr/scripts/review-ledger.sh
+    ledger_script=$SCRIPT_DIR/../../review-remote-pr/scripts/review-ledger.sh
     if [[ ! -f $adversarial_comments || -L $adversarial_comments || ! -O $adversarial_comments ]]; then
         block 'adversarial remediation unknown: fetch trusted issue comments with --adversarial-comments'
     elif ! remediation=$("$ledger_script" remediation --repo "$repo" --pr "$pr" \
@@ -767,7 +769,7 @@ case $cq_effective_state in
 esac
 
 if [[ -n $review_capability_file ]]; then
-    if review_capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "${BASH_SOURCE[0]%/*}/review-capability.sh" \
+    if review_capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "$SCRIPT_DIR/review-capability.sh" \
         --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" --capability-file "$review_capability_file"); then
         [[ $provider_result == DISABLED ]] || block 'review provider is not disabled'
     else
