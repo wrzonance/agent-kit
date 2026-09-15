@@ -130,9 +130,10 @@ def attest(path, expected_hash):
                                   "--get-argv", "AGENT_CMD_TEST"], capture_output=True, timeout=5, check=True)
     if not declaration.stdout:
         raise Unavailable("missing declared verification command")
-    TRUST_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for directory in (OPERATOR_HOME / ".cache", TRUST_ROOT.parent.parent, TRUST_ROOT.parent, TRUST_ROOT):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        private_parents(directory, OPERATOR_HOME)
     private(TRUST_ROOT, directory=True)
-    private_parents(TRUST_ROOT, OPERATOR_HOME)
     profile_path = TRUST_ROOT / (secrets.token_hex(16) + ".json")
     session_settings(spec, profile_path, kit, python)
     paths = {"code": kit / "hooks", "helperTree": kit / "skills", "helper": kit / "skills/.shared/scripts/agent-run.sh",

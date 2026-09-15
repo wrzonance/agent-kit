@@ -111,7 +111,7 @@ class Profiles(unittest.TestCase):
 
     def test_path_absence_rejects_every_existing_entry_and_unknown_access(self):
         directory = self.root / "bin"
-        directory.mkdir()
+        directory.mkdir(mode=0o700)
         repository = self.root / "repo"
         repository.mkdir()
         PROFILE.check_path_absence(str(directory), repository)

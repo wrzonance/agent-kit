@@ -82,6 +82,22 @@ class Rewrites(unittest.TestCase):
         self.assertEqual("call-1", records.consume(first["command"])["toolId"])
         self.assertIsNone(records.consume(first["command"]))
 
+    def test_missing_completion_preserves_delayed_claim_until_correlated_completion(self):
+        records = ENGINE.Records(self.root / "records", "fixture-session")
+        original = self.event["tool_input"].copy()
+        first = records.issue("call-1", original, self.helper)
+        self.assertIsNone(records.issue("call-2", original, self.helper))
+        self.assertEqual(self.event["tool_input"], original)
+        self.assertEqual("call-1", records.consume(first["command"])["toolId"])
+        self.assertIsNone(records.issue("call-2", original, self.helper))
+        post = self.event | {"hook_event_name": "PostToolUse", "tool_use_id": "call-1", "tool_input": first}
+        completed = records.finish(post)
+        self.assertEqual("call-1", completed["toolId"])
+        self.assertTrue(completed["executionClaimed"])
+        self.assertIsNone(completed["exitCode"])
+        self.assertIsNone(records.consume(first["command"]))
+        self.assertIsNotNone(records.issue("call-2", original, self.helper))
+
     def test_failure_completion_records_no_invented_exit_code(self):
         for consumed in (False, True):
             records = ENGINE.Records(self.root / f"records-{consumed}", "fixture-session")

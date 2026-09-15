@@ -2,10 +2,12 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[2] / "agentkit/skills/.shared/scripts/rewrite-profile.py"
 SPEC = importlib.util.spec_from_file_location("rewrite_producer", MODULE)
@@ -111,6 +113,57 @@ class Producer(unittest.TestCase):
         path.chmod(0o600)
         with self.assertRaises(PRODUCER.Unavailable):
             PRODUCER.attest(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_public_attestation_creates_private_parent_chain_under_group_umask(self):
+        def write(name, value):
+            path = self.root / name
+            path.write_text(value)
+            path.chmod(0o600)
+            return str(path)
+
+        nonce = "synthetic"
+        helper = "/private/agent-run.sh"
+        original = {"command": "agent-run.sh --cmd test", "timeout": 10000}
+        replacement = original | {"command": helper + " --cmd test"}
+        events = [{"event": "PreToolUse", "id": "call", "session": "session", "input": original,
+                   "output": {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": replacement}}},
+                  {"event": "PostToolUse", "id": "call", "session": "session", "input": replacement,
+                   "response": {"stdout": "REWRITE-PROBE:" + nonce}}]
+        configuration = self.root / ".agent"
+        configuration.mkdir(mode=0o700)
+        (configuration / "config.env").write_text("AGENT_CMD_TEST=true\n")
+        data = {"kit": str(MODULE.parents[3]), "python": str(Path(sys.executable).resolve()),
+                "prefix": str(self.root / "prefix.sh"), "settings": str(self.root / "settings.json"),
+                "cwd": str(self.root), "snapshotRoot": str(self.root), "allow": [],
+                "auditSnapshot": str(self.snapshot), "auditNative": str(self.native),
+                "reviewedHashes": {"snapshot": hashlib.sha256(self.snapshot.read_bytes()).hexdigest(),
+                                   "native": hashlib.sha256(self.native.read_bytes()).hexdigest()},
+                "provider": write("provider.jsonl", json.dumps({"type": "system", "subtype": "init",
+                    "plugins": [], "claude_code_version": "2.1.272"})),
+                "events": write("events.ndjson", "\n".join(map(json.dumps, events))),
+                "manifest": write("manifest.json", json.dumps({"nonce": nonce, "helper": helper, "cwd": str(self.root)})),
+                "execution": write("entry.json", json.dumps({"nonce": nonce, "cwd": str(self.root),
+                    "argv": ["--cmd", "test"], "environment": "synthetic", "exitCode": 0})),
+                "sources": write("sources.sha256", hashlib.sha256(self.snapshot.read_bytes()).hexdigest() + "  " + str(self.snapshot)),
+                "cli": write("cli", "synthetic CLI")}
+        path = Path(write("spec.json", json.dumps(data)))
+        trust_root = self.root / ".cache/agentkit/tool-rewrite/profiles"
+        previous = os.umask(0o002)
+        try:
+            with (patch.object(PRODUCER, "OPERATOR_HOME", self.root),
+                  patch.object(PRODUCER, "TRUST_ROOT", trust_root),
+                  patch.object(PRODUCER.subprocess, "run", side_effect=[
+                      subprocess.CompletedProcess([], 0, stdout="2.1.272 (Claude Code)"),
+                      subprocess.CompletedProcess([], 0, stdout=b"true\0")])):
+                profile = PRODUCER.attest(path, hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(trust_root, profile.parent)
+            for directory in (trust_root, *trust_root.parents):
+                if directory == self.root:
+                    break
+                self.assertEqual(0o700, directory.stat().st_mode & 0o777)
+            self.assertEqual(0o002, os.umask(0o002))
+        finally:
+            os.umask(previous)
 
 
 if __name__ == "__main__":

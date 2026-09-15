@@ -28,7 +28,7 @@ class NativeRuntime(unittest.TestCase):
         self.repository = self.root / "repo"
         self.repository.mkdir()
         self.binary_directory = self.root / "bin"
-        self.binary_directory.mkdir()
+        self.binary_directory.mkdir(mode=0o700)
         self.snapshot = self.root / "snapshot.sh"
         self.snapshot.write_text(f"unalias -a\nexport PATH={self.binary_directory}\n")
         self.snapshot.chmod(0o600)
@@ -164,6 +164,16 @@ class NativeRuntime(unittest.TestCase):
                                  capture_output=True, text=True, check=False, timeout=5)
         self.assertEqual(126, process.returncode)
         self.assertNotIn("command not found", process.stderr)
+
+    def test_public_prefix_rejects_wrong_argument_count_without_hook_fallback(self):
+        profile = str(self.root / "missing-profile.json")
+        for arguments in ([], [profile], [profile, "printf first", "printf second"]):
+            with self.subTest(arguments=arguments):
+                process = subprocess.run([sys.executable, "-I", str(MODULE), "prefix", *arguments],
+                                         input="{}", capture_output=True, text=True, check=False, timeout=5)
+                self.assertEqual(126, process.returncode)
+                self.assertEqual("", process.stdout)
+                self.assertEqual("agentkit: rewrite execution unavailable\n", process.stderr)
 
     def test_isolated_entrypoint_ignores_matching_repository_bytecode_cache(self):
         code = self.root / "code"

@@ -203,8 +203,10 @@ def prefix(path, native):
 
 
 def main():
-    if len(sys.argv) == 4 and sys.argv[1] == "prefix":
+    if sys.argv[1:2] == ["prefix"]:
         try:
+            if len(sys.argv) != 4:
+                raise Unavailable("invalid prefix argument count")
             prefix(sys.argv[2], sys.argv[3])
         except (Unavailable, OSError):
             print("agentkit: rewrite execution unavailable", file=sys.stderr)
