@@ -303,7 +303,7 @@ Report declarations, blanks and reasons, plus the resulting guards.
 | `AGENT_CMD_SETUP` | install before verify |
 | `AGENT_REPO_RUNNER` | command dispatcher |
 | `AGENT_WORKTREE_ROOT` | where isolated worktrees live |
-| `AGENT_GENERATED_PATHS` | generated path prefixes; exempts a confined base advance from `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`'s staleness check |
+| `AGENT_GENERATED_PATHS` | prefixes: write-set checks; `$agentkit/review-remote-pr/scripts/gh-pr-state.sh`'s staleness exemptions for confined base advances |
 | `AGENT_REVIEW_PROVIDERS` | CodeRabbit triggerable; GitHub Code Quality observe-only; exclusive `none` |
 | `AGENT_WORKER_MODELS` / `AGENT_WORKER_MODELS_FALLBACK` | roster, self-detected; wins over `AGENT_WORKER_MODEL` |
 | `AGENT_ADVERSARIAL_REVIEWER` | `codex`/`claude`, or a roster `<model-id>-<effort>` |

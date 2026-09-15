@@ -325,14 +325,8 @@ suggestion_name() {
     fi
 }
 
-# Config values are parsed line-wise, not sourced. Quote only tokens that need
-# grouping so a generated path such as "My Project" survives that parser as one
-# argv token while ordinary suggestions remain readable.
 config_quote_token() {
-    case $1 in
-        *' '*) printf '"%s"' "$1" ;;
-        *) printf '%s' "$1" ;;
-    esac
+    case $1 in *' '*) printf '"%s"' "$1" ;; *) printf '%s' "$1" ;; esac
 }
 
 # Whether TOOL is available to a python component with runner RUNNER: a
@@ -514,9 +508,12 @@ SUGGEST_EOF
 print_suggestions() {
     local sorted path lang marker runner cname task value name entry any=0
     local -a dispatch=()
+    if declare -F propose_generated_paths > /dev/null; then
+        propose_generated_paths "$repo_root"
+    else
+        printf '%s\n' 'detect-toolchains: generated-path proposals unavailable: lib/generated-paths-proposal.sh' >&2
+    fi
 
-    # An existing single entry point answers the question before any per-language
-    # guess does, so it is offered first and unprefixed.
     mapfile -t dispatch < <(gen_dispatcher_tasks)
     if ((${#dispatch[@]})); then
         any=1
@@ -768,8 +765,11 @@ else
 fi
 repo_root=$(cd -- "$repo_root" && pwd)
 
-self_dir=${BASH_SOURCE[0]%/*}
-[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+if [[ -r $self_dir/lib/generated-paths-proposal.sh ]]; then
+    # shellcheck source=lib/generated-paths-proposal.sh
+    source "$self_dir/lib/generated-paths-proposal.sh"
+fi
 
 [[ $ARG_FORMAT == drift ]] || collect_all
 first=1

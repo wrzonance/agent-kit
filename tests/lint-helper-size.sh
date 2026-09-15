@@ -64,8 +64,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #732: typed failures and recovery actions.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# #739: retry limits and confirmed review repairs; exact bytes / 4: 1719272 / 4.
-readonly MAX_TREE_TOKENS=429818
+# #739: retry limits and confirmed review repairs.
+# #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
+readonly MAX_TREE_TOKENS=430842
 
 violations=0
 checked=0
