@@ -1050,4 +1050,45 @@ assert_eq 0 "$self_rc" 'attended authorization also covers its proven own fix pu
 assert_eq interactive "$(jq -r .source "$repo_root/.agent/pr-to-green-run-attended711.json")" \
     'attended receipt preserves its interactive consent source'
 
+# BSD-style wc padding must not change the parent-count authorization decision.
+mkdir "$tmp/padded-bin"
+real_wc=$(command -v wc)
+cat >"$tmp/padded-bin/wc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == -w ]]; then
+    count=$("$REAL_WC" "$@")
+    printf '       %s\n' "$count"
+else
+    exec "$REAL_WC" "$@"
+fi
+EOF
+chmod +x "$tmp/padded-bin/wc"
+run_padded() {
+    REAL_WC=$real_wc PATH="$tmp/padded-bin:$PATH" \
+      run_authorize_provider coderabbit:trigger:capability-default \
+      --run-id padded711 --write-set-file "$tmp/write-set" "$@"
+}
+QUEUE_SHA=$old run_padded >"$tmp/padded.out"
+cp "$repo_root/.agent/pr-to-green-run-padded711.json" "$tmp/padded-initial"
+jq '.runId="padded711"' "$tmp/proof-save" >"$proof"
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_padded --self-authored-proof "14:$proof" \
+    >"$tmp/padded.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'padded wc output still authorizes a proven one-parent fix commit'
+
+cp "$tmp/padded-initial" "$repo_root/.agent/pr-to-green-run-padded711.json"
+merge=$(git -C "$repo_root" commit-tree "$new^{tree}" -p "$old" -p "$new" -m merge)
+jq --arg merge "$merge" '.to=$merge | .commits += [{sha:$merge,pushed:true,finding:"fix:F1"}]' \
+  "$proof" >"$tmp/changed"
+cp "$tmp/changed" "$proof"
+jq --arg merge "$merge" '.reviews[0].coverage += [{sha:$merge,reason:"fix:F1"}]' \
+  "$finding_ledger" >"$tmp/changed"
+cp "$tmp/changed" "$finding_ledger"
+self_rc=0
+QUEUE_SHA=$merge QUEUE_FP_14=$(printf '%064d' 1) run_padded --self-authored-proof "14:$proof" \
+    >"$tmp/padded.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'padded wc output still refuses a two-parent merge'
+assert_contains "$(cat "$tmp/padded.out")" 'merge commit requires mechanical proof' 'merge rejection remains the parent-count gate'
+
 finish

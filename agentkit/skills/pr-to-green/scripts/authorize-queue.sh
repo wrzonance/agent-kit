@@ -701,7 +701,7 @@ if ((full_match_ok == 0)); then
                 ' "$finding_ledger" >/dev/null || die 'self-authored finding coverage missing; redisplay and reconfirm'
                 while IFS= read -r commit; do
                     parents=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") || die 'commit unreadable'
-                    [[ $(wc -w <<<"$parents") == 2 ]] || die 'self-authored merge commit requires mechanical proof'
+                    (( $(wc -w <<<"$parents") == 2 )) || die 'self-authored merge commit requires mechanical proof'
                     git -C "$repo_root" diff-tree --no-commit-id --no-renames --name-only -r -z "$commit" \
                         >"$work_dir/commit-paths" || die 'commit paths unreadable'
                     jq -Rs 'split("\u0000") | map(select(length > 0)) | unique' \
