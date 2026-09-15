@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse -> two denials and nothing else: work-destroying commands (refused
-# every time) and a bare helper name (refused once; the message says the retry
-# is allowed). Everything else is taught by PostToolUse after the command
-# returned real data, so this hook cannot halt autonomous work. Never exit 2,
-# never updatedInput.
+# PreToolUse: hard refusals, attested exact helper correction, bounded fallback.
 set -uo pipefail
 
 # Allow == say nothing: codex 0.147 rejects permissionDecision:allow at runtime
@@ -136,14 +132,17 @@ if reason=$(guard_destructive_reason "$command_line" "$cwd"); then
 This denial does not lift on a retry; if the task genuinely needs it, the user runs it."
 fi
 
-# A bare helper invocation cannot succeed (nothing is on PATH), so denying it is
-# cheaper than the guaranteed command-not-found. Matched in COMMAND POSITION
-# only (line start or after a separator, interpreter prefix allowed) and only on
-# the executed segments: argument-position mentions (find -name, command -v,
-# grep -rn) are how an agent LOCATES the helper, and a basename at line start
-# inside an inert heredoc body (a pasted plan) is data, not a call. Denied ONCE
-# per session and the message says so -- without that promise a live agent
-# stopped rather than adapting.
+if [[ $tool_name == Bash && $command_line == 'agent-run.sh --cmd test' &&
+    -n ${AGENTKIT_REWRITE_PROFILE:-} ]]; then
+    rewrite_output=$(/usr/bin/python3 -I "$self_dir/lib/rewrite_runtime.py" pre <<< "$input" 2>/dev/null) || rewrite_output='{}'
+    if [[ $(jq -r '.hookSpecificOutput.updatedInput.command // empty' <<< "$rewrite_output") != '' ]]; then
+        printf '%s\n' "$rewrite_output"
+        exit 0
+    fi
+fi
+
+# Keep legacy helper-path diagnostics bounded to one denial per session.
+# Successful rewrites return above; this fallback never changes tool input.
 if grep -qE "(^|[;&|])[[:space:]]*((sudo|bash|sh|env)[[:space:]]+)*($HELPERS)\.sh([[:space:]]|$)" \
     <<< "$(guard_destructive_command_segments "$command_line")"; then
     guard_resolve_roots "$cwd" "$command_line"
