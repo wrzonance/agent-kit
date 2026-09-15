@@ -915,9 +915,181 @@ assert_eq '15:main:dddddddddddddddddddddddddddddddddddddddd 16:main:777777777777
     "$(jq -r '.queue | sort_by(.pr) | map([.pr,.base,.headSha] | join(":")) | join(" ")' "$auth")" \
     'the merged-and-vanished root drops out while the surviving root and successor both refresh live'
 
-# 2026-09-09 issue #607: +236 B, the persisted proof and the delete-on-merge
-# restore; measured (the plan estimated +237). Ceiling moves down to the
-# measured count, never above it.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 20571 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 20571 bytes'
+# #711 documents the run predicate and independently checked fix-push proof.
+# #727 adds finding obligations and validated repairs; exact combined size.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/references/auto-merge.md") -le 22927 ]] && printf yes || printf no)" 'auto-merge reference stays at or under 22927 bytes'
+
+# Invocation intent is independent from the live snapshot and remains bounded.
+write_confirmed
+fast_rc=0
+run_authorize_provider coderabbit:trigger:capability-default --fast-mode >"$tmp/fast.out" 2>&1 || fast_rc=$?
+assert_eq 1 "$fast_rc" 'fast mode refuses missing yolo intent'
+assert_contains "$(cat "$tmp/fast.out")" '--fast-mode requires --yolo' 'refusal names missing intent'
+printf 'src/fix.sh\n' >"$tmp/write-set"
+chmod 600 "$tmp/write-set"
+run_fast() {
+    run_authorize_provider coderabbit:trigger:capability-default --fast-mode --yolo \
+        --run-id run711 --write-set-file "$tmp/write-set" "$@"
+}
+fast_rc=0
+run_fast >"$tmp/fast.out" 2>&1 || fast_rc=$?
+assert_eq 0 "$fast_rc" 'explicit fast intent authorizes the displayed live queue'
+receipt="$repo_root/.agent/pr-to-green-run-run711.json"
+if [[ -f $receipt ]]; then
+    assert_eq 'predicate' "$(jq -r .source "$receipt")" 'receipt records predicate consent'
+    assert_eq '[14,15]' "$(jq -c .predicate.prs "$receipt")" 'initial queue bounds discovery'
+else
+    assert_eq present missing 'predicate receipt exists'
+fi
+fast_rc=0
+QUEUE_INCLUDE_16=1 run_fast >"$tmp/fast.out" 2>&1 || fast_rc=$?
+assert_eq 1 "$fast_rc" 'fast mode refuses newly discovered PRs'
+write_confirmed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa yes coderabbit:observe:operator-instruction
+fast_rc=0
+run_fast >"$tmp/fast.out" 2>&1 || fast_rc=$?
+assert_eq 1 "$fast_rc" 'fast mode refuses provider drift'
+write_confirmed
+
+# Actual Git history pins every intervening commit, including reverted paths.
+git -C "$repo_root" init -q
+git -C "$repo_root" config user.email test@example.com
+git -C "$repo_root" config user.name Test
+mkdir -p "$repo_root/src" "$repo_root/.agent/evidence"
+printf 'before\n' >"$repo_root/src/fix.sh"
+git -C "$repo_root" add src/fix.sh
+git -C "$repo_root" commit -qm initial
+old=$(git -C "$repo_root" rev-parse HEAD)
+printf 'after\n' >"$repo_root/src/fix.sh"
+git -C "$repo_root" commit -qam fix
+new=$(git -C "$repo_root" rev-parse HEAD)
+proof="$repo_root/.agent/self-proof.json"
+finding_ledger="$repo_root/.agent/finding-ledger.json"
+jq -n --arg new "$new" '{repo:"owner/repo",pr:14,reviews:[{coverage:[{sha:$new,reason:"fix:F1"}]}]}' >"$finding_ledger"
+chmod 600 "$finding_ledger"
+jq -n --arg old "$old" --arg new "$new" --arg ledger "$finding_ledger" '{findingLedger:$ledger,runId:"run711",repository:"owner/repo",pr:14,base:"main",
+  from:$old,to:$new,commits:[{sha:$new,pushed:true,finding:"fix:F1"}]}' >"$proof"
+jq -cn --arg sha "$new" '{tool:"worktree-commit",commit:$sha,paths_touched:["src/fix.sh"]}' \
+    >"$repo_root/.agent/evidence/paths-touched.ndjson"
+chmod 600 "$proof" "$repo_root/.agent/evidence/paths-touched.ndjson"
+write_confirmed "$old"
+rm -f "$receipt"
+QUEUE_SHA=$old run_fast >"$tmp/self-initial.out"
+cp "$receipt" "$tmp/initial-receipt"
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'a fully evidenced scoped fix advances without another confirmation'
+if [[ -f $receipt ]]; then
+    assert_eq self-authored "$(jq -r '.advances[-1].kind' "$receipt")" 'receipt audits self-authored advance'
+fi
+for failure in outside-commit outside-path base ancestry missing-finding; do
+    cp "$tmp/initial-receipt" "$receipt"
+    cp "$proof" "$tmp/proof-save"
+    cp "$tmp/write-set" "$tmp/set-save"
+    case $failure in
+        outside-commit) jq '.commits=[]' "$proof" >"$tmp/changed"; cp "$tmp/changed" "$proof" ;;
+        outside-path) printf 'src/other.sh\n' >"$tmp/write-set" ;;
+        missing-finding) jq '.findingLedger="/nonexistent"' "$proof" >"$tmp/changed"; cp "$tmp/changed" "$proof" ;;
+    esac
+    self_rc=0
+    QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) \
+      QUEUE_BASE_14=$([[ $failure == base ]] && printf other || printf main) \
+      QUEUE_COMPARE_BEHIND=$([[ $failure == ancestry ]] && printf 1 || printf 0) \
+      run_fast --self-authored-proof "14:$proof" >"$tmp/self.out" 2>&1 || self_rc=$?
+    assert_eq 1 "$self_rc" "self-authored proof refuses $failure"
+    cp "$tmp/proof-save" "$proof"
+    cp "$tmp/set-save" "$tmp/write-set"
+done
+
+cp "$tmp/initial-receipt" "$receipt"
+write_confirmed "$new"
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'rewriting the display never replaces the last authorized head'
+write_confirmed "$old"
+orphan=$(git -C "$repo_root" commit-tree "$new^{tree}" -m unrelated)
+self_rc=0
+QUEUE_SHA=$orphan QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'local ancestry independently refuses a force-pushed unrelated head'
+
+# Even a reverted escape is outside scope; a net diff alone would miss it.
+printf 'outside\n' >"$repo_root/outside.sh"
+git -C "$repo_root" add outside.sh
+git -C "$repo_root" commit -qm escape
+escape=$(git -C "$repo_root" rev-parse HEAD)
+git -C "$repo_root" rm -q outside.sh
+git -C "$repo_root" commit -qm undo-escape
+reverted=$(git -C "$repo_root" rev-parse HEAD)
+jq --arg escape "$escape" --arg reverted "$reverted" '.to=$reverted |
+  .commits += [{sha:$escape,pushed:true,finding:"fix:F1"},{sha:$reverted,pushed:true,finding:"fix:F1"}]' \
+  "$proof" >"$tmp/changed"
+cp "$tmp/changed" "$proof"
+jq --arg escape "$escape" --arg reverted "$reverted" '.reviews[0].coverage +=
+  [{sha:$escape,reason:"fix:F1"},{sha:$reverted,reason:"fix:F1"}]' "$finding_ledger" >"$tmp/changed"
+cp "$tmp/changed" "$finding_ledger"
+for sha in "$escape" "$reverted"; do
+    jq -cn --arg sha "$sha" '{tool:"worktree-commit",commit:$sha,paths_touched:["outside.sh"]}' \
+      >>"$repo_root/.agent/evidence/paths-touched.ndjson"
+done
+self_rc=0
+QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'a fully recorded push still refuses a reverted out-of-scope path'
+assert_contains "$(cat "$tmp/self.out")" 'outside declared write set' 'scope refusal comes from actual per-commit paths'
+
+run_attended() {
+    run_authorize_provider coderabbit:trigger:capability-default \
+      --run-id attended711 --write-set-file "$tmp/write-set" "$@"
+}
+QUEUE_SHA=$old run_attended >"$tmp/attended.out"
+jq '.runId="attended711"' "$tmp/proof-save" >"$proof"
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_attended --self-authored-proof "14:$proof" \
+    >"$tmp/attended.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'attended authorization also covers its proven own fix push'
+assert_eq interactive "$(jq -r .source "$repo_root/.agent/pr-to-green-run-attended711.json")" \
+    'attended receipt preserves its interactive consent source'
+
+# BSD-style wc padding must not change the parent-count authorization decision.
+mkdir "$tmp/padded-bin"
+real_wc=$(command -v wc)
+cat >"$tmp/padded-bin/wc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == -w ]]; then
+    count=$("$REAL_WC" "$@")
+    printf '       %s\n' "$count"
+else
+    exec "$REAL_WC" "$@"
+fi
+EOF
+chmod +x "$tmp/padded-bin/wc"
+run_padded() {
+    REAL_WC=$real_wc PATH="$tmp/padded-bin:$PATH" \
+      run_authorize_provider coderabbit:trigger:capability-default \
+      --run-id padded711 --write-set-file "$tmp/write-set" "$@"
+}
+QUEUE_SHA=$old run_padded >"$tmp/padded.out"
+cp "$repo_root/.agent/pr-to-green-run-padded711.json" "$tmp/padded-initial"
+jq '.runId="padded711"' "$tmp/proof-save" >"$proof"
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_padded --self-authored-proof "14:$proof" \
+    >"$tmp/padded.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'padded wc output still authorizes a proven one-parent fix commit'
+
+cp "$tmp/padded-initial" "$repo_root/.agent/pr-to-green-run-padded711.json"
+merge=$(git -C "$repo_root" commit-tree "$new^{tree}" -p "$old" -p "$new" -m merge)
+jq --arg merge "$merge" '.to=$merge | .commits += [{sha:$merge,pushed:true,finding:"fix:F1"}]' \
+  "$proof" >"$tmp/changed"
+cp "$tmp/changed" "$proof"
+jq --arg merge "$merge" '.reviews[0].coverage += [{sha:$merge,reason:"fix:F1"}]' \
+  "$finding_ledger" >"$tmp/changed"
+cp "$tmp/changed" "$finding_ledger"
+self_rc=0
+QUEUE_SHA=$merge QUEUE_FP_14=$(printf '%064d' 1) run_padded --self-authored-proof "14:$proof" \
+    >"$tmp/padded.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'padded wc output still refuses a two-parent merge'
+assert_contains "$(cat "$tmp/padded.out")" 'merge commit requires mechanical proof' 'merge rejection remains the parent-count gate'
 
 finish

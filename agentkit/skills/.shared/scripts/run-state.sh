@@ -121,6 +121,18 @@ write_state() {
 main() {
     parse_args "$@"
     resolve_file
+    # Lock a stable inode, not the JSON inode replaced by write_state. Resolve
+    # parent aliases so independent writers cannot lose successful updates.
+    local parent lock lock_fd
+    [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
+    if [[ $ACTION != get ]]; then
+        parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
+        FILE=$parent/$(basename -- "$FILE")
+        lock=$FILE.lock
+        [[ ! -L $lock && (! -e $lock || (-f $lock && -O $lock)) ]] || die 'unsafe state lock'
+        exec {lock_fd}>>"$lock"
+        flock -w 10 "$lock_fd" || die 'state lock unavailable after 10 seconds'
+    fi
     read_state
     local path next present value=''
     path=$(jq_path)
