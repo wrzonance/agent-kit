@@ -400,6 +400,20 @@ out=$("$dt_sh" --repo-root "$repo" --format gaps,gaps)
 assert_eq '1' "$(grep -c '^gaps= detected=' <<< "$out")" \
     'a format repeated in the list still prints its section exactly once'
 
+packaged="$tmp/packaged-detector.sh"
+cp -- "$dt_sh" "$packaged"
+repo=$(new_repo)
+mkdir -p "$repo/My Web"
+printf '%s\n' '{"scripts":{"format:check":"prettier --check src"}}' > "$repo/My Web/package.json"
+out=$("$packaged" --repo-root "$repo" --format components 2> "$tmp/packaged.err")
+assert_contains "$out" 'path=My Web lang=node' 'standalone detector keeps component discovery'
+assert_eq '' "$(cat "$tmp/packaged.err")" 'component discovery does not need the generated-path module'
+out=$("$packaged" --repo-root "$repo" --format suggestions 2> "$tmp/packaged.err")
+assert_contains "$out" '# AGENT_CMD_MY_WEB_FORMAT_FIX=npm exec --no -- prettier --write src' 'standalone detector preserves formatter proposals'
+assert_contains "$out" '# AGENT_RUNDIR_MY_WEB_FORMAT="My Web"' 'standalone detector preserves quoted command directories'
+assert_contains "$(cat "$tmp/packaged.err")" 'generated-path proposals unavailable' 'missing optional proposals are explicitly disclosed'
+assert_not_contains "$out" 'AGENT_GENERATED_PATHS=' 'missing proposal capability cannot invent generated paths'
+
 # 2026-09-10 fix wave (issue #696 findings): full commented-declaration
 # coverage and format-list dedup grew the helper by a few lines, then a
 # comment trim clawed most of it back; net vs. the prior 768 ceiling is still

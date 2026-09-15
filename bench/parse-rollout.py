@@ -45,6 +45,7 @@ import json
 import re
 import sys
 from datetime import datetime, timezone
+from efficiency import build_efficiency
 
 PROGRAM = 'parse-rollout'
 
@@ -137,7 +138,12 @@ def parse_session_file(path):
     reference_hits = {}
     trial_meta = None
 
-    for rec in read_records(path):
+    records = read_records(path)
+    try:
+        efficiency = build_efficiency(records)
+    except ValueError as exc:
+        die(f'{path}: {exc}')
+    for rec in records:
         rtype = rec.get('type')
         payload = rec.get('payload') if isinstance(rec.get('payload'), dict) else {}
 
@@ -169,6 +175,7 @@ def parse_session_file(path):
         'tokens': tokens,
         'reference_hits': reference_hits,
         'trial_meta': trial_meta,
+        'efficiency': efficiency,
     }
 
 
@@ -334,6 +341,11 @@ def main(argv):
         'retry_events': trial_meta['retry_events'],
         'exit_condition': trial_meta['exit_condition'],
         'acceptance': acceptance,
+        'dynamic_efficiency': {
+            'schema_version': 1,
+            'actors': [{'actor': a['actor'], 'model': a['model'], 'effort': a['effort'],
+                        **a['efficiency']} for a in parsed],
+        },
     }
     print(json.dumps(record))
     return 0

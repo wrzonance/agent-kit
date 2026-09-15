@@ -74,14 +74,14 @@ root=$tmp/ratchet-lines
 write_script "$root" hooks/lib/guard-lib.sh 2400 30
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted helper that grows past its line ceiling fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 2298 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 2262 lines' \
     'the line ratchet names its ceiling'
 
 root=$tmp/ratchet-tokens
 write_script "$root" hooks/lib/guard-lib.sh 900 130
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'an allowlisted helper that grows in tokens alone fails'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 25215 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 24666 tokens' \
     'the token ratchet names its ceiling'
 
 root=$tmp/stale

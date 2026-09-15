@@ -22,7 +22,7 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 # same PR, so every raise is a reviewed line in the diff, never a drift.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [hooks/lib/guard-lib.sh]="2298:25215:800"
+    [hooks/lib/guard-lib.sh]="2262:24666:800"
     [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
     # #731/#732: verification query, durable fingerprints, and typed failure records.
     [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
@@ -30,7 +30,6 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1284:16983:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #711: predicate receipts and independently checked self-authored advances.
@@ -65,8 +64,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #732: typed failures and recovery actions.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# #739: retry limits and confirmed review repairs; exact bytes / 4: 1719272 / 4.
-readonly MAX_TREE_TOKENS=429818
+# #739: retry limits and confirmed review repairs.
+# #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
+readonly MAX_TREE_TOKENS=430842
 
 violations=0
 checked=0

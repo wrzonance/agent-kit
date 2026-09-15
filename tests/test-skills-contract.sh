@@ -54,6 +54,19 @@ packaged_out=$("$packaged/.shared/scripts/agent-preflight.sh" --worktree "$repo"
 assert_contains "$packaged_out" "skills= path=$packaged" \
     'a packaged preflight reports its packaged skills tree'
 
+mkdir -p "$repo/.agent"
+printf '%s\n' 'AGENT_CMD_FORMAT=ruff format --check' > "$repo/.agent/config.env"
+packaged_rc=0
+packaged_out=$("$packaged/.shared/scripts/agent-preflight.sh" --worktree "$repo" --no-write 2>&1) || packaged_rc=$?
+assert_eq 1 "$packaged_rc" 'a missing declaration library cannot bypass configured workflow checks'
+assert_contains "$packaged_out" 'required declaration check unavailable' 'missing required library fails with an actionable diagnostic'
+mkdir -p "$packaged/.shared/scripts/lib"
+cp -- "$skills/.shared/scripts/lib/preflight-declarations.sh" "$packaged/.shared/scripts/lib/"
+packaged_rc=0
+packaged_out=$("$packaged/.shared/scripts/agent-preflight.sh" --worktree "$repo" --no-write 2>&1) || packaged_rc=$?
+assert_eq 1 "$packaged_rc" 'a missing config resolver cannot bypass configured workflow checks'
+assert_contains "$packaged_out" 'repo-config.sh' 'the missing config resolver is named'
+
 resolver_matches=$(find "$skills" -type f -name SKILL.md -exec grep -Hn 'agentkit=\$(find ' {} + || true)
 resolver_lines=$(printf '%s\n' "$resolver_matches" | grep -c . || true)
 assert_eq '1' "$resolver_lines" \
@@ -449,6 +462,17 @@ for ref_dir in "$skills"/*/references; do
 
     while IFS= read -r -d '' ref_file; do
         ref_rel="references/$(basename "$ref_file")"
+        # The issue template is compiled, not another root reading obligation.
+        # Pin its conditional selection AND the selected file's renderer input;
+        # test-worker-leaf-contract exercises the generated prompt itself.
+        if [[ $split_skill_name == parallel-issues && $ref_rel == references/implementation-worker.md ]]; then
+            composer_source=$(<"$skills/parallel-issues/scripts/compose-worker-prompt.sh")
+            assert_contains "$composer_source" '[[ $template_kind != issue-lead ]] || template_file=$script_dir/../references/implementation-worker.md' \
+                'issue-lead composition deterministically selects the leaf template'
+            assert_contains "$composer_source" 'done < "$template_file" > "$temporary"' \
+                'the renderer consumes its selected template file'
+            continue
+        fi
         line_no=$(grep -n -F -- "$ref_rel" "$split_skill_body" | head -1 | cut -d: -f1)
         if [[ -n $line_no ]]; then
             _pass "$split_skill_name names $ref_rel in the body"

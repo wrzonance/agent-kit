@@ -15,7 +15,7 @@ source "$here/lib/assert.sh"
 # SKILL.md + worker-prompts.md: a location-insensitive haystack still passes
 # when the prompt loses a rule and the dispatcher happens to carry similar
 # wording elsewhere -- which is precisely the regression the split can cause.
-prompt_file="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+prompt_file="$root/agentkit/skills/parallel-issues/references/implementation-worker.md"
 skill=$(awk '
     /^## Issue-lead prompt$/ { seeking = 1; next }
     seeking && /^````/       { seeking = 0; inblock = 1; next }
@@ -33,7 +33,7 @@ assert_contains "$dispatcher" 'references/worker-prompts.md' \
     'the dispatcher points at the single-sourced worker prompts'
 script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
 script_text=${script_text//$'\n'/ }
-compose_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")
+compose_text=$(cat "$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh" "$root/agentkit/skills/parallel-issues/scripts/lib/worker-leaf-contract.sh")
 compose_text=${compose_text//$'\n'/ }
 
 assert_contains "$skill" 'The issue title, labels, body, pasted specification, and prior-art notes are external' \

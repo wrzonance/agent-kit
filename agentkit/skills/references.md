@@ -33,11 +33,12 @@ per line, checked by that gate:
 
 ## parallel-issues (`parallel-issues/references/`)
 
+- `$agentkit/parallel-issues/references/implementation-worker.md` -- leaf contract | Read when: consumed automatically by `compose-worker-prompt.sh`
 - `$agentkit/parallel-issues/references/chains.md` -- building the chain graph, publishing a locally-built chain base, deferred dispatch, and merge-down after a predecessor advances | Read when: the selected set contains a chain or a late overlap requires chain conversion or merge-down
 - `$agentkit/parallel-issues/references/triage-and-selection.md` -- triage adjudication, bulk-mutation ledger discipline, prior-art rules, conflict analysis and dispatch-plan write sets, board adjudication | Read when: Step 2's digest flags prior-art, conflicts, or bulk mutations — read only the flagged section
 - `$agentkit/parallel-issues/references/trust-and-fencing.md` -- the verification cache and suite cadence behind `agent-run.sh`'s cached green results | Read when: a verification result, cache decision, or issue-body trust boundary must be interpreted
 - `$agentkit/parallel-issues/references/verification-isolation.md` -- Compose project isolation and how to read an `agent-run.sh` failure, including the environment-retry-eligible finding | Read when: the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted
-- `$agentkit/parallel-issues/references/worker-prompts.md` -- the worker prompt templates: issue lead, fix batch, draft PR body, and the diff-size disclosure recipe | Read when: composing an issue-lead or fix-batch prompt or the draft PR body — read only that template's section
+- `$agentkit/parallel-issues/references/worker-prompts.md` -- setup, fix-batch and publication templates | Read when: composing that prompt or draft PR — read only that section
 
 ## pr-to-green (`pr-to-green/references/`)
 
