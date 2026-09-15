@@ -76,7 +76,15 @@ fi
 # blocks must leave no marker: absence of a result file alone would still pass
 # if a regression launched the provider and simply failed to publish.
 [[ -z ${FAKE_CLAUDE_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CLAUDE_CALLED"
+if [[ -n ${FAKE_CLAUDE_LIMITS:-} ]]; then
+    printf '%s\n' "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-unset}" >"$FAKE_CLAUDE_LIMITS"
+    printf '%s\n' "$@" >>"$FAKE_CLAUDE_LIMITS"
+fi
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5","tools":["StructuredOutput"],"mcp_servers":[]}'
+if [[ ${FAKE_PROVIDER_ERROR:-} == 1 ]]; then
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"terminal_reason":"budget_exhausted"}'
+    exit 1
+fi
 if [[ ${FAKE_INVALID:-} == 1 ]]; then
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[],"unexpected":true},"modelUsage":{"claude-opus-5":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
 else
@@ -197,6 +205,61 @@ assert_contains "$(cat -- "$tmp/mismatch.err")" 'does not match PR head' \
     'checkout mismatch names the PR head invariant'
 assert_eq no "$( [[ -e $mismatch_run/adversarial.diff ]] && printf yes || printf no )" \
     'checkout mismatch does not build a review diff'
+
+# Explicit canonical limits reach the provider boundary, with no second send.
+limits_run="$tmp/limits-run"
+grant "$limits_run" anthropic
+limits_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_LIMITS="$tmp/limits.args" bash "$script" --pr 42 --repo acme/widget \
+    --run-dir "$limits_run" --max-budget-usd 10 --max-output-tokens 128000 \
+    --max-duration-seconds 1800) >"$tmp/limits.out" 2>"$tmp/limits.err" || limits_rc=$?
+assert_eq 0 "$limits_rc" 'canonical launcher accepts explicit review resource limits'
+assert_eq 128000 "$(head -n 1 "$tmp/limits.args" 2>/dev/null)" 'requested output limit reaches Claude'
+assert_contains "$(cat "$tmp/limits.args" 2>/dev/null)" $'--max-budget-usd\n10.00' 'requested dollar cap reaches Claude'
+for invalid_limit in 0 -1 128000.5 99999999999999999999999; do
+    invalid_limit_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+        FAKE_CLAUDE_CALLED="$tmp/invalid-limit.called" bash "$script" --pr 42 --repo acme/widget \
+        --run-dir "$tmp/invalid-limit" --max-output-tokens "$invalid_limit") \
+        >"$tmp/invalid-limit.out" 2>"$tmp/invalid-limit.err" || invalid_limit_rc=$?
+    assert_eq 2 "$invalid_limit_rc" 'invalid output limit is a usage error'
+done
+assert_eq no "$([[ -e $tmp/invalid-limit.called ]] && printf yes || printf no)" 'invalid output limit never sends a review'
+
+# An explicitly authorized failed-attempt retry launches once and retains history.
+retry_failed="$tmp/retry-failed"
+grant "$retry_failed" anthropic
+retry_failed_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_PROVIDER_ERROR=1 bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_failed") \
+    >"$tmp/retry-failed.out" 2>"$tmp/retry-failed.err" || retry_failed_rc=$?
+assert_eq 1 "$retry_failed_rc" 'a provider budget error records a failed canonical attempt'
+retry_ledger="$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh"
+prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" --entry-file "$retry_failed/state/review-attempt.json")
+prior_retry_id=$(jq -r .id <<<"$prior_record")
+prior_retry_hash=$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)
+retry_run="$tmp/retry-success"
+mkdir -m 700 "$retry_run"
+retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_run" --repo acme/widget --pr 42 --diff "$expected")
+bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthropic \
+    --payload "$retry_payload" --source interactive >/dev/null
+retry_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/retry.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_run" \
+    --retry-attempt "$prior_retry_id" --retry-authorization 'Operator authorized one retry' \
+    --max-budget-usd 10 --max-output-tokens 128000 --max-duration-seconds 1800) \
+    >"$tmp/retry.out" 2>"$tmp/retry.err" || retry_rc=$?
+assert_eq 0 "$retry_rc" 'canonical authorized retry completes on the same reviewed head'
+assert_eq 1 "$(wc -l <"$tmp/retry.calls" 2>/dev/null)" 'authorized retry sends exactly once'
+retry_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" --entry-file "$retry_run/state/review-attempt.json")
+assert_eq "$prior_retry_id" "$(jq -r .retryOf <<<"$retry_record")" 'canonical retry binds the prior failed attempt'
+assert_eq "$prior_retry_hash" "$(jq -r '.previousAttempts[0].transcriptSha256' <<<"$retry_record")" 'canonical retry archives the original transcript digest'
+assert_eq "$prior_retry_hash" "$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)" 'canonical retry leaves prior transcript untouched'
+retry_validate_rc=0
+bash "$retry_ledger" attempt validate --repo-root "$repo" --entry-file "$retry_run/state/review-attempt.json" \
+    >"$tmp/retry-validate.out" 2>"$tmp/retry-validate.err" || retry_validate_rc=$?
+assert_eq 0 "$retry_validate_rc" 'completed retry retains valid canonical receipt provenance'
 
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
@@ -581,6 +644,7 @@ cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
 cp -- "$consent" "$malformed_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$malformed_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$malformed_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$malformed_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -646,6 +710,7 @@ cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
 cp -- "$consent" "$verdict_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$verdict_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$verdict_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$verdict_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -938,6 +1003,7 @@ cp -- "$script" "$noreceipt_script_dir/adversarial-run.sh"
 cp -- "$consent" "$noreceipt_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$noreceipt_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
@@ -1689,8 +1755,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1083 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1083 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1016 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1016 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

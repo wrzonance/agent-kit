@@ -22,6 +22,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 source "$SCRIPT_DIR/../../.shared/scripts/lib/contract-cache.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../../.shared/scripts/lib/review-attempt.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-launch-options.sh"
 # consent-record.sh owns the state filename so the grant and every check share
 # one spelling. It returns immediately when sourced and has no side effects.
 # shellcheck disable=SC1091
@@ -125,52 +127,6 @@ ATTEMPT_RECORD=''
 ATTEMPT_ID=''
 ATTEMPT_RECOVERING=0
 
-usage() {
-    cat <<EOF
-Usage: $PROGNAME --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
-                 [--review-base-sha SHA]
-                 [--reaffirm-if-covered --comments FILE] [--provenance TEXT]
-                 [--reviewer MODEL-EFFORT --override-authorization TEXT]
-
-Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
-publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
-line containing provider, model, effort, mode, P1, and P2.
-
-Reviewer selection comes from the running harness and peer-cli facts in the
-untracked environment contract at the repository root. The optional
---peer-cli-absent flag must agree with a peer-cli= ... absent contract fact.
-
---provenance TEXT carries launch authorization (the session-ledger RUN_ID, the
-recorded cross_provider_consent record, the user's verbatim invocation quote)
-as one argv element, so a harness approval layer can see it in the launch
-command itself. It is taken verbatim -- never eval'd, never re-parsed -- echoed
-to stderr with a "provenance:" prefix, and written to DIR/state/provenance
-(mode 600) before any external call. Pass it as data from a shell variable at
-the call site; never compose it into shell source.
-
-This is the real PR-diff review path. Capability probes use the provider helper
-with --mode probe --no-payload, send only a synthetic snippet, and never spend
-the one-review-per-PR receipt budget.
-
---review-base-sha SHA explicitly anchors a combined review at a full commit
-SHA that is an ancestor of both the observed PR base and checked-out PR head.
-The consent payload hashes the exact diff from that anchor; the attempt records
-both the current PR base and the selected review base. Omitting it preserves
-the ordinary current-base review.
-
-The consent record is always DIR/state/$CONSENT_STATE_FILENAME. There is no
-caller-supplied consent flag.
-
---reaffirm-if-covered --comments FILE (issue #477): before launching a
-reviewer, consults the sibling review-ledger.sh's status for this PR's
-already-fetched comments artifact. A covered-head or covered-diff verdict
-(the exact tree, or a base-merge-only advance of a tree, already reviewed)
-appends a "reaffirmed_from" ledger entry and exits 0 WITHOUT spawning a
-reviewer -- the DIR/adversarial.result.json this run would otherwise have
-produced is never written. Only an absent ledger permits a first review;
-stale or unreadable evidence requires reconciliation without another send.
-EOF
-}
 
 die() {
     printf '%s: %s\n' "$PROGNAME" "$1" >&2
@@ -191,33 +147,6 @@ require_value() {
     [[ -n ${2:-} ]] || die_usage "$1 requires a value"
 }
 
-parse_args() {
-    while (($#)); do
-        case $1 in
-            --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
-            --worktree) require_value "$1" "${2:-}"; WORKTREE=$2; shift 2 ;;
-            --worktree=*) WORKTREE=${1#*=}; shift ;;
-            --pr) require_value "$1" "${2:-}"; PR=$2; shift 2 ;;
-            --pr=*) PR=${1#*=}; shift ;;
-            --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
-            --repo=*) REPO=${1#*=}; shift ;;
-            --run-dir) require_value "$1" "${2:-}"; RUN_DIR=$2; shift 2 ;;
-            --run-dir=*) RUN_DIR=${1#*=}; shift ;;
-            --review-base-sha) require_value "$1" "${2:-}"; REQUESTED_REVIEW_BASE_SHA=$2; shift 2 ;;
-            --review-base-sha=*) REQUESTED_REVIEW_BASE_SHA=${1#*=}; shift ;;
-            --peer-cli-absent) PEER_CLI_ABSENT=1; shift ;;
-            --reaffirm-if-covered) REAFFIRM_IF_COVERED=1; shift ;;
-            --comments) require_value "$1" "${2:-}"; LEDGER_COMMENTS=$2; shift 2 ;;
-            --comments=*) LEDGER_COMMENTS=${1#*=}; shift ;;
-            --provenance) require_value "$1" "${2:-}"; PROVENANCE=$2; shift 2 ;;
-            --provenance=*) PROVENANCE=${1#*=}; shift ;;
-            --reviewer) require_value "$1" "${2:-}"; REVIEWER_OVERRIDE=$2; shift 2 ;;
-            --override-authorization) require_value "$1" "${2:-}"; OVERRIDE_AUTHORIZATION=$2; shift 2 ;;
-            -h|--help) usage; exit 0 ;;
-            *) die_usage "unknown option: $1" ;;
-        esac
-    done
-}
 
 provider_for_cli() {
     case $1 in
@@ -981,10 +910,11 @@ run_provider() {
         --consent-payload "$PAYLOAD"
         --base-ref "$BASE_REF" --diff "$RUN_DIR/adversarial.diff"
         --transcript "$transcript" --output "$result"
-        --max-duration-seconds 900
+        --max-duration-seconds "$MAX_DURATION_SECONDS"
     )
     if [[ $PROVIDER == anthropic ]]; then
-        helper_args+=(--max-budget-usd 5.00)
+        helper_args+=(--max-budget-usd "$MAX_BUDGET_USD")
+        [[ -z $MAX_OUTPUT_TOKENS ]] || helper_args+=(--max-output-tokens "$MAX_OUTPUT_TOKENS")
     else
         helper_args+=(--max-tokens 400000)
     fi
@@ -1027,6 +957,7 @@ run_provider() {
 
 main() {
     parse_args "$@"
+    validate_review_limits
     if [[ -n $WORKTREE ]]; then
         [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
             die "worktree must be an owned regular directory, not a symlink: $WORKTREE"
@@ -1043,6 +974,7 @@ main() {
     # invocations can never both decide to reaffirm (or one reaffirm while
     # the other launches) against the same RUN_DIR.
     acquire_run_lock
+    guard_fresh_retry_directory
     if resume_existing_review_attempt; then return 0; fi
     # check_finding_ledger stays ahead of resolve_base/build_diff (a
     # regression test pins this: the ledger check must fail before any diff
@@ -1055,6 +987,7 @@ main() {
         require_helper_executable
     fi
     apply_reviewer_override
+    validate_provider_limits
     # issue #609: after select_reviewer (a blocked result names PROVIDER/MODEL)
     # and before compute_payload/consent/any launch marker.
     payload_size_gate || return 1

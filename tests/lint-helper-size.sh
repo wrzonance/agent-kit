@@ -37,7 +37,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1083:13698:800"
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
     # #728 separates optional CI outcomes from required acceptance execution.
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
@@ -65,8 +65,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #732: typed failures and recovery actions.
 # #725: required execution and explicit review-only admin authorization.
 # #725 review repair: resolve siblings for bare filename invocation.
-# #722/#732: activation, combined review bases and model diagnostics; exact bytes / 4: 1708337 / 4.
-readonly MAX_TREE_TOKENS=427084
+# #739: explicit retry authorization and provider limits; exact bytes / 4: 1717483 / 4.
+readonly MAX_TREE_TOKENS=429370
 
 violations=0
 checked=0

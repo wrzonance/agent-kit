@@ -34,13 +34,14 @@ cmd_attempt() {
     python3 - "$@" <<'PY'
 import argparse, datetime, fcntl, hashlib, json, os, pathlib, stat, subprocess, sys, tempfile, time, uuid
 p = argparse.ArgumentParser()
-p.add_argument('operation', choices=['reserve', 'recover', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'validate'])
+p.add_argument('operation', choices=['reserve', 'retry', 'recover', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'validate'])
 p.add_argument('--repo-root', required=True)
 p.add_argument('--entry-file', required=True)
 p.add_argument('--id', default='')
 p.add_argument('--pid', type=int, default=0)
 p.add_argument('--parent-pid', type=int, default=0)
 p.add_argument('--state', choices=['completed', 'failed', 'unknown-outcome', 'parser-rejected'])
+p.add_argument('--authorization', default='')
 a = p.parse_args()
 def safe_file(path):
     s = os.lstat(path)
@@ -161,6 +162,56 @@ try:
         if entry.get('canonical'):
             record['payloadGateSha256'] = digest(pathlib.Path(entry['result']).parent / 'adversarial.payload-size')
             record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
+    elif a.operation == 'retry':
+        if record is None or record.get('id') != a.id:
+            raise ValueError('retry must name the current durable attempt ID')
+        if not a.authorization.strip():
+            raise ValueError('retry requires explicit user authorization')
+        if record.get('state') != 'failed' or not record.get('canonical'):
+            raise ValueError('only a terminal failed canonical attempt can be retried')
+        if not any(e.get('operation') == 'finish' and e.get('state') == 'failed' for e in record['events']):
+            raise ValueError('failed attempt has no terminal failure event')
+        for field in ('repo', 'pr', 'provider', 'model', 'effort', 'base', 'reviewBase'):
+            if attempt_value(record, field) != attempt_value(entry, field):
+                raise ValueError('retry identity mismatch: ' + field)
+        if pathlib.Path(record.get('launcher', '')).name != pathlib.Path(entry.get('launcher', '')).name:
+            raise ValueError('retry launcher identity mismatch')
+        if entry.get('canonical') is not True:
+            raise ValueError('retry must remain canonical')
+        if not entry.get('head') or not record.get('head'):
+            raise ValueError('retry requires both prior and new commit identities')
+        ancestry = subprocess.run(['git', '-C', a.repo_root, 'merge-base', '--is-ancestor',
+            record['head'], entry['head']], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if ancestry.returncode != 0:
+            raise ValueError('retry head must be the prior commit or one of its descendants')
+        if not entry.get('payload'):
+            raise ValueError('retry must bind its review payload')
+        if pathlib.Path(entry['result']).resolve() == pathlib.Path(record['result']).resolve():
+            raise ValueError('retry requires a fresh result path')
+        budget = entry.get('maxBudgetUsd')
+        tokens = entry.get('maxOutputTokens')
+        if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0:
+            raise ValueError('retry requires a positive maxBudgetUsd')
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+            raise ValueError('retry requires a positive integer maxOutputTokens')
+        old_result = pathlib.Path(record['result'])
+        result_value = json.loads(safe_file(old_result))
+        transcript = result_value.get('transcript')
+        if not isinstance(transcript, str) or not transcript:
+            transcript = str(old_result.parent / ('claude.ndjson' if record.get('provider') == 'anthropic' else 'codex.jsonl'))
+        archived = dict(record)
+        archived['resultSha256'] = digest(old_result)
+        archived['resultArtifact'] = str(old_result)
+        archived['transcriptArtifact'] = transcript
+        archived['transcriptSha256'] = digest(transcript)
+        new_record = dict(entry, version=1, id=str(uuid.uuid4()), state='reserved', events=[])
+        new_record['launcherSha256'] = digest(entry['launcher'])
+        new_record['payloadGateSha256'] = digest(pathlib.Path(entry['result']).parent / 'adversarial.payload-size')
+        new_record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
+        new_record['retryOf'] = record['id']
+        new_record['retryAuthorization'] = a.authorization
+        new_record['previousAttempts'] = list(record.get('previousAttempts', [])) + [archived]
+        record = new_record
     elif record is None:
         sys.exit(11)
     elif a.operation == 'recover':
@@ -391,6 +442,12 @@ resume_existing_review_attempt() {
 reserve_review_attempt() {
     ATTEMPT_ENTRY="$RUN_DIR/state/review-attempt.json"
     prepare_owned_artifact "$ATTEMPT_ENTRY"
+    local retry_id=${RETRY_ATTEMPT_ID:-} budget=${MAX_BUDGET_USD:-5.00}
+    local tokens=${MAX_OUTPUT_TOKENS:-} duration=${MAX_DURATION_SECONDS:-900}
+    if [[ -n $retry_id || -n ${RETRY_AUTHORIZATION:-} ]]; then
+        [[ -n $retry_id && -n ${RETRY_AUTHORIZATION:-} && -n $tokens ]] ||
+            die 'retry requires paired attempt/authorization and an explicit output-token limit'
+    fi
     jq -n --arg repo "$REPO" --argjson pr "$PR" --arg payload "$PAYLOAD" \
         --arg repo_root "$CONTRACT_ROOT" \
         --arg head "$(git rev-parse HEAD)" --arg base "$(git rev-parse "origin/$BASE_REF")" \
@@ -401,17 +458,28 @@ reserve_review_attempt() {
         --argjson exclusion_count "${#EXCLUSION_SPECS[@]}" --arg excluded_sha256 "$EXCLUDED_SHA256" \
         --arg authorization "$OVERRIDE_AUTHORIZATION" --argjson pid "$$" \
         --arg launcher "$LAUNCHER_PATH" --arg result "$RUN_DIR/adversarial.result.json" \
+        --arg retry_id "$retry_id" --arg budget "$budget" --arg tokens "$tokens" \
+        --arg duration "$duration" \
         '{repo:$repo,pr:$pr,payload:$payload,head:$head,base:$base,reviewBase:$review_base,
           reviewBaseOverride:($review_base_override == "1"),provider:$provider,repoRoot:$repo_root,
           model:$model,effort:$effort,mode:$mode,configuredReviewer:$configured,override:$override,
-          modelSubstitutedFrom:$substituted,
-          exclusionCount:$exclusion_count,excludedSha256:$excluded_sha256,
-          overrideAuthorization:$authorization,launcher:$launcher,launcherPid:$pid,result:$result,
-          canonical:true,procedure:"one-shot diff review; no contract-blind or two-pass attestation",
-          enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted"}' >"$ATTEMPT_ENTRY"
+        modelSubstitutedFrom:$substituted,
+        exclusionCount:$exclusion_count,excludedSha256:$excluded_sha256,
+        overrideAuthorization:$authorization,launcher:$launcher,launcherPid:$pid,result:$result,
+        canonical:true,procedure:"one-shot diff review; no contract-blind or two-pass attestation",
+          enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted"}
+        + {maxBudgetUsd:($budget|tonumber),
+            maxOutputTokens:(if $tokens == "" then null else ($tokens|tonumber) end),
+            maxDurationSeconds:($duration|tonumber)}' >"$ATTEMPT_ENTRY"
     local rc=0
-    ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt reserve --repo-root "$CONTRACT_ROOT" \
-        --entry-file "$ATTEMPT_ENTRY") || rc=$?
+    if [[ -n $retry_id ]]; then
+        ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt retry --repo-root "$CONTRACT_ROOT" \
+            --entry-file "$ATTEMPT_ENTRY" --id "$retry_id" --authorization "$RETRY_AUTHORIZATION") || rc=$?
+        ((rc == 0)) || die 'authorized retry reservation failed; preserve prior attempt evidence'
+    else
+        ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt reserve --repo-root "$CONTRACT_ROOT" \
+            --entry-file "$ATTEMPT_ENTRY") || rc=$?
+    fi
     if ((rc == 20)); then
         ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt read --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY") ||
             die 'existing review attempt is unreadable'
