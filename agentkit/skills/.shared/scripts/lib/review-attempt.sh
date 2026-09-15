@@ -32,9 +32,9 @@ validate_receipt_attempt() {
 
 cmd_attempt() {
     python3 - "$@" <<'PY'
-import argparse, datetime, fcntl, hashlib, json, os, pathlib, stat, subprocess, sys, tempfile, uuid
+import argparse, datetime, fcntl, hashlib, json, os, pathlib, stat, subprocess, sys, tempfile, time, uuid
 p = argparse.ArgumentParser()
-p.add_argument('operation', choices=['reserve', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'validate'])
+p.add_argument('operation', choices=['reserve', 'recover', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'validate'])
 p.add_argument('--repo-root', required=True)
 p.add_argument('--entry-file', required=True)
 p.add_argument('--id', default='')
@@ -49,6 +49,11 @@ def safe_file(path):
     return pathlib.Path(path).read_bytes()
 def digest(path):
     return hashlib.sha256(safe_file(path)).hexdigest()
+def unsent(record):
+    return (record['state'] == 'parser-rejected' and not record.get('legacyEvidence')
+        and not record.get('providerProcess')
+        and any(e['operation'] == 'finish' and e['state'] == 'parser-rejected' for e in record['events'])
+        and not any(e['operation'] in ('start', 'process') for e in record['events']))
 def completed_result(record):
     result = json.loads(safe_file(record['result']))
     verdict = result.get('verdict', {})
@@ -112,7 +117,15 @@ try:
     lock_stat = os.fstat(fd)
     if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_uid != os.getuid():
         raise ValueError('unsafe attempt lock')
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('attempt lock unavailable after 2s; outcome unknown')
+            time.sleep(0.02)
     record = json.loads(safe_file(path)) if path.exists() or path.is_symlink() else None
     if record is not None and (record.get('version') != 1 or not isinstance(record.get('events'), list)
             or record.get('repo', '').lower() != entry['repo'].lower() or record.get('pr') != entry['pr']):
@@ -142,6 +155,25 @@ try:
             record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
     elif record is None:
         sys.exit(11)
+    elif a.operation == 'recover':
+        if record['id'] != a.id or not unsent(record):
+            raise ValueError('only a provably unsent rejected preparation can recover')
+        for field in ('payload', 'provider', 'model', 'effort', 'head', 'base', 'canonical', 'launcher'):
+            if record.get(field) != entry.get(field): raise ValueError('recovery input mismatch: ' + field)
+        previous = {k: v for k, v in record.items() if k not in ('events', 'preparations')}
+        if pathlib.Path(record['result']).exists():
+            previous['resultBytes'] = safe_file(record['result']).decode()
+        record.setdefault('preparations', []).append(previous)
+        for field in ('result', 'launcherPid', 'repoRoot', 'configuredReviewer', 'override',
+                      'overrideAuthorization', 'modelSubstitutedFrom', 'exclusionCount', 'excludedSha256', 'mode'):
+            if field in entry: record[field] = entry[field]
+        record.update(state='reserved', attached=False)
+        for field in ('helperPid', 'helperProcess', 'providerLauncher', 'providerLauncherSha256'):
+            record.pop(field, None)
+        record['launcherSha256'] = digest(entry['launcher'])
+        if entry.get('canonical'):
+            record['payloadGateSha256'] = digest(pathlib.Path(entry['result']).parent / 'adversarial.payload-size')
+            record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
     elif a.operation in ('attach', 'start', 'process', 'finish', 'reconcile'):
         if record['id'] != a.id: raise ValueError('attempt identity mismatch')
         if a.operation in ('attach', 'start'):
@@ -166,9 +198,16 @@ try:
             completed_result(record)
             record['state'] = 'completed'
         else:
+            if a.parent_pid:
+                if not record.get('canonical') or record.get('launcherPid') != a.parent_pid:
+                    raise ValueError('attempt belongs to another launcher')
+            elif (a.pid or record.get('attached')) and record.get('helperPid') != a.pid:
+                raise ValueError('attempt belongs to another helper')
             if record['state'] in ('completed', 'failed', 'unknown-outcome', 'parser-rejected'):
                 print(json.dumps(record)); sys.exit(20)
             if not a.state: raise ValueError('finish requires --state')
+            if a.state == 'parser-rejected' and record['state'] != 'reserved':
+                raise ValueError('a claimed provider launch cannot become an unsent rejection')
             record['state'] = a.state
             if a.state == 'completed':
                 completed_result(record)
@@ -188,6 +227,7 @@ try:
     if a.operation not in ('read', 'validate'):
         record['events'].append({'state': record['state'], 'operation': a.operation, 'at': now})
         save(path, record)
+    if a.operation == 'read': record['recoverableUnsent'] = unsent(record)
     if a.operation == 'read' and record['state'] == 'running':
         identity = process_identity(record.get('helperPid', 0))
         record['observedState'] = 'running' if identity == record.get('helperProcess') and 'startTicks' in identity else 'unknown-outcome'
@@ -226,6 +266,10 @@ review_attempt_prepare() {
     if [[ -z ${AGENTKIT_REVIEW_ATTEMPT_ID:-} ]]; then
         REVIEW_ATTEMPT_DIRECT=1
         reservation=$(cmd_attempt reserve --repo-root "$REVIEW_ATTEMPT_ROOT" --entry-file "$REVIEW_ATTEMPT_ENTRY") || rc=$?
+        if ((rc == 20)); then
+            reservation=$(cmd_attempt recover --repo-root "$REVIEW_ATTEMPT_ROOT" --entry-file "$REVIEW_ATTEMPT_ENTRY" \
+                --id "$(jq -r '.id' <<<"$reservation")") && rc=0
+        fi
         ((rc == 0)) || die "existing durable review attempt; reconcile before retry: $reservation"
         AGENTKIT_REVIEW_ATTEMPT_ID=$(jq -r '.id' <<<"$reservation")
     fi
@@ -253,7 +297,7 @@ review_attempt_cleanup() {
             state=failed
         fi
         cmd_attempt finish --repo-root "$REVIEW_ATTEMPT_ROOT" --entry-file "$REVIEW_ATTEMPT_ENTRY" \
-            --id "$AGENTKIT_REVIEW_ATTEMPT_ID" --state "$state" >/dev/null ||
+            --id "$AGENTKIT_REVIEW_ATTEMPT_ID" --pid "$$" --state "$state" >/dev/null ||
             printf 'review attempt finalization failed; preserve artifacts and reconcile\n' >&2
     fi
     review_cleanup
@@ -304,6 +348,10 @@ resume_existing_review_attempt() {
         die 'run directory belongs to a different review obligation'
     record=$(cmd_attempt read --repo-root "$CONTRACT_ROOT" --entry-file "$entry") ||
         die 'original review attempt is unavailable; preserve artifacts and reconcile'
+    if jq -e '.recoverableUnsent == true' <<<"$record" >/dev/null; then
+        ATTEMPT_RECOVERING=1
+        return 1
+    fi
     jq -e --arg head "$(git rev-parse HEAD)" --arg launcher "$LAUNCHER_PATH" \
         '.state == "completed" and .canonical == true and .head == $head and .launcher == $launcher' <<<"$record" >/dev/null ||
         die "preserving original review evidence; reconcile existing attempt: $(jq -c '{id,state,observedState,head}' <<<"$record")"
@@ -346,6 +394,12 @@ reserve_review_attempt() {
     if ((rc == 20)); then
         ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt read --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY") ||
             die 'existing review attempt is unreadable'
+        if jq -e '.recoverableUnsent == true' <<<"$ATTEMPT_RECORD" >/dev/null; then
+            ATTEMPT_RECORD=$(cmd_attempt recover --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY" \
+                --id "$(jq -r '.id' <<<"$ATTEMPT_RECORD")") || die 'unsent attempt recovery failed'
+            ATTEMPT_ID=$(jq -r '.id' <<<"$ATTEMPT_RECORD")
+            return 0
+        fi
         # Read/reconcile the original attempt; never replace it with a new run.
         if jq -e --arg payload "$PAYLOAD" --arg model "$MODEL" --arg effort "$EFFORT" \
             --arg head "$(git rev-parse HEAD)" --arg base "$(git rev-parse "origin/$BASE_REF")" --arg launcher "$LAUNCHER_PATH" \
@@ -382,6 +436,6 @@ finish_review_attempt() {
     fi
     local rc=0
     "$SCRIPT_DIR/review-ledger.sh" attempt finish --repo-root "$CONTRACT_ROOT" --entry-file "$ATTEMPT_ENTRY" \
-        --id "$ATTEMPT_ID" --state "$state" >/dev/null || rc=$?
+        --id "$ATTEMPT_ID" --parent-pid "$$" --state "$state" >/dev/null || rc=$?
     ((rc == 0 || rc == 20)) || die 'could not finalize durable review attempt'
 }

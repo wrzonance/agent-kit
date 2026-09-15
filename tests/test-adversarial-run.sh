@@ -257,6 +257,32 @@ assert_eq "$relative_run/adversarial.result.json" "$(jq -r '.result' "$relative_
     'durable artifact paths remain usable after the caller changes directory'
 
 override_run="$tmp/override-run"
+for recovery_dir in same new; do
+    rejected="$tmp/rejected-$recovery_dir"
+    grant "$rejected" anthropic
+    rejected_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE=/definitely/missing/claude \
+        bash "$script" --pr 42 --repo acme/widget --run-dir "$rejected") \
+        >"$tmp/rejected.out" 2>"$tmp/rejected.err" || rejected_rc=$?
+    assert_eq 3 "$rejected_rc" 'unavailable provider preflight rejects without sending'
+    rejection=$("${script%/*}/review-ledger.sh" attempt read --repo-root "$repo" --entry-file "$rejected/state/review-attempt.json")
+    recovered="$rejected"
+    if [[ $recovery_dir == new ]]; then
+        recovered="$tmp/recovered-new"
+        mkdir -m 700 "$recovered" "$recovered/state"
+        "$consent" grant --worktree "$repo" --run-dir "$recovered" --provider anthropic \
+            --payload "$(jq -r '.payload' <<<"$rejection")" --source interactive >/dev/null
+    fi
+    recovery_rc=0
+    (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+        FAKE_CLAUDE_CALLED="$tmp/recovery-$recovery_dir.calls" \
+        bash "$script" --pr 42 --repo acme/widget --run-dir "$recovered") \
+        >"$tmp/recovered.out" 2>"$tmp/recovered.err" || recovery_rc=$?
+    assert_eq 0 "$recovery_rc" "$recovery_dir run-directory resumes after repairing an unsent preflight rejection"
+    assert_eq "$(jq -r '.id' <<<"$rejection")" "$(jq -r '.attemptId' "$recovered/adversarial.result.json")" \
+        'environment repair preserves original review obligation identity'
+    assert_eq 1 "$(wc -l <"$tmp/recovery-$recovery_dir.calls" 2>/dev/null)" 'unsent recovery buys exactly one actual review'
+done
 grant "$override_run" anthropic
 override_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
@@ -966,6 +992,22 @@ assert_contains "$(cat -- "$tmp/prior-launch.out")" 'verdict=blocked' \
     'a marker with no terminal result is never reported as a completed review'
 
 # The complementary case: a marker alongside an already-VALID completed
+legacy_run="$tmp/legacy-completed"
+grant "$legacy_run" anthropic
+cp "$claude_run/state/launch-attempted" "$legacy_run/state/launch-attempted"
+jq 'del(.attemptId, .launcher)' "$claude_run/adversarial.result.json" >"$legacy_run/adversarial.result.json"
+legacy_bytes=$(sha256sum "$legacy_run/adversarial.result.json" | cut -d' ' -f1)
+legacy_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    ATTEMPT_RECOVERING=1 FAKE_CLAUDE_CALLED="$tmp/legacy.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$legacy_run") \
+    >"$tmp/legacy.out" 2>"$tmp/legacy.err" || legacy_rc=$?
+assert_eq 1 "$legacy_rc" 'legacy completed review requires explicit evidence reconciliation'
+assert_eq "$legacy_bytes" "$(sha256sum "$legacy_run/adversarial.result.json" | cut -d' ' -f1)" \
+    'legacy completed result is preserved byte-for-byte'
+assert_contains "$(cat "$tmp/legacy.err")" 'legacy' 'legacy refusal names the preserved evidence'
+assert_eq no "$([[ -e $tmp/legacy.calls ]] && printf yes || printf no)" 'legacy completion never triggers a replacement review'
+
+# The complementary case: a marker alongside an already-VALID completed
 # result is left to the existing (unchanged) findings-ledger/result-clearing
 # flow -- the new guard must not add a fresh refusal there. Reuses the
 # already-completed claude_run RUN_DIR from earlier in this suite, which has
@@ -1523,8 +1565,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1013 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1013 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1018 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1018 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

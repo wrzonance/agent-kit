@@ -1068,7 +1068,10 @@ jq '. + {id: (500 + '"$n"')}' "$GH_PAYLOAD_DIR/payload-$n.json"
 EOF
 chmod +x "$head_gh_dir/gh"
 
-head_sha='1111111111111111111111111111111111111a'
+receipt_repo="$tmp/receipt-repo"
+git init -q "$receipt_repo"
+git -C "$receipt_repo" -c user.name=test -c user.email=test@example.invalid commit -qm reviewed --allow-empty
+head_sha=$(git -C "$receipt_repo" rev-parse HEAD)
 diff_payload='owner/repo:900:abababababababababababababababababababababababababababababab'
 
 : >"$tmp/gh.log"
@@ -1122,6 +1125,41 @@ assert_eq 'yes' "$([[ $reviewed_at_value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}
     'the reviewed_at timestamp is UTC ISO-8601, matching the launch-marker convention'
 
 # -- publish: omitting --head-sha renders neither line, and no ledger call -
+
+# Run the canonical recipe after a fix advances HEAD. The receipt describes
+# the original paid review; a descendant is not automatically reviewed coverage.
+git -C "$receipt_repo" -c user.name=test -c user.email=test@example.invalid commit -qm repaired --allow-empty
+repair_head=$(git -C "$receipt_repo" rev-parse HEAD)
+recipe=$(sed -n '/^rhs=/p' "$root/agentkit/skills/review-remote-pr/SKILL.md")
+postfix_comments="$tmp/postfix-unspent.json"
+printf '%s\n' '[]' >"$postfix_comments"
+postfix_rc=0
+# The extracted canonical recipe reads these globals and assigns rhs via eval.
+# shellcheck disable=SC2034,SC2329,SC2154
+(
+    cd "$receipt_repo" || exit 1
+    RUN_DIR=$(dirname "$findings_file")
+    REPO=owner/repo PR=900
+    gh() { printf '%s\n' "$repair_head"; }
+    eval "$recipe"
+    GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" AGENT_IDENTITY=claude \
+        "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+        --comments "$postfix_comments" --provider anthropic --model claude-opus-5 --effort high \
+        --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' \
+        --head-sha "$rhs" --diff-payload "$diff_payload" --harness claude
+) >"$tmp/postfix.out" 2>"$tmp/postfix.err" || postfix_rc=$?
+[[ $postfix_rc == 0 ]] || cat "$tmp/postfix.err" >&2
+assert_eq 0 "$postfix_rc" 'canonical post-fix receipt publishes with original reviewed identity'
+postfix_body=$(jq -r '.body' "$head_gh_dir/payload-3.json" 2>/dev/null)
+assert_contains "$postfix_body" "$head_sha" 'post-fix receipt retains original reviewed head'
+assert_not_contains "$postfix_body" "$repair_head" 'post-fix receipt does not attest an unreviewed descendant'
+postfix_ledger=$(jq -r '.body' "$head_gh_dir/payload-4.json" 2>/dev/null)
+assert_contains "$postfix_ledger" "$head_sha" 'post-fix ledger retains original paid review identity'
+assert_not_contains "$postfix_ledger" "$repair_head" 'post-fix ledger does not add unsupported descendant coverage'
+assert_rc 1 'an arbitrary descendant cannot replace the original reviewed head' -- \
+    "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+    --comments "$head_comments" --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' --head-sha "$repair_head"
 
 : >"$tmp/gh.log"
 : >"$head_gh_dir/count"
