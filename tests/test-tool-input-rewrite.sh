@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Boundary fixtures only: no harness launches or live compatibility claims.
+set -uo pipefail
+TEST_NAME=tool-input-rewrite
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+module="$root/agentkit/hooks/lib/tool-input-rewrite.sh"
+if [[ ! -f $module ]]; then
+    _fail 'rewrite capability boundary exists' "missing $module"
+    finish
+    exit 1
+fi
+# shellcheck source=../agentkit/hooks/lib/tool-input-rewrite.sh
+source "$module"
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+repo="$tmp/repo"
+mkdir -p "$repo/.agent" "$tmp/a path/it's"
+git -C "$repo" init -q
+helper="$tmp/a path/it's/agent-run.sh"
+cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" "$#" "$@" "$REWRITE_FIXTURE_ENV"
+printf 'fixture stderr\n' >&2
+printf 'executed\n' >> "$REWRITE_FIXTURE_CALLS"
+exit 37
+SH
+chmod +x -- "$helper"
+
+event() {
+    jq -nc --arg cwd "$repo" --arg command "${1-agent-run.sh --cmd test}" \
+        '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,session_id:"fixture",
+          tool_input:{command:$command,timeout:731,description:"private fixture description"}}'
+}
+input=$(event)
+candidate=$(tool_rewrite_candidate "$input" "$helper")
+assert_eq 731 "$(jq -r '.timeout' <<< "$candidate")" 'candidate preserves timeout'
+assert_eq 'private fixture description' "$(jq -r '.description' <<< "$candidate")" \
+    'candidate preserves non-command inputs'
+assert_eq "$(jq -c '.tool_input | del(.command)' <<< "$input")" \
+    "$(jq -c 'del(.command)' <<< "$candidate")" 'only the command may change'
+assert_not_contains "$candidate" 'permissionDecision' 'candidate grants no permission'
+
+# Execute only the synthetic helper inside this wrapped suite, once. This checks
+# quoting/cwd/argv/exit behavior, not whether an installed harness honors a hook.
+export REWRITE_FIXTURE_ENV='fixture environment'
+export REWRITE_FIXTURE_CALLS="$tmp/calls"
+command=$(jq -r '.command' <<< "$candidate")
+rc=0
+(cd -- "$repo" && bash -c "$command") > "$tmp/stdout" 2> "$tmp/stderr" || rc=$?
+assert_eq 37 "$rc" 'fixture retains failure exit status'
+assert_eq "$(printf '%s\n' "$repo" 2 --cmd test 'fixture environment')" \
+    "$(cat "$tmp/stdout")" 'fixture retains cwd, arguments, and environment'
+assert_eq 'fixture stderr' "$(cat "$tmp/stderr")" 'fixture retains stderr'
+assert_eq executed "$(cat "$tmp/calls")" 'fixture helper executes once'
+
+# shellcheck disable=SC2016 # Literal substitutions must remain unexecuted input.
+for command in '' 'agent-run.sh --cmd test ' 'agent-run.sh --cmd format' \
+    'agent-run.sh --cmd test --only hooks' 'agent-run.sh --cmd test; echo extra' \
+    'agent-run.sh --cmd test | cat' 'agent-run.sh --cmd test > result' \
+    'agent-run.sh --cmd test $(echo extra)' 'agent-run.sh --cmd test `echo extra`' \
+    'KEY=value agent-run.sh --cmd test' 'bash agent-run.sh --cmd test' \
+    $'agent-run.sh --cmd test\necho extra' 'agent-run.sh --cmd test # comment'; do
+    assert_rc 1 'non-exact shell input is ineligible' -- \
+        tool_rewrite_candidate "$(event "$command")" "$helper"
+done
+for patch in '.tool_name="exec_command"' '.tool_name="Edit"' \
+    '.hook_event_name="PostToolUse"' '.tool_input.command=12' \
+    '.tool_input.sandbox_permissions="require_escalated"' \
+    '.tool_input.run_in_background=true' '.tool_input.timeout=-1' \
+    '.tool_input.workdir="/elsewhere"' '.cwd="relative"'; do
+    assert_rc 1 'unproven tool or execution controls are ineligible' -- \
+        tool_rewrite_candidate "$(jq -c "$patch" <<< "$input")" "$helper"
+done
+assert_rc 1 'malformed payload is ineligible' -- tool_rewrite_candidate '[' "$helper"
+assert_rc 1 'multiple payloads cannot produce multiple candidates' -- \
+    tool_rewrite_candidate "$input"$'\n'"$input" "$helper"
+assert_rc 1 'unresolved helper is ineligible' -- tool_rewrite_candidate "$input" /missing/agent-run.sh
+
+for adapter in codex claude unknown; do
+    capability=$(tool_rewrite_capability "$adapter" fixture-version Bash)
+    assert_eq unavailable "$(jq -r '.status' <<< "$capability")" \
+        "$adapter has no accepted live capability"
+    assert_eq fixture-version "$(jq -r '.version' <<< "$capability")" \
+        "$adapter capability report names the requested version"
+done
+
+# A plausible activation/compatibility claim is still not execution evidence.
+printf '%s\n' '{"capabilities":{"pre-tool-use":"observed","updatedInput":"observed"}}' \
+    > "$repo/.agent/rewrite-capability.json"
+export AGENTKIT_REWRITE_ENABLED=1
+export AGENTKIT_REWRITE_CAPABILITY="$repo/.agent/rewrite-capability.json"
+assert_rc 1 'local claims cannot arm the production gate' -- tool_rewrite_pre "$input"
+assert_eq '' "$(tool_rewrite_pre "$input")" 'unsupported gate emits no tool update or telemetry'
+out=$("$root/agentkit/hooks/pre-tool-use.sh" <<< "$input")
+assert_eq deny "$(jq -r '.hookSpecificOutput.permissionDecision' <<< "$out")" \
+    'unsupported runtime retains first helper-path denial'
+assert_contains "$out" 'Then run it again' 'existing bounded retry guidance remains'
+out=$("$root/agentkit/hooks/pre-tool-use.sh" <<< "$input")
+assert_not_contains "$out" updatedInput 'retry remains unchanged, with no silent rewrite'
+assert_not_contains "$out" 'private fixture description' 'fallback does not log input metadata'
+
+# Local disabled-seam timing only; no model/harness saving can be inferred.
+started=${EPOCHREALTIME/./}
+for ((iteration=0; iteration<1000; iteration++)); do
+    # shellcheck source=../agentkit/hooks/lib/tool-input-rewrite.sh
+    source "$module"
+    tool_rewrite_pre "$input" || :
+done
+elapsed=$(( ${EPOCHREALTIME/./} - started ))
+printf 'rewrite-fixture: disabled_source_gate_mean_us=%s iterations=1000 live_saved_turns=unavailable live_false_transformations=unavailable\n' \
+    "$((elapsed / 1000))"
+finish
