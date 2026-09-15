@@ -9,6 +9,7 @@
 - Provider identity — why the author matters
 - Step 1a: surfacing formats (H items, B items)
 - CodeRabbit state check
+- Required acceptance execution and CI outcomes
 - Step 5: assess findings (VALID/INVALID/NITPICK, generic B, Code Quality)
 - Step 5: issue-comment findings (surface=issue-comment)
 - Step 5 recipes: canonical reply, anchored nitpick thread, settlement
@@ -204,6 +205,27 @@ When `gh-pr-state.sh` reports a stale base after a parent merge, a CodeRabbit ap
 before retargeting is residue from the old merge state, not approval of the revalidated PR. State
 that residue as a knowing acceptance in the handoff. The one-review/one-ping rule forbids silently
 inheriting it or triggering a second provider pass merely to make the approval look fresh.
+
+## Required acceptance execution and CI outcomes
+
+`ci=P/T green pending=0 failing=0` means no blocking CI outcome; only SUCCESS
+contributes to P. Completed skips and neutral checks remain in T and appear on
+the separate `ci-outcomes: skipped=N neutral=N` line. Optional skips do not fail CI.
+The existing `ci=` line shape and provider evidence timestamps remain unchanged.
+
+For each `--acceptance-command`, `repo-verify=WORD acceptance=COMMAND:STATUS`
+reports `pass` only when every matching check succeeded. Other statuses are
+`fail`, `unavailable`, `pending`, `skipped`, `neutral` (in that precedence), or
+`not-run` when no check matches. Every non-pass emits
+`ready-eligible=no reason=acceptance-STATUS`; a successful duplicate cannot hide
+an unmet execution. Partial stacked CI remains independently ineligible.
+
+Consumer audit (#728): worker handoff recipes pass acceptance declarations to
+the digest. At chain base `12d2a311`, `pr-to-green/scripts/merge-gate.sh:280`
+parses only the CI word and does not consume acceptance or negative readiness.
+That authoritative gate needs a corresponding fix and boundary regression;
+classification alone does not complete enforcement. This is a source audit,
+not a reproduced live merge bypass.
 
 ## Step 5: assess findings
 

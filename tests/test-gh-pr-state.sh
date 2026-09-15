@@ -1026,6 +1026,56 @@ assert_contains "$acceptance_output" 'repo-verify=green acceptance=npm run test:
 assert_contains "$acceptance_output" 'ready-eligible=no reason=acceptance-not-run' \
     'an acceptance command that did not run blocks ready eligibility'
 
+# Required execution differs from optional CI compatibility: exercise the
+# real digest against REST-shaped check fixtures, including duplicate names.
+mkdir -p "$tmp/case-outcomes"
+cat >"$tmp/case-outcomes/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" api repos/owner/repo/pulls/515 "*)
+        printf '%s\n' '{"number":515,"draft":true,"mergeable":true,"head":{"ref":"feat/acceptance","sha":"5155155155"},"base":{"ref":"main","repo":{"default_branch":"main"}}}' ;;
+    *" api repos/owner/repo/commits/5155155155/check-runs"*) cat "$OUTCOME_FIXTURE" ;;
+    *" graphql "*)
+        printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}' ;;
+    *) printf '%s\n' '[]' ;;
+esac
+EOF
+chmod +x "$tmp/case-outcomes/gh"
+for outcome in SUCCESS FAILURE CANCELLED TIMED_OUT ACTION_REQUIRED SKIPPED NEUTRAL pending unavailable; do
+    status=completed conclusion=$outcome expected=fail
+    case $outcome in
+        SUCCESS) expected=pass ;;
+        SKIPPED) expected=skipped ;;
+        NEUTRAL) expected=neutral ;;
+        pending) status=in_progress conclusion='' expected=pending ;;
+        unavailable) conclusion='' expected=unavailable ;;
+    esac
+    jq -n --arg status "$status" --arg conclusion "$conclusion" \
+        '{check_runs:[{name:"acceptance",status:"completed",conclusion:"success"},
+          {name:"matrix/acceptance",status:$status,conclusion:$conclusion},
+          {name:"optional",status:"completed",conclusion:"skipped"}]}' >"$tmp/outcome.json"
+    outcome_output=$(OUTCOME_FIXTURE="$tmp/outcome.json" PATH="$tmp/case-outcomes:$PATH" \
+        bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+        --pr 515 --repo owner/repo --acceptance-command acceptance)
+    assert_contains "$outcome_output" "acceptance=acceptance:$expected" "$outcome acceptance classification"
+    if [[ $expected == pass ]]; then
+        assert_contains "$outcome_output" 'ci=2/3 green pending=0 failing=0' 'optional skip does not count as executed success'
+        assert_contains "$outcome_output" 'ci-outcomes: skipped=1 neutral=0' 'optional outcome stays visible separately'
+        assert_not_contains "$outcome_output" 'ready-eligible=no' 'successful required checks allow optional skips'
+    else
+        assert_contains "$outcome_output" "ready-eligible=no reason=acceptance-$expected" "$outcome cannot be hidden by matching success"
+    fi
+    case $outcome in
+        SKIPPED|NEUTRAL)
+            assert_contains "$outcome_output" 'ci=1/3 green pending=0 failing=0' "$outcome is compatible CI but not executed success"
+            ;;
+    esac
+    if [[ $outcome == NEUTRAL ]]; then
+        assert_contains "$outcome_output" 'ci-outcomes: skipped=1 neutral=1' 'neutral outcome is counted independently'
+    fi
+done
+
 # A trailing runner flag is not the provider's check name. The acceptance
 # command must match the check named by its final non-option token.
 mkdir -p "$tmp/case-acceptance-flag"

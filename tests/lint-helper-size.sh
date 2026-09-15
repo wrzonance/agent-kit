@@ -35,7 +35,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
+    # #728 separates optional CI outcomes from required acceptance execution.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14626:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
 )
@@ -46,9 +47,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# Final #706 + #707 measured tree, plus selected #709 contract-cache.sh delta: 406 bytes.
-# Exact combined ceiling: (1598020 + 406) / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=399606
+# #728 adds explicit acceptance outcomes and independent optional CI counts.
+# Exact final tree ceiling reported by lint-helper-size; no spare allowance.
+readonly MAX_TREE_TOKENS=399801
 
 violations=0
 checked=0

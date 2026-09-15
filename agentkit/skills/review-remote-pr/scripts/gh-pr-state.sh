@@ -668,8 +668,9 @@ ci_counts() {
         def bucket:
           if (has("status") or has("conclusion")) then
             if ((.status // "") | ascii_upcase) != "COMPLETED" then "pending"
+            elif ((.conclusion // "") | ascii_upcase) == "SUCCESS" then "pass"
             elif ((.conclusion // "") | ascii_upcase
-                  | . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "pass"
+                  | . == "NEUTRAL" or . == "SKIPPED") then "optional"
             else "fail" end
           else
             if ((.state // "") | ascii_upcase) == "SUCCESS" then "pass"
@@ -706,17 +707,25 @@ acceptance_status() {
                    or (.name // .context // "") == $token
                    or ((.name // .context // "") | endswith("/" + $token)))
           | if (has("status") or has("conclusion")) then
-              if ((.status // "") | ascii_upcase) != "COMPLETED" then "not-run"
-              elif ((.conclusion // "") | ascii_upcase
-                    | . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "pass"
-              else "fail" end
+              if ((.status // "") | ascii_upcase) != "COMPLETED" then "pending"
+              else ((.conclusion // "") | ascii_upcase) as $c
+                | if $c == "SUCCESS" then "pass"
+                  elif $c == "SKIPPED" then "skipped"
+                  elif $c == "NEUTRAL" then "neutral"
+                  elif (["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"] | index($c)) != null then "fail"
+                  else "unavailable" end end
             elif ((.state // "") | ascii_upcase) == "SUCCESS" then "pass"
             elif ((.state // "") | ascii_upcase
-                  | . == "PENDING" or . == "EXPECTED" or . == "") then "not-run"
-            else "fail" end ]
+                  | . == "PENDING" or . == "EXPECTED") then "pending"
+            elif ((.state // "") | ascii_upcase
+                  | . == "FAILURE" or . == "ERROR") then "fail"
+            else "unavailable" end ]
         | if length == 0 then "not-run"
           elif any(.[]; . == "fail") then "fail"
-          elif any(.[]; . == "not-run") then "not-run"
+          elif any(.[]; . == "unavailable") then "unavailable"
+          elif any(.[]; . == "pending") then "pending"
+          elif any(.[]; . == "skipped") then "skipped"
+          elif any(.[]; . == "neutral") then "neutral"
           else "pass" end' <"$WORK_DIR/pr.json"
 }
 
@@ -999,6 +1008,9 @@ print_ci_line() {
     else
         printf 'ci=%s/%s %s pending=%s failing=%s\n' "$pass" "$total" "$word" "$pending" "$fail"
     fi
+    jq -r '[.statusCheckRollup[]? | select(((.status // "") | ascii_upcase) == "COMPLETED")
+            | (.conclusion // "" | ascii_upcase)]
+        | "ci-outcomes: skipped=\([.[] | select(. == "SKIPPED")] | length) neutral=\([.[] | select(. == "NEUTRAL")] | length)"' <"$WORK_DIR/pr.json"
     stacked_ci_lines "$coverage"
 }
 
