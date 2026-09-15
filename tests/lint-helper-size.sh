@@ -24,10 +24,10 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2298:25215:800"
     [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
-    # #612: explicit formatter pairs and byte-bounded cargo failure context.
-    [skills/.shared/scripts/agent-run.sh]="1685:17676:800"
+    # #731: opt-in freshness fingerprints, durable results, and concurrent leases.
+    [skills/.shared/scripts/agent-run.sh]="1823:19656:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
-    [skills/.shared/scripts/repo-config.sh]="1123:11566:800"
+    [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
@@ -51,13 +51,14 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
+# #731: verification records and declarations.
 # #726: atomic worker ownership and serialized run-state updates.
 # #711: bounded invocation authorization and independent fix-push evidence.
 # #729: structured handback schema and independently pinned completion evidence.
 # #728: optional CI outcomes separated from required acceptance execution.
 # #717: durable review attempts and validated receipt provenance.
-# Exact merged helper-tree bytes / 4: 1664495 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=416123
+# Exact merged helper-tree bytes / 4: 1673021 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=418255
 
 violations=0
 checked=0

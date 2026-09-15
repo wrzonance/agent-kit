@@ -3,7 +3,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 python3 - "$(dirname -- "$here")" <<'PY'
-import hashlib, json, re, subprocess, sys, tempfile
+import hashlib, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 helper = Path(sys.argv[1]) / 'agentkit/skills/.shared/scripts/worker-result.sh'
 with tempfile.TemporaryDirectory() as temp:
@@ -20,7 +20,10 @@ with tempfile.TemporaryDirectory() as temp:
     (repo / 'a.txt').write_text('change\n'); git('commit', '-qam', 'change')
     head = git('rev-parse', 'HEAD')
     (repo / '.agent/logs').mkdir(parents=True)
-    (repo / '.agent/config.env').write_text('AGENT_CMD_TEST=true\n')
+    tool=root/'worker-tool'; tool.write_text('#!/bin/sh\nexit 0\n'); tool.chmod(0o700)
+    os.environ['PATH']=str(root)+os.pathsep+os.environ['PATH']
+    local_declaration='AGENT_CMD_TEST=true\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=bash,true,worker-tool\n'
+    (repo / '.agent/config.env').write_text(local_declaration)
     # Consume real declared-command evidence, not a fixture mirroring the hash.
     run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test')
     cache = (repo / '.agent/verification-cache').read_text()
@@ -60,6 +63,29 @@ with tempfile.TemporaryDirectory() as temp:
     assert validate(2)['claims']['implementation']=='valid', 'legacy cache alone cannot establish original log bytes'
     assert validate(digest=observed_digest)['status'] == 'accepted'
     assert validate()['reused'] is True
+    # Durable execution state cannot be replaced by the legacy green index.
+    record=repo/'.agent/verification-records'/key/'result'
+    saved_record=record.read_bytes()
+    for replacement in (None, f'7\n{log}\n{observed_digest}\n',
+                        f'0\n{log}\n{"0"*64}\n', f'0\n{log}.other\n{observed_digest}\n'):
+        if replacement is None: record.unlink()
+        else: record.write_text(replacement)
+        assert validate(2)['claims']['verification']=='unknown'
+        record.write_bytes(saved_record)
+    running=record.with_name('running'); running.write_text(str(log)+'\n')
+    validate(2); running.unlink(); validate()
+    running.symlink_to(root/'missing-running'); validate(2); running.unlink()
+    for directory in (record.parent,record.parent.parent):
+        moved=root/'moved-records'; directory.rename(moved)
+        directory.symlink_to(moved,target_is_directory=True); validate(2)
+        directory.unlink(); moved.rename(directory)
+    tool.write_text('#!/bin/sh\nexit 1\n'); validate(2)
+    tool.write_text('#!/bin/sh\nexit 0\n'); validate()
+    # Config and declared tool bytes must remain current even on a clean HEAD.
+    for suffix in ('AGENT_VERIFY_TEST_MODE=external\n', 'AGENT_VERIFY_TEST_INPUTS=a.txt\n',
+                   'AGENT_VERIFY_TEST_TOOLCHAIN=bash,false\n'):
+        (repo/'.agent/config.env').write_text('\n'.join(line for line in local_declaration.splitlines() if not line.startswith(suffix.split('=')[0]+'='))+'\n'+suffix); validate(2)
+    (repo/'.agent/config.env').write_text(local_declaration); validate()
     result['verification'][0]['sha256']=observed_digest
     write(source,result); invoke('write',1,'--input',source,'--output',artifact)
     del result['verification'][0]['sha256']; save()  # Trust inputs are root CLI only.
@@ -129,7 +155,7 @@ with tempfile.TemporaryDirectory() as temp:
     for declaration in ('AGENT_CMD_TEST=false\n', 'AGENT_CMD_TEST=true\nAGENT_RUNDIR_TEST=src\n',
                         'AGENT_CMD_TEST=true\nAGENT_CMD_TEST_KIND=format\n'):
         (repo / '.agent/config.env').write_text(declaration); validate(2)
-    (repo / '.agent/config.env').write_text('AGENT_CMD_TEST=true\n')
+    (repo / '.agent/config.env').write_text(local_declaration)
     result['verification'][0]['command']='lint'; save(); validate(1)
     result['verification'][0]['command']='test'; save()
     receipt=validate()
@@ -138,7 +164,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert json.loads(state.read_text())['rootCi']=={'status':'pending'}
     (repo / '.agent/config.env').write_text('AGENT_CMD_TEST=true\nAGENT_RUNDIR_TEST=generic\n')
     assert 'root-review' in validate(2)['obligations']
-    (repo / '.agent/config.env').write_text('AGENT_CMD_TEST=true\n')
+    (repo / '.agent/config.env').write_text(local_declaration)
     logs=repo/'.agent/logs'; moved=root/'outside-logs'
     logs.rename(moved); logs.symlink_to(moved,target_is_directory=True)
     validate(2)  # An in-worktree spelling cannot hide an external log directory.

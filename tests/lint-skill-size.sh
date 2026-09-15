@@ -29,7 +29,7 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [review-remote-pr]="459:7985:450"
     # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="946:18109:900"
+    [parallel-issues]="946:18122:900"
 )
 
 readonly MAX_BODY_LINES=500

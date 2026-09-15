@@ -107,6 +107,7 @@ model_family() {
 # A separate key rather than a prefix inside the value, so the command's argv
 # grammar stays independent from the working-directory path.
 readonly RUNDIR_KEY_PATTERN='^AGENT_RUNDIR_[A-Z][A-Z0-9_]*$'
+readonly VERIFY_KEY_PATTERN='^AGENT_VERIFY_[A-Z][A-Z0-9_]*_(MODE|INPUTS|TOOLCHAIN)$'
 
 # Credential-shaped keys are refused loudly rather than ignored quietly, so a
 # misguided commit is visible instead of silently honored.
@@ -192,6 +193,7 @@ if [[ $mode == keys ]]; then
     printf '%s\n' "${ACCEPTED_KEYS[@]}"
     printf 'AGENT_CMD_<NAME>\n'
     printf 'AGENT_RUNDIR_<NAME>\n'
+    printf 'AGENT_VERIFY_<NAME>_MODE\nAGENT_VERIFY_<NAME>_INPUTS\nAGENT_VERIFY_<NAME>_TOOLCHAIN\n'
     exit 0
 fi
 
@@ -253,6 +255,7 @@ is_accepted() {
     [[ ! $candidate =~ $SECRET_PATTERN ]] || return 1
     [[ ! $candidate =~ $CMD_KEY_PATTERN ]] || return 0
     [[ ! $candidate =~ $RUNDIR_KEY_PATTERN ]] || return 0
+    [[ ! $candidate =~ $VERIFY_KEY_PATTERN ]] || return 0
     for key in "${ACCEPTED_KEYS[@]}"; do
         [[ $key == "$candidate" ]] && return 0
     done
@@ -844,6 +847,14 @@ validate() {
             [[ ${PARSED_ARGV[0]} != *%s* ]]
             ;;
         *)
+            if [[ $key =~ $VERIFY_KEY_PATTERN ]]; then
+                case $key in
+                    *_MODE) [[ $value == local || $value == external ]] ;;
+                    *_INPUTS) generated_paths_valid "$value" ;;
+                    *_TOOLCHAIN) [[ $value =~ ^[A-Za-z0-9._+-]+(,[A-Za-z0-9._+-]+)*$ ]] ;;
+                esac
+                return
+            fi
             if [[ $key =~ $RUNDIR_KEY_PATTERN ]]; then
                 safe_relpath "$value"
                 return
