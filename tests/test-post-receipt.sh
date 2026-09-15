@@ -1142,7 +1142,10 @@ postfix_rc=0
     REPO=owner/repo PR=900
     gh() { printf '%s\n' "$repair_head"; }
     eval "$recipe"
+    # This fixture must not depend on a developer's authenticated gh session.
+    export REVIEW_LEDGER_GH=/definitely/missing/gh REVIEW_LEDGER_VIEWER=''
     GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" AGENT_IDENTITY=claude \
+        REVIEW_LEDGER_VIEWER=ledger-test-author \
         "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
         --comments "$postfix_comments" --provider anthropic --model claude-opus-5 --effort high \
         --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' \
@@ -1150,6 +1153,7 @@ postfix_rc=0
 ) >"$tmp/postfix.out" 2>"$tmp/postfix.err" || postfix_rc=$?
 [[ $postfix_rc == 0 ]] || cat "$tmp/postfix.err" >&2
 assert_eq 0 "$postfix_rc" 'canonical post-fix receipt publishes with original reviewed identity'
+assert_eq 4 "$(cat "$head_gh_dir/count")" 'offline post-fix publication emits both receipt and ledger'
 postfix_body=$(jq -r '.body' "$head_gh_dir/payload-3.json" 2>/dev/null)
 assert_contains "$postfix_body" "$head_sha" 'post-fix receipt retains original reviewed head'
 assert_not_contains "$postfix_body" "$repair_head" 'post-fix receipt does not attest an unreviewed descendant'
