@@ -108,8 +108,14 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
-# #725: exact coordinator size with the separately authorized admin boundary.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 19654 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 19654 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20400 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 20400 bytes'
+
+# shellcheck disable=SC2016 # Markdown backticks are literal.
+assert_contains "$text" '| `--fast-mode` |' 'coordinator exposes queue preauthorization'
+assert_contains "$text" '--fast-mode requires --yolo' 'fast mode preserves explicit intent'
+assert_contains "$text" '--source auto-review-flag --paths-file' 'auto-review reaches guarded consent primitive'
+assert_contains "$text" '--self-authored-proof' 'own fix pushes use proof instead of another confirmation'
+assert_contains "$text" '--source interactive' 'attended cross-provider consent remains explicit'
 
 finish

@@ -1514,8 +1514,8 @@ assert_contains "$gh_comments_call_block" "--jq 'add'" \
 # Issue #707: disclose absent CI on stacked target branches.
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17850 ]] && printf yes || printf no)" 'chains reference stays at or under 17850 bytes'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 2600 ]] && printf yes || printf no)" \
-    'trust-and-fencing reference stays at or under 2600 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4091 ]] && printf yes || printf no)" \
+    'trust-and-fencing reference stays at or under 4091 bytes (issue #731 local reuse contract)'
 
 # 2026-09-09 issue #607: +23 for proof persistence and the event-kind token
 # (measured; the plan estimated +20, the actual multi-line printf/persist

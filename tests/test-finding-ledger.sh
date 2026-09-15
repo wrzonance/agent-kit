@@ -215,6 +215,31 @@ repaired=$("$script" status --file "$open_run/findings.ndjson" --repo-root "$rep
 assert_eq complete "$(jq -r .remediation <<<"$repaired")" 'eight repairs resume to complete without another review'
 assert_eq 8 "$(jq -s length "$open_run/findings.ndjson")" 'updates preserve eight findings rather than inflating counts'
 assert_eq open "$(jq -sr '.[0].history[0].verdict' "$open_run/findings.ndjson")" 'repair retains original open disposition'
+# A PATH containing only declared tools models macOS without GNU sha256sum.
+portable_bin="$tmp/portable-bin"
+mkdir "$portable_bin"
+for tool in bash dirname jq git grep tail; do
+    ln -s "$(command -v "$tool")" "$portable_bin/$tool"
+done
+ln -s "$(command -v shasum)" "$portable_bin/shasum"
+portable_rc=0
+portable_out=$(PATH="$portable_bin" "$script" status --file "$open_run/findings.ndjson" \
+    --repo-root "$repair_repo" --head "$repair_sha" 2>&1) || portable_rc=$?
+assert_eq 0 "$portable_rc" 'repair verification supports shasum without GNU sha256sum'
+assert_contains "$portable_out" '"remediation":"complete"' 'portable digest independently verifies repair completion'
+cp "$open_run/findings.ndjson" "$tmp/wrong-digest.ndjson"
+jq -c '.evidence.logSha256=("0"*64)' "$tmp/wrong-digest.ndjson" >"$tmp/portable-tampered.ndjson"
+portable_rc=0
+portable_out=$(PATH="$portable_bin" "$script" status --file "$tmp/portable-tampered.ndjson" \
+    --repo-root "$repair_repo" --head "$repair_sha" 2>&1) || portable_rc=$?
+assert_eq 1 "$portable_rc" 'portable hashing still rejects mismatched verification bytes'
+assert_contains "$portable_out" 'verification log digest mismatch' 'fallback preserves digest binding'
+rm "$portable_bin/shasum"
+portable_rc=0
+portable_out=$(PATH="$portable_bin" "$script" status --file "$open_run/findings.ndjson" \
+    --repo-root "$repair_repo" --head "$repair_sha" 2>&1) || portable_rc=$?
+assert_eq 1 "$portable_rc" 'missing digest utilities fail as evidence errors'
+assert_contains "$portable_out" 'verification log digest unavailable' 'missing digest capability has a named evidence refusal'
 jq -c '.evidence.command="unrelated-command"' "$open_run/findings.ndjson" >"$tmp/wrong-command.ndjson"
 assert_rc 1 'unrelated successful command cannot certify a repair' -- "$script" status \
     --file "$tmp/wrong-command.ndjson" --repo-root "$repair_repo" --head "$repair_sha"

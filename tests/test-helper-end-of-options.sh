@@ -27,8 +27,8 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-# #725 adds the shared review-only capability detector.
-assert_eq 68 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# 69: #729 adds worker-result.sh; #725 adds review-capability.sh.
+assert_eq 69 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)

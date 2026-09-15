@@ -33,6 +33,7 @@ EOF
     chmod +x "$dir/tools/full" "$dir/tools/focused"
     printf 'AGENT_CMD_TEST=tools/full\nAGENT_CMD_TEST_FOCUS=tools/focused --only %%s\n' \
         >"$dir/.agent/config.env"
+    printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=bash\n' >> "$dir/.agent/config.env"
     printf '.agent/*\n!.agent/config.env\n' >"$dir/.gitignore"
     git -C "$dir" add -- .agent/config.env .gitignore tools
     git -C "$dir" commit -qm base

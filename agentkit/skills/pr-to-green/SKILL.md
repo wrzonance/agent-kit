@@ -10,11 +10,9 @@ description: >-
 
 # PR to green
 
-Coordinate existing Agent Kit review machinery: parallel reviews, serial
-merges. Owns queue authorization and the ready/provider transition boundary
-— not another review engine.
+Coordinate parallel reviews and serial merges.
 
-Open `"$agentkit/<path>"`; use `"$agentkit/references.md"` for paths and purposes instead of searching.
+Paths and purposes: `"$agentkit/references.md"`. Open `"$agentkit/<path>"`; do not search.
 
 Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully; run all `bash` fences via its `bash -c` boundary.
 
@@ -22,7 +20,10 @@ Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell
 
 | Flag | Effect |
 |---|---|
-| `--auto-merge` | Authorize serial merges of the confirmed queue after each pre-merge review-completion gate passes. Otherwise stop at evidence-green; humans merge. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for consent, gates, and serialization. |
+| `--auto-merge` | Gated serial merges of confirmed PRs; otherwise humans merge at evidence-green. See [details](references/auto-merge.md) for consent and gates. |
+| `--yolo` | Explicit intent for unattended queue authorization; never implies merges or cross-provider consent. |
+| `--fast-mode` | Display a receipt and authorize the bounded queue without a question. --fast-mode requires --yolo. |
+| `--auto-review` | Authorize the disclosed adversarial payload through the existing paths-coverage consent guard. |
 
 ## Environment warm-up
 
@@ -100,6 +101,7 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 - Present the provider plan, verified dependency graph, and exact serial queue
   before mutation. One explicit confirmation covers remediation pushes, ready
   transitions, and trigger-capable requests for that displayed queue only.
+  `--fast-mode --yolo` supplies that intent at invocation; always emit the plan receipt.
 - Never merge, force-push, or clean worktrees. Never choose a history rewrite,
   unexpected diff expansion, conflict repair, or human-feedback disposition
   silently.
@@ -156,38 +158,34 @@ trigger-capable provider state the per-run action it will be authorized for:
 no ping for that provider on this queue. State every chain base to tip, then
 independent roots in queue order. When `--auto-merge` is on the invocation
 line, the displayed plan must say plainly that confirmed merges are included,
-naming the merge method and delete-branch setting. Do not mutate until the
-user confirms the displayed provider plan (including any per-provider
-trigger/observe/disabled decision), verified dependency graph, and exact
-serial queue.
+naming the merge method and delete-branch setting. Without `--fast-mode --yolo`,
+wait for confirmation of this exact plan. With it, emit the plan as a receipt
+and pass both flags to `authorize-queue.sh`; never ask the same question again.
 
 After confirmation, derive the owner-only authorization JSON with
 `scripts/authorize-queue.sh`, passing the same repository, merge plan or PR selectors, and provider
 decisions the displayed queue used; it re-reads the live queue, requires it to equal the displayed
 snapshot (any drift fails closed → redisplay/reconfirm), and copies the queue fields from that live result.
-For example, a confirmed non-merging queue with the default CodeRabbit action
-is recorded in one command:
+Pass `--confirmed-queue-file`, `--ready-transition`, every displayed
+`--provider NAME:ACTION:SOURCE` (or `--no-providers`), and `--no-auto-merge` unless
+the invocation included `--auto-merge`. Merging also requires `--merge-method METHOD`
+and exactly one of `--delete-branch`/`--keep-branch`. Provider sources remain
+`capability-default` for default triggers and `operator-instruction` for overrides.
+The head/base-pinned authorization schema and transition guards stay unchanged.
 
-```bash
-"$agentkit/pr-to-green/scripts/authorize-queue.sh" \
-  --repo "$repo" --repo-root "$repo_root" --merge-plan "$merge_plan" \
-  --confirmed-queue-file "$repo_root/.agent/pr-to-green-confirmed-queue.json" \
-  --ready-transition --no-auto-merge \
-  --provider coderabbit:trigger:capability-default
-```
+For fast mode or proof-backed fix pushes, start with `--run-id ID --write-set-file FILE`.
+FILE contains the declared write set expanded to explicit relative paths, one per line.
+The owner-only `.agent/pr-to-green-run-ID.json` records the predicate: repository,
+original selector, providers, initial PR ceiling, merge choices, and write set.
+Re-derivation permits only proven advances; repository/provider changes or added PRs
+still require redisplay and new confirmation. Never invent a new run ID to retry drift.
 
-Pass every displayed trigger-capable provider as `--provider NAME:ACTION:SOURCE` (`--no-providers` when
-the plan has none); they must match the persisted provider records exactly. The ready-transition and
-auto-merge choices are mandatory arguments, so the helper never infers consent — a merging queue passes
-`--auto-merge --merge-method METHOD` plus `--delete-branch` or `--keep-branch`. The record holds
-`repository`, `readyTransition: true`, one `{"name","action":"trigger|observe|disabled","source"}` per
-provider (`source` is `capability-default` for an unmodified `trigger`, `operator-instruction` for an
-operator-chosen `observe`/`disabled`), `queue` entries `{"pr","state","headSha","base"}`, and — under `--auto-merge` — `autoMerge`,
-`mergeMethod`, `deleteBranch` (["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md));
-`review-transition.sh` checks the live head SHA and base ref against it before any ready-flip or provider
-spend, posting nothing for a `disabled`/`observe` action (`result=DISABLED`/`OBSERVE_ONLY source=<source>`).
-It is narrow evidence, not reusable consent: re-display and reconfirm changed inputs, except a verified
-mechanical advance of an already-confirmed PR (Step 5), which this same confirmation durably covers.
+Before the first adversarial send, disclose provider, payload and paths. With
+`--auto-review`, call `$agentkit/review-remote-pr/scripts/consent-record.sh grant` with the existing worktree/run-dir,
+provider and payload arguments plus `--source auto-review-flag --paths-file FILE`.
+Use the authorized payload path set; uncovered paths still fail closed. Without
+that flag, retain the interactive question and `--source interactive` grant.
+`--yolo`, `--fast-mode`, and `--auto-merge` never imply this consent.
 
 ### 2. Normalize runnable PRs
 
@@ -207,11 +205,14 @@ check: proceed through commit, push, adversarial review, and receipt — never p
 unrelated paths just to force a clean run — but ready-flip and merge stay blocked as on any other red (Step 4).
 Any other declared-verification failure is `change-caused-red`: fix it.
 
-If Phase A changes the head, re-run the same displayed queue command with
-`pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
-re-run `authorize-queue.sh`. It atomically replaces stale head/base records
-only after the fresh queue exactly matches that newly confirmed snapshot. Do
-not let earlier confirmation authorize a new SHA.
+After a Phase A or C fix push, retain the run's receipt and invoke
+`authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.
+Record only this run's successful pushes, findings and commit SHAs; the proof format
+and independent checks are in ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md#self-authored-fix-advances).
+Verified own fixes need no new question, even in attended runs. Missing proof or
+outside changes require a fresh displayed queue and confirmation. Rewriting the
+display never overrides the receipt's last authorized head. All new heads still
+need fresh CI, review-completion and merge gates.
 
 This sequence is a **critical section** (one fixed-path snapshot): only one
 root inside it at a time; each re-derives its own authorization on entry.
@@ -247,6 +248,14 @@ per-item confirmation; human threads stay unresolved. Record a verified fix comm
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green
+
+Refresh `gh-pr-state.sh --digest` before reporting; cite head/read for CI.
+After the last thread action, run `review-transition.sh --observe --repo OWNER/REPO
+--pr N --since TRIGGER_TIMESTAMP --settle-after ACTION_TIMESTAMP --rounds 4 --interval 1`.
+Report its source/head/read/action/elapsed fields. For Code Quality use
+`$agentkit/review-remote-pr/scripts/code-quality-state.sh --repo OWNER/REPO --pr N --head SHA40 --claim`.
+Require fresh current-head evidence; pending/unavailable never means complete.
+Disabled providers add no gate.
 
 A PR is evidence-green only when all of these are current for its head and base:
 
@@ -317,9 +326,7 @@ then continue serially.
 
 ## Exit
 
-Continue until every queue item is evidence-green (or, under `--auto-merge`,
-merged) or blocked on a named human/dependency decision. Report per PR:
-head/base, CI, adversarial receipt, provider result, finding settlement,
-human decisions, stack state, formal provider approval separately, and — under
-`--auto-merge` — the gate result and merge outcome. Preserve all worktrees and
-authorization/evidence artifacts for resumption.
+Continue until each item is evidence-green (merged under `--auto-merge`) or has a
+named human/dependency blocker. Report per PR: head/base, CI, adversarial receipt,
+provider result, findings, human decisions, stack state, formal approval separately,
+and auto-merge gate/outcome. Preserve worktrees and authorization/evidence for resumption.

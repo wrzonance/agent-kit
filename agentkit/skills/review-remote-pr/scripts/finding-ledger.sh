@@ -315,6 +315,16 @@ append_record() {
     printf 'added finding verdict=%s title=%s\n' "$VERDICT" "$TITLE"
 }
 
+verification_digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -- "$1"
+    else
+        return 1
+    fi
+}
+
 # Verify repair evidence at every trust boundary, including publication and
 # readiness. A hexadecimal string alone never proves a repair was committed.
 validate_repairs() {
@@ -339,7 +349,8 @@ validate_repairs() {
         git -C "$root" diff --quiet "$tested" "$head" -- "$path" ||
             die_evidence "repair verification is stale for changed path: $path"
         [[ -f $log && ! -L $log && -O $log ]] || die_evidence 'verification log is unavailable'
-        actual=$(sha256sum -- "$log"); actual=${actual%% *}
+        actual=$(verification_digest "$log") || die_evidence 'verification log digest unavailable (requires sha256sum or shasum)'
+        actual=${actual%% *}
         [[ $actual == "$digest" ]] || die_evidence 'verification log digest mismatch'
         grep -Fxq -- "=== agent-run $command" "$log" || die_evidence 'verification command does not match its log'
         [[ $(tail -n 1 -- "$log") == '=== agent-run exited rc=0 '* ]] ||
