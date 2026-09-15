@@ -12,7 +12,7 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 compose="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
-template="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
+template="$root/agentkit/skills/parallel-issues/references/implementation-worker.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 

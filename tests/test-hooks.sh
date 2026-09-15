@@ -335,7 +335,7 @@ sub_in=$(jq -nc --arg cwd "$onboarded" \
       agent_id:"a1",agent_type:"worker",transcript_path:null}')
 out=$(printf '%s' "$sub_in" | "$hooks/subagent-start.sh" 2>/dev/null)
 ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<< "$out")
-assert_contains "$ctx" 'triage-issues.sh' 'a spawned worker inherits the tooling curriculum'
+assert_contains "$ctx" 'agent-run.sh' 'a spawned worker receives the leaf tooling curriculum'
 assert_not_contains "$ctx" 'example-org/example-repo' 'without inheriting the repository contract'
 
 # --- compaction re-arms the lessons ---------------------------------------
@@ -397,7 +397,7 @@ out=$(printf '%s' "$sub" | "$hooks/subagent-start.sh" 2>/dev/null)
 rc=0; printf '%s' "$sub" | "$hooks/subagent-start.sh" >/dev/null 2>&1 || rc=$?
 assert_eq '0' "$rc" 'SubagentStart exits 0'
 assert_hook_output "$out" subagent-start 'SubagentStart emits schema-valid JSON'
-assert_contains "$out" 'triage-issues.sh' 'and injects the tooling curriculum into the worker'
+assert_contains "$out" 'agent-run.sh' 'and injects the leaf tooling curriculum into the worker'
 assert_contains "$out" '.agent/env-contract.txt' 'and teaches the guarded contract resolver'
 assert_not_contains "$out" 'example-org/example-repo' 'without injecting the repository contract'
 assert_not_contains "$out" 'branch=feat/x' 'or its worktree-specific branch'
