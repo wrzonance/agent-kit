@@ -1480,7 +1480,7 @@ hash_untracked_files() {
     # Explicit ignored files are dependency/config freshness receipts. Never
     # follow repository symlinks into an undeclared external input tree.
     for path in "${verification_paths[@]}"; do
-        [[ -d $git_top/$path ]] || printf '%s\0' "$path" >> "$paths"
+        [[ ! -L $(realpath -ms -- "$git_top/$path") && -d $git_top/$path ]] || printf '%s\0' "$path" >> "$paths"
     done
     exec 3<"$paths" || {
         rm -f -- "$paths"
@@ -1611,7 +1611,7 @@ claim_verification() {
     assert_private_dir "$verification_handle"
     [[ ! -L $verification_handle/lock ]] || refuse_boundary "verification lock is a symlink: $verification_handle/lock"
     [[ ! -L $verification_handle/running ]] || refuse_boundary "verification running record is a symlink: $verification_handle/running"
-    exec {verification_fd}>"$verification_handle/lock"
+    exec {verification_fd}>"$verification_handle/lock" || refuse_boundary "cannot open verification lock: $verification_handle/lock"
     if ! flock -n "$verification_fd"; then
         failure_evidence=$verification_handle
         failure_state=verification-running
