@@ -519,13 +519,11 @@ bot triggers, and human-review responses.
 
 Every issue-lead call uses the spawn policy in
 ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md); fill in the complete prompt below.
-When constructing a worker session, set its working directory to the assigned worktree
-whenever the harness supports a cwd/workdir field; the prompt's absolute-path rule remains
-mandatory even when that field is unavailable. Do not describe the spawn call without making
-it — a task is dispatched only after `spawn_agent` returns a task/agent identifier. On the
-degraded path (`spawn_agent` unavailable), do the implementation yourself per the same
-reference's degraded-path section, one issue to a draft PR before the next, labelled
-`worker=self (spawn unavailable)`.
+Apply that contract's durable sole-writer gate: reserve before submission, persist each returned
+ID immediately, reconcile unknown outcomes, and confirm release before replacement. Never erase
+partial successes; set its working directory to the assigned worktree when supported.
+A task is dispatched only after `spawn_agent` returns a task/agent identifier. The degraded
+path implements serially with the same ownership gate, labelled `worker=self (spawn unavailable)`.
 
 ### Root canonical issue fetch and fence preparation
 
