@@ -592,4 +592,39 @@ out=$(PATH="$tmp/bin:$PATH" local_run)
 assert_contains "$out" 'running:' 'permitted Compose transient failure executes again'
 assert_contains "$out" 'environment-retry-eligible' 'transient classification survives reuse guard'
 
+# A lock path that cannot open is not evidence of another running command.
+lock_repo=$(make_repo)
+out=$(COUNT_FILE="$tmp/lock-count" "$real_run_sh" --dir "$lock_repo" --cmd test 2>&1)
+lock_path=$(find "$lock_repo/.agent/verification-records" -name lock -print)
+rm -- "$lock_path"
+mkdir -- "$lock_path"
+out=$(COUNT_FILE="$tmp/lock-count" "$real_run_sh" --dir "$lock_repo" --cmd test 2>&1); lock_rc=$?
+assert_eq '1' "$lock_rc" 'a directory at the lock path fails setup explicitly'
+assert_contains "$out" 'cannot open verification lock' 'lock-open failure names the setup error'
+assert_not_contains "$out" 'verification running:' 'lock-open failure does not invent an active lease'
+
+# Explicit ignored directory symlinks must reach unsupported-input handling.
+linked_repo=$(make_repo)
+mkdir -p "$tmp/linked-inputs"
+printf '0\n' > "$tmp/linked-inputs/result"
+ln -s "$tmp/linked-inputs" "$linked_repo/.agent/linked"
+printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,cat\nAGENT_VERIFY_TEST_INPUTS=tools,.agent/linked\n' > "$linked_repo/.agent/config.env"
+printf '%s\n' '#!/bin/sh' 'exit "$(cat .agent/linked/result)"' > "$linked_repo/tools/run"
+out=$("$real_run_sh" --dir "$linked_repo" --cmd test 2>&1)
+assert_contains "$out" 'verification miss: inputs-unavailable' 'ignored directory symlink disables reuse'
+printf '7\n' > "$tmp/linked-inputs/result"
+out=$("$real_run_sh" --dir "$linked_repo" --cmd test 2>&1); linked_rc=$?
+assert_eq '7' "$linked_rc" 'changing linked input cannot reuse stale success'
+assert_not_contains "$out" 'verification current:' 'unsupported linked inputs execute freshly'
+
+for suffix in / ///; do
+    printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,cat\nAGENT_VERIFY_TEST_INPUTS=tools,.agent/linked%s\n' "$suffix" > "$linked_repo/.agent/config.env"
+    printf '0\n' > "$tmp/linked-inputs/result"
+    out=$("$real_run_sh" --dir "$linked_repo" --cmd test 2>&1)
+    assert_contains "$out" 'verification miss: inputs-unavailable' "directory symlink with suffix $suffix disables reuse"
+    printf '7\n' > "$tmp/linked-inputs/result"
+    out=$("$real_run_sh" --dir "$linked_repo" --cmd test 2>&1); linked_rc=$?
+    assert_eq '7' "$linked_rc" "directory symlink with suffix $suffix cannot reuse stale success"
+done
+
 finish
