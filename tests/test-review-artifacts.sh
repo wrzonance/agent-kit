@@ -176,6 +176,16 @@ output_payload=$(/bin/bash "$consent_script" payload --repo acme/widget --pr 24 
 grant_consent "$claude_consent_state" anthropic
 grant_consent "$codex_consent_state" openai
 
+# Each independent artifact scenario owns a separate PR budget, including
+# relative-cwd cases. Never initialize attempt state in the checkout's gitdir.
+fresh_attempt() {
+    CONSENT_WORKTREE=$(mktemp -d "$tmp/attempt-repo.XXXXXXXX")
+    export CONSENT_WORKTREE
+    git init -q "$CONSENT_WORKTREE"
+    git -C "$CONSENT_WORKTREE" -c user.name=test -c user.email=test@example.invalid \
+        commit -q --allow-empty -m fixture
+}
+
 # --output is documented as ADDITIVE, so it must not be allowed to name another
 # artifact. prepare_output runs after prepare_transcript and clears a
 # pre-existing target, so aliasing the transcript deleted the raw audit trail
@@ -187,6 +197,7 @@ for alias_helper in "$claude" "$codex"; do
     consent_state="$output_run/$alias_name-consent"
     alias_transcript="$output_run/$alias_name-alias.transcript"
     alias_rc=0
+    fresh_attempt
     bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
         --diff "$output_diff" \
         --transcript "$alias_transcript" --output "$alias_transcript" \
@@ -196,6 +207,7 @@ for alias_helper in "$claude" "$codex"; do
         "--output: $alias_name says the paths alias"
 
     alias_rel_rc=0
+    fresh_attempt
     ( cd "$output_run" && bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 \
         --consent-state "$consent_state" --diff "$output_diff" \
         --transcript "$alias_name-rel.transcript" \
@@ -205,6 +217,7 @@ for alias_helper in "$claude" "$codex"; do
 
     for status_alias in "$alias_transcript.status" "$alias_transcript.status.tmp"; do
         status_rc=0
+        fresh_attempt
         bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
             --diff "$output_diff" \
             --transcript "$alias_transcript" --output "$status_alias" \
@@ -214,6 +227,7 @@ for alias_helper in "$claude" "$codex"; do
     done
 
     alias_diff_rc=0
+    fresh_attempt
     bash "$alias_helper" --mode review --model m --repo acme/widget --pr 24 --consent-state "$consent_state" \
         --diff "$output_diff" \
         --transcript "$output_run/$alias_name-diffalias.transcript" \
@@ -227,6 +241,7 @@ done
 success_output="$output_run/success.result.json"
 success_stdout="$tmp/output-success.stdout"
 success_rc=0
+fresh_attempt
 CLAUDE_EXECUTABLE="$tmp/fake-claude-output-success" bash "$claude" \
     --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$output_diff" \
@@ -329,6 +344,7 @@ chmod +x "$tmp/fake-codex-output-success"
 codex_success_output="$output_run/codex-success.result.json"
 codex_success_stdout="$tmp/codex-output-success.stdout"
 codex_success_rc=0
+fresh_attempt
 CODEX_EXECUTABLE="$tmp/fake-codex-output-success" bash "$codex" \
     --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$output_diff" \
@@ -593,7 +609,8 @@ assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, o
 # naming the prompt-overhead and output/reasoning-reserve terms the gate
 # adds on top of the diff estimate, not just the diff itself; measured.
 # Issue #706 documents evidence-backed model provenance and safe redaction.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 21599 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 21599 bytes'
+# Issue #717 documents durable attempt accounting and truthful receipt provenance.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 26517 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 26517 bytes'
 
 finish

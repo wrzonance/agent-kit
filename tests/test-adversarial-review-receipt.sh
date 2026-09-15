@@ -187,6 +187,24 @@ run_rd_publish() {
     GH_COMMENT_GH="$rd_tmp/gh" GH_PAYLOAD="$rd_tmp/payload.json" "$script" publish "$@"
 }
 
+prime_attempt() {
+    local dir=$1 pr=$2 budget="$rd_tmp/budget-$2" entry="$1/state/review-attempt.json" record id
+    git init -q "$budget"
+    mkdir -p "$dir/state"
+    printf 'fixture payload gate\n' >"$dir/adversarial.payload-size"
+    jq -n --argjson pr "$pr" --arg root "$budget" --arg result "$dir/adversarial.result.json" \
+        --arg launcher "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh" \
+        '{repo:"owner/repo",pr:$pr,repoRoot:$root,result:$result,launcher:$launcher,canonical:true,
+          head:"",base:"fixture-base",payload:"",provider:"anthropic",model:"claude-opus-5",effort:"high",
+          override:"",procedure:"one-shot diff review"}' >"$entry"
+    record=$("${script%/*}/review-ledger.sh" attempt reserve --repo-root "$budget" --entry-file "$entry")
+    id=$(jq -r '.id' <<<"$record")
+    jq --arg id "$id" '.attemptId=$id | .requestedModel="claude-opus-5"' \
+        "$dir/adversarial.result.json" >"$dir/result.fixture"
+    mv "$dir/result.fixture" "$dir/adversarial.result.json"
+    "${script%/*}/review-ledger.sh" attempt finish --repo-root "$budget" --entry-file "$entry" --id "$id" --state completed >/dev/null
+}
+
 # A valid RUN_DIR: owned, not a symlink, mode 0700, carrying the completed
 # adversarial-run.sh result validate_runner_provenance requires.
 valid_run_dir="$rd_tmp/run-dir"
@@ -195,6 +213,7 @@ chmod 700 "$valid_run_dir"
 printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
     >"$valid_run_dir/adversarial.result.json"
 chmod 600 -- "$valid_run_dir/adversarial.result.json"
+prime_attempt "$valid_run_dir" 301
 
 # -- RUN_DIR-derived findings file resolves when --findings-file is omitted --
 
@@ -222,6 +241,7 @@ override_findings="$rd_tmp/override-findings.ndjson"
 printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
     >"$rd_tmp/adversarial.result.json"
 chmod 600 -- "$rd_tmp/adversarial.result.json"
+prime_attempt "$rd_tmp" 302
 reset_rd_not_spent
 override_out=$(RUN_DIR="$override_dir" run_rd_publish \
     --pr 302 --repo owner/repo --comments "$rd_not_spent" --findings-file "$override_findings" \
