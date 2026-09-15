@@ -1,0 +1,15 @@
+{"type":"bench_efficiency_meta","payload":{"schema_version":1,"role":"root","source":"complete","coverage":["calls","classifications","model_turns","checkpoints","policies"],"required_acceptance":["unit","acceptance"],"activation":{"status":"active","version":"0.8.1","evidence":"activation-receipt"}}}
+{"type":"bench_efficiency_event","payload":{"kind":"model_turn","id":"t1","tokens":100}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"a","name":"shell","arguments":"{\"command\":\"helper.sh --help\"}"}}
+{"type":"bench_efficiency_event","payload":{"kind":"call","call_id":"a","tags":["help","interface_recovery"],"evidence":"reasoning:a"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"b","name":"shell","arguments":"{\"command\":\"cat references/example.md\"}"}}
+{"type":"bench_efficiency_event","payload":{"kind":"call","call_id":"b","tags":["reference_read"],"read_key":"references/example.md","evidence":"reasoning:b"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"c","name":"shell","arguments":"{\"command\":\"cat references/example.md\"}"}}
+{"type":"bench_efficiency_event","payload":{"kind":"call","call_id":"c","tags":["reference_read","source_grep"],"read_key":"references/example.md","retry":"unchanged_deterministic","evidence":"unchanged-tree:c"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"edit","name":"apply_patch","input":"synthetic implementation edit"}}
+{"type":"bench_efficiency_event","payload":{"kind":"call","call_id":"edit","tags":["implementation_edit"],"tree":"tree1","evidence":"diff:edit"}}
+{"type":"bench_efficiency_event","payload":{"kind":"model_turn","id":"t2","tokens":50}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"suite","name":"shell","arguments":"{\"command\":\"agent-run.sh --cmd test\"}"}}
+{"type":"bench_efficiency_event","payload":{"kind":"call","call_id":"suite","tags":["full_suite"],"evidence":"executed:suite"}}
+{"type":"bench_efficiency_event","payload":{"kind":"checkpoint","id":"cp1","call_id":"edit","tree":"tree1","required":["unit","acceptance"],"passed":["unit","acceptance"],"evidence":"acceptance:tree1"}}
+{"type":"bench_efficiency_event","payload":{"kind":"policy","id":"p1","issue":731,"correct":true,"false_block":false,"avoided_calls":2,"evidence":"paired-case:1"}}
