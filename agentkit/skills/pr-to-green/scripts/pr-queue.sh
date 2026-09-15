@@ -26,6 +26,7 @@ repo_root=''
 merge_plan=''
 plan_option=''
 format=table
+review_capability_file=''
 write_confirmed_queue=0
 no_providers=0
 declare -a providers=()
@@ -59,6 +60,7 @@ usage() {
 usage: $PROGRAM --repo OWNER/REPO [--repo-root DIR]
                 [--merge-plan FILE, --dispatch-plan FILE]
                 [--pr N ...] [--format records|table|json]
+                [--review-capability-file FILE]
                 [--write-confirmed-queue
                    (--provider NAME:ACTION:SOURCE ... | --no-providers)]
 
@@ -101,6 +103,11 @@ while (($#)); do
         --write-confirmed-queue)
             write_confirmed_queue=1
             shift
+            ;;
+        --review-capability-file)
+            (($# >= 2)) || usage
+            review_capability_file=$2
+            shift 2
             ;;
         --provider)
             (($# >= 2)) || usage
@@ -622,6 +629,16 @@ if ((write_confirmed_queue)); then
     output_tmp=''
 fi
 
+if [[ -n $review_capability_file ]]; then
+    while IFS=$'\t' read -r number sha target; do
+        if capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "$SCRIPT_DIR/review-capability.sh" \
+            --repo "$repo" --pr "$number" --head-sha "$sha" --base "$target" --capability-file "$review_capability_file"); then
+            printf '%s operator-command-required=yes\n' "$capability" >&2
+        else
+            printf '%s admin-eligible=no\n' "$capability" >&2
+        fi
+    done < <(jq -r '.[] | [.pr,.sha,.base] | @tsv' "$work_dir/queue.json")
+fi
 if [[ $format == json ]]; then
     jq -c . "$work_dir/queue.json"
 elif [[ $format == records ]]; then

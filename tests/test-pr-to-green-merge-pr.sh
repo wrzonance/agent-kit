@@ -22,12 +22,33 @@ set -euo pipefail
 endpoint=''
 for arg in "\$@"; do [[ \$arg == repos/* ]] && endpoint=\$arg; done
 printf 'gh %s\n' "\$*" >>"\$MERGE_LOG"
+if [[ \$1 == pr && \$2 == view ]]; then
+    printf '{"reviewDecision":"%s","headRefOid":"$HEAD_SHA","baseRefName":"main","reviewRequests":[]}\n' "\${REVIEW_DECISION:-REVIEW_REQUIRED}"
+    exit 0
+fi
+if [[ \$1 == pr && \$2 == merge ]]; then
+    [[ \${MERGE_REFUSE:-0} == 0 ]] || { printf 'refused: protected\n' >&2; exit 1; }
+    touch "\$MERGE_LOG.admin"
+    exit 0
+fi
 is_delete=0
 [[ " \$* " == *' -X DELETE '* ]] && is_delete=1
 is_post=0
 [[ " \$* " == *' -X POST '* ]] && is_post=1
 case \$endpoint in
+repos/owner/repo/rules/branches/*)
+    default_rules='[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'
+    printf '%s\n' "\${REVIEW_RULES_JSON:-\$default_rules}"
+    ;;
+repos/owner/repo/branches/*/protection)
+    printf '{"message":"%s","status":"404"}\n' "\${PROTECTION_MESSAGE:-Branch not protected}"
+    exit 1
+    ;;
 repos/owner/repo/pulls/9)
+    if [[ -e \$MERGE_LOG.admin ]]; then
+        printf '{"merged":true,"merge_commit_sha":"$MERGE_SHA","head":{"sha":"$HEAD_SHA"},"base":{"ref":"main"}}\n'
+        exit 0
+    fi
     mergeable=\${PR_MERGEABLE:-true}
     draft=\${PR_DRAFT:-false}
     state=\${PR_STATE:-open}
@@ -109,6 +130,10 @@ write_auth() {
 write_gate() {
     local sha=${1:-$HEAD_SHA}
     printf 'gate=PASS pr=9 sha=%s\n' "$sha" >"$tmp/gate.txt"
+    if [[ ${ADMIN_GATE:-0} == 1 ]]; then
+        printf 'gate=ADMIN_ELIGIBLE repo=owner/repo pr=9 sha=%s base=main review=unsatisfiable\n' "$sha" >"$tmp/gate.txt"
+    fi
+    [[ ${GATE_BLOCK:-0} == 0 ]] || printf 'blocked reason=acceptance-pending\n' >>"$tmp/gate.txt"
 }
 
 run_merge() {
@@ -621,5 +646,75 @@ assert_contains "$out" 'dependent-recovery-failed pr=10 reason=' \
     'a failed recovery is reported, never silently dropped'
 assert_contains "$out" 'branch_delete=ok ref=feat/demo' \
     'a failed post-delete recovery never undoes the already-completed merge and delete'
+
+# Admin authority is separate from the ordinary queue grant and fails closed.
+jq -n --arg sha "$HEAD_SHA" '{version:1,repository:"owner/repo",source:"operator-confirmed",
+  queue:[{pr:9,headSha:$sha,base:"main",humanReviewers:"none",reviewProvider:"disabled"}]}' >"$tmp/capability.json"
+jq -n --arg sha "$HEAD_SHA" '{version:1,kind:"admin-merge",operatorAuthorized:true,
+  repository:"owner/repo",pr:9,headSha:$sha,base:"main",mergeMethod:"squash"}' >"$tmp/admin-original.json"
+cp "$tmp/admin-original.json" "$tmp/admin.json"
+chmod 600 "$tmp/admin.json"
+run_admin() {
+    rm -f "$tmp/merge.log.admin"
+    : >"$tmp/merge.log"
+    ADMIN_GATE=${ADMIN_GATE:-1} run_merge --admin --admin-authorization-file "$tmp/admin.json" \
+        --review-capability-file "$tmp/capability.json"
+}
+rc=0
+out=$(run_merge --admin 2>&1) || rc=$?
+assert_eq 1 "$rc" 'admin without its separate artifact refuses as authorization, not usage'
+out=$(run_admin)
+assert_contains "$out" 'admin=true bypass=unsatisfiable-review' 'admin bypass is recorded in receipt'
+assert_contains "$(cat "$tmp/merge.log")" "pr merge 9 --repo owner/repo --admin --squash --match-head-commit $HEAD_SHA" 'admin mutation binds the exact head'
+for gate_case in "ADMIN_GATE=0" "GATE_BLOCK=1" "GATE_SHA=$OTHER_SHA"; do
+    rc=0
+    case $gate_case in
+        ADMIN_GATE=0) out=$(ADMIN_GATE=0 run_admin 2>&1) || rc=$? ;;
+        GATE_BLOCK=1) out=$(GATE_BLOCK=1 run_admin 2>&1) || rc=$? ;;
+        *) out=$(GATE_SHA="$OTHER_SHA" run_admin 2>&1) || rc=$? ;;
+    esac
+    assert_eq 1 "$rc" "admin refuses $gate_case"
+    assert_not_contains "$(cat "$tmp/merge.log")" 'pr merge ' 'unmet gate sends no admin mutation'
+done
+for mutation in '.pr=10' '.headSha="stale"' '.repository="other/repo"' '.base="other"' '.mergeMethod="merge"' '.operatorAuthorized=false'; do
+    jq "$mutation" "$tmp/admin-original.json" >"$tmp/admin.json"
+    rc=0
+    out=$(run_admin 2>&1) || rc=$?
+    assert_eq 1 "$rc" "admin authorization refuses $mutation"
+    assert_not_contains "$(cat "$tmp/merge.log")" 'pr merge ' 'unbound grant sends no admin mutation'
+done
+cp "$tmp/admin-original.json" "$tmp/admin.json"
+for mode in 660 606; do
+    chmod "$mode" "$tmp/admin.json"
+    rc=0
+    out=$(run_admin 2>&1) || rc=$?
+    assert_eq 1 "$rc" "admin authorization refuses writable mode $mode"
+done
+chmod 600 "$tmp/admin.json"
+cp "$tmp/capability.json" "$tmp/capability-original.json"
+for mutation in '.source="inferred"' '.queue[0].humanReviewers="available"' '.queue[0].reviewProvider="enabled"' '.queue[0].headSha="stale"' '.queue[0].pr=10' '.queue += .queue'; do
+    jq "$mutation" "$tmp/capability-original.json" >"$tmp/capability.json"
+    rc=0
+    out=$(run_admin 2>&1) || rc=$?
+    assert_eq 1 "$rc" "admin refuses capability $mutation"
+    assert_not_contains "$(cat "$tmp/merge.log")" 'pr merge ' 'unknown capability sends no admin mutation'
+done
+cp "$tmp/capability-original.json" "$tmp/capability.json"
+for rules in '[]' '[{"type":"required_signatures"}]' '[[{"type":"pull_request","parameters":{"required_approving_review_count":1}}],[{"type":"merge_queue"}]]' '{}'; do
+    rc=0
+    out=$(REVIEW_RULES_JSON="$rules" run_admin 2>&1) || rc=$?
+    assert_eq 1 "$rc" 'missing, additional, paginated or malformed rules refuse admin'
+    assert_not_contains "$(cat "$tmp/merge.log")" 'pr merge ' 'unsupported policy sends no admin mutation'
+done
+rc=0
+out=$(REVIEW_DECISION=APPROVED run_admin 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a review requirement already satisfied cannot use admin'
+rc=0
+out=$(PROTECTION_MESSAGE='Not Found' run_admin 2>&1) || rc=$?
+assert_eq 1 "$rc" 'unknown classic protection cannot use admin'
+rc=0
+out=$(MERGE_REFUSE=1 run_admin 2>&1) || rc=$?
+assert_contains "$out" 'refused: protected' 'admin preserves the verbatim forge refusal'
+assert_eq 1 "$rc" 'admin never retries around another forge refusal'
 
 finish

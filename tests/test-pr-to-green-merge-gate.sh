@@ -21,6 +21,10 @@ cat >"$tmp/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 endpoint=''
+if [[ \$1 == pr && \$2 == view ]]; then
+    printf '{"reviewDecision":"%s","headRefOid":"$HEAD_SHA","baseRefName":"main","reviewRequests":[]}\n' "\${REVIEW_DECISION:-REVIEW_REQUIRED}"
+    exit 0
+fi
 ref_param=''
 ref_param_set=no
 prev=''
@@ -48,6 +52,13 @@ default_pr_analyses='[{"ref":"refs/pull/9/merge","commit_sha":"$HEAD_SHA","tool"
 default_check_runs='{"check_runs":[]}'
 default_timeline='[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]'
 case \$endpoint in
+repos/owner/repo/rules/branches/*)
+    printf '%s\n' '[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'
+    ;;
+repos/owner/repo/branches/*/protection)
+    printf '{"message":"Branch not protected","status":"404"}\n'
+    exit 1
+    ;;
 repos/owner/repo)
     printf '{"default_branch":"main","security_and_analysis":{"code_security":{"status":"%s"}}}\n' "\${REPO_CODE_SECURITY_STATUS:-enabled}"
     ;;
@@ -186,6 +197,7 @@ EOF
 write_adversarial_comments() {
     jq -n --arg head "$HEAD_SHA" --argjson findings "$1" '
       {version:1,repo:"owner/repo",pr:9,reviews:[{kind:"adversarial",provider:"openai",head_sha:$head,findings:$findings}]} |
+      (if $findings == null then del(.reviews[].findings) else . end) |
       [{id:1,user:{login:"trusted"},body:("<!-- review-ledger:v1 -->\n```json\n" + tojson + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$tmp/adversarial-comments.json"
 }
 write_adversarial_comments '[]'
@@ -221,6 +233,67 @@ write_cq_state_file() {
 good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
+
+jq -n --arg sha "$HEAD_SHA" '{version:1,repository:"owner/repo",source:"operator-confirmed",
+  queue:[{pr:9,headSha:$sha,base:"main",humanReviewers:"none",reviewProvider:"disabled"}]}' >"$tmp/capability.json"
+rc=0
+out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \
+    --review-capability-file "$tmp/capability.json") || rc=$?
+assert_eq 1 "$rc" 'an unsatisfiable review requirement is not ordinary PASS'
+assert_contains "$out" 'review=unsatisfiable' 'review-only rule and explicit capability evidence classify structurally'
+assert_contains "$out" 'gate=ADMIN_ELIGIBLE' 'other clean gates yield only admin eligibility'
+
+# Both sibling helpers must resolve when bash receives a filename without a slash.
+rc=0
+out=$(cd "${gate%/*}" && gate=merge-gate.sh run_gate 2>&1) || rc=$?
+assert_eq 0 "$rc" 'bare filename invocation validates covered remediation'
+assert_contains "$out" 'gate=PASS pr=9' 'bare filename preserves the ordinary clean gate'
+rc=0
+out=$(cd "${gate%/*}" && gate=merge-gate.sh GATE_PROVIDER_RESULT=DISABLED \
+    run_gate_raw --code-quality-scan-state complete --review-capability-file "$tmp/capability.json" 2>&1) || rc=$?
+assert_eq 1 "$rc" 'bare filename admin eligibility remains distinct from PASS'
+assert_contains "$out" 'gate=ADMIN_ELIGIBLE' 'bare filename resolves review capability and covered remediation'
+assert_not_contains "$out" 'gate=BLOCKED' 'clean bare filename admin invocation has no spurious denial'
+write_adversarial_comments '[{"title":"still-open","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair"}]'
+rc=0
+out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \
+    --review-capability-file "$tmp/capability.json") || rc=$?
+assert_not_contains "$out" 'gate=ADMIN_ELIGIBLE' 'open remediation cannot qualify for admin'
+write_adversarial_comments null
+out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \
+    --review-capability-file "$tmp/capability.json") || true
+assert_not_contains "$out" 'gate=ADMIN_ELIGIBLE' 'unknown legacy remediation cannot qualify for admin'
+assert_contains "$out" 'unknown' 'unknown remediation remains an explicit refusal'
+write_adversarial_comments '[]'
+printf 'repo-verify=green acceptance=certify:skipped\n' >>"$tmp/digest.txt"
+out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \
+    --review-capability-file "$tmp/capability.json") || true
+assert_not_contains "$out" 'gate=ADMIN_ELIGIBLE' 'admin eligibility cannot waive required execution'
+good_digest
+sed -i 's/green pending=0 failing=0/red pending=0 failing=1/' "$tmp/digest.txt"
+out=$(GATE_PROVIDER_RESULT=DISABLED run_gate_raw --code-quality-scan-state complete \
+    --review-capability-file "$tmp/capability.json") || true
+assert_not_contains "$out" 'gate=ADMIN_ELIGIBLE' 'admin eligibility cannot waive failing CI'
+good_digest
+
+# Required execution is stronger than the aggregate green CI summary.
+for acceptance in fail unavailable pending skipped neutral not-run unknown; do
+    good_digest
+    printf 'repo-verify=green acceptance=tools/certify --browser:pass\nrepo-verify=green acceptance=tools/certify --browser:%s\n' "$acceptance" >>"$tmp/digest.txt"
+    rc=0
+    out=$(run_gate) || rc=$?
+    assert_eq 1 "$rc" "acceptance $acceptance cannot be hidden by a duplicate pass"
+    assert_contains "$out" 'required acceptance execution is not pass' 'acceptance refusal names the unmet boundary'
+done
+good_digest
+printf 'repo-verify=green acceptance=tools/certify --browser:pass\n' >>"$tmp/digest.txt"
+out=$(run_gate)
+assert_contains "$out" 'gate=PASS' 'actual required execution passes'
+printf 'ready-eligible=no reason=acceptance-unavailable\n' >>"$tmp/digest.txt"
+rc=0
+out=$(run_gate) || rc=$?
+assert_eq 1 "$rc" 'negative readiness cannot be hidden by a pass'
+good_digest
 
 write_adversarial_comments "$(jq -cn '[range(1;9)|{title:("confirmed-"+tostring),severity:"P1",schemaVersion:2,verdict:"open",rationale:"dispatch repair"}]')"
 rc=0
@@ -261,6 +334,13 @@ good_digest
 # one. Feed its actual PR/head/base evidence through the merge boundary.
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
 forge_queue=$(PR_QUEUE_GH="$tmp/gh" bash "$queue" --repo owner/repo --pr 9 --format json)
+rc=0
+admin_queue=$(PR_QUEUE_GH="$tmp/gh" bash "$queue" --repo owner/repo --pr 9 --format json \
+    --review-capability-file "$tmp/capability.json" 2>"$tmp/queue-review") || rc=$?
+assert_eq 0 "$rc" 'queue displays review capability at dispatch'
+assert_contains "$admin_queue" '"pr":9' 'queue JSON remains machine-readable'
+assert_contains "$(cat "$tmp/queue-review")" 'review=unsatisfiable' 'dispatch names the structural review block'
+assert_contains "$(cat "$tmp/queue-review")" 'operator-command-required=yes' 'dispatch discloses the operator merge dependency'
 assert_eq 'null' "$(jq -c '.[0].issue' <<<"$forge_queue")" \
     'a forge PR with Closes #601 carries an underived issue, never zero'
 forge_table=$(PR_QUEUE_GH="$tmp/gh" bash "$queue" --repo owner/repo --pr 9 --format table)

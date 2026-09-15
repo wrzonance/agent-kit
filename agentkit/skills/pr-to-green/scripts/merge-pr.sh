@@ -35,6 +35,9 @@ delete_branch=0
 retarget_dependents_opt_in=0
 authorization_file=''
 gate_result_file=''
+admin=0
+admin_authorization=''
+review_capability_file=''
 work_dir=''
 
 die() {
@@ -187,6 +190,7 @@ usage() {
 usage: $PROGRAM --repo OWNER/REPO --pr N --head-sha SHA40 --base REF
        --merge-method squash|merge|rebase --authorization-file FILE
        --gate-result FILE [--delete-branch [--retarget-dependents]]
+       [--admin --admin-authorization-file FILE --review-capability-file FILE]
 
 --delete-branch first checks for any open PR still based on the merged head
 branch (issue #564). By default, any open dependent refuses the delete (exit
@@ -212,6 +216,9 @@ while (($#)); do
         --merge-method) (($# >= 2)) || usage; method=$2; shift 2 ;;
         --authorization-file) (($# >= 2)) || usage; authorization_file=$2; shift 2 ;;
         --gate-result) (($# >= 2)) || usage; gate_result_file=$2; shift 2 ;;
+        --admin) admin=1; shift ;;
+        --admin-authorization-file) (($# >= 2)) || usage; admin_authorization=$2; shift 2 ;;
+        --review-capability-file) (($# >= 2)) || usage; review_capability_file=$2; shift 2 ;;
         --delete-branch) delete_branch=1; shift ;;
         --retarget-dependents) retarget_dependents_opt_in=1; shift ;;
         -h|--help) usage 0 ;;
@@ -226,6 +233,12 @@ done
 case $method in squash|merge|rebase) ;; *) die '--merge-method must be squash, merge, or rebase' ;; esac
 [[ -n $authorization_file ]] || die '--authorization-file is required'
 [[ -n $gate_result_file ]] || die '--gate-result is required'
+if ((admin)); then
+    [[ -n $admin_authorization && -n $review_capability_file ]] ||
+        die '--admin requires --admin-authorization-file and --review-capability-file'
+elif [[ -n $admin_authorization || -n $review_capability_file ]]; then
+    die 'admin evidence requires --admin'
+fi
 [[ $retarget_dependents_opt_in == 0 || $delete_branch == 1 ]] ||
     die '--retarget-dependents requires --delete-branch'
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
@@ -269,8 +282,23 @@ fi
 [[ -f $gate_result_file && ! -L $gate_result_file && -O $gate_result_file ]] ||
     die 'gate-result file must be an owned regular file, not a symlink'
 reject_writable_by_others "$gate_result_file" 'gate-result file'
-grep -qF "gate=PASS pr=$pr sha=$head_sha" "$gate_result_file" ||
-    die 'merge is not authorized by a passed review-completion gate for this PR and head'
+if ((admin)); then
+    [[ -f $admin_authorization && ! -L $admin_authorization && -O $admin_authorization ]] ||
+        die 'admin authorization must be an owned regular file, not a symlink'
+    reject_writable_by_others "$admin_authorization" 'admin authorization'
+    jq -e --arg repo "$repo" --argjson pr "$pr" --arg sha "$head_sha" --arg base "$base" --arg method "$method" '
+      .version == 1 and .kind == "admin-merge" and .operatorAuthorized == true and
+      .repository == $repo and .pr == $pr and .headSha == $sha and .base == $base and .mergeMethod == $method
+    ' "$admin_authorization" >/dev/null 2>&1 || die 'admin authorization does not bind this exact merge'
+    if ! { [[ $(grep -c '^gate=' "$gate_result_file") == 1 ]] &&
+        ! grep -q '^blocked ' "$gate_result_file" &&
+        grep -qxF "gate=ADMIN_ELIGIBLE repo=$repo pr=$pr sha=$head_sha base=$base review=unsatisfiable" "$gate_result_file"; }; then
+        die 'admin merge requires an exact ADMIN_ELIGIBLE gate result with no other blocks'
+    fi
+else
+    grep -qF "gate=PASS pr=$pr sha=$head_sha" "$gate_result_file" ||
+        die 'merge is not authorized by a passed review-completion gate for this PR and head'
+fi
 
 "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" 2>"$work_dir/api.err" ||
     die "pull request metadata unavailable: $(head -n 1 "$work_dir/api.err")"
@@ -304,7 +332,21 @@ merge_body_file="$work_dir/merge-body.json"
 jq -n --arg method "$method" --arg sha "$head_sha" \
     '{merge_method:$method, sha:$sha}' >"$merge_body_file"
 
-if ! "$GH_BIN" api -X PUT "repos/$repo/pulls/$pr/merge" --input "$merge_body_file" \
+if ((admin)); then
+    capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "$SCRIPT_DIR/review-capability.sh" \
+        --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" --capability-file "$review_capability_file") ||
+        die "admin capability refused: $capability"
+    if ! "$GH_BIN" pr merge "$pr" --repo "$repo" --admin "--$method" --match-head-commit "$head_sha" \
+        >"$work_dir/admin.out" 2>"$work_dir/merge.err"; then
+        die "merge refused by the forge: $(head -n 1 "$work_dir/merge.err")"
+    fi
+    "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/admin-pr.json" 2>"$work_dir/api.err" ||
+        die 'admin merge submitted but receipt unavailable; inspect PR before any further action'
+    jq -e --arg sha "$head_sha" --arg base "$base" \
+        '.merged == true and .head.sha == $sha and .base.ref == $base' "$work_dir/admin-pr.json" >/dev/null ||
+        die 'admin merge submitted but merged head/base could not be confirmed'
+    jq '{merged,sha:.merge_commit_sha}' "$work_dir/admin-pr.json" >"$work_dir/merge.json"
+elif ! "$GH_BIN" api -X PUT "repos/$repo/pulls/$pr/merge" --input "$merge_body_file" \
     >"$work_dir/merge.json" 2>"$work_dir/merge.err"; then
     die "merge refused by the forge (branch protection, stale sha, or not mergeable): $(head -n 1 "$work_dir/merge.err")"
 fi
@@ -313,6 +355,7 @@ jq -e '.merged == true' "$work_dir/merge.json" >/dev/null 2>&1 ||
 
 merge_sha=$(jq -r '.sha // empty' "$work_dir/merge.json")
 printf 'pr=%s merged=true method=%s merge_sha=%s\n' "$pr" "$method" "${merge_sha:-unknown}"
+((admin == 0)) || printf 'admin=true bypass=unsatisfiable-review repo=%s pr=%s sha=%s base=%s method=%s\n' "$repo" "$pr" "$head_sha" "$base" "$method"
 
 if ((delete_branch)); then
     if [[ $authorized_delete_branch == deferred ]]; then
