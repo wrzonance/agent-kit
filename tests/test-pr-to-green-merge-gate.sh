@@ -1039,4 +1039,40 @@ assert_eq '1' "$rc" '--adversarial-review-status is required'
 assert_contains "$out" '--adversarial-review-status is required' \
     'the missing-flag usage error names the required flag'
 
+# #727 remediation must preserve the same diff and ancestry inputs as status.
+lineage_repo="$tmp/lineage-repo"
+git init -q "$lineage_repo"
+git -C "$lineage_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm reviewed
+reviewed=$(git -C "$lineage_repo" rev-parse HEAD)
+git -C "$lineage_repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm advanced
+advanced=$(git -C "$lineage_repo" rev-parse HEAD)
+good_digest
+sed -i "s/sha=$HEAD_SHA7/sha=${advanced:0:7}/g" "$tmp/digest.txt"
+write_context_comments() {
+    jq -n --arg old "$reviewed" --argjson covered "$1" '
+      {version:1,repo:"owner/repo",pr:9,reviews:[{kind:"adversarial",provider:"openai",
+       head_sha:$old,diff_payload:"same-diff",covered_heads:$covered,findings:[]}]} |
+      [{id:1,user:{login:"trusted"},body:("<!-- review-ledger:v1 -->\n```json\n" + tojson + "\n```\n<!-- /review-ledger:v1 -->")}]' >"$tmp/adversarial-comments.json"
+}
+run_context_gate() {
+    PR_HEAD_SHA=$advanced CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$advanced\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-20T00:00:00Z\"}]" \
+        run_gate_raw --head-sha "$advanced" --code-quality-scan-state complete "$@"
+}
+write_context_comments '[]'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --repo-root "$lineage_repo" --diff-payload same-diff 2>&1) || rc=$?
+assert_eq 0 "$rc" 'a proven ancestor with the same diff passes remediation freshness'
+assert_contains "$out" 'gate=PASS pr=9' 'covered diff carries its payload into the gate subcheck'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --repo-root "$lineage_repo" --diff-payload other-diff 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a mismatched diff still blocks despite caller covered-diff status'
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-diff run_context_gate --diff-payload same-diff 2>&1) || rc=$?
+assert_eq 1 "$rc" 'a matching diff without ancestry context still blocks'
+assert_contains "$out" 'gate=BLOCKED pr=9' 'missing ancestry context returns the contractual gate result'
+write_context_comments "[\"$advanced\"]"
+rc=0
+out=$(GATE_ADVERSARIAL_STATUS=covered-lineage run_context_gate --repo-root "$lineage_repo" 2>&1) || rc=$?
+assert_eq 0 "$rc" 'covered lineage retains explicit repository context during remediation'
+
 finish

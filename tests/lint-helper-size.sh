@@ -59,8 +59,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #728: optional CI outcomes separated from required acceptance execution.
 # #717: durable review attempts and validated receipt provenance.
 # #727: confirmed open findings, validated repairs and independent readiness.
-# Exact merged helper-tree bytes / 4: 1676009 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=419002
+# #727 review repairs: preserve coverage context and portable verification hashes.
+# Exact merged helper-tree bytes / 4: 1676746 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=419186
 
 violations=0
 checked=0
