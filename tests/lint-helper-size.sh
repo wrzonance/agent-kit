@@ -33,6 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
+    # #711: predicate receipts and independently checked self-authored advances.
+    [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1018:12770:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
@@ -46,9 +48,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #717: durable attempt library and supported-boundary wiring, 1628328 bytes.
-# Exact measured tree / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=407082
+# Combined #711 authorization and #717 durable review attempts: 1638204 bytes.
+# Exact combined helper-tree bytes / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=409551
 
 violations=0
 checked=0
