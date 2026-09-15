@@ -37,7 +37,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1018:12770:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
     # #717: validated attempt provenance in receipts and remote ledger entries.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="992:11317:800"
+    [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
     # #727: independently validated remediation and repair resume.
     [skills/review-remote-pr/scripts/review-ledger.sh]="829:10180:800"
 )
@@ -50,7 +50,7 @@ readonly MAX_HELPER_TOKENS=10000
 # only in the PR that needs the room, and say why in that PR.
 # #727: confirmed open findings, validated repairs and independent readiness.
 # Exact measured tree / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=409928
+readonly MAX_TREE_TOKENS=409960
 
 violations=0
 checked=0

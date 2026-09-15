@@ -615,8 +615,10 @@ validate_findings_file() {
     [[ -f $FINDINGS_FILE && ! -L $FINDINGS_FILE && -O $FINDINGS_FILE && -r $FINDINGS_FILE ]] ||
         evidence_unavailable "findings file is not an owned readable regular file: $FINDINGS_FILE${expected}"
     command -v jq >/dev/null 2>&1 || evidence_unavailable 'jq is not installed'
+    # Repairs advance the checkout; HEAD_SHA remains the original paid review.
     REMEDIATION=$("$STACKED_CI_DIR/finding-ledger.sh" status --file "$FINDINGS_FILE" \
-        --repo-root "$(git rev-parse --show-toplevel 2>/dev/null || true)" --head "$HEAD_SHA") ||
+        --repo-root "$(git rev-parse --show-toplevel 2>/dev/null || true)" \
+        --head "$(git rev-parse --verify HEAD 2>/dev/null || true)") ||
         evidence_unavailable 'findings file must not contain a line break; it must not contain the receipt marker; it must match the ledger schema'
 
     local finding_count total
