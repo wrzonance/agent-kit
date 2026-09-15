@@ -33,7 +33,7 @@ EOF
 # Directories excluded at ANY depth (e.g. dashboard/.next/package.json is a
 # build artifact, not a component -- reporting it would get it declared).
 readonly -a EXCLUDE_NAMES=(
-    node_modules .venv venv vendor .git .worktrees site-packages
+    node_modules .venv venv vendor .git .worktrees .agent site-packages
     dist build target out coverage .next
 )
 
@@ -42,7 +42,7 @@ readonly -a EXCLUDE_NAMES=(
 readonly -a PRUNE_EXPR=(
     -type d '('
     -name node_modules -o -name .venv -o -name venv -o -name vendor
-    -o -name .git -o -name .worktrees -o -name site-packages
+    -o -name .git -o -name .worktrees -o -name .agent -o -name site-packages
     -o -name dist -o -name build -o -name target -o -name out
     -o -name coverage -o -name .next
     ')' -prune

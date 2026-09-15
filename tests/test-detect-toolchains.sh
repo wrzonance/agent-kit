@@ -192,6 +192,26 @@ assert_not_contains "$out" '.venv/pyproject' \
 assert_not_contains "$out" '.next' \
     'dashboard/.next/package.json is a build artifact; reporting it is the phantom this exclusion list exists to prevent'
 
+# Runtime evidence must not become source, even when copied or tracked.
+repo=$(new_repo)
+mkdir -p "$repo/alpha" "$repo/zeta" "$repo/.agent/evidence/copied" "$repo/alpha/.agent/copied"
+printf '{"scripts":{"test":"jest"}}' > "$repo/alpha/package.json"
+printf '' > "$repo/zeta/go.mod"
+expected=$("$dt_sh" --repo-root "$repo" --format components,suggestions)
+for copied in "$repo/.agent/evidence/copied" "$repo/alpha/.agent/copied"; do
+    cp "$repo/alpha/package.json" "$copied/package.json"
+    printf '' > "$copied/pyproject.toml"
+    printf '' > "$copied/App.csproj"
+    printf '' > "$copied/go.mod"
+    printf '' > "$copied/Cargo.toml"
+    printf '#!/bin/sh\n' > "$copied/run.sh"
+    for n in 1 2 3 4 5 6; do printf 'evidence\n' > "$copied/$n.md"; done
+done
+git -C "$repo" init -q
+git -C "$repo" add -A
+out=$("$dt_sh" --repo-root "$repo" --format components,suggestions)
+assert_eq "$expected" "$out" 'runtime evidence preserves source components, suggestions and ordering'
+
 # --- suggestions never emit a live, uncommented key --------------------------
 bad_lines=$(printf '%s\n' "$sugg_out" | grep -E '^AGENT_' || true)
 assert_eq '' "$bad_lines" \
