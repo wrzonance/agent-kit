@@ -27,8 +27,8 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-# 67 since issue #613 added .shared/scripts/run-state.sh.
-assert_eq 67 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# 68 since issue #729 added .shared/scripts/worker-result.sh.
+assert_eq 68 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)

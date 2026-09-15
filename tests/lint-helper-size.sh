@@ -50,8 +50,9 @@ readonly MAX_HELPER_TOKENS=10000
 # only in the PR that needs the room, and say why in that PR.
 # #726: atomic worker ownership and serialized run-state updates.
 # #711: bounded invocation authorization and independent fix-push evidence.
-# Exact merged helper-tree bytes / 4: 1614585 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=403646
+# #729: structured handback schema and independently pinned completion evidence.
+# Exact merged helper-tree bytes / 4: 1634450 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=408612
 
 violations=0
 checked=0
