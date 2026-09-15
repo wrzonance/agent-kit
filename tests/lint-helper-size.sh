@@ -62,8 +62,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #727: confirmed open findings, validated repairs and independent readiness.
 # #727 review repairs: preserve coverage context and portable verification hashes.
 # #731: freshness fingerprints, durable results, and concurrent leases.
-# Exact merged helper-tree bytes / 4: 1685272 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=421318
+# #725: required execution and explicit review-only admin authorization.
+# #725 review repair: resolve siblings for bare filename invocation.
+# Exact merged helper-tree bytes / 4: 1694885 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=423721
 
 violations=0
 checked=0
