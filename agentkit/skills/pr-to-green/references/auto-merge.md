@@ -173,6 +173,8 @@ its reviews live and consumes:
   review ledger. Required for covered reviews: the gate independently reads remediation and blocks
   open obligations, unknown legacy semantics, or invalid repair evidence. Its reasons name each
   unresolved finding and the next repair action. Review execution alone never grants readiness.
+  Forward the same `--repo-root` and optional `--diff-payload` used for status; matching diffs
+  still require proven ancestry. Never infer missing repository context from the working directory.
 - `--code-quality-scan-state complete|pending|not-enabled` and/or `--code-quality-state-file FILE`
   — from `code-quality-state.sh --head SHA --pr N` (its `--state-file` output is the file form;
   both must agree byte-for-byte). `pending` blocks; `complete` and `not-enabled` pass; an
@@ -198,16 +200,18 @@ Every block prints `blocked reason=…`; `scripts/merge-gate.sh --help` carries 
 # that file holds {head, findingsOnHead, repoWideOpen, timestamp}, not a
 # textual scan-state= line, and merge-gate.sh rejects it as malformed.
 
+coverage_args=(--repo-root "$repo_root")
+[[ -z ${diff_payload:-} ]] || coverage_args+=(--diff-payload "$diff_payload")
 adversarial_status=$("$agentkit/review-remote-pr/scripts/review-ledger.sh" status \
   --repo "$repo" --pr "$pr" --comments "$comments_file" --head "$head_sha" \
-  --kind adversarial --repo-root "$repo_root") || true
+  --kind adversarial "${coverage_args[@]}") || true
 
 "$agentkit/pr-to-green/scripts/merge-gate.sh" \
   --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" \
   --pr-state-digest "$digest_file" --provider-result "$provider_result" \
   --human-items-decided yes \
   --adversarial-review-status "$adversarial_status" \
-  --adversarial-comments "$comments_file" --repo-root "$repo_root" \
+  --adversarial-comments "$comments_file" "${coverage_args[@]}" \
   --code-quality-state-file "$work_dir/code-quality-scan-state.txt"
 ```
 

@@ -30,7 +30,7 @@ declare -A KNOWN_OVERSIZE=(
     # #727: open obligations and terminal evidence in the canonical recipe.
     [review-remote-pr]="461:8087:450"
     # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="946:18109:900"
+    [parallel-issues]="946:18122:900"
 )
 
 readonly MAX_BODY_LINES=500

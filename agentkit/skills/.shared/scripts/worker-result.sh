@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import stat
 import subprocess
 import sys
@@ -116,7 +115,7 @@ def matches(path, glob):
     return re.fullmatch(regex,path) is not None
 
 def verify(root, r, git, a):
-    """Legacy clean full-checkout evidence only; unsupported handles stay unknown."""
+    """Current local full-checkout evidence; unsupported handles stay unknown."""
     cache=read(root/'.agent/verification-cache').decode()
     observed=[]
     for v in r['verification']:
@@ -125,23 +124,12 @@ def verify(root, r, git, a):
         name=v['command']
         if name not in ('test','lint','typecheck','coverage','verify','check'):
             raise Unknown(f'unsupported verification command: {name}')
-        raw=command([str(HELPERS/'repo-config.sh'),'--repo-root',str(root),'--get',
-                     'AGENT_CMD_'+name.upper().replace('-','_')]).decode().strip()
-        for key in ('AGENT_RUNDIR_'+name.upper(),'AGENT_CMD_'+name.upper()+'_KIND'):
-            meta=subprocess.run([str(HELPERS/'repo-config.sh'),'--repo-root',str(root),'--get',key],
-                                capture_output=True,text=True,timeout=20)
-            accepted=('', 'generic') if key.endswith('_KIND') else ('',)
-            if meta.returncode not in (0,1) or (meta.returncode==0 and meta.stdout.strip() not in accepted):
-                raise Unknown(f'unsupported verification metadata: {key}')
-        argv=shlex.split(raw)
-        if not argv: raise Unknown(f'no declared command: {name}')
-        # Scoped, focused, runner-backed and precommit records cannot prove this
-        # clean checkout via the legacy format. Never guess a compatible hash.
-        data=git('rev-parse','HEAD')+b'\0command\0'+name.encode()+b'\0kind\0generic\0focus\0\0resolved\0'
-        data+=b''.join(a.encode()+b'\0' for a in argv)
-        data+=git('diff','HEAD')+b'\0'+git('status','--porcelain=v2','-z','--untracked-files=all')
-        data+=b'\0work-dir\0'+os.fsencode(root)+b'\0'
-        fingerprint=hashlib.sha256(data).hexdigest()
+        # The producer owns input/config/toolchain identity. This query cannot
+        # execute commands or create records; unsupported scopes fail closed.
+        fingerprint=command([str(HELPERS/'agent-run.sh'),'--dir',str(root),
+                             '--cmd',name,'--verification-key']).decode().strip()
+        if not re.fullmatch('[0-9a-f]{64}',fingerprint):
+            raise Unknown(f'invalid current verification fingerprint: {name}')
         if v.get('fingerprint')!=fingerprint: raise Unknown(f'stale or unsupported tested-state fingerprint: {name}')
         log=Path(v.get('log',''))
         if not log.is_absolute() or root not in log.resolve().parents or log.parent.resolve()!= (root/'.agent/logs').resolve():
@@ -149,6 +137,16 @@ def verify(root, r, git, a):
         expected=f'{fingerprint} cmd={name} log={log} at='
         if not any(line.startswith(expected) and line.endswith(' focus=') for line in cache.splitlines()):
             raise Unknown(f'no matching full-command verification record: {name}')
+        handle=root/'.agent/verification-records'/fingerprint
+        for directory in (root/'.agent',handle.parent,handle):
+            info=directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid():
+                raise Unknown(f'verification directory must be owned and non-symlink: {directory}')
+        if os.path.lexists(handle/'running'):
+            raise Unknown(f'verification is running or interrupted: {name}')
+        completed=read(handle/'result').decode().splitlines()
+        if len(completed)!=3 or completed[0]!='0' or completed[1]!=str(log) or not re.fullmatch('[0-9a-f]{64}',completed[2]):
+            raise Unknown(f'no matching completed successful verification: {name}')
         identity=hashlib.sha256(json.dumps([name,fingerprint,str(log)]).encode()).hexdigest()
         pin=a.trusted_logs.get(identity)
         supplied=a.root_digests.get(name)
@@ -172,6 +170,8 @@ def verify(root, r, git, a):
         except Unknown:
             if pin is not None: pin['invalidated']=True
             raise
+        if completed[2]!=expected_digest:
+            raise Unknown(f'completed verification digest differs from root pin: {name}')
         a.trusted_logs[identity]=dict(command=name,fingerprint=fingerprint,log=str(log),sha256=expected_digest)
         observed.append([name,fingerprint,expected_digest])
     return observed

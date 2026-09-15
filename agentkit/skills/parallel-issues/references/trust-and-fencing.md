@@ -6,18 +6,34 @@ runs a declared command directly, with no approval or trust record.)
 
 ## Verification cache and suite cadence
 
-On a green completion for an eligible verification name (`test`, `lint`, `typecheck`,
-`coverage`, `verify`, or `check`), `agent-run.sh` records evidence in the excluded
-per-worktree `.agent/verification-cache`, keyed by the command name, execution directory,
-and current tree state. Repeating the same eligible `--cmd` in the same directory on
-unchanged bytes prints `agent-run: verification current: <log>` and exits 0; `--force`
-bypasses that shortcut.
+Reuse requires `AGENT_VERIFY_<NAME>_MODE=local` and a nonempty
+`AGENT_VERIFY_<NAME>_TOOLCHAIN` list of executable names, including interpreters and transitive
+tools. Eligible names are `test`, `lint`, `typecheck`, `coverage`, `verify`, `check`, and component
+names ending in `-test`, `-lint`, `-typecheck`, or `-check`. Undeclared/external commands,
+delegated runners, baseline comparisons, and state-producing commands always execute.
 
-During red/green iteration, run focused suites for changed files, then run the full suite
-once per tree state before commit. State-producing names such as `build`, `setup`, `seed`,
-and `migrate` are always executed and never cached. After push, GitHub CI is authoritative
-for that SHA; an unchanged local full-suite request is evidence-backed by the cache rather
-than a new run.
+`local` asserts read-only deterministic behavior independent of credentials, ambient environment,
+network, time, and concurrent services. `AGENT_VERIFY_<NAME>_INPUTS` is a comma-separated list of
+repository paths (default `.`): tracked and non-ignored untracked bytes are included; explicitly
+listed files also include ignored dependency/config freshness receipts. Ignored directory contents
+need individual receipts. Declare every relevant input; otherwise leave reuse disabled. Do not
+include secrets in declarations or freshness receipts. Symlinks escaping the repository and
+unavailable toolchain executables cause a named miss. Resolved command/config, cwd, HEAD, file
+content, and toolchain executable paths/bytes all participate; HEAD alone is insufficient.
+
+Records survive resume under `.agent/verification-records/<fingerprint>`. Reused success prints
+`verification current` with an explicit reused-evidence label. Reused deterministic failure
+returns its original status and log plus an inspection command. Missing/corrupt completed evidence
+produces a named miss and fresh execution. An identical running command returns its existing
+handle with status 75. An interrupted/unknown record also returns 75: inspect the handle's `running`
+file and named log, then use `--force` if recovery is appropriate. `--force` never starts a duplicate
+while the lease is held. Compose collisions and existing permitted transient retries remain
+retryable. The legacy green index and PASS/FAIL completion-log markers retain their formats.
+
+During red/green iteration, run focused suites for changed files, then use `--force` for the required
+fresh full suite before commit. Reused evidence never satisfies a workflow's fresh-run requirement.
+After push, GitHub CI is authoritative for that SHA. This guard does not suppress file reads, git
+queries, or search, and does not broaden dispatch or provider-review retry budgets.
 
 ## Worker baseline exclusions
 
