@@ -33,6 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="1279:16783:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
+    # #711: predicate receipts and independently checked self-authored advances.
+    [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
@@ -46,9 +48,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# Final #706 + #707 measured tree, plus selected #709 contract-cache.sh delta: 406 bytes.
-# Exact combined ceiling: (1598020 + 406) / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=399606
+# #711 adds bounded invocation authorization and independent fix-push evidence.
+# Exact final helper-tree bytes / 4, integer floor; no spare allowance.
+readonly MAX_TREE_TOKENS=402075
 
 violations=0
 checked=0
