@@ -66,6 +66,19 @@ for command in '' 'agent-run.sh --cmd test ' 'agent-run.sh --cmd format' \
     assert_rc 1 'non-exact shell input is ineligible' -- \
         tool_rewrite_candidate "$(event "$command")" "$helper"
 done
+while IFS= read -r fixture; do
+    nested=$(jq -c --argjson command "$fixture" \
+        '.tool_input.command=$command | .session_id="nested-fixture"' <<< "$input")
+    before=$nested
+    output=$(tool_rewrite_candidate "$nested" "$helper")
+    status=$?
+    assert_eq 1 "$status" 'nested or non-exact command is ineligible'
+    assert_eq '' "$output" 'ineligible command emits no replacement or rewrite event'
+    assert_eq "$before" "$nested" 'ineligible tool input remains byte-for-byte unchanged'
+    output=$("$root/agentkit/hooks/pre-tool-use.sh" <<< "$nested")
+    assert_not_contains "$output" updatedInput 'production hook never rewrites nested or inert text'
+done < <(jq -c '.[]' "$here/fixtures/tool-rewrite-ineligible.json")
+assert_rc 1 'ineligible calls produce no rewrite telemetry' -- test -e "$repo/.agent/tool-rewrites.ndjson"
 for patch in '.tool_name="exec_command"' '.tool_name="Edit"' \
     '.hook_event_name="PostToolUse"' '.tool_input.command=12' \
     '.tool_input.sandbox_permissions="require_escalated"' \
@@ -78,6 +91,16 @@ assert_rc 1 'malformed payload is ineligible' -- tool_rewrite_candidate '[' "$he
 assert_rc 1 'multiple payloads cannot produce multiple candidates' -- \
     tool_rewrite_candidate "$input"$'\n'"$input" "$helper"
 assert_rc 1 'unresolved helper is ineligible' -- tool_rewrite_candidate "$input" /missing/agent-run.sh
+duplicate_object='"tool_input":{"description":"first"},"tool_input":'
+for duplicate in \
+    "${input/\"tool_name\":/\"tool_name\":\"Edit\",\"tool_name\":}" \
+    "${input/\"tool_input\":/$duplicate_object}" \
+    "${input/\"command\":/\"command\":\"false\",\"command\":}" \
+    "${input/\"timeout\":/\"timeout\":1,\"timeout\":}"; do
+    assert_rc 0 'duplicate-key fixture is valid JSON' -- jq -e . <<< "$duplicate"
+    assert_rc 1 'duplicate relevant keys cannot establish a candidate' -- \
+        tool_rewrite_candidate "$duplicate" "$helper"
+done
 
 for adapter in codex claude unknown; do
     capability=$(tool_rewrite_capability "$adapter" fixture-version Bash)

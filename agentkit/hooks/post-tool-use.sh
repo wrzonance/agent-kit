@@ -57,6 +57,12 @@ guard_pinned_path_probe_text() {
 }
 
 input=$(cat 2> /dev/null || true)
+if [[ -n ${AGENTKIT_REWRITE_PROFILE:-} ]]; then
+    /usr/bin/python3 -I "$self_dir/lib/rewrite_runtime.py" post <<< "$input" >/dev/null 2>&1 || true
+    if [[ $input == *PostToolUseFailure* ]]; then
+        [[ $(jq -r '.hook_event_name // empty' <<< "$input" 2>/dev/null) != PostToolUseFailure ]] || emit_empty
+    fi
+fi
 command_line=$(jq -r '.tool_input.command // empty' <<< "$input" 2> /dev/null || true)
 cwd=$(jq -r '.cwd // empty' <<< "$input" 2> /dev/null || true)
 session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)

@@ -14,8 +14,11 @@ tool_rewrite_candidate() {
     [[ $helper == /*/agent-run.sh && $helper != *[[:cntrl:]]* &&
         -f $helper && -x $helper && ! -L $helper ]] || return 1
     quoted="'${helper//\'/\'\\\'\'}'"
-    jq -sce --arg command "$quoted --cmd test" '
-        select(length == 1) | .[0] | select(type == "object")
+    jq --stream -sce --arg command "$quoted --cmd test" '
+        select([.[] | select(length == 2) | .[0]] | group_by(.) | all(length == 1))
+        | select([.[] | select((length == 1 and (.[0] | length) == 2 and .[0][0] == "tool_input")
+            or (length == 2 and .[0] == ["tool_input"]))] | length == 1)
+        | [fromstream(.[])] | select(length == 1) | .[0] | select(type == "object")
         | select(.hook_event_name == "PreToolUse" and .tool_name == "Bash")
         | select(.cwd | type == "string" and startswith("/"))
         | .tool_input | select(type == "object")
