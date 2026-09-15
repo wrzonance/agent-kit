@@ -47,9 +47,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #728 adds explicit acceptance outcomes and independent optional CI counts.
-# Exact final tree ceiling reported by lint-helper-size; no spare allowance.
-readonly MAX_TREE_TOKENS=399801
+# #728 acceptance outcomes combined with the #720 provider-state fixes.
+# Exact combined tree: 1598584 bytes / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=399646
 
 violations=0
 checked=0

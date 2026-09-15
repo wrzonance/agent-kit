@@ -6,13 +6,8 @@ set -uo pipefail
 
 readonly PROGRAM=${0##*/}
 readonly SHA_RE='^[0-9a-f]{40}$'
-# GitHub's `code-quality/findings` list is the only Code Quality REST surface
-# that is actually live (issue #472 rework): `code-quality/analyses` and
-# `pulls/N/code-quality` both 404 in a real repository, and the findings
-# list's own ref=/pull_request= filters are silently ignored. --head derives
-# its per-head evidence from two surfaces that ARE real and per-head: the
-# Checks API (for an in-flight scan) and PR review comments (for completed,
-# attributable findings).
+# The findings API is repository-wide; its ref/PR filters are ignored.
+# Per-head evidence uses checks plus comments (--head) or threads (--claim).
 readonly CQ_BOT_RE='^github-code-quality(\[bot\])?$'
 repository=''
 state=open
@@ -42,47 +37,28 @@ output is the API JSON; --summary emits one compact line per finding.
 
 --claim is the reportable findings surface: a fresh, head-checked threads
 read stamped with source/head/read, after a successful current-head scan.
-Missing scans report pending; unreadable or truncated threads report unavailable.
-The legacy scan-state token describes execution and is not a zero-findings claim.
+In-flight/missing-but-enabled scans report pending; confirmed disablement reports
+not-enabled (exit 0). Unsuccessful completed scans report unavailable: scan-failed;
+unreadable evidence or truncated threads report unavailable (exit 1).
+The legacy scan-state token is execution evidence, never a zero-findings claim.
 
---probe performs a single lightweight request to decide whether GitHub Code
-Quality is enabled for the repository, without fetching findings. It prints
-exactly one line and exits 0 for a decided answer:
-  state=enabled
-  state=not-enabled
-or, when the answer cannot be decided (a network failure, an auth/scope
-problem, a 5xx, or any other unrecognized response), prints one line and
-exits 1 -- an inconclusive probe is never treated as proof the feature is
-disabled:
-  state=unknown reason=<first line of the underlying error>
---probe always queries its own minimal page; --state and --per-page are
-ignored (and --probe cannot be combined with --summary).
+--probe reads a minimal findings page. Prints state=enabled or state=not-enabled
+(exit 0; only a confirmed 403 'not enabled' proves disablement), otherwise
+state=unknown reason=<error> (exit 1). Ignores --state/--per-page; rejects --summary.
 
---head SHA40 (requires --pr N) decides the merge-gate's per-head scan-state
-token from two real, per-head evidence surfaces -- never from a fictitious
-analyses record. It prints exactly one line:
+--head SHA40 requires --pr N. Its legacy merge-gate token is exactly one line:
   scan-state=complete head=<sha> findings-on-head=<n>
   scan-state=pending head=<sha>
   scan-state=not-enabled
   scan-state=unknown reason=<first line of the underlying error>
-and exits 0 for complete/pending/not-enabled, 1 for unknown -- an unreadable
-record never maps to complete. Order of evidence: (1) the head's check-runs
--- any run whose app.slug is exactly "github-code-quality" and whose status
-is not "completed" reports pending; (2) otherwise, the PR's review comments
-whose user.login matches github-code-quality[bot] and whose commit_id or
-original_commit_id equals the head SHA are counted as findings-on-head (zero
-such comments is a valid, complete, zero-finding scan) and the repository's
-findings?state=open list additionally decides not-enabled (a confirmed 403)
-vs an unreadable repository (unknown). --head always queries its own pages;
---state, --per-page, and --summary are ignored/rejected (--head cannot be
-combined with --probe or --summary). --baseline-file FILE additionally
-writes a mode-600 JSON evidence artifact
-{head, findingsOnHead, repoWideOpen, timestamp} for this run. --state-file
-FILE additionally writes the exact printed scan-state=... token (the same
-line printed on stdout, whichever of complete/pending/not-enabled/unknown it
-is) to FILE, mode 600 -- this is the file merge-gate.sh's
---code-quality-state-file expects; --baseline-file's JSON artifact is a
-different, non-interchangeable shape and does not satisfy that flag.
+Exit 0 for complete/pending/not-enabled, 1 for unknown. First, any current-head
+github-code-quality check with status != completed reports pending. Otherwise,
+the findings API determines reachability and bot comments matching commit_id or
+original_commit_id supply findings-on-head (zero is valid). Queries its own pages;
+ignores --state/--per-page and rejects --probe/--summary. --baseline-file writes
+mode-600 JSON {head, findingsOnHead, repoWideOpen, timestamp}; --state-file writes
+the exact stdout token, mode 600, for merge-gate.sh --code-quality-state-file.
+These two artifacts are not interchangeable.
 
 --pr N --comments-file FILE --diff-base REF reports the open findings attributed
 to a PR's persisted Code Quality comments artifact and the remaining
@@ -255,10 +231,27 @@ if [[ $claim == yes ]]; then
     if ! jq -se 'length > 0 and all(.[]; (.check_runs | type) == "array")' <<<"$checks" >/dev/null; then
         printf 'code-quality: unavailable: malformed check-runs\n'; exit 1
     fi
-    if ! jq -se '[.[].check_runs[] | select(.app.slug == "github-code-quality")]
-        | length > 0 and all(.[]; .status == "completed" and .conclusion == "success")' <<<"$checks" >/dev/null; then
+    cq_checks=$(jq -sc '[.[].check_runs[] | select(.app.slug == "github-code-quality")]' <<<"$checks") || {
+        printf 'code-quality: unavailable: malformed check-runs\n'; exit 1;
+    }
+    if [[ $cq_checks == '[]' ]]; then
+        if probe_response=$(gh api "repos/$repository/code-quality/findings?state=open&per_page=1" \
+            -H 'X-GitHub-Api-Version: 2026-03-10' 2>&1); then
+            if ! jq -e 'type == "array" or (.findings | type) == "array"' <<<"$probe_response" >/dev/null 2>&1; then
+                printf 'code-quality: unavailable: malformed findings probe\n'; exit 1
+            fi
+        elif [[ $probe_response == *'HTTP 403'* ]] && grep -qi 'not enabled' <<<"$probe_response"; then
+            printf 'code-quality: not-enabled\n'; exit 0
+        else
+            printf 'code-quality: unavailable: %s\n' "$(first_error_line "$probe_response")"; exit 1
+        fi
+    fi
+    if [[ $cq_checks == '[]' ]] || jq -e 'any(.[]; .status != "completed")' <<<"$cq_checks" >/dev/null; then
         printf 'code-quality: pending reason=scan-not-complete head=%s read=%s\n' "$head_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         exit 0
+    fi
+    if ! jq -e 'all(.[]; .conclusion == "success")' <<<"$cq_checks" >/dev/null; then
+        printf 'code-quality: unavailable: scan-failed\n'; exit 1
     fi
     # First comment owns the provider identity; later replies cannot turn a
     # human thread into a provider finding. Truncation fails closed.
@@ -497,12 +490,7 @@ if [[ $probe == yes ]]; then
         printf 'state=enabled\n'
         exit 0
     fi
-    # A 403 whose message specifically says Code Quality is not enabled is a
-    # stable repository fact and may be treated as a decided "not-enabled"
-    # answer. Anything else -- a network failure, a 5xx, an auth/scope 403
-    # with a different message, gh being unreachable -- is NOT proof of
-    # disablement: report unknown and fail closed rather than silently
-    # downgrading the provider.
+    # Only a 403 'not enabled' proves disablement; other failures are unknown.
     if [[ $probe_response == *'HTTP 403'* ]] && grep -qi 'not enabled' <<<"$probe_response"; then
         printf 'state=not-enabled\n'
         exit 0
