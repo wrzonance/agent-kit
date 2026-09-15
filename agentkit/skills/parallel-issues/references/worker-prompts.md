@@ -327,6 +327,9 @@ owner-private artifact. Version 1 requires exactly these fields (no extra or dup
 Root invokes `worker-result.sh validate --result FILE --dispatch-plan FILE --owners FILE
 --state RUN_STATE_JSON --run-id ID --attempt ID --worker-id ID --issue N --worktree PATH
 --base-sha SHA --required-check test` (repeat `--required-check` for all declared obligations).
+For initial acceptance, supply `--log-sha256 test=SHA256` from root's independently observed
+original successful execution; repeat for each command. Record that digest at completion, never
+manufacture a trusted pin from a worker's retained log at handback. Worker JSON cannot supply it.
 Every expected identity/path/check comes from root dispatch, never from the result. `--owners`
 is the repository's existing `active-workers.ndjson`; `--state` is its run's `run-state.json`.
 Ownership supplies dispatched/running state; result receipts at `results.ATTEMPT` record
@@ -338,7 +341,11 @@ An unchanged accepted receipt returns `reused:true` after read-only evidence che
 rerunning implementation, tests or review. Changed logs invalidate verification while independently
 valid ownership/Git claims remain visible. Root CI/review receipts are never modified or discharged.
 Legacy full-command cache fingerprints are validated only for clean root checkouts with declared
-commands and final successful logs. Focused, precommit, scoped or unsupported durable records stay
+commands, final successful logs and root-held original digest pins. Pins persist in the existing
+result receipt through rejected/unknown handbacks. A conflicting supplied digest cannot replace
+a pin for the same command/fingerprint/log path. Missing or modified pinned logs invalidate that
+execution, even if later restored; acceptance needs a newly observed execution/log identity.
+Missing initial pins, focused, precommit, scoped or unsupported durable records stay
 unknown; a marker alone is insufficient. A native text fallback also stays unknown until root can
 collect real evidence. Existing `validate-handback.sh` publication-command argv validation is unchanged.
 

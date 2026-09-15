@@ -48,7 +48,7 @@ readonly MAX_HELPER_TOKENS=10000
 # only in the PR that needs the room, and say why in that PR.
 # #729: structured handback schema and independent evidence validation; exact final
 # helper tree, no spare allowance. Per-file limits remain unchanged.
-readonly MAX_TREE_TOKENS=405387
+readonly MAX_TREE_TOKENS=406143
 
 violations=0
 checked=0
