@@ -151,6 +151,11 @@ assert_contains "$out" 'AGENT_CMD_SERVER_FORMAT_FIX' 'preflight names the missin
 assert_contains "$out" 'parallel-issues worker workflow' 'preflight names the workflow requiring repair'
 assert_contains "$out" 'server/.venv/bin/ruff format server' 'preflight preserves the declared ruff operands'
 assert_eq "$before" "$(cat "$repo/.agent/config.env")" 'preflight offers repairs without writing config'
+usage_rc=0
+usage_out=$("$preflight" --worktree "$repo" --ensure --repo o/r 2>&1) || usage_rc=$?
+assert_eq 2 "$usage_rc" 'invalid ensure combinations precede missing-declaration errors'
+assert_contains "$usage_out" '--ensure cannot be combined' 'invalid ensure combinations retain their usage diagnostic'
+assert_not_contains "$usage_out" 'missing AGENT_CMD_' 'invalid usage does not enter the declaration gate'
 
 # The preview's config line must resolve as argv, not a single quoted token.
 grep '^AGENT_CMD_SERVER_FORMAT_FIX=' <<< "$out" >> "$repo/.agent/config.env"
@@ -185,6 +190,24 @@ out=$("$preflight" --worktree "$repo" --no-write 2>&1) || rc=$?
 assert_eq 1 "$rc" 'an empty fix does not satisfy the workflow'
 assert_contains "$out" 'No safe FORMAT_FIX proposal: add an explicit format:fix script.' 'unknown formatters require an explicit script, never a guess'
 assert_not_contains "$out" 'Confirm in .agent/config.env:' 'unknown formatters do not receive invented commands'
+
+# A failed resolver remains report-only; its partial output is not declarations.
+failed_repo="$tmp/failed-listing"
+failed_scripts="$tmp/failed-scripts"
+mkdir -p "$failed_repo/.agent" "$failed_scripts/lib"
+cp -- "$preflight" "$failed_scripts/agent-preflight.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/preflight-declarations.sh" "$failed_scripts/lib/"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "AGENT_CMD_FORMAT=cargo fmt --check\n"' 'exit 1' > "$failed_scripts/repo-config.sh"
+chmod +x "$failed_scripts/repo-config.sh"
+printf '%s\n' 'AGENT_REPO_SLUG=o/r' > "$failed_repo/.agent/config.env"
+rc=0
+out=$("$failed_scripts/agent-preflight.sh" --worktree "$failed_repo" --no-write 2>&1) || rc=$?
+assert_eq 0 "$rc" 'a failed config listing does not block contract reporting'
+assert_contains "$out" 'repository declarations unavailable' 'a failed listing explicitly discloses the unavailable check'
+assert_contains "$out" 'config= present=no keys=0 supplied=none' 'failed listing output is not accepted configuration'
+assert_contains "$out" 'skills= path=' 'a failed listing still reports the environment contract'
+assert_eq 'AGENT_REPO_SLUG=o/r' "$(cat "$failed_repo/.agent/config.env")" 'failed listing never modifies config'
+assert_rc 1 'the downstream resolver still rejects its listing' -- "$failed_scripts/repo-config.sh" --repo-root "$failed_repo" --list
 
 # Generated artifacts are proposed even without a detected language component.
 artifacts="$tmp/artifacts"

@@ -6,7 +6,7 @@ probe_config() {
     resolver="$SCRIPT_DIR/repo-config.sh"
     listing=""
     if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
-        listing="$("$resolver" --repo-root "$WORKTREE" --list 2>/dev/null || true)"
+        listing="$("$resolver" --repo-root "$WORKTREE" --list 2>/dev/null)" || listing=''
     fi
     if [[ -z "$listing" ]]; then
         emit 'config= present=no keys=0 supplied=none'
@@ -45,7 +45,10 @@ preflight_required_declarations() {
         note "required declaration check unavailable: $SCRIPT_DIR/repo-config.sh"
         return 1
     fi
-    listing=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$WORKTREE" --list) || return 1
+    if ! listing=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$WORKTREE" --list); then
+        note 'repository declarations unavailable; required-declaration check skipped'
+        return 0
+    fi
     while IFS='=' read -r key value; do
         [[ -n $key ]] && declared[$key]=$value
     done <<< "$listing"

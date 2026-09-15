@@ -325,6 +325,10 @@ suggestion_name() {
     fi
 }
 
+config_quote_token() {
+    case $1 in *' '*) printf '"%s"' "$1" ;; *) printf '%s' "$1" ;; esac
+}
+
 # Whether TOOL is available to a python component with runner RUNNER: a
 # resolved .venv checks binary presence (strongest evidence); otherwise fall
 # back to a text match against the component's own marker files.
@@ -504,10 +508,12 @@ SUGGEST_EOF
 print_suggestions() {
     local sorted path lang marker runner cname task value name entry any=0
     local -a dispatch=()
-    propose_generated_paths "$repo_root"
+    if declare -F propose_generated_paths > /dev/null; then
+        propose_generated_paths "$repo_root"
+    else
+        printf '%s\n' 'detect-toolchains: generated-path proposals unavailable: lib/generated-paths-proposal.sh' >&2
+    fi
 
-    # An existing single entry point answers the question before any per-language
-    # guess does, so it is offered first and unprefixed.
     mapfile -t dispatch < <(gen_dispatcher_tasks)
     if ((${#dispatch[@]})); then
         any=1
@@ -760,8 +766,10 @@ fi
 repo_root=$(cd -- "$repo_root" && pwd)
 
 self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
-# shellcheck source=lib/generated-paths-proposal.sh
-source "$self_dir/lib/generated-paths-proposal.sh"
+if [[ -r $self_dir/lib/generated-paths-proposal.sh ]]; then
+    # shellcheck source=lib/generated-paths-proposal.sh
+    source "$self_dir/lib/generated-paths-proposal.sh"
+fi
 
 [[ $ARG_FORMAT == drift ]] || collect_all
 first=1

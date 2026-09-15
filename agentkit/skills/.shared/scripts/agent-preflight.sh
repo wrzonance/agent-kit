@@ -1235,6 +1235,9 @@ check_agent_dir_mode() {
 
 main() {
     parse_args "$@"
+    if (( ARG_ENSURE && (ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET || ARG_INHERIT_SESSION_SET) )); then
+        die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
+    fi
     if [[ -n $ARG_ACTIVATION_SESSION || -n $ARG_WORKFLOW ]]; then
         "$SCRIPT_DIR/workflow-activation.sh" check --repo-root "${ARG_WORKTREE:-$PWD}" \
             --session "$ARG_ACTIVATION_SESSION" --skill "$ARG_WORKFLOW" >/dev/null || return 1
@@ -1247,9 +1250,6 @@ main() {
         return 1
     fi
     if (( ARG_ENSURE )); then
-        if (( ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET || ARG_INHERIT_SESSION_SET )); then
-            die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
-        fi
         contract_reader="$SCRIPT_DIR/contract-read.sh"
         if [[ -x $contract_reader ]] && declare -F contract_cache_contract_file > /dev/null &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then

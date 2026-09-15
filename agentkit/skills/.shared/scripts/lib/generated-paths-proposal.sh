@@ -1,14 +1,4 @@
 # shellcheck shell=bash
-# Config values are parsed line-wise, not sourced. Quote only tokens that need
-# grouping so a generated path such as "My Project" survives that parser as one
-# argv token while ordinary suggestions remain readable.
-config_quote_token() {
-    case $1 in
-        *' '*) printf '"%s"' "$1" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
 # Candidate contracts only: reuse the detector's exclusions, never write config.
 propose_generated_paths() {
     local repo_root=$1 path relative paths=''
