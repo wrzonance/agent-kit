@@ -27,6 +27,9 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Require fresh execution, including recovery of unknown evidence.
                  An identical in-flight local command still returns its handle.
+  --verification-key  Read-only query for one local, generic, full-checkout
+                 command. Prints only its current fingerprint; creates no execution
+                 records or logs. Rejects execution modifiers and unsupported inputs.
   --fix          With --cmd [COMPONENT-]format, run its declared *_FORMAT_FIX
                  pair. Applies to that link only; never falls back to a runner.
   --only NAME[,NAME...]  For --cmd test, use the repository's
@@ -138,6 +141,7 @@ cmd=()
 focus_opt=''
 focus_requested=0
 force_cmd=0
+verification_key=0
 fix_cmd=0
 baseline_ref=''
 baseline_path=''
@@ -155,6 +159,7 @@ declare -a cmd_queue_fix=() remaining_fix=()
 
 while (($#)); do
     case $1 in
+        --verification-key) verification_key=1; shift ;;
         --fix)
             ((${#cmd_queue[@]})) || die '--fix requires a preceding --cmd format.'
             fix_name=${cmd_queue[${#cmd_queue[@]} - 1]}
@@ -214,6 +219,14 @@ while (($#)); do
             ;;
     esac
 done
+
+if ((verification_key)); then
+    if ((${#cmd_queue[@]} != 1 || ${#cmd[@]} != 0 || force_cmd || focus_requested)) ||
+        [[ -n $resolve_name || -n $baseline_ref || -n $baseline_path || -n $baseline_id || -n $label ]] ||
+        ((cmd_queue_if_declared[0] || cmd_queue_fix[0])); then
+        die '--verification-key requires exactly one --cmd without execution modifiers.'
+    fi
+fi
 
 if ((${#cmd_queue[@]})); then
     cmd_name=${cmd_queue[0]}
@@ -1648,6 +1661,16 @@ refresh_cmd_str
 maybe_use_package_dir
 canonicalise_work_dir
 resolve_literal_executable
+
+if ((verification_key)); then
+    verification_cache_eligible && [[ $command_kind == generic && $work_dir == "$git_top" &&
+        ${#verification_paths[@]} == 1 && ${verification_paths[0]} == . ]] ||
+        die '--verification-key requires local generic full-checkout verification.'
+    tree_hash=$(compute_tree_hash 2>/dev/null) && [[ $tree_hash =~ ^[0-9a-f]{64}$ ]] ||
+        die '--verification-key inputs unavailable.'
+    printf '%s\n' "$tree_hash"
+    exit 0
+fi
 
 # Configure the per-worktree Compose namespace only for a named command, before
 # either delegation or execution so every declared command sees it.

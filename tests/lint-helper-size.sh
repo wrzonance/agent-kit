@@ -25,7 +25,7 @@ declare -A KNOWN_OVERSIZE=(
     [hooks/lib/guard-lib.sh]="2298:25215:800"
     [skills/.shared/scripts/agent-preflight.sh]="1335:15946:800"
     # #731: opt-in freshness fingerprints, durable results, and concurrent leases.
-    [skills/.shared/scripts/agent-run.sh]="1800:19361:800"
+    [skills/.shared/scripts/agent-run.sh]="1823:19656:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="816:8485:800"
@@ -37,7 +37,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
+    # #728 separates optional CI outcomes from required acceptance execution.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
 )
@@ -49,9 +50,12 @@ readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
 # #731: verification records and declarations.
-# #711 adds bounded invocation authorization and independent fix-push evidence.
-# Exact final helper-tree bytes / 4, integer floor; no spare allowance.
-readonly MAX_TREE_TOKENS=403914
+# #726: atomic worker ownership and serialized run-state updates.
+# #711: bounded invocation authorization and independent fix-push evidence.
+# #729: structured handback schema and independently pinned completion evidence.
+# #728: optional CI outcomes separated from required acceptance execution.
+# Exact merged helper-tree bytes / 4: 1643119 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=410779
 
 violations=0
 checked=0

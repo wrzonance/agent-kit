@@ -10,9 +10,8 @@ description: >-
 
 # PR to green
 
-Coordinate existing Agent Kit review machinery: parallel reviews, serial
-merges. Owns queue authorization and the ready/provider transition boundary
-— not another review engine.
+Coordinate parallel reviews and serial merges; own queue authorization and
+ready/provider transitions through existing Agent Kit machinery.
 
 Open `"$agentkit/<path>"`; use `"$agentkit/references.md"` for paths and purposes instead of searching.
 
@@ -22,7 +21,7 @@ Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell
 
 | Flag | Effect |
 |---|---|
-| `--auto-merge` | Authorize serial merges of the confirmed queue after each pre-merge review-completion gate passes. Otherwise stop at evidence-green; humans merge. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for consent, gates, and serialization. |
+| `--auto-merge` | Gated serial merges of confirmed PRs; otherwise humans merge at evidence-green. See [details](references/auto-merge.md) for consent and gates. |
 | `--yolo` | Explicit intent for unattended queue authorization; never implies merges or cross-provider consent. |
 | `--fast-mode` | Display a receipt and authorize the bounded queue without a question. --fast-mode requires --yolo. |
 | `--auto-review` | Authorize the disclosed adversarial payload through the existing paths-coverage consent guard. |
@@ -251,6 +250,14 @@ per-item confirmation; human threads stay unresolved. Record a verified fix comm
 
 ### 4. Prove evidence-green
 
+Refresh `gh-pr-state.sh --digest` before reporting; cite head/read for CI.
+After the last thread action, run `review-transition.sh --observe --repo OWNER/REPO
+--pr N --since TRIGGER_TIMESTAMP --settle-after ACTION_TIMESTAMP --rounds 4 --interval 1`.
+Report its source/head/read/action/elapsed fields. For Code Quality use
+`$agentkit/review-remote-pr/scripts/code-quality-state.sh --repo OWNER/REPO --pr N --head SHA40 --claim`.
+Require fresh current-head evidence; pending/unavailable never means complete.
+Disabled providers add no gate.
+
 A PR is evidence-green only when all of these are current for its head and base:
 
 - CI and every declared repository check pass with no stale-base residue — a
@@ -315,9 +322,7 @@ then continue serially.
 
 ## Exit
 
-Continue until every queue item is evidence-green (or, under `--auto-merge`,
-merged) or blocked on a named human/dependency decision. Report per PR:
-head/base, CI, adversarial receipt, provider result, finding settlement,
-human decisions, stack state, formal provider approval separately, and — under
-`--auto-merge` — the gate result and merge outcome. Preserve all worktrees and
-authorization/evidence artifacts for resumption.
+Continue until each item is evidence-green (merged under `--auto-merge`) or has a
+named human/dependency blocker. Report per PR: head/base, CI, adversarial receipt,
+provider result, findings, human decisions, stack state, formal approval separately,
+and auto-merge gate/outcome. Preserve worktrees and authorization/evidence for resumption.
