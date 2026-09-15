@@ -155,6 +155,8 @@ printf '#!/bin/sh\nprintf "dependency failed to start; container name is already
 chmod +x "$repo/tools/docker"
 printf 'AGENT_CMD_TEST=tools/docker compose\n' > "$repo/.agent/config.env"
 collision_out=$(cd "$repo" && "$real_run_sh" --cmd test 2>&1 || true)
+assert_contains "$collision_out" 'failure-v1 class=environment-collision' 'positive Compose evidence yields typed collision'
+assert_contains "$collision_out" 'next_action=retry-unchanged-once-after-conflicting-dependency-drains-or-is-isolated' 'collision transition requires external state change'
 assert_contains "$collision_out" 'FAIL(rc=1)' \
     'a Compose collision preserves the wrapped command exit status'
 assert_contains "$collision_out" 'environment-retry-eligible' \
