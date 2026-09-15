@@ -65,10 +65,14 @@ CA_ENV_VARS=(SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
 readonly SCRIPT_DIR
 
-# Sibling libraries, each guarded: this script reports missing facts rather than
-# blocking (see BEHAVIOUR), so a copy without its lib/ sibling still runs and the
-# consumer (probe_protected, apply_never_widen, probe_skills_content, the .agent
-# mkdir sites) discloses the gap via `declare -F`. Issues #332 F3, #453, #474.
+# Required workflow declarations are checked even before cached-contract reuse.
+if [[ -r $SCRIPT_DIR/lib/preflight-declarations.sh ]]; then
+    # shellcheck source=lib/preflight-declarations.sh
+    source "$SCRIPT_DIR/lib/preflight-declarations.sh"
+fi
+
+# Optional probe libraries disclose missing facts; required declarations above
+# remain fail-closed. Issues #332 F3, #453, #474.
 for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache; do
     preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
     if [[ -r $preflight_lib_path ]]; then
@@ -124,7 +128,7 @@ Options:
 
 Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
 
-Exit: 0 for reported facts (including missing tools); 1 for failed activation;
+Exit: 0 for reported facts; 1 for failed activation or required declarations;
       2 for invalid usage.
 EOF
 }
@@ -385,32 +389,6 @@ probe_identity() {
     emit "branch=$branch"
     emit "worktree=$WORKTREE"
     emit "$(detect_base)"
-}
-
-# What the repository declared about itself. This tells the agent which facts below
-# came from a committed file rather than from probing -- and, when a config exists but
-# supplies nothing, that its keys were rejected rather than absent.
-probe_config() {
-    local resolver listing count keys shown extra
-    resolver="$SCRIPT_DIR/repo-config.sh"
-    listing=""
-
-    if [[ -x "$resolver" && -n "$WORKTREE" ]]; then
-        listing="$("$resolver" --repo-root "$WORKTREE" --list 2>/dev/null || true)"
-    fi
-    if [[ -z "$listing" ]]; then
-        emit 'config= present=no keys=0 supplied=none'
-        return 0
-    fi
-
-    count="$(printf '%s\n' "$listing" | grep -c '=' || true)"
-    # Name only the first few: this block is read on every run, and a dozen key
-    # names would cost more than the fact they convey.
-    shown="$(printf '%s\n' "$listing" | cut -d= -f1 | head -n 4 | paste -sd, -)"
-    extra=$(( count > 4 ? count - 4 : 0 ))
-    keys="$shown"
-    if (( extra > 0 )); then keys="$shown,+$extra more"; fi
-    emit "config= present=yes keys=$count supplied=\"$keys\""
 }
 
 # The effective protected-path set, computable up front so a colliding write set is
@@ -1261,11 +1239,17 @@ main() {
         "$SCRIPT_DIR/workflow-activation.sh" check --repo-root "${ARG_WORKTREE:-$PWD}" \
             --session "$ARG_ACTIVATION_SESSION" --skill "$ARG_WORKFLOW" >/dev/null || return 1
     fi
+    resolve_worktree
+    if declare -F preflight_required_declarations > /dev/null; then
+        preflight_required_declarations || return 1
+    elif [[ -e $WORKTREE/.agent/config.env || -L $WORKTREE/.agent/config.env ]]; then
+        note "required declaration check unavailable: $SCRIPT_DIR/lib/preflight-declarations.sh"
+        return 1
+    fi
     if (( ARG_ENSURE )); then
         if (( ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET || ARG_INHERIT_SESSION_SET )); then
             die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
         fi
-        resolve_worktree
         contract_reader="$SCRIPT_DIR/contract-read.sh"
         if [[ -x $contract_reader ]] && declare -F contract_cache_contract_file > /dev/null &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
@@ -1311,9 +1295,12 @@ main() {
     fi
     probe_skills_path
     probe_skills_content
-    resolve_worktree
     probe_identity
-    probe_config
+    if declare -F probe_config > /dev/null; then
+        probe_config
+    else
+        emit 'config= present=no keys=0 supplied=none'
+    fi
     probe_protected
     probe_instructions
     probe_git

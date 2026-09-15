@@ -135,4 +135,70 @@ assert_contains "$variable_table" "$compose_row" \
 assert_contains "$variable_table" "$cache_root_row" \
     'the onboarding table documents the runtime-only cache root override'
 
+# A required formatter repair must be discoverable before a worker starts.
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+repo="$tmp/repo"
+mkdir -p "$repo/.agent" "$repo/server"
+git -C "$repo" init -q
+preflight="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
+printf '%s\n' 'AGENT_CMD_SERVER_FORMAT=server/.venv/bin/ruff format --check server' > "$repo/.agent/config.env"
+before=$(cat "$repo/.agent/config.env")
+rc=0
+out=$("$preflight" --worktree "$repo" --no-write 2>&1) || rc=$?
+assert_eq 1 "$rc" 'preflight rejects a missing component formatter repair declaration'
+assert_contains "$out" 'AGENT_CMD_SERVER_FORMAT_FIX' 'preflight names the missing declaration'
+assert_contains "$out" 'parallel-issues worker workflow' 'preflight names the workflow requiring repair'
+assert_contains "$out" 'server/.venv/bin/ruff format server' 'preflight preserves the declared ruff operands'
+assert_eq "$before" "$(cat "$repo/.agent/config.env")" 'preflight offers repairs without writing config'
+
+# The preview's config line must resolve as argv, not a single quoted token.
+grep '^AGENT_CMD_SERVER_FORMAT_FIX=' <<< "$out" >> "$repo/.agent/config.env"
+argv=$("$resolver" --repo-root "$repo" --get-argv AGENT_CMD_SERVER_FORMAT_FIX | tr '\0' '\n')
+assert_eq $'server/.venv/bin/ruff\nformat\nserver' "$argv" 'the offered declaration is directly usable by agent-run'
+rc=0
+"$preflight" --worktree "$repo" > /dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" 'an explicitly paired formatter passes and writes a contract'
+printf '%s\n' "$before" > "$repo/.agent/config.env"
+rc=0
+out=$("$preflight" --worktree "$repo" --ensure 2>&1) || rc=$?
+assert_eq 1 "$rc" 'cached-contract reuse cannot bypass a missing repair declaration'
+
+for check in 'dotnet format --verify-no-changes' 'cargo fmt --check' 'python3 -m ruff format --check'; do
+    printf 'AGENT_CMD_FORMAT=%s\nAGENT_RUNDIR_FORMAT=server\n' "$check" > "$repo/.agent/config.env"
+    rc=0
+    out=$("$preflight" --worktree "$repo" --no-write 2>&1) || rc=$?
+    expected=${check/ --verify-no-changes/}
+    expected=${expected/ --check/}
+    assert_eq 1 "$rc" "$check requires a repair pair"
+    assert_contains "$out" "AGENT_CMD_FORMAT_FIX=$expected" "$check offers its supported fix verbatim"
+    assert_contains "$out" 'AGENT_RUNDIR_FORMAT_FIX=server' 'the repair retains the declared check directory'
+done
+printf '%s\n' '{"scripts":{"format:check":"prettier --check src"}}' > "$repo/package.json"
+printf '%s\n' 'AGENT_CMD_FORMAT=npm run format:check' > "$repo/.agent/config.env"
+out=$("$preflight" --worktree "$repo" --no-write 2>&1)
+assert_contains "$out" 'AGENT_CMD_FORMAT_FIX=npm exec --no -- prettier --write src' 'preflight reuses the safe Prettier detector proposal'
+printf '%s\n' '{"scripts":{"format:check":"custom-formatter --check src"}}' > "$repo/package.json"
+printf '%s\n' 'AGENT_CMD_FORMAT_FIX=' >> "$repo/.agent/config.env"
+rc=0
+out=$("$preflight" --worktree "$repo" --no-write 2>&1) || rc=$?
+assert_eq 1 "$rc" 'an empty fix does not satisfy the workflow'
+assert_contains "$out" 'No safe FORMAT_FIX proposal: add an explicit format:fix script.' 'unknown formatters require an explicit script, never a guess'
+assert_not_contains "$out" 'Confirm in .agent/config.env:' 'unknown formatters do not receive invented commands'
+
+# Generated artifacts are proposed even without a detected language component.
+artifacts="$tmp/artifacts"
+mkdir -p "$artifacts/server" "$artifacts/client" "$artifacts/node_modules/pkg"
+printf '{}\n' > "$artifacts/server/openapi.json"
+printf '// generated\n' > "$artifacts/client/generated.ts"
+printf '{}\n' > "$artifacts/node_modules/pkg/openapi.json"
+detector="$root/agentkit/skills/.shared/scripts/detect-toolchains.sh"
+out=$("$detector" --repo-root "$artifacts" --format suggestions)
+assert_contains "$out" '# AGENT_GENERATED_PATHS=client/generated.ts,server/openapi.json' 'the detector proposes sorted generated-contract paths'
+assert_not_contains "$out" 'node_modules/pkg/openapi.json' 'generated proposals exclude dependency artifacts'
+assert_not_contains "$out" $'\nAGENT_GENERATED_PATHS=' 'generated paths are proposals, never active declarations'
+generated_description=$(grep -F "$generated_row" <<< "$variable_table")
+assert_contains "$generated_description" 'write-set' 'generated-path documentation names its write-set role'
+assert_contains "$generated_description" 'staleness' 'generated-path documentation retains its staleness role'
+
 finish

@@ -325,16 +325,6 @@ suggestion_name() {
     fi
 }
 
-# Config values are parsed line-wise, not sourced. Quote only tokens that need
-# grouping so a generated path such as "My Project" survives that parser as one
-# argv token while ordinary suggestions remain readable.
-config_quote_token() {
-    case $1 in
-        *' '*) printf '"%s"' "$1" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
 # Whether TOOL is available to a python component with runner RUNNER: a
 # resolved .venv checks binary presence (strongest evidence); otherwise fall
 # back to a text match against the component's own marker files.
@@ -514,6 +504,7 @@ SUGGEST_EOF
 print_suggestions() {
     local sorted path lang marker runner cname task value name entry any=0
     local -a dispatch=()
+    propose_generated_paths "$repo_root"
 
     # An existing single entry point answers the question before any per-language
     # guess does, so it is offered first and unprefixed.
@@ -768,8 +759,9 @@ else
 fi
 repo_root=$(cd -- "$repo_root" && pwd)
 
-self_dir=${BASH_SOURCE[0]%/*}
-[[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+# shellcheck source=lib/generated-paths-proposal.sh
+source "$self_dir/lib/generated-paths-proposal.sh"
 
 [[ $ARG_FORMAT == drift ]] || collect_all
 first=1
