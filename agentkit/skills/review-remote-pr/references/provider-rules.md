@@ -17,8 +17,7 @@
 - Decline Rationale Templates
 - Pitfalls
 
-This is the detail behind the SKILL.md body's provider-rules heading and Step 1a/5/6 pointers.
-Read the relevant section when Phase C findings land.
+Read the relevant section for Phase C findings (Steps 1a/5/6).
 
 ## Provider table
 
@@ -84,17 +83,13 @@ jq -r '.[] | "\(.id)\t\(.path)\t\(.line)\t\(.commit_id)"' \
 
 ## Reply-body integrity gate
 
-After every automated reply, the created comment must be re-fetched by
-its returned ID and its stored body compared byte-for-byte with the exact intended text. Do not
-resolve or dismiss a finding until they match.
-
-`scripts/compose-review-reply.sh` owns automated-reply structure and calls `gh-comment.sh`, the
-procedural implementation of that gate — do not hand-roll either layer. The transport reads the
-body from a file, posts JSON, re-fetches the stored comment, and `cmp`s exact decoded bytes. On success it prints one line
-(`posted id=… url=… verified=exact`) and exits `0`. On any mismatch it prints a capped unified diff
-to stderr, leaves stdout empty, and exits `1`. The safe caller rule is therefore: **resolve or
-dismiss only when the helper printed a line on stdout AND exited `0`.** See below for the call
-shapes (`--reply-to`, `--anchor`, `--update`).
+Use `scripts/compose-review-reply.sh` for structure and its `gh-comment.sh`
+transport; never hand-roll either. After posting JSON from the body file, the
+transport refetches by returned ID and `cmp`s decoded bytes against that file.
+Success prints `posted id=… url=… verified=exact` and exits `0`; mismatch prints
+a capped stderr diff, leaves stdout empty, and exits `1`. **Resolve or dismiss
+only when the helper printed a line on stdout AND exited `0`.** Call shapes
+(`--reply-to`, `--anchor`, `--update`) follow below.
 
 ## Human-review confirmation gate
 
@@ -188,6 +183,21 @@ A green "CodeRabbit" check or an ack comment is not a review. Read `gh-pr-state.
 - `none` — nothing landed; post no review command and leave any trigger decision to the user.
 - `rate-limited` — observe bounded rounds and report; never advise buying credits.
 
+### Provider claim evidence
+
+Stamp claims with `source`, full `head`, and UTC `read`; cache hits retain the
+original timestamp. Older-head evidence is `pending`; unreadable evidence is
+`unavailable: <reason>`. Never infer completion from either.
+After settlement, record the last action's UTC time and use pr-to-green Step 4's
+bounded observer. Report action/elapsed and the final decision; `COMMENTED` is an
+observation, not proof approval cannot arrive. No observation authorizes a trigger.
+Code Quality `--head SHA40 --pr N --claim` requires a successful scan and counts
+unresolved, non-outdated provider threads. Missing scans are pending; truncated
+threads unavailable. Green checks and `scan-state=complete` never prove zero
+findings. Cite dismissal rationales separately rather than counting them absent.
+Surfaces: [reviews](https://docs.github.com/en/rest/pulls/reviews),
+[threads](https://docs.github.com/en/graphql/reference/pulls).
+
 ### Stale approval residue
 
 When `gh-pr-state.sh` reports a stale base after a parent merge, a CodeRabbit approval earned
@@ -222,12 +232,10 @@ Body-only nitpicks are still actionable. Do not skip them just because they do n
 
 ### Generic automated finding handling
 
-For each unresolved generic automated (`B1`, `B2`, ...) thread, assess the finding on its merits,
-then put the smallest safe fix or a concrete decline reason in a canonical reply. A bot-only
-thread may resolve only after the bot's response settles. If the author is a
-code-scanning bot, state that a pushed fix is expected to clear on the next rescan; never trigger a
-scan or a review bot. If any human-lane comment is present, convert the item to `H#`, leave it open,
-and apply the human confirmation gate instead.
+For generic automated `B#` findings, reply canonically with the smallest safe fix
+or a concrete decline reason. Settle bot-only threads after the bot response;
+code-scanning fixes require the next rescan. Never trigger scans or review bots.
+Human comments convert the item to `H#`: leave it open and require confirmation.
 
 ### GitHub Code Quality finding handling
 
@@ -250,7 +258,12 @@ INVALID → do not resolve the thread as a shortcut. Reply to the original comme
           finding is dismissed after the scan.
 ```
 
-A Code Quality finding is complete only when GitHub reports it auto-cleared after the pushed fix or reports it dismissed with a reason. `resolveReviewThread` is not a Code Quality dismissal API and must not be used for an inaccurate finding. Do not use `/code-scanning/alerts/...` unless the finding has independently been identified as a code-scanning alert — Code Quality and code scanning are distinct API resources. If the UI does not expose **Dismiss finding**, stop and report the missing permission; do not silently close the thread or use the whole-review dismissal endpoint (`PUT .../reviews/$REVIEW_ID/dismissals` dismisses an entire PR review, never one finding).
+A Code Quality finding is complete only when GitHub reports it auto-cleared after
+the pushed fix or dismissed with a reason. Never substitute `resolveReviewThread`
+or whole-review dismissal (`PUT .../reviews/$REVIEW_ID/dismissals`). Use
+`/code-scanning/alerts/...` only for independently identified code-scanning alerts;
+Code Quality is a separate resource. If **Dismiss finding** is unavailable, stop
+and report the missing permission; never silently close the thread.
 
 ### Issue-comment finding handling (agent-kit#566)
 

@@ -108,8 +108,8 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 19765 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 19765 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20049 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 20049 bytes'
 
 # shellcheck disable=SC2016 # Markdown backticks are literal.
 assert_contains "$text" '| `--fast-mode` |' 'coordinator exposes queue preauthorization'

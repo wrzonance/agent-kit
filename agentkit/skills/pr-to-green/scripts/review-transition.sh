@@ -35,6 +35,7 @@ work_dir=''
 plan_resolved=0
 observe=0
 since=''
+settle_after=''
 ledger_comments=''
 REVIEW_LEDGER_SCRIPT=${REVIEW_TRANSITION_REVIEW_LEDGER:-$SCRIPT_DIR/../../review-remote-pr/scripts/review-ledger.sh}
 REVIEW_TRANSITION_LEDGER_IDENTITY=${REVIEW_TRANSITION_LEDGER_IDENTITY:-pr-to-green/$PROGRAM}
@@ -63,6 +64,11 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --pr N
        --authorization-file FILE [--rounds 1-60] [--interval 1-3600]
        [--ledger-comments FILE]
        $PROGRAM --observe --repo OWNER/REPO --pr N --since TIMESTAMP
+       [--settle-after TIMESTAMP --rounds 1-60 --interval 1-3600]
+
+--settle-after records the last thread action and rereads reviews in a bounded
+window (stops on APPROVED or the round limit). Other states remain observations,
+never a terminal claim that approval cannot arrive. No provider is triggered.
 
 --ledger-comments FILE (issue #477): before polling a triggerable provider,
 consults the sibling review-ledger.sh's status for this PR's already-fetched
@@ -71,53 +77,23 @@ straight to "provider=NAME result=ALREADY_SPENT source=ledger" without
 burning any polling rounds or REST budget. Any other verdict (stale, absent,
 or a blocked/malformed ledger) polls exactly as it does without this flag.
 
---observe is a lightweight, read-only companion query: after a --trigger run
-prints TRIGGERED/ALREADY_SPENT with a since=TIMESTAMP, poll with --observe
---since that TIMESTAMP until it reports LANDED (a terminal CodeRabbit review
-submitted after TIMESTAMP, for the PR's OWN CURRENT head SHA -- fetched
-fresh, never trusted from a caller) instead of re-running the full
-ready-transition and provider-spend flow. Prints "provider=coderabbit
-result=LANDED state=STATE threads=N since=TIMESTAMP", or
-"provider=coderabbit result=STALE_HEAD state=STATE commit=SHA" for a
-terminal review that postdates TIMESTAMP but targets a head the PR has since
-moved past, or "provider=coderabbit result=RATE_LIMITED" when a CodeRabbit
-issue comment postdating TIMESTAMP carries a throttling phrase (review limit
-reached / rate limit -- the same signature gh-pr-state.sh's provider_state
-already treats as authoritative), or "provider=coderabbit
-result=TRIGGER_MISPARSED" when CodeRabbit instead replied to the trigger as
-chat (an issue comment postdating TIMESTAMP carrying its chat-tip/analysis-
-chain signature AND mentioning the account that posted the marked trigger
-comment -- never this call's own identity) instead of filing a review -- that
-spend produced nothing and is reported distinctly from "provider=coderabbit
-result=PENDING" (no activity at all) otherwise. Always exits 0 -- none of
-PENDING, STALE_HEAD, RATE_LIMITED, or TRIGGER_MISPARSED is a failure, only
-"not landed for this head yet". A LANDED result additionally appends kind=bot evidence
-(review_id/state/submitted_at) back to the review ledger through
---ledger-comments (also required with --repo-root for this write-back) --
-best-effort, never blocking the printed result. When --ledger-comments/
---repo-root were given, LANDED's line carries a trailing " ledger=recorded"
-or " ledger=unrecorded" so a caller (or a resumed run) can tell a lost
-write-back from a recorded one instead of only seeing it on stderr; the
-field is omitted entirely when no write-back was attempted.
+--observe reads provider evidence without rerunning the ready/trigger flow.
+Use the TRIGGERED/ALREADY_SPENT since= timestamp. Results (exit 0):
+  LANDED state=STATE threads=N since=TIMESTAMP: post-trigger review of live head.
+  STALE_HEAD state=STATE commit=SHA: review targets an earlier head.
+  RATE_LIMITED: post-trigger provider comment reports a throttling phrase.
+  TRIGGER_MISPARSED: chat-tip/analysis-chain reply mentions the trigger author.
+  PENDING: no landed review yet, or head changed during the read.
+LANDED appends review_id/state/submitted_at to the bot ledger when both
+--ledger-comments and --repo-root are supplied. Best-effort write-back adds
+ledger=recorded|unrecorded to stdout; absent arguments omit the field.
+Unreadable evidence fails closed.
 EOF
     exit "${1:-2}"
 }
 
-# issue #486 item 3: a live --observe poll that resolves LANDED reads the
-# ledger (via --ledger-comments) but never wrote its own finding back --
-# every derived state must be appended, not just consulted. Best-effort and
-# non-fatal, matching post-receipt.sh's ledger write-back: a missing
-# --ledger-comments/--repo-root, or an append failure, is reported but never
-# blocks the LANDED result this call already earned.
-#
-# Root-review finding on issue #486 item 3: a failed append used to be
-# stderr-only, so a caller parsing the stdout result line -- and a resumed
-# run relying on the ledger -- had no way to tell a lost write-back from a
-# recorded one, risking a second spend against the one-ping-per-PR budget.
-# ledger_write_back_status now carries that outcome back to the caller as a
-# global: "recorded", "unrecorded", or "" (no ledger args -- the caller must
-# never append a ledger= field for that case, keeping it exactly as optional
-# as before).
+# Preserve LANDED on ledger failure; expose recorded/unrecorded on stdout so
+# resumed runs can distinguish missing write-back from a missing bot review.
 ledger_write_back_status=''
 write_back_bot_ledger_entry() {
     local head=$1 state=$2 review_id=$3 submitted_at=$4
@@ -166,6 +142,7 @@ while (($#)); do
         --interval) (($# >= 2)) || usage; interval=$2; shift 2 ;;
         --observe) observe=1; shift ;;
         --since) (($# >= 2)) || usage; since=$2; shift 2 ;;
+        --settle-after) (($# >= 2)) || usage; settle_after=$2; shift 2 ;;
         --ledger-comments) (($# >= 2)) || usage; ledger_comments=$2; shift 2 ;;
         -h|--help) usage 0 ;;
         *) usage ;;
@@ -176,6 +153,18 @@ if ((observe)); then
     [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die '--repo must have the form OWNER/REPO'
     [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
     [[ -n $since ]] || die '--since is required with --observe'
+    [[ $rounds =~ ^[1-9][0-9]*$ && $rounds -le 60 ]] || die '--rounds must be 1-60'
+    [[ $interval =~ ^[1-9][0-9]*$ && $interval -le 3600 ]] || die '--interval must be 1-3600'
+    if [[ -n $settle_after ]]; then
+        [[ $settle_after =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die '--settle-after must be a UTC timestamp'
+        action_epoch=$(date -u -d "$settle_after" +%s 2>/dev/null) ||
+            action_epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$settle_after" +%s 2>/dev/null) ||
+            die 'invalid --settle-after timestamp'
+        ((action_epoch <= $(date -u +%s))) || die '--settle-after is in the future'
+        printf 'Waiting for agents: post-settlement review observation\n' >&2
+    else
+        rounds=1
+    fi
     command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
     command -v jq >/dev/null 2>&1 || die 'jq is required; observe evidence unavailable'
 
@@ -192,38 +181,46 @@ if ((observe)); then
             "$work_dir/$label.raw" >"$out" || die "$label evidence returned malformed JSON"
         jq -e 'type == "array"' "$out" >/dev/null 2>&1 || die "$label evidence returned malformed JSON"
     }
-    # The live head SHA, fetched fresh rather than trusted from any caller
-    # input: the PR can advance between the trigger and this observe call, and
-    # a review submitted for the OLD head can still postdate $since and read
-    # as current if commit_id is never checked (agent-kit#395 follow-up).
-    "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" || die 'pull request metadata unavailable'
-    head_sha=$(jq -r '.head.sha // empty' "$work_dir/pr.json") || head_sha=''
-    [[ $head_sha =~ ^[0-9a-f]{40}$ ]] || die 'pull request metadata carries no full head SHA'
+    # Fetch the live head each round; post-trigger does not imply current-head.
+    for ((round=1; round<=rounds; round++)); do
+        ((round == 1)) || sleep "$interval"
+        "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/pr.json" || die 'pull request metadata unavailable'
+        head_sha=$(jq -r '.head.sha // empty' "$work_dir/pr.json") || head_sha=''
+        [[ $head_sha =~ ^[0-9a-f]{40}$ ]] || die 'pull request metadata carries no full head SHA'
 
-    fetch_slurped "repos/$repo/pulls/$pr/reviews?per_page=100" "$work_dir/reviews.json" reviews
-    fetch_slurped "repos/$repo/pulls/$pr/comments?per_page=100" "$work_dir/comments.json" comments
+        fetch_slurped "repos/$repo/pulls/$pr/reviews?per_page=100" "$work_dir/reviews.json" reviews
+        fetch_slurped "repos/$repo/pulls/$pr/comments?per_page=100" "$work_dir/comments.json" comments
 
-    # Same terminal-state/tie-break rule as gh-pr-state.sh's provider_state:
-    # only a genuinely submitted review (APPROVED/CHANGES_REQUESTED/COMMENTED)
-    # postdating the trigger counts at all, and only one whose OWN commit_id
-    # matches the just-fetched live head counts as LANDED. A terminal,
-    # post-trigger review that targets a different (older) commit is reported
-    # as STALE_HEAD -- distinct from PENDING, so the root does not read a
-    # real-but-stale review as "nothing happened yet" and does not read it as
-    # LANDED either, which would let a review of different code authorize
-    # this head's merge.
-    info=$(jq -r "$PROVIDER_IDENTITY_JQ"'
-        [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
-               | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED")
-               | select((.submitted_at // "") > $since) ] as $terminal
-        | ($terminal | map(select((.commit_id // "") == $head))
-            | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
-        | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
-        | if $current != null then
-            ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
-          elif $latest != null then
-            ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
-          else empty end' --arg since "$since" --arg head "$head_sha" <"$work_dir/reviews.json") || info=""
+        # Match gh-pr-state's terminal-review ordering and exact commit identity.
+        info=$(jq -r "$PROVIDER_IDENTITY_JQ"'
+            [ .[] | select(((.user.login // "") | ascii_downcase) | is_coderabbit_login)
+                   | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED")
+                   | select((.submitted_at // "") > $since) ] as $terminal
+            | ($terminal | map(select((.commit_id // "") == $head))
+                | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $current
+            | ($terminal | sort_by([(.submitted_at // ""), (.id // 0)]) | last) as $latest
+            | if $current != null then
+                ["current", $current.state, ($current.submitted_at // ""), (($current.id // 0) | tostring)] | @tsv
+              elif $latest != null then
+                ["stale", $latest.state, ($latest.commit_id // ""), ""] | @tsv
+              else empty end' --arg since "$since" --arg head "$head_sha" <"$work_dir/reviews.json") || info=""
+        [[ $info == $'current\tAPPROVED\t'* ]] && break
+        ((round < rounds)) || break
+    done
+    # Recheck head after the provider read; never bless a push that raced it.
+    "$GH_BIN" api "repos/$repo/pulls/$pr" >"$work_dir/final-pr.json" || die 'current head evidence unavailable'
+    final_head=$(jq -er '.head.sha' "$work_dir/final-pr.json") || die 'current head evidence malformed'
+    [[ $final_head =~ ^[0-9a-f]{40}$ ]] || die 'current head evidence malformed'
+    read_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    evidence="source=reviews-api head=$head_sha read=$read_at round=$round/$rounds"
+    if [[ -n $settle_after ]]; then
+        evidence+=" action=$settle_after elapsed=$(($(date -u +%s) - action_epoch))s"
+        printf 'Finished waiting: %s\n' "$evidence" >&2
+    fi
+    if [[ $final_head != "$head_sha" ]]; then
+        printf 'provider=coderabbit result=PENDING reason=head-changed %s current-head=%s\n' "$evidence" "$final_head"
+        exit 0
+    fi
     if [[ -n $info ]]; then
         kind='' state_or_commit='' info_b='' review_id=''
         IFS=$'\t' read -r kind state_or_commit info_b review_id <<< "$info"
@@ -234,43 +231,30 @@ if ((observe)); then
             write_back_bot_ledger_entry "$head_sha" "$state_or_commit" "$review_id" "${info_b:-}"
             ledger_suffix=''
             [[ -z $ledger_write_back_status ]] || ledger_suffix=" ledger=$ledger_write_back_status"
-            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s%s\n' \
-                "$state_or_commit" "$threads" "${info_b:-unknown}" "$ledger_suffix"
+            printf 'provider=coderabbit result=LANDED state=%s threads=%s since=%s%s %s\n' \
+                "$state_or_commit" "$threads" "${info_b:-unknown}" "$ledger_suffix" "$evidence"
             exit 0
         fi
-        printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s\n' \
-            "$state_or_commit" "${info_b:-unknown}"
+        printf 'provider=coderabbit result=STALE_HEAD state=%s commit=%s %s\n' \
+            "$state_or_commit" "${info_b:-unknown}" "$evidence"
         exit 0
     fi
 
-    # issue #565 fix batch (F1): no terminal review exists yet, but a
-    # CodeRabbit issue comment postdating the trigger may carry a throttling
-    # notice (which can ALSO tag the triggering account, so it used to
-    # satisfy the misparse predicate below even though nothing was
-    # misparsed -- just rationed). Classify the known throttle signature
-    # first -- the same phrase gh-pr-state.sh's provider_state already
-    # treats as authoritative for "rate-limited" -- so a throttled trigger
-    # is reported distinctly rather than swept into TRIGGER_MISPARSED or
-    # PENDING.
+    # Throttling takes precedence over chat signatures that also tag the author.
     fetch_slurped "repos/$repo/issues/$pr/comments?per_page=100" \
         "$work_dir/issue-comments.json" issue-comments
+    evidence=${evidence/reviews-api/issue-comments-api}
     if jq -e --arg since "$since" "$PROVIDER_IDENTITY_JQ"'
         any(.[]; (((.user.login // "") | ascii_downcase) | is_coderabbit_login) and
                  ((.created_at // "") > $since) and
                  ((.body // "") | test("review limit reached|rate limit"; "i")))
     ' "$work_dir/issue-comments.json" >/dev/null 2>&1; then
-        printf 'provider=coderabbit result=RATE_LIMITED\n'
+        printf 'provider=coderabbit result=RATE_LIMITED %s\n' "$evidence"
         exit 0
     fi
 
-    # (F2) The mention test below must match the account that actually
-    # POSTED the trigger, never this --observe call's own `gh api user`
-    # identity -- a resumed or independent observer can be authenticated as
-    # someone else entirely. Derive it from the marked trigger comment's own
-    # author in the same evidence; fall back to `gh api user` only when no
-    # marked trigger comment is present at all (best-effort -- a failed
-    # lookup degrades to PENDING rather than breaking --observe's
-    # documented always-exits-0 contract).
+    # Match the marked trigger's author, not a resumed observer's identity.
+    # With no marker, the best-effort authenticated-login fallback may be empty.
     trigger_login=$(jq -r --arg marker "$(review_provider_request_marker coderabbit)" '
         [ .[] | select((.body // "") | contains($marker)) ]
         | sort_by(.created_at // "") | last | (.user.login // empty)
@@ -281,11 +265,7 @@ if ((observe)); then
             trigger_login=''
     fi
 
-    # A CodeRabbit chat-style reply (agent-kit#552's shape: the "For best
-    # results, initiate chat" tip and an ad-hoc analysis chain, never a
-    # review) that ALSO mentions the account which posted the trigger is the
-    # misparse signature; a bare mention of the account is never enough on
-    # its own (F1 above -- a throttle notice can mention it too).
+    # Misparse requires both a chat signature and a mention of the trigger author.
     if [[ -n $trigger_login ]] && jq -e --arg since "$since" --arg login "$trigger_login" \
         "$PROVIDER_IDENTITY_JQ"'
         any(.[]; (((.user.login // "") | ascii_downcase) | is_coderabbit_login) and
@@ -293,10 +273,10 @@ if ((observe)); then
                  ((.body // "") | test("for best results, initiate chat|analysis chain"; "i")) and
                  ((.body // "") | test("@" + $login; "i")))
     ' "$work_dir/issue-comments.json" >/dev/null 2>&1; then
-        printf 'provider=coderabbit result=TRIGGER_MISPARSED\n'
+        printf 'provider=coderabbit result=TRIGGER_MISPARSED %s\n' "$evidence"
         exit 0
     fi
-    printf 'provider=coderabbit result=PENDING\n'
+    printf 'provider=coderabbit result=PENDING %s\n' "$evidence"
     exit 0
 fi
 
