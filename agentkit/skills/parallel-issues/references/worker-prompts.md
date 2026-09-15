@@ -2,6 +2,7 @@
 
 ## Contents
 - [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
+- [Structured result contract](#structured-result-contract) — atomic artifact and independent root acceptance
 - [Throwaway waiter prompt](#throwaway-waiter-prompt) — one bounded CI/review observation in fresh context
 - [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
@@ -286,6 +287,14 @@ __ACCEPTANCE_DECLARATIONS__
 
 ### Completion handoff
 
+When root supplies runId, attempt and workerId, additionally materialize worker-result v1
+using the exact fields in `parallel-issues/references/worker-prompts.md#structured-result-contract`
+with `.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with
+`worker-result=ABSOLUTE_PATH`. Keep the six-step report as evidence. Do not invent IDs or
+verification fingerprints: missing filesystem access or native harness support uses the
+existing text handback with `evidence=unknown` and the precise remaining action. Root validates
+the artifact independently; root-review, root-ci and draft-pr remain unresolved obligations.
+
 If a worker completion still asks for approval, the root classifies it as
 `needs-authorization` when its final non-blank line ends in `?` or `reply yes`; it is not a
 successful completion. Under `--yolo`, the root resumes the same worker with its stored grant
@@ -297,6 +306,41 @@ diffstat, green verification log path) — or, on an environment refusal, the fa
 publication handback — or BLOCKED with one concrete reason. Do not contact the forge beyond
 pushing your own branch, and do not ask for privilege escalation.
 ````
+
+## Structured result contract
+
+`worker-result.sh write --input FILE --output FILE` schema-checks and atomically replaces an
+owner-private artifact. Version 1 requires exactly these fields (no extra or duplicate fields):
+
+- `schemaVersion: 1`; `runId`, `attempt`, `workerId`, positive integer `issue`;
+  absolute canonical `worktree`, `branch`, full `baseSha` and `headSha`.
+- `writeSet`: assigned globs including recorded dispositions; `touchedPaths`: actual relative
+  paths from the base/head diff plus staged, unstaged and untracked work, including rename sources.
+- `verification`: one object per root-required command: `command`, `status` (`pass`, `fail`,
+  `skipped`, `unavailable`, `unknown`), optional `log`, `fingerprint`, `reason` (required for non-pass).
+- `push`: `pushed`, `not-pushed` or `unknown`; `obligations`: unique strings including
+  `root-review`, `root-ci`, `draft-pr`, and `root-push` when publication is outstanding.
+- `findings`: unresolved finding strings; `blocker`: null or an object with `class`
+  (`publication`, `write-set`, `baseline-red`, `filesystem`, `harness`, `other`),
+  `remainingAction` and `evidence` strings. A blocker preserves work, never authorizes publication.
+
+Root invokes `worker-result.sh validate --result FILE --dispatch-plan FILE --owners FILE
+--state RUN_STATE_JSON --run-id ID --attempt ID --worker-id ID --issue N --worktree PATH
+--base-sha SHA --required-check test` (repeat `--required-check` for all declared obligations).
+Every expected identity/path/check comes from root dispatch, never from the result. `--owners`
+is the repository's existing `active-workers.ndjson`; `--state` is its run's `run-state.json`.
+Ownership supplies dispatched/running state; result receipts at `results.ATTEMPT` record
+accepted/rejected/blocked/unknown handbacks. No second lifecycle or review ledger is created.
+
+Exit 0 accepts implementation handoff; 1 rejects one actionable claim; 2 means evidence unknown;
+3 records blocked work and its remaining action. Only exit 0 permits continuation to root review.
+An unchanged accepted receipt returns `reused:true` after read-only evidence checks, without
+rerunning implementation, tests or review. Changed logs invalidate verification while independently
+valid ownership/Git claims remain visible. Root CI/review receipts are never modified or discharged.
+Legacy full-command cache fingerprints are validated only for clean root checkouts with declared
+commands and final successful logs. Focused, precommit, scoped or unsupported durable records stay
+unknown; a marker alone is insufficient. A native text fallback also stays unknown until root can
+collect real evidence. Existing `validate-handback.sh` publication-command argv validation is unchanged.
 
 ## Throwaway waiter prompt
 

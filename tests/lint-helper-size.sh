@@ -46,9 +46,9 @@ readonly MAX_HELPER_LINES=800
 readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
-# #726: atomic worker ownership and serialized run-state updates; exact final
+# #729: structured handback schema and independent evidence validation; exact final
 # helper tree, no spare allowance. Per-file limits remain unchanged.
-readonly MAX_TREE_TOKENS=401177
+readonly MAX_TREE_TOKENS=405387
 
 violations=0
 checked=0

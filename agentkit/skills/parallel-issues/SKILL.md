@@ -669,6 +669,8 @@ Composer publishes once; root installs and verifies its hashed `uncoveredVerific
 
 Act on each lead result as soon as it arrives:
 
+Structured `worker-result=PATH` handbacks follow the [result contract](references/worker-prompts.md#structured-result-contract): validate against root dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence cannot be green. Resume unchanged accepted receipts without rerunning implementation or review. Text fallbacks remain unknown until independently checked.
+
 - **Cross-write check first** → run the root-checkout Collect check against the immutable
   dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
   mtime-window attribution, branch byte-compare, and duplicate/divergent disposition with that
