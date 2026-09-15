@@ -37,7 +37,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1202:14568:800"
+    # #728 separates optional CI outcomes from required acceptance execution.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
 )
@@ -51,8 +52,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #726: atomic worker ownership and serialized run-state updates.
 # #711: bounded invocation authorization and independent fix-push evidence.
 # #729: structured handback schema and independently pinned completion evidence.
-# Exact merged helper-tree bytes / 4: 1634450 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=408612
+# #728: optional CI outcomes separated from required acceptance execution.
+# Exact merged helper-tree bytes / 4: 1634593 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=408648
 
 violations=0
 checked=0
