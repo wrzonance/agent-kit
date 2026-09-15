@@ -36,7 +36,7 @@ declare -A KNOWN_OVERSIZE=(
     # Issue #706: preserve selected invalid model provenance through the result.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
     # #728 separates optional CI outcomes from required acceptance execution.
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14626:800"
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
 )
@@ -48,8 +48,8 @@ readonly MAX_HELPER_TOKENS=10000
 # The whole tree's estimated tokens as of this ceiling being written. Raise it
 # only in the PR that needs the room, and say why in that PR.
 # #728 acceptance outcomes combined with the #720 provider-state fixes.
-# Exact combined tree: 1598584 bytes / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=399646
+# Exact combined tree: 1598569 bytes / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=399642
 
 violations=0
 checked=0

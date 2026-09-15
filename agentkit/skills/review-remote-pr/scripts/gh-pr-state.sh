@@ -993,7 +993,7 @@ print_ci_line() {
         word=failing
     elif ((pending > 0)); then
         word=pending
-    elif [[ $BASE_STATUS == stale && $pass -gt 0 ]]; then
+    elif [[ $BASE_STATUS == stale ]]; then
         word=stale
     else
         word=green

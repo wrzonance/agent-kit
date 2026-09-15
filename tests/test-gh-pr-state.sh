@@ -132,6 +132,22 @@ assert_contains "$stale_base_output" 'ci=1/1 stale pending=0 failing=0' \
 assert_contains "$stale_base_output" 'base: ref=main behind=1 stale=yes' \
     'digest identifies stale ancestry evidence'
 
+# Completed optional outcomes still belong to a stale base; failures keep
+# precedence even when no successful execution contributes to the pass count.
+for stale_conclusion in skipped neutral failure; do
+    mkdir -p "$tmp/case-stale-$stale_conclusion"
+    cp "$tmp/case-stale-base/gh" "$tmp/case-stale-$stale_conclusion/gh"
+    sed -i "s/\"conclusion\":\"success\"/\"conclusion\":\"$stale_conclusion\"/" "$tmp/case-stale-$stale_conclusion/gh"
+    stale_outcome=$(PATH="$tmp/case-stale-$stale_conclusion:$PATH" \
+        bash "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" --pr 77 --repo owner/repo)
+    stale_word=stale stale_failing=0
+    if [[ $stale_conclusion == failure ]]; then stale_word=failing stale_failing=1; fi
+    assert_contains "$stale_outcome" "ci=0/1 $stale_word pending=0 failing=$stale_failing" \
+        "$stale_conclusion preserves CI freshness and failure precedence with zero passes"
+    assert_contains "$stale_outcome" 'base: ref=main behind=1 stale=yes' \
+        "$stale_conclusion retains independent stale-base evidence"
+done
+
 # A stale ancestry signal must not mask a pending check.
 mkdir -p "$tmp/case-stale-pending"
 cp "$tmp/case-stale-base/gh" "$tmp/case-stale-pending/gh"
