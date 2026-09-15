@@ -103,9 +103,11 @@ def session_settings(spec, profile_path, kit, python):
 
 def attest(path, expected_hash):
     path = private(path)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+    private_parents(path.parent, OPERATOR_HOME)
+    specification = path.read_bytes()
+    if hashlib.sha256(specification).hexdigest() != expected_hash:
         raise Unavailable("specification was not reviewed at these bytes")
-    spec = decode(path.read_text())
+    spec = decode(specification)
     check_environment(os.environ)
     kit = canonical(spec["kit"])
     if kit != Path(__file__).resolve().parents[3]:
@@ -116,6 +118,9 @@ def attest(path, expected_hash):
     for name in ("prefix", "settings"):
         parent = private(Path(spec[name]).parent, directory=True)
         private_parents(parent, OPERATOR_HOME)
+    for name in ("auditSnapshot", "auditNative", "provider", "events", "execution", "manifest", "sources"):
+        evidence = private(spec[name])
+        private_parents(evidence.parent, OPERATOR_HOME)
     shell = reviewed_shell(spec["auditSnapshot"], spec["auditNative"], spec["reviewedHashes"])
     compatibility(spec["provider"], spec["events"])
     events = [decode(line) for line in Path(spec["events"]).read_text().splitlines()]

@@ -15,7 +15,15 @@ trap 'rm -rf -- "$tmp"' EXIT
 probe="$tmp/probe"
 bash "$driver" prepare "$probe"
 assert_eq 700 "$(stat -c %a "$probe")" 'audit directory is owner-private'
-assert_rc 2 'audit cannot launch without root marker' -- bash "$driver" run "$probe" /missing/claude
+cat > "$tmp/cli" <<'SH'
+#!/bin/bash
+printf invoked > "$0.called"
+exit 93
+SH
+chmod +x "$tmp/cli"
+shellcheck "$tmp/cli"
+assert_rc 2 'audit cannot launch without root marker' -- bash "$driver" run "$probe" "$tmp/cli" --not-authorized
+assert_rc 1 'unauthorized audit marker never invokes the CLI' -- test -e "$tmp/cli.called"
 printf '# private-fixture-value\nexport PATH=/usr/bin:/bin\n' > "$tmp/snapshot"
 native="source $tmp/snapshot 2>/dev/null || true && printf agentkit-shell-audit"
 out=$(bash "$probe/driver.sh" prefix "$probe" "$native")

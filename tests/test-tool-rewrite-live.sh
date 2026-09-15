@@ -15,7 +15,15 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 probe="$tmp/probe"
 bash "$driver" prepare "$probe"
-assert_rc 2 'live runner requires explicit root marker' -- bash "$driver" run "$probe" /missing/claude
+cat > "$tmp/cli" <<'SH'
+#!/bin/bash
+printf invoked > "$0.called"
+exit 93
+SH
+chmod +x "$tmp/cli"
+shellcheck "$tmp/cli"
+assert_rc 2 'live runner requires explicit root marker' -- bash "$driver" run "$probe" "$tmp/cli" --not-authorized
+assert_rc 1 'unauthorized marker never invokes the CLI' -- test -e "$tmp/cli.called"
 for mode in control rewrite; do
     case_dir="$probe/$mode"
     helper="$case_dir/agent-run.sh"

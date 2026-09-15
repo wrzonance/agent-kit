@@ -114,7 +114,7 @@ class Producer(unittest.TestCase):
         with self.assertRaises(PRODUCER.Unavailable):
             PRODUCER.attest(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
-    def test_public_attestation_creates_private_parent_chain_under_group_umask(self):
+    def attestation_fixture(self):
         def write(name, value):
             path = self.root / name
             path.write_text(value)
@@ -147,6 +147,10 @@ class Producer(unittest.TestCase):
                 "sources": write("sources.sha256", hashlib.sha256(self.snapshot.read_bytes()).hexdigest() + "  " + str(self.snapshot)),
                 "cli": write("cli", "synthetic CLI")}
         path = Path(write("spec.json", json.dumps(data)))
+        return path, data
+
+    def test_public_attestation_creates_private_parent_chain_under_group_umask(self):
+        path, _ = self.attestation_fixture()
         trust_root = self.root / ".cache/agentkit/tool-rewrite/profiles"
         previous = os.umask(0o002)
         try:
@@ -164,6 +168,31 @@ class Producer(unittest.TestCase):
             self.assertEqual(0o002, os.umask(0o002))
         finally:
             os.umask(previous)
+
+    def test_public_attestation_rejects_nonprivate_evidence_and_replaceable_parents(self):
+        path, data = self.attestation_fixture()
+        directory = self.root / "untrusted"
+        directory.mkdir(mode=0o700)
+        trust_root = self.root / ".cache/agentkit/tool-rewrite/profiles"
+        for name in ("spec", "auditSnapshot", "auditNative", "provider", "events", "execution", "manifest", "sources"):
+            for shared_parent in (False, True):
+                with self.subTest(evidence=name, shared_parent=shared_parent):
+                    replacement = directory / name
+                    source = path if name == "spec" else Path(data[name])
+                    replacement.write_bytes(source.read_bytes())
+                    replacement.chmod(0o600 if shared_parent else 0o644)
+                    directory.chmod(0o775 if shared_parent else 0o700)
+                    reviewed = replacement if name == "spec" else self.root / "changed-spec.json"
+                    if name != "spec":
+                        reviewed.write_text(json.dumps(data | {name: str(replacement)}))
+                        reviewed.chmod(0o600)
+                    with (patch.object(PRODUCER, "OPERATOR_HOME", self.root),
+                          patch.object(PRODUCER, "TRUST_ROOT", trust_root),
+                          patch.object(PRODUCER.subprocess, "run", side_effect=AssertionError("untrusted evidence reached execution")),
+                          self.assertRaises(PRODUCER.Unavailable)):
+                        PRODUCER.attest(reviewed, hashlib.sha256(reviewed.read_bytes()).hexdigest())
+                    self.assertFalse(trust_root.exists())
+                    self.assertFalse(Path(data["prefix"]).exists())
 
 
 if __name__ == "__main__":
