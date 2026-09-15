@@ -1,10 +1,7 @@
 # Implementation-worker spawn contract
 
-Read this before dispatching any implementation worker — issue leads in `parallel-issues`
-Phase 2's Dispatch step, and mechanical fix-batch workers in `review-remote-pr`'s
-Implementation-worker gate.
-This file owns model/effort selection, spawn policy, and the degraded no-spawn path.
-Dispatching skills mark the gate mandatory and link here.
+Root reads this at the worker gate in `parallel-issues` or `review-remote-pr`.
+It owns model/effort selection, leaf policy, and the no-spawn fallback.
 
 ## Model/effort selection (MANDATORY before dispatch)
 
@@ -214,7 +211,12 @@ Inspect the current `spawn_agent` capability before dispatch:
 - Required context isolation: Paste the complete issue/spec,
   prior art, branch rules, and the six-step contract into the prompt — do not rely on
   inherited history.
-- Required role: **`agent_type: "worker"`**.
+- Required role: **`agent_type: "worker"`**. Leaf policy applies even when nesting is supported.
+  Omit delegation tools using advertised per-agent filters (Claude's
+  [tools/disallowedTools](https://code.claude.com/docs/en/subagents)); preserve investigation,
+  correction, verification and authorized commit/push. Record the applied restriction or
+  `role-enforcement=prompt-only`; [SubagentStart](https://code.claude.com/docs/en/hooks#subagentstart)
+  cannot remove tools. Root retains other-agent review, CI polling and PR/board management.
 - Never omit `model` or `reasoning_effort`; omission can silently inherit an expensive parent.
 
 - If neither resolved model is advertised, **STOP before creating worktrees, moving Project items, or

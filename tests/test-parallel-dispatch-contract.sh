@@ -41,7 +41,7 @@ prepare_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-is
 # only a gate statement + pointer at each binding step. Template-content
 # assertions below therefore check the reference file, never the body.
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
-worker_prompts_text=$(<"$worker_prompts")
+worker_prompts_text=$(cat "$worker_prompts" "${worker_prompts%/*}/implementation-worker.md")
 # The bulk-mutation ledger recipe and the triage/prior-art/board adjudication
 # detail are single-sourced in references/triage-and-selection.md (issue
 # #107 phase 3's split); SKILL.md's body keeps only the one-line verdict
@@ -67,7 +67,7 @@ issue_lead_prompt=$(awk '
     /^Per-issue prompt:/ { capture=1; next }
     capture && /^````$/ { exit }
     capture { print }
-' "$worker_prompts")
+' "${worker_prompts%/*}/implementation-worker.md")
 # The opening fence may carry a language tag (markdownlint MD040 requires one);
 # only the CLOSING fence is bare. Matching `^```$` for the opener silently
 # extracted nothing the moment the tag was added, and an empty haystack fails
@@ -129,7 +129,7 @@ for _tpl_name in issue_lead fix_batch; do
     assert_not_contains "$_tpl_flat" 'move-github-project-item.sh' \
         "the $_tpl_name template does not hardcode root-side writers a worker never invokes"
 done
-compose_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")
+compose_script_text=$(cat "$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh" "$root/agentkit/skills/parallel-issues/scripts/lib/worker-leaf-contract.sh")
 assert_contains "$compose_script_text" 'AGENT_COMPOSE_SERIALIZED=1' \
     'the composer owns the Compose serialization fallback text'
 assert_contains "$compose_script_text" 'environment-retry-eligible' \
@@ -1125,8 +1125,8 @@ assert_contains "$draft_loop_prompt" 'Use the authoritative `instructions=` line
 
 # The outer four-backtick fence lives in references/worker-prompts.md now
 # (issue #107's split); SKILL.md's body carries a pointer, never the fence.
-outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "$worker_prompts")
-outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "$worker_prompts")
+outer_open_count=$(awk '$0 == "````text" { count++ } END { print count + 0 }' "${worker_prompts%/*}/implementation-worker.md")
+outer_close_count=$(awk '$0 == "````" { count++ } END { print count + 0 }' "${worker_prompts%/*}/implementation-worker.md")
 assert_eq '1' "$outer_open_count" \
     'the per-issue prompt has one four-backtick opening fence'
 assert_eq '1' "$outer_close_count" \
@@ -1138,7 +1138,7 @@ prompt_body=$(awk '
     $0 == "````text" { capture=1; next }
     capture && $0 == "````" { exit }
     capture { print }
-' "$worker_prompts")
+' "${worker_prompts%/*}/implementation-worker.md")
 assert_contains "$prompt_body" '<PASTE the complete output selected by the boundary mode' \
     'the prompt placeholders remain inside the outer fence'
 assert_contains "$issue_lead_prompt" \
