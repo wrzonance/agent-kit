@@ -118,6 +118,7 @@ fi
 if [[ -n ${FAKE_CLAUDE_PID_FILE:-} ]]; then
     printf '%s\n' "$BASHPID" >"$FAKE_CLAUDE_PID_FILE"
 fi
+[[ -z ${FAKE_CLAUDE_LAUNCHES:-} ]] || printf 'launch\n' >>"$FAKE_CLAUDE_LAUNCHES"
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-test","tools":["StructuredOutput"],"mcp_servers":[]}'
 sleep "${FAKE_CLAUDE_SLEEP:-2}"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"verdict":"no_findings","findings":[]},"modelUsage":{"claude-test":{"inputTokens":1}},"duration_api_ms":1,"total_cost_usd":0.01}'
@@ -224,6 +225,14 @@ claude_consent_state="$private/claude-consent"
 codex_consent_state="$private/codex-consent"
 grant_consent() {
     local state_path=$1 provider=$2 diff_path=$3 payload
+    # Direct helper reviews now require repository-scoped durable accounting.
+    export CONSENT_WORKTREE="$tmp/attempt-repo"
+    if [[ ! -d $CONSENT_WORKTREE/.git ]]; then
+        git init -q "$CONSENT_WORKTREE"
+        git -C "$CONSENT_WORKTREE" -c user.name=test -c user.email=test@example.invalid \
+            commit -q --allow-empty -m fixture
+    fi
+    rm -rf -- "$CONSENT_WORKTREE/.git/agentkit-review-attempts"
     payload=$(/bin/bash "$consent_script" payload --repo acme/widget --pr 24 --diff "$diff_path")
     /bin/bash "$consent_script" grant --state "$state_path" --provider "$provider" \
         --payload "$payload" --source interactive >/dev/null
@@ -292,6 +301,7 @@ claude_success_dir="$tmp/claude-success"
 mkdir -- "$claude_success_dir"
 chmod 700 -- "$claude_success_dir"
 claude_success_result="$tmp/claude-success.result.json"
+grant_consent "$claude_consent_state" anthropic "$no_usage_diff"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-success" bash "$claude" \
     --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
     --diff "$no_usage_diff" \
@@ -310,9 +320,10 @@ pid_dir="$tmp/claude-pidfile"
 mkdir -- "$pid_dir"
 chmod 700 -- "$pid_dir"
 pid_result="$tmp/claude-pidfile.result.json"
-CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
+grant_consent "$claude_consent_state" anthropic "$no_usage_diff"
+CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_SLEEP=4 FAKE_CLAUDE_LAUNCHES="$tmp/slow-launches" bash "$claude" \
     --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
-    --diff "$no_usage_diff" \
+    --diff "$no_usage_diff" --output "$pid_dir/original.json" \
     --transcript "$pid_dir/transcript.jsonl" --poll-seconds 1 \
     --max-duration-seconds 30 --max-budget-usd 0.25 >"$pid_result" &
 helper_pid=$!
@@ -338,7 +349,19 @@ first_epoch=$(jq -r '.wallClockEpoch' <<<"$status_first")
 wait_for_heartbeat_advance "$status_file" "$first_epoch" \
     'Claude status heartbeat advances while the review runs'
 assert_eq "$helper_pid" "$pid_seen" 'a running helper records its own PID beside the transcript'
+assert_rc 1 'a slow running review cannot be purchased again through a direct helper' -- \
+    env CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_LAUNCHES="$tmp/slow-launches" bash "$claude" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" --transcript "$pid_dir/duplicate.jsonl" --max-duration-seconds 30
 wait "$helper_pid"
+assert_eq 1 "$(wc -l <"$tmp/slow-launches")" 'slow completion and replay produce exactly one provider invocation'
+original_result=$(cat "$pid_dir/original.json")
+assert_rc 1 'completed direct-helper replay is refused before replacing output' -- \
+    env CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" bash "$claude" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" --output "$pid_dir/original.json" --transcript "$pid_dir/replay.jsonl" --max-duration-seconds 30
+assert_eq "$original_result" "$(cat "$pid_dir/original.json" 2>/dev/null)" \
+    'rejected direct replay preserves the original completed result byte-for-byte'
 assert_eq no "$( [[ ! -e $pid_file ]] && printf no || printf yes )" \
     'a finished helper removes its PID file'
 assert_eq no "$( [[ ! -e $status_file ]] && printf no || printf yes )" \
@@ -348,6 +371,15 @@ assert_contains "$(cat "$pid_result")" '"status": "completed"' \
 
 # A heartbeat publication failure is a blocked review, and must stop the
 # producer instead of leaving it running behind a stale status artifact.
+grant_consent "$claude_consent_state" anthropic "$no_usage_diff"
+printf 'preserve output target\n' >"$pid_dir/output-target"
+ln -s "$pid_dir/output-target" "$pid_dir/output-link"
+assert_rc 1 'absolute-path accounting preserves rejection of output symlinks' -- \
+    env CLAUDE_EXECUTABLE="$tmp/fake-claude-success" bash "$claude" \
+    --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
+    --diff "$no_usage_diff" --output "$pid_dir/output-link" --transcript "$pid_dir/symlink.jsonl" --max-duration-seconds 30
+assert_eq 'preserve output target' "$(cat "$pid_dir/output-target")" 'output normalization cannot overwrite a symlink target'
+
 mv_bin="$tmp/mv-bin"
 mkdir -- "$mv_bin"
 real_mv=$(command -v mv)
@@ -367,6 +399,7 @@ chmod 700 -- "$failure_dir"
 failure_result="$tmp/claude-heartbeat-failure.result.json"
 failure_err="$tmp/claude-heartbeat-failure.err"
 failure_producer_pid_file="$tmp/claude-heartbeat-failure.pid"
+grant_consent "$claude_consent_state" anthropic "$no_usage_diff"
 CLAUDE_EXECUTABLE="$tmp/fake-claude-slow" FAKE_CLAUDE_PID_FILE="$failure_producer_pid_file" \
 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$claude" \
     --mode review --model claude-test --repo acme/widget --pr 24 --consent-state "$claude_consent_state" \
@@ -404,6 +437,7 @@ chmod 700 -- "$codex_failure_dir"
 codex_failure_result="$tmp/codex-heartbeat-failure.result.json"
 codex_failure_err="$tmp/codex-heartbeat-failure.err"
 codex_failure_producer_pid_file="$tmp/codex-heartbeat-failure.pid"
+grant_consent "$codex_consent_state" openai "$no_usage_diff"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" FAKE_CODEX_PID_FILE="$codex_failure_producer_pid_file" \
 FAKE_CODEX_SLEEP=10 PATH="$mv_bin:$PATH" REAL_MV="$real_mv" bash "$codex" \
     --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
@@ -442,6 +476,7 @@ codex_success_dir="$tmp/codex-success"
 mkdir -- "$codex_success_dir"
 chmod 700 -- "$codex_success_dir"
 codex_success_result="$tmp/codex-success.result.json"
+grant_consent "$codex_consent_state" openai "$no_usage_diff"
 CODEX_EXECUTABLE="$tmp/fake-codex-success" bash "$codex" \
     --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \
@@ -456,6 +491,7 @@ codex_status_dir="$tmp/codex-status"
 mkdir -- "$codex_status_dir"
 chmod 700 -- "$codex_status_dir"
 codex_status_result="$tmp/codex-status.result.json"
+grant_consent "$codex_consent_state" openai "$no_usage_diff"
 CODEX_EXECUTABLE="$tmp/fake-codex-slow" bash "$codex" \
     --mode review --model gpt-test --repo acme/widget --pr 24 --consent-state "$codex_consent_state" \
     --diff "$no_usage_diff" \

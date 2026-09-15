@@ -7,6 +7,7 @@ set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
+LAUNCHER_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 SCRIPT_DIR=$(cd -- "$SCRIPT_DIR" && pwd -P) || {
@@ -19,6 +20,8 @@ source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../../.shared/scripts/lib/contract-cache.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../.shared/scripts/lib/review-attempt.sh"
 # consent-record.sh owns the state filename so the grant and every check share
 # one spelling. It returns immediately when sourced and has no side effects.
 # shellcheck disable=SC1091
@@ -94,6 +97,7 @@ PAYLOAD=''
 PAYLOAD_PATHS_FILE=''
 EXCLUSION_SPECS=()
 EXCLUDED_SHA256=''
+REPLAY_EXCLUSION_COUNT=''
 REAFFIRM_IF_COVERED=0
 LEDGER_COMMENTS=''
 HARNESS_NAME=''
@@ -109,11 +113,19 @@ EFFORT=''
 MODE=''
 HELPER=''
 TRANSCRIPT_NAME=''
+REVIEWER_OVERRIDE=''
+OVERRIDE_AUTHORIZATION=''
+CONFIGURED_REVIEWER=''
+ATTEMPT_ENTRY=''
+ATTEMPT_RECORD=''
+ATTEMPT_ID=''
+ATTEMPT_RECOVERING=0
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
                  [--reaffirm-if-covered --comments FILE] [--provenance TEXT]
+                 [--reviewer MODEL-EFFORT --override-authorization TEXT]
 
 Builds DIR/adversarial.diff, runs exactly one consent-gated blind reviewer, and
 publishes DIR/adversarial.result.json. On success stdout is one receipt-shaped
@@ -144,8 +156,8 @@ already-fetched comments artifact. A covered-head or covered-diff verdict
 (the exact tree, or a base-merge-only advance of a tree, already reviewed)
 appends a "reaffirmed_from" ledger entry and exits 0 WITHOUT spawning a
 reviewer -- the DIR/adversarial.result.json this run would otherwise have
-produced is never written. Any other verdict (stale, absent, or a blocked/
-malformed ledger) runs the review exactly as it does without this flag.
+produced is never written. Only an absent ledger permits a first review;
+stale or unreadable evidence requires reconciliation without another send.
 EOF
 }
 
@@ -186,6 +198,8 @@ parse_args() {
             --comments=*) LEDGER_COMMENTS=${1#*=}; shift ;;
             --provenance) require_value "$1" "${2:-}"; PROVENANCE=$2; shift 2 ;;
             --provenance=*) PROVENANCE=${1#*=}; shift ;;
+            --reviewer) require_value "$1" "${2:-}"; REVIEWER_OVERRIDE=$2; shift 2 ;;
+            --override-authorization) require_value "$1" "${2:-}"; OVERRIDE_AUTHORIZATION=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown option: $1" ;;
         esac
@@ -653,16 +667,11 @@ verify_consent() {
 # try_reaffirm_if_covered -- issue #477. Returns 0 (and has already appended
 # a "reaffirmed_from" ledger entry) when the ledger already proves this exact
 # tree, or a base-merge-only advance of it, was reviewed; the caller must
-# then skip run_provider entirely. Returns 1 for every other case (stale,
-# absent, an unparseable/blocked ledger, or any transport hiccup along the
-# way) -- always the SAFE direction to fall back to, since it just means "run
-# the review as if this flag were never given".
+# then skip run_provider entirely. Only proven absence permits a first send;
+# stale or unreadable review evidence cannot authorize another purchase.
 try_reaffirm_if_covered() {
     local ledger_script="$SCRIPT_DIR/review-ledger.sh"
-    [[ -x $ledger_script ]] || {
-        warn "review-ledger.sh is missing or not executable; running the review normally: $ledger_script"
-        return 1
-    }
+    [[ -x $ledger_script ]] || die "review-ledger.sh is unavailable: $ledger_script"
     local head_oid status_out status_rc=0
     head_oid=$(git rev-parse HEAD 2>/dev/null) || return 1
     status_out=$(
@@ -672,29 +681,32 @@ try_reaffirm_if_covered() {
     ) || status_rc=$?
     case $status_rc in
         0) : ;;
-        *) return 1 ;;
+        11) return 1 ;;
+        *) die 'existing or unreadable review ledger requires reconciliation; refusing another review' ;;
     esac
-    [[ $status_out == covered-head || $status_out == covered-diff ]] || return 1
+    [[ $status_out == covered-head || $status_out == covered-diff || $status_out == covered-lineage ]] ||
+        die 'unrecognized review coverage; refusing another review'
 
     local read_out read_rc=0
     read_out=$(
         "$ledger_script" read --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
             --repo-root "$CONTRACT_ROOT" 2>/dev/null
     ) || read_rc=$?
-    ((read_rc == 0)) || return 1
+    ((read_rc == 0)) || die 'covered review ledger could not be read'
     local ledger_json
     ledger_json=$(tail -n +2 <<<"$read_out")
 
     local original
     original=$(jq -c --arg head "$head_oid" --arg dp "$PAYLOAD" '
       .reviews | map(select(.kind == "adversarial")) |
-      (map(select(.head_sha == $head)) + map(select((.diff_payload // "") == $dp and (.diff_payload // "") != ""))) |
+      (map(select(.head_sha == $head or ((.covered_heads // []) | index($head)) != null)) +
+       map(select((.diff_payload // "") == $dp and (.diff_payload // "") != ""))) |
       first // empty
-    ' <<<"$ledger_json" 2>/dev/null) || return 1
-    [[ -n $original && $original != null ]] || return 1
+    ' <<<"$ledger_json" 2>/dev/null) || die 'could not read the covered review entry'
+    [[ -n $original && $original != null ]] || die 'covered review entry is unavailable'
 
     local entry_file
-    entry_file=$(mktemp "${TMPDIR:-/tmp}/adversarial-run-reaffirm.XXXXXXXXXX") || return 1
+    entry_file=$(mktemp "${TMPDIR:-/tmp}/adversarial-run-reaffirm.XXXXXXXXXX") || die 'could not stage reaffirmation'
     chmod 600 -- "$entry_file" 2>/dev/null || true
     jq -cn --arg provider "$PROVIDER" --arg head "$head_oid" --arg dp "$PAYLOAD" \
         --argjson original "$original" --arg verdict "$status_out" \
@@ -703,7 +715,7 @@ try_reaffirm_if_covered() {
           reaffirmed_from: $original, reaffirmedVerdict: $verdict, reviewed_at: $reviewed_at}' \
         >"$entry_file" 2>/dev/null || {
         rm -f -- "$entry_file"
-        return 1
+        die 'could not encode covered review reaffirmation'
     }
 
     # A failed append is deliberately non-fatal: the ORIGINAL ledger entry
@@ -810,7 +822,7 @@ receipt_line() {
     verdict=$(jq -r 'if .status == "blocked" then "blocked" else (.verdict | objects | .verdict) // "blocked" end' <"$path")
     printf 'provider=%s model=%s%s effort=%s mode=%s P1=%s P2=%s verdict=%s exclusions=%s excluded_sha256=%s\n' \
         "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$p1" "$p2" "$verdict" \
-        "${#EXCLUSION_SPECS[@]}" "${EXCLUDED_SHA256:-none}"
+        "${REPLAY_EXCLUSION_COUNT:-${#EXCLUSION_SPECS[@]}}" "${EXCLUDED_SHA256:-none}"
 }
 
 validate_finding_ledger_if_present() {
@@ -846,16 +858,8 @@ initialize_finding_ledger() {
     chmod 600 -- "$ledger" || die "could not secure findings ledger: $ledger"
 }
 
-# acquire_run_lock -- #473 follow-up (T2, PR #479 CodeRabbit). Takes an
-# exclusive, non-blocking flock on DIR/state/.launch.lock before any of the
-# marker/result decisions below are made, and holds it (via the open file
-# descriptor) for the rest of this process's life -- through provider launch
-# and terminal-result publication -- so it releases automatically on any
-# exit path, including die(). Without this, two concurrent invocations
-# sharing a RUN_DIR could both observe "no marker yet", both pass consent,
-# and both send the diff. A refusal here touches neither the launch marker
-# nor the result file: this invocation never got far enough to own either,
-# and the concurrent holder is the one actually deciding their fate.
+# Protect artifact decisions for this run until exit. The durable PR registry
+# separately preserves the provider budget across run directories and exits.
 acquire_run_lock() {
     local lock=$RUN_DIR/state/.launch.lock
     local lock_fd
@@ -889,23 +893,18 @@ write_provenance_record() {
     mv -f -- "$tmp" "$path" || die "could not publish the provenance record: $path"
 }
 
-# guard_prior_launch_attempt -- #473 follow-up (F1). Refuses to relaunch into
-# a RUN_DIR whose launch-attempted marker is already present unless the
-# result it left behind is a validated terminal one (completed or blocked).
-# Marker-present-with-no-terminal-result is exactly the ambiguous "possible
-# send" state adversarial-review.md now documents: the previous attempt may
-# already have disclosed the diff and lost its receipt, so relaunching would
-# risk a second, silent disclosure with no operator authorization. This
-# check is read-only with respect to the marker -- it never rewrites or
-# removes it, so its bytes remain the forensic record of the original
-# attempt. A marker alongside an already-valid terminal result is left
-# entirely to the existing (unchanged) findings-ledger / result-clearing
-# flow that runs after this guard.
+# Preserve ambiguous legacy markers. Only a canonical completed result may
+# proceed to durable reconciliation; a blocked result never releases a budget.
 guard_prior_launch_attempt() {
     local marker=$RUN_DIR/state/launch-attempted result=$RUN_DIR/adversarial.result.json
     [[ -e $marker ]] || return 0
-    valid_completed_result "$result" && return 0
-    valid_blocked_result "$result" && return 0
+    [[ ${ATTEMPT_RECOVERING:-0} != 1 ]] || return 0
+    if valid_completed_result "$result" && jq -e '.attemptId | type == "string"' "$result" >/dev/null; then
+        return 0
+    fi
+    if valid_completed_result "$result"; then
+        die "preserving completed legacy/noncanonical review at $result; reconcile its original evidence"
+    fi
     write_blocked_result prior-launch-unconfirmed \
         "a previous launch attempt recorded at $marker has no completed or blocked result; treating this as a possible undisclosed send and refusing to relaunch automatically"
     receipt_line
@@ -935,23 +934,28 @@ run_provider() {
     # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
     # purely local abort must never leave one behind.
     write_launch_attempted
-    CONSENT_WORKTREE="$CONTRACT_ROOT" "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
+    AGENTKIT_REVIEW_ATTEMPT_ID="$ATTEMPT_ID" CONSENT_WORKTREE="$CONTRACT_ROOT" \
+        "$HELPER" "${helper_args[@]}" >"$stdout_path" 2>"$stderr_path" || rc=$?
     cat -- "$stderr_path" >&2 || true
 
     if ((rc == 0)); then
         valid_completed_result "$result" || {
             write_blocked_result invalid-verdict 'provider returned an unparseable or schema-invalid verdict'
+            finish_review_attempt unknown-outcome
             receipt_line
             return 1
         }
+        finish_review_attempt completed
         receipt_line
         return 0
     fi
     if ((rc == 3)) && valid_blocked_result "$result"; then
+        finish_review_attempt unknown-outcome
         receipt_line
         return 3
     fi
     write_blocked_result provider-failure "review helper exited $rc without a validated verdict"
+    finish_review_attempt unknown-outcome
     receipt_line
     return 1
 }
@@ -966,6 +970,7 @@ main() {
     fi
     validate_args
     private_dir_ensure "$RUN_DIR" '--run-dir'
+    RUN_DIR=$(cd -- "$RUN_DIR" && pwd -P) || die 'could not resolve run directory'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
     # Serializes this whole invocation against any concurrent one sharing the
     # same RUN_DIR before either the marker or the result is ever inspected --
@@ -973,6 +978,7 @@ main() {
     # invocations can never both decide to reaffirm (or one reaffirm while
     # the other launches) against the same RUN_DIR.
     acquire_run_lock
+    if resume_existing_review_attempt; then return 0; fi
     # check_finding_ledger stays ahead of resolve_base/build_diff (a
     # regression test pins this: the ledger check must fail before any diff
     # is constructed, not after paying for it).
@@ -983,6 +989,7 @@ main() {
         select_reviewer "$BASE_CONFIG_FILE"
         require_helper_executable
     fi
+    apply_reviewer_override
     # issue #609: after select_reviewer (a blocked result names PROVIDER/MODEL)
     # and before compute_payload/consent/any launch marker.
     payload_size_gate || return 1
@@ -998,8 +1005,12 @@ main() {
     # Must run before the result artifact below is cleared: it needs to read
     # whatever terminal status (if any) a prior attempt actually left behind.
     guard_prior_launch_attempt
-    prepare_owned_artifact "$RUN_DIR/adversarial.result.json"
+    [[ -e $RUN_DIR/state/launch-attempted ]] || prepare_owned_artifact "$RUN_DIR/adversarial.result.json"
     verify_consent
+    local reserve_rc=0
+    reserve_review_attempt || reserve_rc=$?
+    ((reserve_rc != 20)) || return 0
+    ((reserve_rc == 0)) || return "$reserve_rc"
     run_provider
     initialize_finding_ledger
 }

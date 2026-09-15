@@ -36,11 +36,13 @@ declare -A KNOWN_OVERSIZE=(
     # #711: predicate receipts and independently checked self-authored advances.
     [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
     # Issue #706: preserve selected invalid model provenance through the result.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1007:12670:800"
+    # #717: durable reservation and canonical resume integration; exact size.
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1018:12770:800"
     # #728 separates optional CI outcomes from required acceptance execution.
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="990:11209:800"
+    # #717: validated attempt provenance in receipts and remote ledger entries.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="1002:11415:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -53,8 +55,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #711: bounded invocation authorization and independent fix-push evidence.
 # #729: structured handback schema and independently pinned completion evidence.
 # #728: optional CI outcomes separated from required acceptance execution.
-# Exact merged helper-tree bytes / 4: 1634593 / 4; no spare allowance.
-readonly MAX_TREE_TOKENS=408648
+# #717: durable review attempts and validated receipt provenance.
+# Exact merged helper-tree bytes / 4: 1664495 / 4; no spare allowance.
+readonly MAX_TREE_TOKENS=416123
 
 violations=0
 checked=0

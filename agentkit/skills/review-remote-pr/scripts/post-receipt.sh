@@ -11,6 +11,8 @@ STACKED_CI_DIR=${BASH_SOURCE[0]%/*}
 [[ $STACKED_CI_DIR != "${BASH_SOURCE[0]}" ]] || STACKED_CI_DIR=.
 # shellcheck disable=SC1091
 source "$STACKED_CI_DIR/../../.shared/scripts/lib/stacked-ci.sh"
+# shellcheck disable=SC1091
+source "$STACKED_CI_DIR/../../.shared/scripts/lib/review-attempt.sh"
 umask 077
 
 readonly PROGNAME=${0##*/}
@@ -501,6 +503,7 @@ validate_runner_provenance() {
             (.verdict.findings | type) == "array")
     ' "$result" >/dev/null 2>&1 ||
         evidence_unavailable "adversarial review result is not a completed validated result: $result"
+    validate_receipt_attempt "$run_dir"
     # Old results have no substitution field. New evidence is authoritative:
     # omission by an old caller must not hide it, nor may a flag overwrite it.
     local recorded
@@ -733,12 +736,16 @@ append_ledger_entry() {
     if ! jq -cn \
         --arg kind adversarial --arg provider "$PROVIDER" --arg model "$MODEL" \
         --arg substituted_from "$MODEL_SUBSTITUTED_FROM" \
+        --arg attempt_id "${RECEIPT_ATTEMPT_ID:-}" --arg launcher "${LAUNCHER_PROVENANCE:-}" \
+        --arg procedure "${REVIEW_PROCEDURE:-}" --arg reviewer_override "${REVIEW_OVERRIDE:-}" \
         --arg effort "$EFFORT" --arg mode "$MODE" --arg harness "$HARNESS" \
         --arg head "$HEAD_SHA" --arg diff_payload "$DIFF_PAYLOAD" \
         --argjson covered_heads "$covered_heads" \
         --arg reviewed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
+         + (if $attempt_id == "" then {} else {attemptId:$attempt_id,launcherSha256:$launcher,
+            procedure:$procedure,reviewerOverride:$reviewer_override} end)
          + (if $substituted_from == "" then {} else {modelSubstitutedFrom:$substituted_from} end)
          + (if $harness == "" then {} else {harness:$harness} end)
          + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}
@@ -812,6 +819,11 @@ render_body() {
     printf '## Adversarial review receipt\n'
     printf -- '- Reviewer: provider=%s; model=%s%s; effort=%s; mode=%s (reason: %s)\n' \
         "$PROVIDER" "$MODEL" "$model_note" "$EFFORT" "$MODE" "$MODE_REASON"
+    if [[ -n ${LAUNCHER_PROVENANCE:-} ]]; then
+        printf -- '- Launcher: adversarial-run.sh sha256=%s; attempt=%s\n' "$LAUNCHER_PROVENANCE" "$RECEIPT_ATTEMPT_ID"
+        printf -- '- Procedure: %s\n' "$REVIEW_PROCEDURE"
+        [[ -z $REVIEW_OVERRIDE ]] || printf -- '- Reviewer override: %s\n' "$REVIEW_OVERRIDE"
+    fi
     printf -- '- Counts: P1=%s; P2=%s; total=%s\n' "$P1" "$P2" "$total"
     render_head_lines
     render_ci_verification
