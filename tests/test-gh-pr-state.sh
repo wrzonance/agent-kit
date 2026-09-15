@@ -410,6 +410,8 @@ approved_output=$(PATH="$tmp/case-approved-zero-threads:$PATH" bash "$root/agent
     --pr 99 --repo owner/repo)
 assert_contains "$approved_output" 'provider: coderabbit=reviewed state=APPROVED threads=0 since=2026-08-22T06:36:18Z' \
     'an APPROVED review with zero threads reports reviewed+state+threads, never none (agent-kit#395)'
+assert_contains "$approved_output" 'source=reviews-api head=1111111111 read=' \
+    'provider review claims identify their source, head, and original read timestamp'
 
 mkdir -p "$tmp/case-changes-requested"
 cat >"$tmp/case-changes-requested/gh" <<'EOF'
@@ -1359,6 +1361,9 @@ assert_eq 0 "$new3" \
     'a same-PR/head/updated_at cache hit makes zero additional reviews/comments/threads/code-scanning calls'
 assert_contains "$second_full" 'provider: coderabbit=reviewed' \
     'a cache-hit digest still derives provider state from the cached reviews'
+assert_eq "$(sed -n 's/.* source=reviews-api /source=reviews-api /p' <<<"$first_full")" \
+    "$(sed -n 's/.* source=reviews-api /source=reviews-api /p' <<<"$second_full")" \
+    'cached provider claims preserve their original read provenance'
 
 # Same PR, same head, but updated_at moved (a review/comment/label landed
 # with no push): the cache entry is stale and must miss (F1b).

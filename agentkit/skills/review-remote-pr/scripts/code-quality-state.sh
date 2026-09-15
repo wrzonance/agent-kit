@@ -27,16 +27,23 @@ comments_file=''
 diff_base=''
 diff_head=HEAD
 repo_root=''
+claim=no
 
 usage() {
     cat <<'EOF'
 Usage: code-quality-state.sh --repo OWNER/REPO [--state open|dismissed] [--per-page N] [--summary]
        code-quality-state.sh --repo OWNER/REPO --probe
        code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N [--baseline-file FILE] [--state-file FILE]
+       code-quality-state.sh --repo OWNER/REPO --head SHA40 --pr N --claim
        code-quality-state.sh --repo OWNER/REPO --pr N --comments-file FILE --diff-base REF --repo-root DIR [--diff-head REF]
 
 Reads Code Quality findings through the public read-only API. The default
 output is the API JSON; --summary emits one compact line per finding.
+
+--claim is the reportable findings surface: a fresh, head-checked threads
+read stamped with source/head/read, after a successful current-head scan.
+Missing scans report pending; unreadable or truncated threads report unavailable.
+The legacy scan-state token describes execution and is not a zero-findings claim.
 
 --probe performs a single lightweight request to decide whether GitHub Code
 Quality is enabled for the repository, without fetching findings. It prints
@@ -106,21 +113,9 @@ first_error_line() {
     head -n 1 <<<"$raw"
 }
 
-# Prints the given scan-state=... line on stdout and, when --state-file is
-# set, additionally writes that exact same line (byte-for-byte) to the file,
-# mode 600 -- merge-gate.sh's --code-quality-state-file reads it back
-# verbatim, so the file must carry the printed token itself, never the
-# --baseline-file JSON artifact's shape. Staged via mktemp (mode 600 from
-# creation, never a plain '>' that is briefly group/world-writable under a
-# permissive umask) in the destination's own directory, then renamed into
-# place with `mv -fT` -- the -T (no-target-directory) form is required
-# because a plain `mv src dest` treats a dest that is a symlink TO A
-# DIRECTORY as that directory and moves src inside it, leaving the symlink
-# itself untouched; -T forces dest to be treated as the file path itself, so
-# rename(2) replaces whatever is at --state-file -- a plain file, a
-# dangling/file symlink, or a symlink-to-directory alike -- without ever
-# following it, and a planted symlink's target is never opened, let alone
-# truncated.
+# Preserve the exact merge-gate token on stdout and in --state-file.
+# Stage mode 600, then mv -fT replaces the destination without following even
+# directory symlinks. Baseline JSON is a different, non-interchangeable shape.
 emit_scan_state() {
     local line=$1 state_dir staged
     printf '%s\n' "$line"
@@ -164,6 +159,7 @@ while (($#)); do
             shift 2
             ;;
         --summary) summary=yes; shift ;;
+        --claim) claim=yes; shift ;;
         --probe) probe=yes; shift ;;
         --head)
             (($# >= 2)) || die '--head requires a 40-character SHA'
@@ -249,6 +245,58 @@ esac
 command -v gh >/dev/null 2>&1 || die 'gh is not installed; evidence unavailable'
 command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
 
+if [[ $claim == yes ]]; then
+    [[ -n $head_sha && -z $baseline_file && -z $state_file ]] ||
+        die '--claim requires --head and cannot write scan-state/baseline files'
+    # Scan completion is only a prerequisite. It never supplies a finding count.
+    checks=$(gh api -X GET "repos/$repository/commits/$head_sha/check-runs?per_page=100" --paginate) || {
+        printf 'code-quality: unavailable: check-runs API\n'; exit 1;
+    }
+    if ! jq -se 'length > 0 and all(.[]; (.check_runs | type) == "array")' <<<"$checks" >/dev/null; then
+        printf 'code-quality: unavailable: malformed check-runs\n'; exit 1
+    fi
+    if ! jq -se '[.[].check_runs[] | select(.app.slug == "github-code-quality")]
+        | length > 0 and all(.[]; .status == "completed" and .conclusion == "success")' <<<"$checks" >/dev/null; then
+        printf 'code-quality: pending reason=scan-not-complete head=%s read=%s\n' "$head_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+    fi
+    # First comment owns the provider identity; later replies cannot turn a
+    # human thread into a provider finding. Truncation fails closed.
+    # shellcheck disable=SC2016 # GraphQL variables, not shell expansions.
+    threads=$(gh api graphql -f query='query($owner:String!,$name:String!,$pr:Int!) {
+      repository(owner:$owner,name:$name) { pullRequest(number:$pr) {
+        headRefOid reviewThreads(first:100) { pageInfo { hasNextPage }
+          nodes { isResolved isOutdated comments(first:1) { nodes { author { login } } } }
+        }
+      } }
+    }' -f owner="${repository%/*}" -f name="${repository#*/}" -F pr="$pr") || {
+        printf 'code-quality: unavailable: threads API\n'; exit 1;
+    }
+    if ! jq -e '(.errors // [] | length) == 0 and
+        (.data.repository.pullRequest | (.headRefOid | type) == "string" and
+          (.reviewThreads | .pageInfo.hasNextPage == false and (.nodes | type) == "array" and
+            all(.nodes[]; (.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean" and
+              (.comments.nodes | type) == "array" and (.comments.nodes | length) == 1 and
+              (.comments.nodes[0].author.login | type) == "string")))' <<<"$threads" >/dev/null; then
+        printf 'code-quality: unavailable: incomplete threads API evidence\n'; exit 1
+    fi
+    live=$(gh api -X GET "repos/$repository/pulls/$pr") || {
+        printf 'code-quality: unavailable: current head API\n'; exit 1;
+    }
+    read_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    current=$(jq -er '.head.sha' <<<"$live") || current=''
+    [[ $current =~ $SHA_RE ]] || { printf 'code-quality: unavailable: current head\n'; exit 1; }
+    if [[ $current != "$head_sha" || $(jq -r '.data.repository.pullRequest.headRefOid' <<<"$threads") != "$head_sha" ]]; then
+        printf 'code-quality: pending reason=head-changed head=%s read=%s\n' "$current" "$read_at"
+        exit 0
+    fi
+    unresolved=$(jq --arg re "$CQ_BOT_RE" '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.isResolved == false and .isOutdated == false)
+      | select(.comments.nodes[0].author.login | test($re; "i"))] | length' <<<"$threads") || exit 1
+    printf 'code-quality: %s unresolved (source=threads-api head=%s read=%s)\n' "$unresolved" "$head_sha" "$read_at"
+    exit 0
+fi
+
 if [[ $head_sha != '' ]]; then
     # --- Step 1: is a github-code-quality check-run still running for this
     # head? A generic Checks API read -- always live, unrelated to whether
@@ -294,13 +342,7 @@ if [[ $head_sha != '' ]]; then
         emit_scan_state "scan-state=unknown reason=$(first_error_line "$findings_response")"
         exit 1
     fi
-    # --paginate concatenates one JSON value per page; slurp them, same as
-    # the check-runs/comments reads above, so repoWideOpen counts every page
-    # instead of the first 100 findings (issue #486 item 1). `all` over an
-    # EMPTY array is vacuously true, so an empty/blank response would
-    # otherwise validate as readable and silently print repoWideOpen=0 --
-    # require at least one page before trusting the shape check (root review
-    # finding on this PR).
+    # Count every page; require at least one so blank output never becomes zero.
     if ! jq -se '
         (length >= 1) and
         all(.[]; (type == "array") or ((.findings? | type) == "array"))
@@ -317,11 +359,8 @@ if [[ $head_sha != '' ]]; then
     ' <<<"$findings_response" 2>/dev/null) || repo_wide_open=''
     [[ $repo_wide_open =~ ^[0-9]+$ ]] || repo_wide_open=0
 
-    # --- Step 3: no in-flight scan and Code Quality is reachable --
-    # findings-on-head is counted from github-code-quality[bot]'s own PR
-    # review comments attributed to this exact commit (commit_id or, for a
-    # comment whose thread outlived a force-push, original_commit_id). Zero
-    # such comments is a valid, complete, zero-finding scan for this head.
+    # Legacy token: count comments attributed by commit_id/original_commit_id.
+    # This is not unresolved-thread evidence; report findings with --claim.
     comments_response=''
     if ! comments_response=$(gh api -X GET \
         "repos/$repository/pulls/$pr/comments?per_page=100" --paginate \

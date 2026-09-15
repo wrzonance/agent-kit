@@ -568,4 +568,36 @@ out=$(PATH="$tmp/bin:$PATH" "$quality" --repo o/r --pr "$PR" \
 assert_eq $'cq-repo: 3\ncq-open: 1 source=pr_9_hunk_comments.json' "$out" \
     'a plus sign in hunk context does not corrupt changed-line attribution'
 
+# Provider claims use live threads independently of successful workflow conclusions.
+cat >"$tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *graphql*)
+    jq -n --arg head "${CLAIM_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
+      --argjson nodes "${CLAIM_THREADS:-[]}" --argjson more "${CLAIM_MORE:-false}" \
+      '{data:{repository:{pullRequest:{headRefOid:$head,reviewThreads:{pageInfo:{hasNextPage:$more},nodes:$nodes}}}}}' ;;
+  *check-runs*)
+    if [[ -n ${CLAIM_CHECKS:-} ]]; then printf '%s\n' "$CLAIM_CHECKS";
+    else printf '%s\n' '{"check_runs":[{"app":{"slug":"github-code-quality"},"status":"completed","conclusion":"success"}]}'; fi ;;
+  *) printf '{"head":{"sha":"%s"}}\n' "${CLAIM_FINAL_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
+esac
+EOF
+chmod +x "$tmp/bin/gh"
+out=$(run_head --claim)
+assert_contains "$out" 'code-quality: 0 unresolved (source=threads-api head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa read=' 'claim names its findings surface, head, and read timestamp'
+out=$(CLAIM_THREADS='[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"github-code-quality[bot]"}}]}}]' run_head --claim)
+assert_contains "$out" 'code-quality: 1 unresolved' 'successful analyzer execution never substitutes for zero findings'
+out=$(CLAIM_FINAL_HEAD="$OTHER_SHA" run_head --claim)
+assert_contains "$out" 'code-quality: pending reason=head-changed' 'a head pushed during the read invalidates the completion claim'
+out=$(CLAIM_CHECKS='{"check_runs":[]}' run_head --claim)
+assert_contains "$out" 'code-quality: pending reason=scan-not-complete' 'absence of registered scans cannot prove a new head clean'
+out=$(CLAIM_MORE=true run_head --claim)
+assert_contains "$out" 'code-quality: unavailable:' 'truncated threads never prove zero findings'
+out=$(CLAIM_THREADS='[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"github-code-quality[bot]"}}]}},{"isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"github-code-quality[bot]"}}]}},{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"my-github-code-quality[bot]"}}]}}]' run_head --claim)
+assert_contains "$out" 'code-quality: 0 unresolved' 'resolved, outdated, and impersonating threads do not count'
+out=$(CLAIM_HEAD="$OTHER_SHA" run_head --claim)
+assert_contains "$out" 'code-quality: pending reason=head-changed' 'thread evidence for a different head never supports completion'
+out=$(CLAIM_THREADS='[{"comments":{"nodes":[]}}]' run_head --claim)
+assert_contains "$out" 'code-quality: unavailable:' 'missing thread state is unavailable, never an empty finding set'
+
 finish

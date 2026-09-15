@@ -10,9 +10,8 @@ description: >-
 
 # PR to green
 
-Coordinate existing Agent Kit review machinery: parallel reviews, serial
-merges. Owns queue authorization and the ready/provider transition boundary
-— not another review engine.
+Coordinate parallel reviews and serial merges; own queue authorization and
+ready/provider transitions through existing Agent Kit machinery.
 
 Open `"$agentkit/<path>"`; use `"$agentkit/references.md"` for paths and purposes instead of searching.
 
@@ -22,7 +21,7 @@ Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell
 
 | Flag | Effect |
 |---|---|
-| `--auto-merge` | Authorize serial merges of the confirmed queue after each pre-merge review-completion gate passes. Otherwise stop at evidence-green; humans merge. See ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md) for consent, gates, and serialization. |
+| `--auto-merge` | Gated serial merges of confirmed PRs; otherwise humans merge at evidence-green. See [details](references/auto-merge.md) for consent and gates. |
 
 ## Environment warm-up
 
@@ -161,12 +160,10 @@ user confirms the displayed provider plan (including any per-provider
 trigger/observe/disabled decision), verified dependency graph, and exact
 serial queue.
 
-After confirmation, derive the owner-only authorization JSON with
-`scripts/authorize-queue.sh`, passing the same repository, merge plan or PR selectors, and provider
-decisions the displayed queue used; it re-reads the live queue, requires it to equal the displayed
-snapshot (any drift fails closed → redisplay/reconfirm), and copies the queue fields from that live result.
-For example, a confirmed non-merging queue with the default CodeRabbit action
-is recorded in one command:
+After confirmation, `scripts/authorize-queue.sh` writes owner-only authorization
+from the same repository, selectors/plan, and provider decisions. It rereads the
+live queue and copies it only if it matches the displayed snapshot; drift requires
+redisplay/reconfirmation. Example without merging:
 
 ```bash
 "$agentkit/pr-to-green/scripts/authorize-queue.sh" \
@@ -207,11 +204,9 @@ check: proceed through commit, push, adversarial review, and receipt — never p
 unrelated paths just to force a clean run — but ready-flip and merge stay blocked as on any other red (Step 4).
 Any other declared-verification failure is `change-caused-red`: fix it.
 
-If Phase A changes the head, re-run the same displayed queue command with
-`pr-queue.sh --write-confirmed-queue`, reconfirm the advanced queue, then
-re-run `authorize-queue.sh`. It atomically replaces stale head/base records
-only after the fresh queue exactly matches that newly confirmed snapshot. Do
-not let earlier confirmation authorize a new SHA.
+After a Phase A push, rerun `pr-queue.sh --write-confirmed-queue` with the same
+selectors, reconfirm, then rerun `authorize-queue.sh`. Replacement head/base
+records must exactly match that fresh confirmed snapshot; old consent never covers a new SHA.
 
 This sequence is a **critical section** (one fixed-path snapshot): only one
 root inside it at a time; each re-derives its own authorization on entry.
@@ -247,6 +242,14 @@ per-item confirmation; human threads stay unresolved. Record a verified fix comm
 ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
 
 ### 4. Prove evidence-green
+
+Refresh `gh-pr-state.sh --digest` before reporting; cite head/read for CI.
+After the last thread action, run `review-transition.sh --observe --repo OWNER/REPO
+--pr N --since TRIGGER_TIMESTAMP --settle-after ACTION_TIMESTAMP --rounds 4 --interval 1`.
+Report its source/head/read/action/elapsed fields. For Code Quality use
+`$agentkit/review-remote-pr/scripts/code-quality-state.sh --repo OWNER/REPO --pr N --head SHA40 --claim`.
+Require fresh current-head evidence; pending/unavailable never means complete.
+Disabled providers add no gate.
 
 A PR is evidence-green only when all of these are current for its head and base:
 
@@ -312,9 +315,7 @@ then continue serially.
 
 ## Exit
 
-Continue until every queue item is evidence-green (or, under `--auto-merge`,
-merged) or blocked on a named human/dependency decision. Report per PR:
-head/base, CI, adversarial receipt, provider result, finding settlement,
-human decisions, stack state, formal provider approval separately, and — under
-`--auto-merge` — the gate result and merge outcome. Preserve all worktrees and
-authorization/evidence artifacts for resumption.
+Continue until each item is evidence-green (merged under `--auto-merge`) or has a
+named human/dependency blocker. Report per PR: head/base, CI, adversarial receipt,
+provider result, findings, human decisions, stack state, formal approval separately,
+and auto-merge gate/outcome. Preserve worktrees and authorization/evidence for resumption.
