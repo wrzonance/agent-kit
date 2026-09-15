@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.dont_write_bytecode = True
 sys.pycache_prefix = "/dev/null"
-import rewrite_profile as profiles
 from rewrite_profile import (
+    TRUST_ROOT,
     Unavailable,
     canonical,
     check_environment,
@@ -157,7 +157,7 @@ def context(path, event=None):
         raise Unavailable("changed command configuration environment")
     process = validate_launch(profile, os.environ, event)
     session = os.environ["CLAUDE_CODE_SESSION_ID"]
-    root = profiles.TRUST_ROOT.parent / "sessions"
+    root = TRUST_ROOT.parent / "sessions"
     for part in (None, Path(path).stem, hashlib.sha256(session.encode()).hexdigest()):
         root = root if part is None else root / part
         root.mkdir(mode=0o700, exist_ok=True)
@@ -220,7 +220,7 @@ def main():
         elif sys.argv[1:] == ["post"]:
             records.finish(event)
     except (Unavailable, OSError, KeyError, TypeError, ValueError, AttributeError):
-        pass
+        output = {}
     print(json.dumps(output, separators=(",", ":")))
     return 0
 

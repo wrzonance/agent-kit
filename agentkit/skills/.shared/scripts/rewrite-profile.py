@@ -11,8 +11,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "hooks/lib"))
 sys.dont_write_bytecode = True
 sys.pycache_prefix = "/dev/null"
-import rewrite_profile as profiles
 from rewrite_profile import (
+    OPERATOR_HOME,
+    TRUST_ROOT,
     Unavailable,
     canonical,
     check_environment,
@@ -114,7 +115,7 @@ def attest(path, expected_hash):
         raise Unavailable("unsupported validator interpreter")
     for name in ("prefix", "settings"):
         parent = private(Path(spec[name]).parent, directory=True)
-        private_parents(parent, profiles.OPERATOR_HOME)
+        private_parents(parent, OPERATOR_HOME)
     shell = reviewed_shell(spec["auditSnapshot"], spec["auditNative"], spec["reviewedHashes"])
     compatibility(spec["provider"], spec["events"])
     events = [decode(line) for line in Path(spec["events"]).read_text().splitlines()]
@@ -129,10 +130,10 @@ def attest(path, expected_hash):
                                   "--get-argv", "AGENT_CMD_TEST"], capture_output=True, timeout=5, check=True)
     if not declaration.stdout:
         raise Unavailable("missing declared verification command")
-    profiles.TRUST_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-    private(profiles.TRUST_ROOT, directory=True)
-    private_parents(profiles.TRUST_ROOT, profiles.OPERATOR_HOME)
-    profile_path = profiles.TRUST_ROOT / (secrets.token_hex(16) + ".json")
+    TRUST_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private(TRUST_ROOT, directory=True)
+    private_parents(TRUST_ROOT, OPERATOR_HOME)
+    profile_path = TRUST_ROOT / (secrets.token_hex(16) + ".json")
     session_settings(spec, profile_path, kit, python)
     paths = {"code": kit / "hooks", "helperTree": kit / "skills", "helper": kit / "skills/.shared/scripts/agent-run.sh",
              "config": cwd / ".agent/config.env", "cli": cli, "python": python, "shell": Path("/bin/bash").resolve(),
