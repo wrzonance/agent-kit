@@ -109,6 +109,15 @@ class Efficiency(unittest.TestCase):
             events[0]['payload'][field] = value
             self.parse(events, succeeds=False)
 
+    def test_minimal_metadata_defaults_missing_coverage(self):
+        meta = {'type': 'bench_efficiency_meta', 'payload': {
+                'schema_version': 1, 'role': 'root', 'source': 'complete'}}
+        report = self.parse([meta, FIXTURE[2]])
+        self.assertEqual(report['coverage'], [])
+        self.assertEqual(report['metrics']['tool_calls']['value'], 1)
+        self.assertEqual(report['metrics']['tool_calls']['status'], 'incomplete')
+        self.assertIsNone(report['metrics']['model_turns']['value'])
+
     def test_native_paths_in_patterns_and_edits_are_not_reads(self):
         path = 'agentkit/skills/.shared/scripts/helper.sh'
         commands = [f'rg {path} README.md', f'sed -i s/old/new/ {path}',

@@ -55,7 +55,7 @@ def metadata(payload):
     if activation['status'] == 'active':
         require(nonempty(activation.get('version')) and nonempty(activation.get('evidence')),
                 'active workflow needs version and evidence')
-    return {**payload, 'activation': activation}
+    return {**payload, 'coverage': coverage, 'activation': activation}
 
 
 def validate_event(payload):
