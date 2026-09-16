@@ -180,4 +180,17 @@ assert_rc 2 'historical active ownership still prevents pruning a completed life
 cp -- "$ledger" "$tmp/completed-ledger"
 jq -c 'if .state == "terminal" then .result="unexpected" else . end' "$tmp/completed-ledger" >"$ledger"
 assert_rc 2 'fresh completion of a long-lived reservation still receives strict validation' -- run_state none --now-epoch 21602
+
+# Fresh malformed terminal evidence must prevent all maintenance writes.
+jq -c 'select(.state == "terminal") | .result="unexpected"' "$tmp/completed-ledger" >"$ledger"
+printf '%s\n' '{not-json' >>"$ledger"
+cp -- "$ledger" "$tmp/before-prune"
+assert_rc 2 'prune refuses fresh malformed terminal evidence' -- owner prune --now-epoch 21602
+assert_rc 0 'refused prune preserves every byte including unparseable lines' -- cmp "$tmp/before-prune" "$ledger"
+assert_rc 0 'aged schema-invalid terminal evidence remains repairable' -- owner prune --now-epoch 30000
+assert_eq 0 "$(wc -l <"$ledger" | tr -d ' ')" 'aged malformed terminal and unparseable rows are removed'
+jq -c 'select(.state == "terminal")' "$tmp/completed-ledger" >"$ledger"
+jq -c 'select(.state == "terminal") | .heartbeatEpoch=30000' "$tmp/completed-ledger" >>"$ledger"
+assert_rc 0 'valid terminal rows permit age-based maintenance' -- owner prune --now-epoch 30000
+assert_eq '[30000]' "$(jq -sc 'map(.heartbeatEpoch)' "$ledger")" 'prune removes valid aged rows and retains valid fresh rows'
 finish
