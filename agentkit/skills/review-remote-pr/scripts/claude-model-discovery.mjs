@@ -61,8 +61,10 @@ async function showDeclared(repoRoot) {
   const reviewerKey = `AGENT_ADVERSARIAL_REVIEWER${suffix ?? ''}`;
   const modelKey = `AGENT_ADVERSARIAL_REVIEW_MODEL${suffix ?? ''}`;
   const reviewer = values[reviewerKey];
-  const model = values[modelKey];
-  if (suffix === undefined || (reviewer === 'claude' && !model.startsWith('claude-'))) {
+  // The resolver validates roster syntax/effort; strip that final effort before
+  // requiring a nonempty Claude model identifier in either declaration form.
+  const model = reviewer === 'claude' ? values[modelKey] : reviewer.slice(0, reviewer.lastIndexOf('-'));
+  if (suffix === undefined || !model.startsWith('claude-') || model.length === 'claude-'.length) {
     fail('no complete, valid declared Claude reviewer/model; use --list-models only for optional live discovery');
     return;
   }
