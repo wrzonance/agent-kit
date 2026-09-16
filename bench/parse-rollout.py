@@ -244,6 +244,8 @@ def parse_session_file(path):
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
+            if awaiting_usage == 'poll':
+                polling['inputs_complete'] = False
             call_name = payload.get('name', '').rsplit('.', 1)[-1]
             arguments = decoded_call_arguments(payload)
             if call_name == 'write_stdin' and not arguments.get('chars'):
