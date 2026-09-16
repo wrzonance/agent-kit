@@ -35,7 +35,7 @@ elif [[ ! -r $board ]]; then
 else
     command_declared=no
     grep -qE '^AGENT_CMD_[A-Z][A-Z0-9_]*=' "$config" 2> /dev/null && command_declared=yes
-    if [[ $command_declared == no || ( ! -r $repo_root/.agent/cache/stamp-verify && ! -r $repo_root/.agent/cache/stamp-test ) ]]; then
+    if [[ $command_declared == no ]]; then
         state=declared; next=verify
     else
         tracked=no

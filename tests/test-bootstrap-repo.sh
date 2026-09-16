@@ -390,7 +390,7 @@ assert_rc 0 'the generated board is ignored by git' -- \
 # asserted by actually staging.
 mkdir -p "$repo/.agent/cache" "$repo/.agent/logs"
 printf 'account=someone home=/home/someone\n' > "$repo/.agent/env-contract.txt"
-printf 'x\n' > "$repo/.agent/cache/stamp-verify"
+printf 'discovered\n' > "$repo/.agent/cache/onboarding-stage"
 printf 'x\n' > "$repo/.agent/logs/run.log"
 git -C "$repo" add -A > /dev/null 2>&1
 staged=$(git -C "$repo" diff --cached --name-only -- .agent | sort | tr '\n' ' ')

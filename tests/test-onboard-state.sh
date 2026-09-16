@@ -36,9 +36,8 @@ assert_contains "$out" 'stage=declared' 'config and board are declared'
 assert_contains "$out" 'next=verify' 'declared reports verification as next'
 
 printf 'AGENT_CMD_VERIFY=true\n' >> "$repo/.agent/config.env"
-touch "$repo/.agent/cache/stamp-verify"
 out=$("$state_sh" --repo-root "$repo" --report)
-assert_contains "$out" 'stage=verified' 'a command plus verify evidence reaches verified'
+assert_contains "$out" 'stage=verified' 'a declared command reaches verified without legacy stamp files'
 assert_contains "$out" 'next=commit' 'verified reports commit as next'
 
 # The blessed local model arms after verification once both declarations are
@@ -70,7 +69,6 @@ make_repo "$feature"
 printf 'AGENT_REPO_SLUG=o/r\nAGENT_BASE_BRANCH=main\nAGENT_CMD_VERIFY=true\n' > "$feature/.agent/config.env"
 printf '{"project":{}}\n' > "$feature/.agent/board.json"
 printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$feature/.gitignore"
-touch "$feature/.agent/cache/stamp-verify"
 git -C "$feature" add -- .agent/config.env .agent/board.json .gitignore
 git -C "$feature" -c user.name=t -c user.email=t@example.invalid commit -qm trunk-base
 git -C "$feature" checkout -qb feat/onboarding
