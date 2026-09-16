@@ -2958,6 +2958,52 @@ grep -rn foo .|
 ls -la /tmp|
 ssh host tmux capture-pane|
 TARGETS_765
+# Review regressions: inspect public extraction, actual hook protection, and
+# recorded paths without executing any of the proposed writer commands.
+review_repo_765=$(make_repo)
+while IFS='|' read -r command_765 expected_765; do
+    expected_765=${expected_765//,/$'\n'}
+    assert_eq "$expected_765" "$(write_targets_765 "$command_765")" \
+        "wrapped writer exposes only changed paths: $command_765"
+    strict_765=$(bash -c '
+        source "$1"
+        set -eE
+        trap '\''echo unexpected-ERR >&2; exit 97'\'' ERR
+        guard_shell_write_targets "$2"
+    ' bash "$hooks/lib/guard-lib.sh" "$command_765" 2>"$tmp/strict-765.err")
+    assert_eq "$expected_765" "$strict_765" "strict extraction retains targets: $command_765"
+    assert_eq '' "$(cat "$tmp/strict-765.err")" "strict extraction raises no ERR: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "wrapped or leading redirect protects paths: $command_765"
+    assert_eq "$expected_765" \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "hook evidence retains only changed paths: $command_765"
+done <<'REVIEW_765'
+git mv .github/workflows/ci.yml /tmp/ci.yml|.github/workflows/ci.yml,/tmp/ci.yml
+git -c user.name=tee mv -- .github/workflows/ci.yml /tmp/ci.yml|.github/workflows/ci.yml,/tmp/ci.yml
+{ tee .github/workflows/ci.yml; }|.github/workflows/ci.yml
+(tee .github/workflows/ci.yml)|.github/workflows/ci.yml
+timeout -k 2 10 tee .github/workflows/ci.yml|.github/workflows/ci.yml
+nice -n 5 tee .github/workflows/ci.yml|.github/workflows/ci.yml
+xargs -n 1 sed -i s/a/b/ .github/workflows/ci.yml|.github/workflows/ci.yml
+>>.github/workflows/ci.yml|.github/workflows/ci.yml
+REVIEW_765
+# A separate fixture allows a literal pipe in the command.
+for command_765 in '>|.github/workflows/ci.yml' 'printf a;>>.github/workflows/ci.yml'; do
+    strict_765=$(bash -c 'source "$1"; set -eE; trap "exit 97" ERR; guard_shell_write_targets "$2"' \
+        bash "$hooks/lib/guard-lib.sh" "$command_765")
+    assert_eq '.github/workflows/ci.yml' "$strict_765" "strict leading redirect survives: $command_765"
+    out=$(pre_input "$review_repo_765" "$command_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "hook protects leading redirect: $command_765"
+done
+for command_765 in 'printf "%s" "{ tee .github/workflows/ci.yml; }"' \
+    'git show HEAD:.github/workflows/ci.yml' \
+    'xargs -I tee printf "%s" .github/workflows/ci.yml'; do
+    assert_eq '' "$(write_targets_765 "$command_765")" "wrapper data is never a write operand: $command_765"
+done
 touch "$observer_repo/EOF"
 assert_eq '/tmp/x.sh' "$(write_targets_765 $'cat > /tmp/x.sh <<EOF\nEOF\n')" \
     'an existing filename used as a heredoc delimiter is not a write target'

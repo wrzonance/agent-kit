@@ -945,12 +945,7 @@ guard_contract_mode() {
     printf '%s' "${mode:-owner}"
 }
 
-# An observer session exists to watch a run already active under another
-# harness, not to compete with it for the same files (issue #551 north star:
-# "two harnesses on one machine must not fight"). A write that resolves into
-# the checkout root this session started in is exactly that collision; a
-# write into a linked worktree, /tmp, or any other repository remains
-# ordinary and is never touched by this guard.
+# Observer sessions guard their checkout, not linked worktrees or foreign paths.
 guard_observer_write_reason() {
     local target=$1 cwd=$2 command_line=${3:-} classification
     [[ -n ${workspace_root:-} ]] || return 1
@@ -1794,19 +1789,13 @@ guard_destructive_segment_reason() {
     return 1
 }
 
-# Split shell command text at unquoted separators while dropping heredoc bodies.
-# This is intentionally a small lexer, not a shell evaluator: the hook only
-# needs command-position boundaries. Keeping quote and heredoc state prevents
-# prose such as `echo "step 1; gh ..."` and body lines such as `gh ...` from
-# becoming executable-looking segments.
+# Split executable segments, preserving quotes and dropping heredoc bodies.
 guard_gh_command_segments() {
     # One lexer, two modes (issue #661): drop never recovers a heredoc body.
     guard_destructive_command_segments "$1" drop
 }
 
-# Tokenize ONE segment as the shell would (single/double quotes, backslash
-# escapes): read -r -a split a quoted sed address into several path-shaped
-# "words" (issue #335 Case 3). One word per line; quote characters are consumed.
+# Tokenize quoted/escaped words, one per line (issue #335).
 guard_tokenize_words() {
     local segment=$1 word='' quote='' escaped=0 char i length
     # Opt-in operators retain their identity through quote removal.
@@ -1837,22 +1826,23 @@ guard_tokenize_words() {
         if [[ $typed == writes && $char == '#' ]] && ((!present)); then
             break
         fi
-        if [[ $typed == writes && ( $char == '>' || $char == '<' ) ]]; then
+        if [[ $typed == writes ]] && { [[ $char == [\<\>\(\)] ]] ||
+            { [[ $char == '{' && ${segment:i+1:1} == [[:space:]] ]] && ((!present)); }; }; then
             # Only an adjacent, unquoted number is a file descriptor.
-            if ((present)) && { ((quoted)) || [[ ! $word =~ ^[0-9]+$ ]]; }; then
+            if ((present)) && { [[ $char != [\<\>] ]] || ((quoted)) || [[ ! $word =~ ^[0-9]+$ ]]; }; then
                 printf 'word:%s\n' "$word"
             fi
             word=''; present=0; quoted=0
             operator=$char
             next=${segment:i+1:1}
-            if [[ $next == "$char" || $next == '&' || ( $char == '>' && $next == '|' ) ||
-                ( $char == '<' && $next == '>' ) ]]; then
+            if [[ $char == [\<\>] && ( $next == "$char" || $next == '&' ||
+                ( $char == '>' && $next == '|' ) || ( $char == '<' && $next == '>' ) ) ]]; then
                 operator+=$next
-                ((i++))
+                i=$((i + 1))
                 next=${segment:i+1:1}
                 if [[ $operator == '<<' && ( $next == '<' || $next == '-' ) ]]; then
                     operator+=$next
-                    ((i++))
+                    i=$((i + 1))
                 fi
             fi
             printf 'op:%s\n' "$operator"
@@ -2034,16 +2024,15 @@ guard_shell_write_targets() {
     local cmd=$1 segments segment token pending command i options inplace script directory install_dirs
     local -a results=() words=() operands=()
 
-    # Drop heredoc bodies: their contents are not destinations (issue #397).
-    segments=$(guard_gh_command_segments "$cmd")
+    segments=$(guard_destructive_command_segments "$cmd" writes) || return
     while IFS= read -r segment; do
         [[ -n ${segment//[[:space:]]/} ]] || continue
 
-        # Remove all redirection operands from argv, emitting only output
-        # destinations. In particular, << operands are delimiters, not paths.
+        # Remove redirects from argv; only output operands are paths.
         words=(); pending=''
         while IFS= read -r token; do
             if [[ $token == op:* ]]; then
+                case $token in 'op:('| 'op:)'|'op:{') continue;; esac
                 pending=${token#op:}
                 continue
             fi
@@ -2062,8 +2051,19 @@ guard_shell_write_targets() {
             words+=("$token")
         done < <(guard_tokenize_words "$segment" writes)
 
-        i=$(guard_skip_command_prefix words 0)
+        i=$(guard_skip_command_prefix words 0) || continue
         command=${words[i]-}; command=${command##*/}
+        if [[ $command == git ]]; then
+            for ((i++; i < ${#words[@]}; i++)); do
+                case ${words[i]} in
+                    -c|-C|--git-dir|--work-tree|--namespace|--exec-path) i=$((i + 1));;
+                    -*) ;;
+                    *) break;;
+                esac
+            done
+            command=${words[i]-}
+            [[ $command == mv ]] || command=''
+        fi
         options=1; inplace=0; script=0; directory=''; install_dirs=0; operands=()
         for ((i++; i < ${#words[@]}; i++)); do
             token=${words[i]}
