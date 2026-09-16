@@ -352,7 +352,7 @@ verify_lineage() {
         [[ $main_from != "$main_to" ]] || die 'default advance must be nonempty'
         anchor_ok=0
         git -C "$repo_root" merge-base --is-ancestor "$main_from" "$old" && anchor_ok=1
-        while IFS= read -r sha; do
+        while ((anchor_ok == 0)) && IFS= read -r sha; do
             git -C "$repo_root" merge-base --is-ancestor "$main_from" "$sha" && anchor_ok=1
         done < <(jq -r '.[].sha' "$work_dir/authorized-heads.json")
         ((anchor_ok)) || die 'default anchor is outside authorized history'

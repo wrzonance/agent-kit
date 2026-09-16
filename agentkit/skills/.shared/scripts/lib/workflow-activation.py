@@ -170,8 +170,10 @@ def delegated_skills(args, record):
         if len(cells) != 4 or cells[0].strip() or cells[-1].strip():
             continue
         for name in re.findall(r"`\.\./([a-z][a-z0-9-]*)/SKILL\.md`", cells[2]):
-            target = Path(args.skills) / name / "SKILL.md"
-            if name in WORKFLOWS and target.is_file() and not target.is_symlink():
+            target_dir = Path(args.skills) / name
+            target = target_dir / "SKILL.md"
+            if (name in WORKFLOWS and target_dir.is_dir() and not target_dir.is_symlink()
+                    and target.is_file() and not target.is_symlink()):
                 names.add(name)
     return names
 

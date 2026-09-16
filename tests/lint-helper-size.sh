@@ -33,7 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16457:800"
+    # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16463:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -75,7 +76,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 + predecessor #769: 1,750,963 bytes / 4 = 437,740 tokens; exact combined total.
 # #765: recover executable heredocs and retain combined-output file targets.
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
-readonly MAX_TREE_TOKENS=437799
+# #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
+readonly MAX_TREE_TOKENS=437843
 
 violations=0
 checked=0

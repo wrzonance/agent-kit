@@ -1370,4 +1370,27 @@ for workflow in parallel-issues pr-to-green review-remote-pr ''; do
     esac
 done
 
+# Public contract output retains its first record on both --ensure paths.
+cat >"$ensure_build/.shared/scripts/workflow-activation.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+for workflow in pr-to-green review-remote-pr onboard-repo; do
+    header_repo=$(new_repo)
+    printf 'AGENT_CMD_FORMAT=ruff format --check .\n' >"$header_repo/.agent/config.env"
+    for temperature in cold cached; do
+        header_rc=0
+        header_out=$("$ensure_build_script" --ensure --worktree "$header_repo" \
+            --activation-session declaration-test --workflow "$workflow" 2>"$tmp/header.err") || header_rc=$?
+        assert_eq 0 "$header_rc" "$temperature $workflow preflight succeeds with an unused formatter declaration"
+        first_record=${header_out%%$'\n'*}
+        assert_eq skills= "${first_record%% *}" "$temperature $workflow stdout starts with the skills contract record"
+        assert_not_contains "$header_out" 'declarations= advisory' 'diagnostics never precede or enter contract stdout'
+        assert_contains "$(cat "$tmp/header.err")" "declarations= advisory workflow=$workflow missing=AGENT_CMD_FORMAT_FIX" \
+            "$temperature workflow advisory remains visible on stderr"
+        if [[ $temperature == cold ]]; then cold_header=$header_out
+        else assert_eq "$cold_header" "$header_out" 'cached ensure returns the original contract bytes'; fi
+    done
+done
+
 finish
