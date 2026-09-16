@@ -144,10 +144,11 @@ entries=$(jq -Rnc --argjson now "$now_epoch" --argjson hours "$fresh_hours" '
 ' "$ledger_path") || die 'could not inspect worker evidence'
 
 if [[ $action == prune ]]; then
-    # Even historical active rows and incomplete/unknown parsed reservations are
-    # conservative holds. Unparseable bytes can be removed only with no such row.
+    # Live history holds; fresh terminal rows must validate.
+    # Aged terminal rows retain their schema exemption.
     jq -e 'all(.[] | select(has("row"));
-        .row | type == "object" and .state == "terminal")' <<<"$entries" >/dev/null ||
+        (.aged or .diagnostic == null) and
+        (.row | type == "object" and .state == "terminal"))' <<<"$entries" >/dev/null ||
         die 'prune refused: active, unknown or indeterminate worker evidence; reconcile runtime first'
     staged=$(mktemp "$parent/.active-workers.XXXXXX")
     trap 'rm -f -- "$staged"' EXIT
