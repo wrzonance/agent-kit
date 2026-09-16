@@ -631,7 +631,7 @@ done < <(find "$shared_dir" -maxdepth 1 -name '*.md' -print0)
 declare -A shared_canonical_phrase=(
     [six-step-loop.md]='Worker prompts render this content verbatim, not as a pointer'
     [spawn-contract.md]='omission can silently inherit an expensive parent'
-    [wait-discipline.md]='Between waits, wait again; read durable state only when a wait reports an actual completion.'
+    [wait-discipline.md]='empty wait cycles'
 )
 for shared_name in "${!shared_canonical_phrase[@]}"; do
     phrase=${shared_canonical_phrase[$shared_name]}
