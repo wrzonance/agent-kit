@@ -2042,8 +2042,12 @@ guard_shell_write_targets() {
             fi
             token=${token#word:}
             if [[ -n $pending ]]; then
+                # >& duplicates, closes or moves FDs when its operand is numeric/-.
+                if [[ $pending == '>&' && ( $token == - || $token =~ ^[0-9]+-?$ ) ]]; then
+                    pending=''; continue
+                fi
                 case $pending in
-                    '>'|'>>'|'>|'|'<>')
+                    '>'|'>>'|'>|'|'<>'|'>&')
                         case $token in
                             ''|/dev/null|/dev/stdout|/dev/stderr) ;;
                             *) results+=("$token");;

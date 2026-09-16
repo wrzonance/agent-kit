@@ -73,7 +73,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #761 review repair: refresh record/release transition timestamps.
 # #763 + predecessor #772: exact combined helper total; no spare allowance.
 # #760 + predecessor #769: 1,750,963 bytes / 4 = 437,740 tokens; exact combined total.
-readonly MAX_TREE_TOKENS=437740
+# #765: recover executable heredocs and retain combined-output file targets.
+# #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
+readonly MAX_TREE_TOKENS=437799
 
 violations=0
 checked=0
