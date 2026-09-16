@@ -2104,6 +2104,58 @@ heredoc_helper_cmd=$'cat > /tmp/plan.md <<\'EOF\'\n## What\ngh-pr-state.sh usage
 out=$(pre_input "$repo" "$heredoc_helper_cmd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a helper name at line start inside a quoted heredoc body is not a bare invocation'
 
+# Inert separators/newlines must not become helper command positions (#751).
+# Exercise the production hook with fresh sessions, then prove that inert data
+# did not consume the session's one real helper-path denial.
+for inert_helper in \
+    'bash sh agent-run.sh --cmd test' \
+    'sh bash agent-run.sh --cmd test' \
+    'env bash sh agent-run.sh --cmd test' \
+    'bash env agent-run.sh --cmd test' \
+    'sh sudo agent-run.sh --cmd test' \
+    'sudo bash env agent-run.sh --cmd test' \
+    "printf '%s' 'x; agent-run.sh --cmd test'" \
+    'printf "%s" "x| agent-run.sh --cmd test"' \
+    'printf "%s" "x& agent-run.sh --cmd test"' \
+    'rg -n "x; agent-run.sh --cmd test" docs/' \
+    'printf %s x\; agent-run.sh --cmd test' \
+    'printf %s x\| agent-run.sh --cmd test' \
+    'printf %s x\& agent-run.sh --cmd test' \
+    $'printf "%s" "x\nagent-run.sh --cmd test"' \
+    $'printf "%s" \'x\nagent-run.sh --cmd test\'' \
+    $'printf %s \\\nagent-run.sh --cmd test' \
+    $'printf %s agent-run.sh \\' \
+    $'printf %s \\\nagent-run.sh \\' \
+    $'agent-run.sh "unfinished\\' \
+    $'agent-run.sh <<EOF\nunfinished\\' \
+    $'printf %s "x\\\nagent-run.sh --cmd test"' \
+    '# example; agent-run.sh --cmd test' \
+    'printf %s x # example; agent-run.sh --cmd test'; do
+    helper_session=$(fresh_sid)
+    out=$(pre_input "$repo" "$inert_helper" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "inert helper text is allowed: $inert_helper"
+    out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" 'inert helper text preserves the real diagnostic'
+done
+for actual_helper in \
+    'bash agent-run.sh --cmd test' \
+    'sh agent-run.sh --cmd test' \
+    'env sudo sh agent-run.sh --cmd test' \
+    'env env agent-run.sh --cmd test' \
+    $'agent-run.sh --cmd test \\' \
+    $'agent-run.sh \\\n--cmd test \\' \
+    'printf %s x\ #data; agent-run.sh --cmd test' \
+    'printf x | agent-run.sh --cmd test' \
+    'printf x & agent-run.sh --cmd test' \
+    $'printf x\nagent-run.sh --cmd test' \
+    $'bash \\\nagent-run.sh --cmd test' \
+    'sudo env bash agent-run.sh --cmd test' \
+    $'cat <<\'EOF\'\nagent-run.sh --cmd test\nEOF\nagent-run.sh --cmd test' \
+    $'bash <<\'EOF\'\nagent-run.sh --cmd test\nEOF'; do
+    out=$(pre_input "$repo" "$actual_helper" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "actual helper retains diagnostic: $actual_helper"
+done
+
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
 # meeting one had no way past it. They now run and are taught afterwards.
