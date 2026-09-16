@@ -62,6 +62,10 @@ make_repo() {
         'AGENT_CMD_TEST_FOCUS=tools/focused-test --only %s' \
         > "$dir/.agent/config.env"
     printf '%s\n' "$contract" > "$dir/.agent/env-contract.txt"
+    if ! grep -q '^tools=' "$dir/.agent/env-contract.txt"; then
+        printf "%s\n" "tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'" \
+            >> "$dir/.agent/env-contract.txt"
+    fi
     # Both the public-fenced names and the mode-neutral private/yolo names are
     # seeded so a single fixture repo can drive a composer call in any mode.
     printf '%s\n' "SPEC-BYTES \$(must-stay-literal)" > "$dir/.agent/fenced-spec.txt"
@@ -124,6 +128,38 @@ assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
     'issue-lead prompt requires the exact remaining step on a blocker'
+expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
+assert_contains "$prompt" "$expected_tools_line" \
+    'issue-lead prompt carries the validated runtime-tool mapping verbatim'
+
+missing_tools_repo="$tmp/missing-tools"
+make_repo "$missing_tools_repo" "$contract"
+sed -i '/^tools=/d' "$missing_tools_repo/.agent/env-contract.txt"
+missing_tools_rc=0
+missing_tools_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$missing_tools_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || missing_tools_rc=$?
+assert_eq 1 "$missing_tools_rc" 'composer refuses a contract with no runtime-tool mapping'
+assert_contains "$missing_tools_err" 'missing tools= record' \
+    'the missing runtime-tool refusal names the absent contract record'
+assert_contains "$missing_tools_err" \
+    "recovery: $root/agentkit/skills/.shared/scripts/agent-preflight.sh --worktree $missing_tools_repo --ensure" \
+    'the missing runtime-tool refusal gives the exact cache-upgrade command'
+
+malformed_tools_repo="$tmp/malformed-tools"
+make_repo "$malformed_tools_repo" "$contract"
+sed -i "s|^tools=.*|tools= spawn=bad value wait=wait send=send list='list'|" \
+    "$malformed_tools_repo/.agent/env-contract.txt"
+malformed_tools_rc=0
+malformed_tools_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$malformed_tools_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || malformed_tools_rc=$?
+assert_eq 1 "$malformed_tools_rc" 'composer refuses malformed runtime-tool metadata'
+assert_contains "$malformed_tools_err" 'invalid tools= record' \
+    'the malformed runtime-tool refusal names the invalid record'
+assert_contains "$malformed_tools_err" \
+    "recovery: $root/agentkit/skills/.shared/scripts/agent-preflight.sh --worktree $malformed_tools_repo --ensure" \
+    'the malformed runtime-tool refusal gives the exact repair command'
 
 compose_verification_report() {
     local fixture=$1 spec_body=$2 dispatch_plan=${3:-} output_file
@@ -921,7 +957,7 @@ make_widen_worktree() {
         'AGENT_BASE_BRANCH=develop' \
         'AGENT_CMD_TEST=tools/full-test' \
         > "$worktree/.agent/config.env"
-    printf 'skills= path=%s/agentkit/skills\n%s\n' "$root_path" "$sandbox_line" \
+    printf "skills= path=%s/agentkit/skills\n%s\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" "$root_path" "$sandbox_line" \
         > "$worktree/.agent/env-contract.txt"
     printf 'SPEC-BYTES\n' > "$worktree/.agent/fenced-spec.txt"
     printf 'PRIOR-BYTES\n' > "$worktree/.agent/fenced-prior-art.txt"
@@ -1101,7 +1137,7 @@ printf '%s\n' \
     'AGENT_BASE_BRANCH=develop' \
     'AGENT_CMD_TEST=tools/full-test' \
     > "$yolo_only_repo/.agent/config.env"
-printf 'skills= path=%s/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
     "$root" > "$yolo_only_repo/.agent/env-contract.txt"
 printf 'TRUSTED-SPEC-BYTES\n' > "$yolo_only_repo/.agent/spec.txt"
 printf 'TRUSTED-PRIOR-BYTES\n' > "$yolo_only_repo/.agent/prior-art.txt"
@@ -1254,7 +1290,7 @@ if [[ -x "$selector" && -x "$preparer" && -x "$stub_gh" && -f "$fixture" ]]; the
             'AGENT_BASE_BRANCH=develop' \
             'AGENT_CMD_TEST=tools/full-test' \
             > "$pipeline_worktree/.agent/config.env"
-        printf 'skills= path=%s/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+        printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
             "$root" > "$pipeline_worktree/.agent/env-contract.txt"
 
         GH_STUB_RESPONSE="$fixture" PATH="$integration_stub_path:$PATH" \

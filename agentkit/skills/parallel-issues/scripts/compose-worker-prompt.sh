@@ -159,12 +159,14 @@ template_file=$script_dir/../references/worker-prompts.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh
 contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
 sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
+harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
 yield_cap_lib=$script_dir/../../.shared/scripts/lib/yield-cap.sh
 wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
+[[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
 [[ -r $yield_cap_lib ]] || die "missing yield-cap.sh: $yield_cap_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
 fence_script=$script_dir/fence-untrusted-data.sh
@@ -252,6 +254,17 @@ skills_path=${shared_path%/.shared/scripts}
 if grep -Eq '<(PASTE|WHEN)([[:space:]]|[^[:alnum:]_])' "$contract"; then
     die 'environment contract contains an unresolved <PASTE ...> or <WHEN ...> placeholder'
 fi
+printf -v tools_recovery '%q --worktree %q --ensure' "$shared_path/agent-preflight.sh" "$worktree"
+tools_count=$(grep -c '^tools=' "$contract" 2>/dev/null || true)
+[[ $tools_count != 0 ]] ||
+    die "missing tools= record in environment contract; recovery: $tools_recovery"
+[[ $tools_count == 1 ]] ||
+    die "invalid tools= record in environment contract: expected exactly one line; recovery: $tools_recovery"
+tools_line=$(grep -m1 '^tools=' "$contract")
+# shellcheck disable=SC1090,SC1091
+source "$harness_tools_lib"
+harness_tools_record_valid "$tools_line" ||
+    die "invalid tools= record in environment contract: $tools_line; recovery: $tools_recovery"
 yield_cap_line=$(grep -m1 '^yield-cap=' "$contract" 2>/dev/null || true)
 if [[ -z $yield_cap_line ]]; then
     # shellcheck disable=SC1090,SC1091

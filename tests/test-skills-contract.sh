@@ -246,6 +246,10 @@ else
 fi
 assert_contains "$spawn_contract_text" 'explicit user authorization' \
     'spawn contract keeps unsupported-model authorization explicit'
+stale_tool_aliases=$(grep -RInE 'collaboration\.|(^|[^[:alnum:]_])spawn_agent([^[:alnum:]_]|$)' \
+    "$skills" --include='*.md' || true)
+assert_eq '' "$stale_tool_aliases" \
+    'skill Markdown uses contract tokens instead of runtime-specific alias prose'
 for stale_schema in 'multi_agent_v1__spawn_agent' 'fork_context' 'There is no `task_name`' \
     'Nesting is blocked' 'collaboration.spawn_agent'; do
     assert_not_contains "$spawn_contract_text" "$stale_schema" \
@@ -299,7 +303,7 @@ assert_contains "$worker_gate_text" '## Bounded inline corrections' \
     'worker gate documents the bounded inline-correction exception'
 assert_contains "$worker_gate_text" 'two allowed implementation exceptions' \
     'worker gate names the complete implementation exception set'
-assert_contains "$worker_gate_text" 'resume the same worker with `collaboration.followup_task` first' \
+assert_contains "$worker_gate_text" 'resume the same worker with `tools.send` first' \
     'worker gate prefers resuming the same worker for non-inline corrections'
 assert_contains "$onboard_text" 'AGENTS.md' \
     'onboarding reviews the repository instruction files'
