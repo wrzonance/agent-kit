@@ -61,7 +61,7 @@ preflight_required_declarations() {
         [[ -n ${declared[$key]} && -z ${declared[${key}_FIX]:-} ]] || continue
         if ((advisory)); then
             # Print even when --ensure returns a cached contract below.
-            printf 'declarations= advisory workflow=%s missing=%s_FIX consumer=worker-format-fix\n' "$ARG_WORKFLOW" "$key"
+            printf 'declarations= advisory workflow=%s missing=%s_FIX consumer=worker-format-fix\n' "$ARG_WORKFLOW" "$key" >&2
             continue
         fi
         if ((missing == 0)) && [[ -x $SCRIPT_DIR/detect-toolchains.sh ]]; then

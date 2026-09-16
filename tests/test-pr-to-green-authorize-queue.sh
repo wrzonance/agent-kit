@@ -1223,14 +1223,29 @@ for bad in missing-merge extra-commit unrelated-parent parent-descendant manual-
 done
 # Main can remove inherited content from the PR diff without a head change.
 cp "$tmp/lineage-after" "$lineage_receipt"
+mkdir "$tmp/anchor-bin"
+anchor_git=$(command -v git)
+anchor_tail=$(git -C "$repo_root" commit-tree "$old^{tree}" -m retained-unrelated-head)
+cat >"$tmp/anchor-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${3:-} == merge-base && ${4:-} == --is-ancestor && ${6:-} == "$ANCHOR_TAIL" ]]; then
+    printf '%s\n' "$*" >>"$ANCHOR_CALLS"
+fi
+exec "$ANCHOR_GIT" "$@"
+EOF
+chmod +x "$tmp/anchor-bin/git"
+jq --arg tail "$anchor_tail" '.authorizedHeads += [{pr:999,sha:$tail}]' "$lineage_receipt" >"$tmp/changed"
+cp "$tmp/changed" "$lineage_receipt"
 jq -n --arg own "$own_fix" --arg old "$old" --arg main "$merge_two" \
   '{runId:"lineage",repository:"owner/repo",pr:14,base:"main",from:$own,to:$own,
     commits:[],merges:[],defaultAdvance:{from:$old,to:$main,prs:[15,16]}}' >"$lineage"
 lineage_rc=0
-QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$merge_two \
+ANCHOR_GIT=$anchor_git ANCHOR_TAIL=$anchor_tail ANCHOR_CALLS="$tmp/anchor-calls" PATH="$tmp/anchor-bin:$PATH" \
+  QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$merge_two \
   QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two \
   run_lineage --lineage-proof "14:$lineage" >"$tmp/main-advance.out" 2>&1 || lineage_rc=$?
 assert_eq 0 "$lineage_rc" 'verified queued main merges allow inherited diff shrink on an unchanged head'
+assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'an old-head anchor avoids retained-head git subprocesses'
 cp "$lineage" "$tmp/main-proof"
 for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
     cp "$tmp/lineage-after" "$lineage_receipt"
@@ -1415,12 +1430,17 @@ assert_eq 1 "$lineage_rc" 'an ordinary queued merge after the imported default i
 cp "$tmp/lineage-after" "$lineage_receipt"
 jq --arg sha "$parent_two" --arg anchor "$merge_two" '.snapshot.queue[0].headSha=$sha | .authorizedHeads += [{pr:15,sha:$anchor}]' \
   "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt"
+jq --arg tail "$anchor_tail" '.authorizedHeads += [{pr:999,sha:$tail}]' "$lineage_receipt" >"$tmp/changed"
+cp "$tmp/changed" "$lineage_receipt"
+: >"$tmp/anchor-calls"
 jq --arg sha "$parent_two" --arg anchor "$merge_one" '.from=$sha | .to=$sha | .defaultAdvance.from=$anchor | .defaultAdvance.prs=[16]' \
   "$tmp/main-proof" >"$lineage"
 lineage_rc=0
-QUEUE_SHA=$parent_two QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$merge_two QUEUE_OLD_COMPARE=$merge_one \
+ANCHOR_GIT=$anchor_git ANCHOR_TAIL=$anchor_tail ANCHOR_CALLS="$tmp/anchor-calls" PATH="$tmp/anchor-bin:$PATH" \
+  QUEUE_SHA=$parent_two QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$merge_two QUEUE_OLD_COMPARE=$merge_one \
   QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two run_lineage --lineage-proof "14:$lineage" >"$tmp/anchor.out" 2>&1 || lineage_rc=$?
 assert_eq 0 "$lineage_rc" 'another exact authorized head can establish the default anchor'
+assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'a proven retained anchor stops later git subprocesses'
 [[ $lineage_rc == 0 ]] || cat "$tmp/anchor.out"
 
 for bad in valid wrong-ref unrelated-tip unrecorded-base missing-retarget; do

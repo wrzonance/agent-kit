@@ -425,17 +425,23 @@ grant_command() {
     PROVIDER=$(normalize_provider "$PROVIDER")
     if [[ $SOURCE == operator-instruction ]]; then
         local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} peer=$PROVIDER
-        instruction=${instruction//[‘’]/\'}
-        # Only this trailing request concerns repeated prompts rather than consent.
-        local consent_instruction=${instruction%'; do not ask again.'}
-        consent_instruction=${consent_instruction%'; do not ask again'}
         field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
         case $PROVIDER in anthropic) peer=claude ;; openai) peer=codex ;; esac
+        local verb actor suffix affirmative=0
+        # Whole literal forms: supplied fields are data, never regex or suffix syntax.
+        for verb in use 'i authorize'; do
+            for actor in "$PROVIDER" "$peer"; do
+                for suffix in '' '.' ' of this pr' ' of this pr.' \
+                    '; do not ask again' '; do not ask again.' \
+                    ' of this pr; do not ask again' ' of this pr; do not ask again.'; do
+                    if [[ $instruction == "$verb $actor with ${MODEL,,} for ${PURPOSE,,}$suffix" ]]; then
+                        affirmative=1; break 3
+                    fi
+                done
+            done
+        done
         [[ -n $instruction && -n $MODEL && -n $PURPOSE && -n $destination &&
-           $instruction == *"${MODEL,,}"* && $instruction == *"${PURPOSE,,}"* &&
-           ( $instruction == *"$PROVIDER"* || $instruction == *"$peer"* ) &&
-           ( $destination == *"$PROVIDER"* || $destination == *"$peer"* ) &&
-           ! $consent_instruction =~ (^|[^a-z])(no|not|never|dont|cannot|[a-z]+n\'t|refuse|decline)([^a-z]|$) ]] ||
+           $affirmative == 1 && ( $destination == *"$PROVIDER"* || $destination == *"$peer"* ) ]] ||
             die_usage 'operator instruction must affirmatively name provider, model and purpose'
         disclose_command
         printf 'model=%s\n' "$MODEL"

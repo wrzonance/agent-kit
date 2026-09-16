@@ -206,6 +206,16 @@ assert result.returncode == 0, result.stderr
 assert path.read_bytes() == before, 'companion must not replace governing receipt'
 assert run('check', *base, '--skill', 'review-remote-pr').returncode == 0
 assert run('check', *base, '--skill', 'onboard-repo').returncode == 1
+delegate_dir = skills / 'review-remote-pr'
+external_dir = tmp / 'external-delegate'
+delegate_dir.rename(external_dir)
+delegate_dir.symlink_to(external_dir, target_is_directory=True)
+assert run('check', *base, '--skill', 'review-remote-pr').returncode == 1, 'symlinked delegate directory must not authorize'
+assert run('ack', *base, '--skill', 'review-remote-pr', '--nonce', record['nonce']).returncode == 1
+assert path.read_bytes() == before, 'refused delegate leaves governing activation intact'
+delegate_dir.unlink()
+external_dir.rename(delegate_dir)
+assert run('check', *base, '--skill', 'review-remote-pr').returncode == 0, 'real delegate directory remains authorized'
 for skill, allowed in [('agentkit:review-remote-pr', True), ('agentkit:onboard-repo', False), ('agentkit:', False), (None, False)]:
     result = run('hook', payload={'cwd':str(repo), 'session_id':'session', 'hook_event_name':'PreToolUse',
                                  'tool_name':'Skill', 'tool_input':{'skill':skill}})

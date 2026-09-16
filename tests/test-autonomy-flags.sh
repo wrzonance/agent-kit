@@ -288,7 +288,17 @@ for refusal in "Don’t use Claude with Opus 5 for adversarial review." \
     "Don‘t use Claude with Opus 5 for adversarial review." \
     'dont use Claude with Opus 5 for adversarial review.' \
     'Do not ever use Claude with Opus 5 for adversarial review.' \
-    'Never under any circumstances authorize Claude with Opus 5 for adversarial review.'; do
+    'Never under any circumstances authorize Claude with Opus 5 for adversarial review.' \
+    'Avoid Claude with Opus 5 for adversarial review.' \
+    'Proceed without Claude with Opus 5 for adversarial review.' \
+    'Use anyone except Claude with Opus 5 for adversarial review.' \
+    'I forbid Claude with Opus 5 for adversarial review.' \
+    'Use Claude with Opus 5 for adversarial review except this PR.' \
+    'Use Claude with Opus 5 for adversarial review without sending the diff.' \
+    'Use Claude with Opus 5 for adversarial review; avoid sending files.' \
+    'Use Claude with Opus 5 for adversarial review; do not send anything.' \
+    'Use Claude with Opus 5 for adversarial review; do not ask again; do not ask again.' \
+    'Use Claude with Opus 5 for adversarial review. I forbid sending the diff.'; do
     before_refusal=$(sha256sum "$state" "$state.decision.json" "$state.consent-paths")
     assert_rc 2 'negated instructions preserve existing valid consent' -- bash "$consent" grant \
         --state "$state" --provider claude --payload "$payload" --source operator-instruction \
@@ -321,11 +331,26 @@ for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Clau
         --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
         --paths-file "$tmp/instruction-paths"
 done
-for affirmative in 'I authorize Claude with Opus 5 for adversarial review.' 'Use Claude with Opus 5 for adversarial review; do not ask again.'; do
+for affirmative in 'I authorize Claude with Opus 5 for adversarial review.' \
+    'Use Claude with Opus 5 for adversarial review; do not ask again.' \
+    'USE ANTHROPIC WITH OPUS 5 FOR ADVERSARIAL REVIEW OF THIS PR; DO NOT ASK AGAIN.'; do
     assert_rc 0 'explicit authorization needs no prescribed introductory phrase' -- bash "$consent" grant \
         --state "$state" --provider claude --payload "$payload" --source operator-instruction \
         --operator-instruction "$affirmative" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
         --paths-file "$tmp/instruction-paths"
+    assert_eq "$affirmative" "$(jq -r .instruction "$state.decision.json")" 'accepted casing and wording remain verbatim evidence'
 done
+assert_rc 0 'a literal purpose ending with an allowed suffix is not truncated' -- bash "$consent" grant \
+    --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Use Claude with Opus 5 for adversarial review of this PR.' \
+    --destination Claude --model 'Opus 5' --purpose 'adversarial review of this PR' --paths-file "$tmp/instruction-paths"
+assert_rc 0 'model punctuation is literal data in the affirmative grammar' -- bash "$consent" grant \
+    --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Use Claude with Opus [5].* for adversarial review.' \
+    --destination Claude --model 'Opus [5].*' --purpose 'adversarial review' --paths-file "$tmp/instruction-paths"
+assert_rc 2 'model metacharacters cannot match another model' -- bash "$consent" grant \
+    --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Use Claude with Opus 5-anything for adversarial review.' \
+    --destination Claude --model 'Opus [5].*' --purpose 'adversarial review' --paths-file "$tmp/instruction-paths"
 
 finish
