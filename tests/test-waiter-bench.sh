@@ -6,6 +6,7 @@ python3 - "$here/../bench/fixtures/waiter.json" <<'PY'
 import json
 import math
 import sys
+from pathlib import Path
 
 with open(sys.argv[1], encoding='utf-8') as stream:
     fixture = json.load(stream)
@@ -49,5 +50,22 @@ assert simulate(720, 60, 30, 1800, 80, implementation=True)['stall_times'] == []
 reused = simulate(1200, 600, 30, 163000, 80)
 assert reused['max_waiter_context'] >= 10000
 assert simulate(1, 600, 30, 1800, 80)['root_requests'] == 2
+
+# Count explicit synthetic tool events, not model requests. No real CI or
+# harness session is launched; the issue's reported live trace is not replayed.
+def ci_cost(events):
+    return dict(root_tool_calls=len(events), spawns=events.count('spawn'),
+                extra_model_sessions=events.count('spawn'))
+
+before = ci_cost(['spawn', 'collect', 'collect', 'collect'])
+policy = (Path(sys.argv[1]).parents[2] /
+          'agentkit/skills/.shared/wait-discipline.md').read_text(encoding='utf-8')
+assert 'Root calls already-blocking bounded helpers directly' in policy
+after = ci_cost(['blocking_helper'])
+assert before == dict(root_tool_calls=4, spawns=1, extra_model_sessions=1)
+assert after == dict(root_tool_calls=1, spawns=0, extra_model_sessions=0)
+print(json.dumps(dict(evidence='synthetic', scenario='bounded-ci-no-runtime-yield',
+                     before=before, after=after,
+                     live_measurement='unavailable', model_requests='unavailable')))
 print('waiter-bench: PASS (synthetic only; live acceptance unmeasured)')
 PY

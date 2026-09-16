@@ -356,9 +356,9 @@ rc=0
 if ((rc == 0)); then mv -f -- "$tmp" "$RUN_DIR/baseline-evidence.md"; else rm -f -- "$tmp"; fi
 ```
 
-### Wait contract: fresh bounded waiter
+### Wait contract
 
-Follow [wait-discipline](../.shared/wait-discipline.md): root spawns its fresh waiter template for CI/review. Respect runtime/communication caps; silent until terminal.
+Follow [wait-discipline](../.shared/wait-discipline.md) for direct helper waits, waiter exceptions, and runtime caps; silent until terminal.
 
 ### Adversarial-review receipt:
 
@@ -414,20 +414,20 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 
 ## Step 4: Wait for CI
 
-Guards run only in root. Before dispatch, root must substitute absolute helper/artifact paths and resolved PR/repo values below, then send only the resulting single bounded invocation to the fresh waiter. Refresh Step 5 afterward:
+Guards run only in root. Root runs this bounded helper directly; read its log and refresh Step 5 afterward:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
+rc=0
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
-  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60 --full --tmpdir "$RUN_DIR/state"
+  --pr "$PR" --repo "$REPO" --wait-ci --rounds 4 --interval 60 --full --tmpdir "$RUN_DIR/state" >"$RUN_DIR/ci-wait.log" 2>&1 || rc=$?
+printf 'CI wait exited %s; log=%s/ci-wait.log\n' "$rc" "$RUN_DIR"
+exit "$rc"
 ```
 
-Bounds 1–60 rounds, 1–3600 seconds; progress on stderr, digest plus Step 1's `pr_<N>_*.json`
-artifacts on stdout. Never grep repo-specific check names; `SKIPPED`/`NEUTRAL` count as passing;
-`/coderabbit/i` checks are ignored for settlement but still counted in `pending=`. A `note:`
-means still-settling CI; exit-1 names the broken fetch. Still pending after the bounded rounds →
-**stop and escalate**; do not keep raising `--rounds`. Never infer review behavior from a push.
+Bounds: 1–60 rounds, 1–3600 seconds. The log captures stderr progress and stdout digest/artifact paths. Never grep repo-specific checks: `SKIPPED`/`NEUTRAL` pass; `/coderabbit/i` checks count in `pending=` but not settlement.
+A `note:` means settling; exit-1 names the broken fetch. Pending after the bound → **stop and escalate**, never raise `--rounds`. Never infer review behavior from a push.
 
 ---
 
