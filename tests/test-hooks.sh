@@ -2920,6 +2920,163 @@ git -C "$observer_repo" -c user.name=t -c user.email=t@example.invalid commit -q
 printf 'repo=observer-example/repo\n%s\nmode=observer other-harness=peer\n' "$HARNESS_LINE" \
     > "$observer_repo/.agent/env-contract.$ME.txt"
 
+# Issue #765: assert the extractor's public output, including words that look
+# like syntax only after quote removal. No fixture command is executed.
+write_targets_765() (
+    source "$hooks/lib/guard-lib.sh"
+    cd "$observer_repo" || exit 1
+    guard_shell_write_targets "$1"
+)
+while IFS='|' read -r command_765 expected_765; do
+    assert_eq "$expected_765" "$(write_targets_765 "$command_765")" \
+        "write extraction returns only destinations: $command_765"
+done <<'TARGETS_765'
+printf hi > /tmp/x.sh|/tmp/x.sh
+sed -i s/a/b/ /tmp/f|/tmp/f
+tee /tmp/x.log|/tmp/x.log
+cat a > b|b
+cmd >> f|f
+tee -a f|f
+sed -i.bak s/a/b/ f|f
+sed -i -e s/a/b/ -f script.sed f|f
+sed -n s/a/b/ f > out|out
+cat a>b|b
+printf '>fake' > 'real file'|real file
+cat < input > output|output
+cat <<EOF|
+cat <<<text|
+printf hi 2>&1|
+dd if=input of=output bs=1|output
+cp input output|output
+install -m 644 input output|output
+install -d -m 755 output|output
+cp -toutput input|output
+truncate -s 0 output|output
+tee f # explanatory prose|f
+sed -i f -e s/a/b/|f
+grep -rn foo .|
+ls -la /tmp|
+ssh host tmux capture-pane|
+TARGETS_765
+# Review regressions: inspect public extraction, actual hook protection, and
+# recorded paths without executing any of the proposed writer commands.
+review_repo_765=$(make_repo)
+while IFS='|' read -r command_765 expected_765; do
+    expected_765=${expected_765//,/$'\n'}
+    assert_eq "$expected_765" "$(write_targets_765 "$command_765")" \
+        "wrapped writer exposes only changed paths: $command_765"
+    strict_765=$(bash -c '
+        source "$1"
+        set -eE
+        trap '\''echo unexpected-ERR >&2; exit 97'\'' ERR
+        guard_shell_write_targets "$2"
+    ' bash "$hooks/lib/guard-lib.sh" "$command_765" 2>"$tmp/strict-765.err")
+    assert_eq "$expected_765" "$strict_765" "strict extraction retains targets: $command_765"
+    assert_eq '' "$(cat "$tmp/strict-765.err")" "strict extraction raises no ERR: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "wrapped or leading redirect protects paths: $command_765"
+    assert_eq "$expected_765" \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "hook evidence retains only changed paths: $command_765"
+done <<'REVIEW_765'
+git mv .github/workflows/ci.yml /tmp/ci.yml|.github/workflows/ci.yml,/tmp/ci.yml
+git -c user.name=tee mv -- .github/workflows/ci.yml /tmp/ci.yml|.github/workflows/ci.yml,/tmp/ci.yml
+{ tee .github/workflows/ci.yml; }|.github/workflows/ci.yml
+(tee .github/workflows/ci.yml)|.github/workflows/ci.yml
+timeout -k 2 10 tee .github/workflows/ci.yml|.github/workflows/ci.yml
+nice -n 5 tee .github/workflows/ci.yml|.github/workflows/ci.yml
+xargs -n 1 sed -i s/a/b/ .github/workflows/ci.yml|.github/workflows/ci.yml
+>>.github/workflows/ci.yml|.github/workflows/ci.yml
+REVIEW_765
+# A separate fixture allows a literal pipe in the command.
+for command_765 in '>|.github/workflows/ci.yml' 'printf a;>>.github/workflows/ci.yml'; do
+    strict_765=$(bash -c 'source "$1"; set -eE; trap "exit 97" ERR; guard_shell_write_targets "$2"' \
+        bash "$hooks/lib/guard-lib.sh" "$command_765")
+    assert_eq '.github/workflows/ci.yml' "$strict_765" "strict leading redirect survives: $command_765"
+    out=$(pre_input "$review_repo_765" "$command_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "hook protects leading redirect: $command_765"
+done
+for command_765 in 'printf "%s" "{ tee .github/workflows/ci.yml; }"' \
+    'git show HEAD:.github/workflows/ci.yml' \
+    'xargs -I tee printf "%s" .github/workflows/ci.yml'; do
+    assert_eq '' "$(write_targets_765 "$command_765")" "wrapper data is never a write operand: $command_765"
+done
+# Shell-consumer heredocs execute; ordinary heredoc data and FD operations do not.
+for command_765 in \
+    $'bash <<\'EOF\'\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'env bash <<EOF\ntee .github/workflows/ci.yml\nEOF' \
+    $'sh <<-EOF\n\tprintf hi > .github/workflows/ci.yml\n\tEOF' \
+    $'cat <<EOF\n$(printf hi > .github/workflows/ci.yml)\nEOF' \
+    'printf hi >&.github/workflows/ci.yml' \
+    'printf hi &>.github/workflows/ci.yml' \
+    'printf hi &>>.github/workflows/ci.yml'; do
+    assert_eq '.github/workflows/ci.yml' "$(write_targets_765 "$command_765")" \
+        "executed heredoc or output redirect retains target: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "executed output protects workflow: $command_765"
+    assert_eq '.github/workflows/ci.yml' \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "executed output records workflow evidence: $command_765"
+done
+for command_765 in \
+    $'cat <<\'EOF\'\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'cat <<EOF\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'cat <<\'EOF\'\n$(tee .github/workflows/ci.yml)\nEOF' \
+    'cat < .github/workflows/ci.yml' \
+    'printf "%s" ">&.github/workflows/ci.yml"' \
+    'printf hi >&1' 'printf hi 2>&1' 'printf hi >&-' 'printf hi 2>&-' \
+    'printf hi >&2-' 'cat <&0'; do
+    assert_eq '' "$(write_targets_765 "$command_765")" "data or FD operation has no write path: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "data or FD operation stays allowed: $command_765"
+    assert_eq '' \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "data or FD operation creates no path evidence: $command_765"
+done
+for command_765 in 'printf hi &>123' 'printf hi &>>123' 'printf hi &>-' 'printf hi &>>-'; do
+    expected_765=${command_765##*>}
+    assert_eq "$expected_765" "$(write_targets_765 "$command_765")" "combined output retains literal filename: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "unprotected combined output stays allowed: $command_765"
+    assert_eq "$expected_765" \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "combined output records literal filename: $command_765"
+done
+touch "$observer_repo/EOF"
+assert_eq '/tmp/x.sh' "$(write_targets_765 $'cat > /tmp/x.sh <<EOF\nEOF\n')" \
+    'an existing filename used as a heredoc delimiter is not a write target'
+assert_eq '/tmp/x.sh' "$(write_targets_765 $'cat > /tmp/x.sh <<\'EOF\'\nEOF\n')" \
+    'a quoted heredoc delimiter is not a write target'
+
+observer_linked="$tmp/observer-linked"
+git -C "$observer_repo" worktree add -q -b observer-linked "$observer_linked"
+for target_765 in "$tmp/outside.txt" "$observer_linked/out.txt"; do
+    out=$(pre_input "$observer_repo" "printf hi > '$target_765'" "observer-shell-$target_765" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" 'observer permits shell output outside its workspace'
+done
+out=$(pre_input "$observer_repo" 'printf hi > file.txt' 'observer-shell-inside' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" 'observer still denies genuine shell workspace writes'
+assert_contains "$out" 'OBSERVER' 'shell workspace denial identifies observer mode'
+(
+    source "$hooks/lib/guard-lib.sh"
+    guard_record_write_targets "$observer_repo" '{}' "$observer_repo" \
+        $'cat > /tmp/evidence.txt <<EOF\ntext\nEOF' Bash evidence-765
+)
+assert_eq '["/tmp/evidence.txt"]' \
+    "$(jq -c 'select(.session == "evidence-765") | .paths_touched' "$observer_repo/.agent/evidence/paths-touched.ndjson")" \
+    'write evidence excludes command words, data arguments and heredoc delimiters'
+
 observer_sid='observer-mode-once'
 observer_out=$(edit_input "$observer_repo" "$observer_repo/file.txt" "$observer_sid" |
     "$hooks/pre-tool-use.sh" 2> /dev/null)
@@ -2939,6 +3096,9 @@ observer_elsewhere_out=$(edit_input "$observer_repo" "$observer_elsewhere/other.
     'observer-mode-elsewhere' | "$hooks/pre-tool-use.sh" 2> /dev/null)
 assert_eq 'allow' "$(decision "$observer_elsewhere_out")" \
     'an observer-mode session may still write into an unrelated repository'
+out=$(pre_input "$observer_repo" "tee -a '$observer_elsewhere/other.txt'" 'observer-shell-unrelated' |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" 'observer permits shell writes to an unrelated repository'
 
 owner_repo="$tmp/owner-repo"
 mkdir -p "$owner_repo/.agent"

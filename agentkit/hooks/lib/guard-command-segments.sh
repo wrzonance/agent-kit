@@ -8,6 +8,7 @@
 # dropped (guard_gh_command_segments, issue #661).
 # mode=helper: recover bodies, but emit NUL records, join line continuations,
 # and discard shell comments so inert text cannot create diagnostic boundaries.
+# mode=writes: recover executable bodies, preserving >| and >& operators.
 # shellcheck disable=SC2059  # record_format is one of two fixed literals, never input.
 guard_destructive_command_segments() {
     local input=$1 mode=${2:-recover} line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
@@ -99,6 +100,11 @@ guard_destructive_command_segments() {
                 continue
             fi
 
+            if [[ $mode == writes && $char == '>' && ( $next == '|' || $next == '&' ) ]]; then
+                segment+=">$next"
+                i=$((i + 2))
+                continue
+            fi
             case $char in
                 '#')
                     if [[ $mode == helper ]] && ((word_start)); then

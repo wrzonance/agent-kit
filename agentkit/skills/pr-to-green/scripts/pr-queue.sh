@@ -7,6 +7,16 @@ readonly PROGRAM=${0##*/}
 GH_BIN=${PR_QUEUE_GH:-gh}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+fingerprint_json() {
+    jq -ecS 'sort_by(.filename) | map({filename, sha:(.sha // ""),
+      patch:((.patch // "") | gsub("@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@"; "@@ @@"))})' "$1" |
+      sha256sum | awk '{print $1}'
+}
+if [[ ${1:-} == --fingerprint-json ]]; then
+    (($# == 2)) || exit 2
+    fingerprint_json "$2"
+    exit
+fi
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/gh-budget.sh"
 readonly EXIT_RATE_LIMITED=$GH_BUDGET_RATE_LIMIT_EXIT
@@ -521,11 +531,7 @@ compute_diff_fingerprint() {
     # hunk carries stays identical. Normalize them to "@@ @@" so that shift
     # alone never flips the fingerprint -- the hunk's own content lines,
     # filename, and blob sha still fully participate.
-    fp=$(jq -cS '
-        sort_by(.filename) | map({filename, sha:(.sha // ""),
-          patch:((.patch // "") |
-            gsub("@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@"; "@@ @@"))})
-      ' "$flat" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}') || fp=''
+    fp=$(fingerprint_json "$flat" 2>/dev/null) || fp=''
     [[ $fp =~ ^[0-9a-f]{64}$ ]] || { printf 'null' >"$out"; return 0; }
     printf '"%s"' "$fp" >"$out"
 }
