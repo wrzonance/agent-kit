@@ -1,27 +1,29 @@
 # Wait / polling discipline
 
-Read this before issuing any wait in `parallel-issues` or `review-remote-pr` — for a worker
-lead, a PR-loop agent, CI, or an adversarial review verdict. It is the single detailed home
-for the wait contract; each skill's own body keeps only the pinned rule sentences and names
-this file for the rationale and the durable-state recipe.
-
-Waiting is not work, and narrating a wait is not a status report — one observed run spent ~27 empty wait cycles on it.
+Read this before any worker, CI, or review wait in `parallel-issues` or `review-remote-pr`.
+This is the single detailed wait contract; skills link here for rules and durable-state recipes.
+Avoid empty wait cycles that do not advance collection.
 
 ## The rule
 
 **A wait must never spend model turns.** This is the cost goal, not a guarantee: a runtime may yield even while a helper blocks. Use a bounded helper — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test`. A `sleep N` + re-check issued as its own tool call is churn: the helper already owns the polling loop.
 
-CI and review waits belong to a throwaway waiter with fresh context, never the setup or
-fix-batch worker. Root dispatches the compact **Throwaway waiter prompt** in
-`parallel-issues/references/worker-prompts.md`, using the spawn contract's isolation and
-effective cap rules. One waiter owns one bounded helper invocation and one result line;
-helper output goes to a file. Consent-bearing review launches remain in the consent-holding
-context: a waiter may observe their completion, never launch them. If spawning is unavailable,
-record that degradation and use one bounded local helper with the same limits and metrics.
+Root calls already-blocking bounded helpers directly: CI `gh-pr-state.sh --wait-ci` and
+duration-bounded adversarial runs need no waiter. Redirect output to a log and report one
+terminal line preserving exit status; read the log after completion. Consent-bearing launches
+stay in the consent-holding context. A fresh waiter is justified only for a genuinely unbounded or long-lived producer,
+or when useful root work continues concurrently. Give that waiter a finite observation bound;
+use the **Throwaway waiter prompt** and spawn-contract isolation rules, never a setup/fix worker.
 
-Blocking is safe because every wait names an explicit bound alongside its invocation: adversarial max-duration-seconds, the CI round cap, the worker completion marker/contract, or the runner completion marker/contract. Background a worker or producer only when useful work can continue concurrently; when it is the last task standing, rejoin once with a harness-level terminal wait. This rule covers adversarial verdicts, CI, worker waits, and test-runner logs. For logs, run `agent-run.sh --cmd test` in the foreground or poll the log only from inside one bounded harness cell; never issue separate sleep and tail/re-check tool calls.
+Every wait names an explicit bound: adversarial duration, CI round cap, or native collection
+deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Resume
+the same running helper session after a runtime yield; never restart it. Run tests in the
+foreground or collect test-runner logs inside one bounded harness cell, never separate sleep/tail calls.
+Require the worker completion marker/contract or runner completion marker as terminal evidence.
 
-**A bounded wait must be silent until its terminal condition.** The waiting process emits nothing while waiting and exactly one line on completion or expiry: every line of background output wakes the orchestrator for a turn. A progress heartbeat, if genuinely needed, goes to a log file, not stdout.
+**A bounded wait must be silent until its terminal condition.** Emit one completion or expiry
+line: every line of background output wakes the orchestrator for a turn. Send any progress heartbeat
+to a log file, not stdout.
 
 For a wait to a known epoch, calculate the target and sleep once. The following copy/paste recipe is silent until its final line:
 
@@ -37,9 +39,9 @@ printf 'wait complete\n'
 If a bounded loop is genuinely necessary, redirect each heartbeat with `>>"$log"` and reserve
 stdout for the single completion or expiry line.
 
-- **One wait per interval.** Issue at most one blocking wait per polling interval, and only while a task is genuinely outstanding. Re-issuing a wait the instant it returns empty is the failure mode: it produces nothing and costs a turn every time.
-- **Between waits, wait again; read durable state only when a wait reports an actual completion.** A running lead leaves evidence on disk and on the forge; inspect it after completion rather than asking the runtime again.
-- **Narrate only a state change or a decision.** "PR #42 opened for issue #57", "lead for #62 returned BLOCKED — coverage gate", "starting the draft loop for PR #68", "declining finding F2 because the input is validated at the boundary" are reports. "Still running", "still waiting", "no output yet", "checking again", "continuing to monitor" are not — when nothing changed, say nothing and wait again.
+- **One wait per interval.** For helper polling, the helper owns the interval. For native collection, an empty capped wait may be re-issued as specified below; short polling outside that rule is churn.
+- **Between waits, wait again; read durable state only when a wait reports an actual completion.** Empty yields do not justify repeated disk/forge inspection.
+- **Narrate only a state change or a decision.** Report completion, blockers, or review decisions; never narrate "still waiting" or "checking again".
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
 ### Idle notices are not quiescence proof
@@ -84,9 +86,22 @@ printed value follows.
 An early completion still returns early. Use the largest runtime-advertised yield/timeout
 allowed by higher-priority communication limits (the effective cap); class defaults never
 override these limits. Below that cap, increase an empty wait's duration up to the cap.
-At the effective cap, repeat that capped wait only while the bounded task is outstanding.
+At the effective cap, repeat that capped wait only while the task is outstanding and its
+collection deadline has not expired.
 An empty yield is neither completion nor a stall. No empty-wait narration, except updates
 required by higher-priority instructions; count those requests too.
+
+### Native sub-agent collection
+
+For `collaboration.wait_agent`, pass `timeout_ms`; advertised maximum **3600000 ms**, subject to
+the current schema. Set a finite collection deadline: now plus the class bound above. Use
+`timeout_ms = min(class_bound_ms, effective_cap_ms, remaining_deadline_ms)`; a 60-second
+communication limit caps calls at 60000 ms. Re-issuing an empty capped wait is correct until
+that deadline. If less than the schema minimum remains, expire collection without another call.
+Read actual completion results. At expiry report outstanding IDs and a resume decision; never
+silently reset the deadline. Expiry does not terminate the worker or authorize worktree writes:
+stopping execution requires cancellation and quiescence proof. Other runtimes use their
+advertised equivalent with these same limits.
 
 For implementation workers, record the last observed progress time at dispatch/completion
 and the next stall-check deadline: progress time plus `STALL_THRESHOLD_MINUTES` (default 12).

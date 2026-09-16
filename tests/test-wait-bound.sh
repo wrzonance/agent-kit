@@ -20,8 +20,7 @@ skill_text=$(<"$skill")
 compose_source=$(<"$compose")
 
 # The table remains the single source: the worker-wait row still names a
-# positive numeric bound, and the never-re-issue-a-timed-out-wait rule this
-# issue must not remove is still stated.
+# positive numeric bound, and capped empty returns remain safe to collect.
 assert_contains "$wait_text" 'Worker implementation wait' \
     'wait-discipline.md keeps the worker-wait class row'
 worker_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline" | grep -oE '[0-9]+' | head -n1)
@@ -44,8 +43,17 @@ assert_not_contains "$setup" '--wait-ci --rounds 60' 'setup worker does not poll
 assert_contains "$(<"$root/agentkit/skills/.shared/spawn-contract.md")" 'effective cap' 'spawn contract defers wait limits to runtime'
 review=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
 assert_contains "$review" 'Guards run only in root' 'fresh waiter does not receive root shell guards'
-assert_contains "$review" 'substitute absolute helper/artifact paths' 'root resolves waiter paths before dispatch'
-assert_contains "$review" 'only the resulting single bounded invocation' 'root dispatches resolved helper argv only'
+assert_contains "$review" 'Root runs this bounded helper directly' 'root owns the blocking CI call'
+assert_not_contains "$review" 'invocation to the fresh waiter' 'CI does not require waiter indirection'
+assert_not_contains "$skill_text" 'Use the shared fresh waiter template for CI/review' 'parallel skill does not mandate CI waiters'
+assert_not_contains "$wait_text" 'Re-issuing a wait the instant it returns empty is the failure mode' 'empty capped waits are not simultaneously forbidden'
+assert_contains "$wait_text" 'Root calls already-blocking bounded helpers directly' 'bounded helper default is direct'
+assert_contains "$wait_text" 'genuinely unbounded or long-lived producer' 'waiter exception has a purpose'
+assert_contains "$wait_text" 'timeout_ms' 'native worker wait names runtime parameter'
+assert_contains "$wait_text" '3600000 ms' 'native worker wait names advertised cap'
+assert_contains "$wait_text" 'collection deadline' 'native worker collection has a finite overall bound'
+assert_contains "$wait_text" 'does not terminate the worker' 'collection expiry is not worker termination'
+assert_contains "$wait_text" 'No empty-wait narration' 'silent empty returns remain required'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.
