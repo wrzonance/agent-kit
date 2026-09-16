@@ -406,9 +406,8 @@ smuggle a worker into that reservation. The completion table's `worker=<model> <
 actually ran. Root design review and adversarial review keep their own effort settings
 regardless of any entry here.
 
-Seed each `predictedWriteSet` with `scripts/issue-paths.sh --issue N`, then
-expand it from the issue's code impact to include affected shared build config, lockfiles, and generated contracts
-even when the issue does not name them.
+Start with the body-free `predictedWriteSet` in `pick-issues.sh` output, then expand it for affected
+shared build config, lockfiles, and generated contracts plus code-implied paths.
 Record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
 --validate-only` supply required manifest companions; extraction is a seed for
 code-aware conflict analysis, not a substitute for it.

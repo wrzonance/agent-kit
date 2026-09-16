@@ -41,7 +41,10 @@ prepare_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-is
 # only a gate statement + pointer at each binding step. Template-content
 # assertions below therefore check the reference file, never the body.
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
-worker_prompts_text=$(cat "$worker_prompts" "${worker_prompts%/*}/implementation-worker.md")
+implementation_worker="${worker_prompts%/*}/implementation-worker.md"
+worker_prompts_text=$(cat "$worker_prompts" "$implementation_worker")
+worker_prompts_only_text=$(<"$worker_prompts")
+implementation_worker_text=$(<"$implementation_worker")
 # The bulk-mutation ledger recipe and the triage/prior-art/board adjudication
 # detail are single-sourced in references/triage-and-selection.md (issue
 # #107 phase 3's split); SKILL.md's body keeps only the one-line verdict
@@ -214,8 +217,8 @@ assert_contains "$normalized_text" 'require `schemaVersion=1 valid`' \
     'dispatch requires the schema-1 validation success marker'
 assert_contains "$triage_and_selection_text" 'same owner-only file' \
     'dispatch-plan and merge-plan names are documented as lifecycle aliases'
-assert_contains "$triage_and_selection_text" 'scripts/issue-paths.sh --issue N' \
-    'conflict analysis seeds predictions from issue-body paths'
+assert_contains "$triage_and_selection_text" 'body-free `predictedWriteSet` in `pick-issues.sh` output' \
+    'conflict analysis seeds predictions from picker path evidence'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \
     'late overlap has an explicit chain-conversion disposition'
 assert_contains "$triage_and_selection_text" 'merge-down' \
@@ -1391,8 +1394,10 @@ assert_contains "$normalized_text" 'Digest flags: read [prior-art]' \
     'adjudication section reads remain conditional on digest flags'
 assert_contains "$normalized_text" '; skip `clean`.' \
     'clean issues require no adjudication reference reads'
-assert_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
-    'the single-issue dispatch set retains worker prompts'
+assert_contains "$single_issue_reference_set" 'references/implementation-worker.md' \
+    'the common dispatch path reads only the issue-lead template'
+assert_not_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
+    'the common dispatch path does not read setup and publication templates'
 assert_contains "$single_issue_reference_set" '.shared/spawn-contract.md' \
     'the single-issue dispatch set retains the spawn contract'
 assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
@@ -1409,6 +1414,22 @@ assert_contains "$normalized_text" 'non-empty repository-relative `predictedWrit
     'dispatch-plan compaction preserves repository-relative non-empty predictions'
 assert_contains "$normalized_text" 'shared build config, lockfiles, and generated contracts' \
     'dispatch-plan compaction preserves shared conflict inputs'
+assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
+    'selection uses the body-free picker record as its sole mechanical input'
+assert_not_contains "$normalized_text" 'Read each issue' \
+    'root conflict analysis does not reread issue bodies or repository documents'
+assert_not_contains "$worker_prompts_only_text" '## Issue-lead prompt' \
+    'the broad prompt reference no longer contains issue-lead material'
+assert_not_contains "$worker_prompts_only_text" '### Root completion classification' \
+    'root completion classification lives with the issue-lead contract'
+assert_contains "$implementation_worker_text" '## Issue-lead prompt' \
+    'the dedicated implementation-worker reference owns the issue-lead template'
+assert_contains "$implementation_worker_text" '### Root completion classification' \
+    'the dedicated implementation-worker reference owns root completion classification'
+prose_lines=$(wc -l < "$skill")
+prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts")))
+assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
+    'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

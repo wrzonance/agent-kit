@@ -178,6 +178,28 @@ assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")
 assert_eq '["tools/bootstrap-worktree.sh"]' \
     "$(jq -c '.[] | select(.number == 10) | .predictedWriteSet' <<< "$out")" \
     'JSON carries issue-derived write-set literals into dispatch planning'
+assert_eq '["blockerRead","blockerTotal","blockers","dispatch","eligible","number","predictedWriteSet","queued","repository","state","status","title"]' \
+    "$(jq -c '.[] | select(.number == 10) | keys' <<< "$out")" \
+    'one picker record carries every selection and dispatch input without the issue body'
+
+# Path extraction is part of selection evidence. A missing or failing helper
+# must fail the picker instead of returning an empty predictedWriteSet that a
+# root could mistake for "no conflict".
+shadow="$tmp/shadow"
+mkdir -p "$shadow/.shared/scripts" "$shadow/parallel-issues/scripts"
+cp "$script" "$shadow/.shared/scripts/pick-issues.sh"
+cp "$root/agentkit/skills/.shared/scripts/repo-config.sh" "$shadow/.shared/scripts/repo-config.sh"
+rc=0
+out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a missing issue-paths helper fails selection'
+assert_contains "$out" 'issue-paths.sh is unavailable' 'the missing-helper failure names the degraded evidence'
+
+printf '#!/usr/bin/env bash\nexit 9\n' > "$shadow/parallel-issues/scripts/issue-paths.sh"
+chmod +x "$shadow/parallel-issues/scripts/issue-paths.sh"
+rc=0
+out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed issue-paths helper fails selection'
+assert_contains "$out" 'could not derive paths for issue #10' 'the failed-helper error names the affected issue'
 
 # Fast mode caps the current wave and leaves later pickup-order candidates for
 # refill. The attended path still returns the complete eligible set; only the

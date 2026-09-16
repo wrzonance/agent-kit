@@ -3,6 +3,7 @@
 ## Contents
 
 - [Issue-lead prompt](#issue-lead-prompt)
+- [Root completion classification](#root-completion-classification)
 
 ## Issue-lead prompt
 Per-issue prompt:
@@ -258,3 +259,11 @@ diffstat, green verification log path) — or, on an environment refusal, the fa
 publication handback — or BLOCKED with one concrete reason. Do not contact the forge beyond
 pushing your own branch and the assigned CI evidence read above; do not ask for privilege escalation.
 ````
+
+### Root completion classification
+
+If a worker completion still asks for approval, the root classifies it as
+`needs-authorization` when its final non-blank line ends in `?` or `reply yes`; it is not a
+successful completion. Under `--yolo`, the root resumes the same worker with its stored grant
+exactly once via `followup_task` and logs
+`auto_resume_authorization=needs-authorization attempt=1`; repeated approval requests are parked.
