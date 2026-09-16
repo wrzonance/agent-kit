@@ -25,6 +25,7 @@ yolo=0
 run_id=''
 write_set_file=''
 declare -A self_proof_file=()
+declare -A lineage_proof_file=()
 declare -a providers=()
 declare -a prs=()
 requested_prs_json='[]'
@@ -113,6 +114,7 @@ usage: $PROGRAM --repo OWNER/REPO --repo-root DIR --ready-transition
        [--allow-mechanical-advance [--retarget-proof PR:FILE ...]]
        [--fast-mode --yolo] [--run-id ID --write-set-file FILE]
        [--self-authored-proof PR:FILE ...]
+       [--lineage-proof PR:FILE ...]
 
 Derives .agent/pr-to-green-auth.json from fresh pr-queue.sh JSON. ACTION is
 trigger, observe, or disabled. FILE is the owner-only snapshot written by the
@@ -211,6 +213,13 @@ while (($#)); do
             [[ -z ${self_proof_file[$proof_pr]+set} ]] || die 'duplicate self-authored proof'
             self_proof_file[$proof_pr]=$proof_path
             shift 2 ;;
+        --lineage-proof)
+            (($# >= 2)) || usage
+            proof_pr=${2%%:*}; proof_path=${2#*:}
+            [[ $proof_pr =~ ^[1-9][0-9]*$ && $proof_path != "$2" && -n $proof_path ]] || die 'invalid lineage proof selector'
+            [[ -z ${lineage_proof_file[$proof_pr]+set} ]] || die 'duplicate lineage proof'
+            lineage_proof_file[$proof_pr]=$proof_path
+            shift 2 ;;
         --retarget-proof)
             (($# >= 2)) || usage
             retarget_pr=${2%%:*}
@@ -228,7 +237,7 @@ while (($#)); do
 done
 
 ((fast_mode == 0 || yolo)) || die '--fast-mode requires --yolo'
-if ((fast_mode || ${#self_proof_file[@]})); then
+if ((fast_mode || ${#self_proof_file[@]} || ${#lineage_proof_file[@]})); then
     [[ -n $run_id ]] || die '--fast-mode and --self-authored-proof require --run-id'
     allow_mechanical_advance=1
 fi
@@ -236,6 +245,102 @@ fi
 private_file() {
     [[ -f $1 && ! -L $1 && -O $1 ]] || die "untrusted evidence file: $1"
     reject_writable_by_others "$1" evidence
+}
+
+# Bounded, local replay; a successful command and exact tree are both required.
+clean_merge_tree() {
+    local commit=$1 output tree
+    local -a parents
+    read -r -a parents <<<"$(git -C "$repo_root" rev-list --parents -n 1 "$commit")"
+    ((${#parents[@]} == 3)) || die 'lineage requires two-parent mechanical merges'
+    output=$(timeout 10 git -C "$repo_root" merge-tree --write-tree "${parents[1]}" "${parents[2]}") ||
+        die 'lineage merge conflicts, is unavailable, or exceeded its bound'
+    tree=$(git -C "$repo_root" rev-parse "$commit^{tree}") || die 'lineage tree unreadable'
+    [[ ${output%%$'\n'*} == "$tree" ]] || die 'lineage merge tree differs from clean replay'
+}
+
+verify_lineage() {
+    local pr=$1 old=$2 new=$3 proof=$4 commit parent main_from main_to default metadata sha fp expected
+    local -a parents imported=()
+    jq -e '(.merges | type == "array" and length <= 16 and all(.[]; test("^[0-9a-f]{40}$"))) and
+      (.commits | type == "array") and
+      ((.merges + [.commits[].sha]) as $all | ($all | unique | length) == ($all | length))' "$proof" >/dev/null ||
+        die 'malformed lineage commit partition'
+    jq '[.snapshot.queue[] | {pr,sha:.headSha}] + (.authorizedHeads // []) +
+      [.advances[] | {pr,sha:.to}] | map(select(.sha | test("^[0-9a-f]{40}$"))) | unique' \
+      "$receipt" >"$work_dir/authorized-heads.json"
+    git -C "$repo_root" rev-list --first-parent --max-count=258 "$new" >"$work_dir/first-parent" || die 'lineage unreadable'
+    grep -Fxq "$old" "$work_dir/first-parent" || die 'lineage must retain the authorized first-parent history within 256 commits'
+    git -C "$repo_root" rev-list --first-parent "$old..$new" >"$work_dir/lineage-commits"
+    jq -Rn '[inputs] | sort' <"$work_dir/lineage-commits" >"$work_dir/lineage-commits.json"
+    jq -e --slurpfile actual "$work_dir/lineage-commits.json" \
+      '(.merges + [.commits[].sha] | sort) == $actual[0]' "$proof" >/dev/null || die 'lineage commit partition is incomplete'
+
+    main_to=''
+    if jq -e '.defaultAdvance != null' "$proof" >/dev/null; then
+        jq -e '.defaultAdvance | (.from | test("^[0-9a-f]{40}$")) and (.to | test("^[0-9a-f]{40}$")) and
+          (.prs | type == "array" and length > 0 and length <= 16 and all(.[]; type == "number" and floor == . and . > 0))' \
+          "$proof" >/dev/null || die 'malformed default advance'
+        main_from=$(jq -r .defaultAdvance.from "$proof"); main_to=$(jq -r .defaultAdvance.to "$proof")
+        git -C "$repo_root" merge-base --is-ancestor "$main_from" "$old" || die 'default anchor is outside the authorized head'
+        git -C "$repo_root" merge-base --is-ancestor "$main_from" "$main_to" || die 'default history was rewritten'
+        metadata=$(timeout 10 "$GH_BIN" api "repos/$repo") || die 'default branch unreadable'
+        default=$(jq -er '.default_branch | select(type == "string" and length > 0)' <<<"$metadata") || die 'default branch missing'
+        [[ $default == "$recon_live_base" ]] || die 'default advance requires the actual default base'
+        metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/git/ref/heads/$default") || die 'default ref unreadable'
+        [[ $(jq -r .object.sha <<<"$metadata") == "$main_to" ]] || die 'default advance is not the live default tip'
+        : >"$work_dir/default-merges"
+        while IFS= read -r sha; do
+            jq -e --argjson pr "$sha" '.predicate.prs | index($pr) != null' "$receipt" >/dev/null || die 'default advance added a PR'
+            metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/pulls/$sha") || die 'merged queue PR unreadable'
+            jq -e --arg base "$default" --argjson pr "$sha" --slurpfile heads "$work_dir/authorized-heads.json" \
+              '. as $p | .merged == true and .base.ref == $base and
+               any($heads[0][]; .pr == $pr and .sha == $p.head.sha) and
+               (.merge_commit_sha | test("^[0-9a-f]{40}$"))' <<<"$metadata" >/dev/null || die 'default merge is not an authorized queue head'
+            commit=$(jq -r .merge_commit_sha <<<"$metadata")
+            parent=$(git -C "$repo_root" rev-parse "$commit^2") || die 'default advance supports merge commits only'
+            [[ $parent == "$(jq -r .head.sha <<<"$metadata")" ]] || die 'default merge parent differs from authorized queue head'
+            clean_merge_tree "$commit"
+            printf '%s\n' "$commit" >>"$work_dir/default-merges"
+        done < <(jq -r '.defaultAdvance.prs[]' "$proof")
+        git -C "$repo_root" rev-list --first-parent --max-count=17 "$main_from..$main_to" | sort >"$work_dir/default-actual"
+        sort -u "$work_dir/default-merges" >"$work_dir/default-expected"
+        cmp -s "$work_dir/default-actual" "$work_dir/default-expected" || die 'default history contains unproved commits'
+        # Anchor old/new diff identities to these exact bases; fail on API truncation.
+        for sha in "$main_from" "$main_to"; do
+            commit=$old; expected=$(jq -r --argjson pr "$pr" '.queue[] | select(.pr == $pr) | .diffFingerprint' "$confirmed_queue_file")
+            if [[ $sha == "$main_to" ]]; then
+                commit=$new; expected=$(jq -r --argjson pr "$pr" '.[] | select(.pr == $pr) | .diffFingerprint' "$work_dir/queue.json")
+            fi
+            metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/compare/$sha...$commit") || die 'default diff comparison unreadable'
+            jq -e '.files | type == "array" and length < 300' <<<"$metadata" >/dev/null || die 'default diff comparison incomplete'
+            jq .files <<<"$metadata" >"$work_dir/compare-files.json"
+            fp=$("$SCRIPT_DIR/pr-queue.sh" --fingerprint-json "$work_dir/compare-files.json") || die 'default diff fingerprint unavailable'
+            [[ $fp == "$expected" ]] || die 'default diff fingerprint does not match authorized/live identity'
+        done
+    fi
+    [[ $old != "$new" || -n $main_to ]] || die 'unchanged-head lineage requires a checked default advance'
+    while IFS= read -r commit; do
+        read -r -a parents <<<"$(git -C "$repo_root" rev-list --parents -n 1 "$commit")"
+        ((${#parents[@]} == 3)) || die 'lineage requires two-parent merges'
+        parent=${parents[2]}
+        if [[ -z $main_to || $parent != "$main_to" ]]; then
+            jq -e --arg sha "$parent" 'any(.[]; .sha == $sha)' "$work_dir/authorized-heads.json" >/dev/null ||
+                die 'lineage parent is not an exact authorized queue head'
+        fi
+        clean_merge_tree "$commit"
+        imported+=("$parent")
+    done < <(jq -r '.merges[]' "$proof")
+    git -C "$repo_root" rev-list --max-count=257 "$old..$new" >"$work_dir/all-commits"
+    (( $(wc -l <"$work_dir/all-commits") <= 256 )) || die 'lineage exceeds 256 commits'
+    cp "$work_dir/lineage-commits" "$work_dir/accounted"
+    for parent in "${imported[@]}"; do
+        git -C "$repo_root" rev-list "$old..$parent" >>"$work_dir/accounted" || die 'imported parent history unreadable'
+    done
+    sort -u "$work_dir/accounted" >"$work_dir/accounted-sorted"
+    sort "$work_dir/all-commits" >"$work_dir/all-sorted"
+    cmp -s "$work_dir/accounted-sorted" "$work_dir/all-sorted" || die 'lineage has unaccounted imported commits'
+    jq -r '.commits[].sha' "$proof" >"$work_dir/commits"
 }
 
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
@@ -589,6 +694,7 @@ if ((full_match_ok == 0)); then
     # neither bucket below and falls through to "fail", exactly like any
     # other unproven drift.
     jq -n --slurpfile confirmed "$confirmed_queue_file" --slurpfile live "$work_dir/queue.json" \
+      --argjson lineage "$(printf '%s\n' "${!lineage_proof_file[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \
       --argjson self "$(printf '%s\n' "${!self_proof_file[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" '
       ($confirmed[0].queue) as $confirmed |
       ($live[0] | map({pr,state,headSha:.sha,base,diffFingerprint})) as $live |
@@ -608,6 +714,11 @@ if ((full_match_ok == 0)); then
           elif ($l.state == $c.state and $l.headSha == $c.headSha and
                 $l.base == $c.base and $l.diffFingerprint == $c.diffFingerprint) then
             {pr:$c.pr, verdict:"unchanged",
+             confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
+          elif (($lineage | index($c.pr)) != null and $l.state == "RUNNABLE" and
+                ($c.state == "RUNNABLE" or $c.state == "WAITING_FOR_MERGE" or $c.state == "RETARGET_REQUIRED") and
+                ($l.headSha != $c.headSha or $l.diffFingerprint != $c.diffFingerprint or $l.base != $c.base)) then
+            {pr:$c.pr, verdict:(if $l.base == $c.base then "lineage" else "lineage-retarget" end),
              confirmedHeadSha:$confirmedHeadSha, liveHeadSha:$liveHeadSha, liveBase:$liveBase}
           elif ($c.state == "RUNNABLE" and $l.state == "RUNNABLE" and
                 $l.base == $c.base and $l.headSha != $c.headSha and ($self | index($c.pr)) != null) then
@@ -669,39 +780,50 @@ if ((full_match_ok == 0)); then
             merge-down)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 ;;
-            self-authored)
+            self-authored|lineage|lineage-retarget)
                 [[ -f $receipt ]] || die 'self-authored advance requires an existing run receipt'
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
-                proof=${self_proof_file[$recon_pr]}
+                if [[ $recon_verdict == self-authored ]]; then proof=${self_proof_file[$recon_pr]}
+                else proof=${lineage_proof_file[$recon_pr]}; fi
                 private_file "$proof"
-                touched=$repo_root/.agent/evidence/paths-touched.ndjson
-                [[ -d $repo_root/.agent/evidence && ! -L $repo_root/.agent/evidence && -O $repo_root/.agent/evidence ]] ||
-                    die 'untrusted paths evidence directory'
-                private_file "$touched"
+                jq -e --arg run "$run_id" --arg repo "$repo" --argjson pr "$recon_pr" \
+                  --arg base "$recon_live_base" --arg old "$recon_confirmed_sha" --arg new "$recon_live_sha" \
+                  '.runId == $run and .repository == $repo and .pr == $pr and .base == $base and .from == $old and .to == $new' \
+                  "$proof" >/dev/null || die 'proof identity differs from the authorized/live queue'
                 git -C "$repo_root" merge-base --is-ancestor "$recon_confirmed_sha" "$recon_live_sha" ||
                     die 'self-authored local ancestry failed; redisplay and reconfirm'
-                git -C "$repo_root" rev-list "$recon_confirmed_sha..$recon_live_sha" >"$work_dir/commits" ||
-                    die 'could not enumerate self-authored commits'
+                if [[ $recon_verdict == self-authored ]]; then
+                    git -C "$repo_root" rev-list "$recon_confirmed_sha..$recon_live_sha" >"$work_dir/commits" ||
+                        die 'could not enumerate self-authored commits'
+                else
+                    verify_lineage "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha" "$proof"
+                fi
                 jq -Rn '[inputs] | sort' <"$work_dir/commits" >"$work_dir/commits.json"
                 jq -e --arg run "$run_id" --arg repo "$repo" --argjson pr "$recon_pr" \
                   --arg base "$recon_live_base" --arg old "$recon_confirmed_sha" --arg new "$recon_live_sha" \
-                  --slurpfile commits "$work_dir/commits.json" '
+                  --arg kind "$recon_verdict" --slurpfile commits "$work_dir/commits.json" '
                   .runId == $run and .repository == $repo and .pr == $pr and .base == $base and
-                  .from == $old and .to == $new and (.commits | length > 0) and
+                  .from == $old and .to == $new and (($kind != "self-authored") or (.commits | length > 0)) and
                   ([.commits[].sha] | sort) == $commits[0] and
                   all(.commits[]; .pushed == true and (.finding | test("^fix:[A-Za-z0-9._/-]+$")))
                 ' "$proof" >/dev/null || die 'self-authored push/finding evidence incomplete; redisplay and reconfirm'
-                finding_ledger=$(jq -er '.findingLedger | select(type == "string" and length > 0)' "$proof") ||
-                    die 'self-authored finding ledger missing; redisplay and reconfirm'
-                private_file "$finding_ledger"
-                jq -e --arg repo "$repo" --argjson pr "$recon_pr" --slurpfile proof "$proof" '
-                  [.reviews[].coverage[]?] as $coverage | .repo == $repo and .pr == $pr and
-                  all($proof[0].commits[]; . as $commit |
-                    any($coverage[]; .sha == $commit.sha and .reason == $commit.finding))
-                ' "$finding_ledger" >/dev/null || die 'self-authored finding coverage missing; redisplay and reconfirm'
+                if [[ -s $work_dir/commits ]]; then
+                    touched=$repo_root/.agent/evidence/paths-touched.ndjson
+                    [[ -d $repo_root/.agent/evidence && ! -L $repo_root/.agent/evidence && -O $repo_root/.agent/evidence ]] ||
+                        die 'untrusted paths evidence directory'
+                    private_file "$touched"
+                    finding_ledger=$(jq -er '.findingLedger | select(type == "string" and length > 0)' "$proof") ||
+                        die 'self-authored finding ledger missing; redisplay and reconfirm'
+                    private_file "$finding_ledger"
+                    jq -e --arg repo "$repo" --argjson pr "$recon_pr" --slurpfile proof "$proof" '
+                      [.reviews[].coverage[]?] as $coverage | .repo == $repo and .pr == $pr and
+                      all($proof[0].commits[]; . as $commit |
+                        any($coverage[]; .sha == $commit.sha and .reason == $commit.finding))
+                    ' "$finding_ledger" >/dev/null || die 'self-authored finding coverage missing; redisplay and reconfirm'
+                fi
                 while IFS= read -r commit; do
-                    parents=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") || die 'commit unreadable'
-                    (( $(wc -w <<<"$parents") == 2 )) || die 'self-authored merge commit requires mechanical proof'
+                    commit_parents=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") || die 'commit unreadable'
+                    (( $(wc -w <<<"$commit_parents") == 2 )) || die 'self-authored merge commit requires mechanical proof'
                     git -C "$repo_root" diff-tree --no-commit-id --no-renames --name-only -r -z "$commit" \
                         >"$work_dir/commit-paths" || die 'commit paths unreadable'
                     jq -Rs 'split("\u0000") | map(select(length > 0)) | unique' \
@@ -714,7 +836,8 @@ if ((full_match_ok == 0)); then
                         (.paths_touched | sort | unique) == $paths[0])' "$touched" >/dev/null ||
                         die 'self-authored paths-touched evidence missing; redisplay and reconfirm'
                 done <"$work_dir/commits"
-                ;;
+                [[ $recon_verdict == lineage-retarget ]] || continue
+                ;&
             retarget)
                 verify_ancestry "$recon_pr" "$recon_confirmed_sha" "$recon_live_sha"
                 proof_file=${retarget_proof_file[$recon_pr]-}
@@ -833,7 +956,9 @@ if [[ -n $receipt ]]; then
     [[ -f $work_dir/reconcile.json ]] || printf '{"perPr":[]}' >"$work_dir/reconcile.json"
     jq --slurpfile reconciliation "$work_dir/reconcile.json" --slurpfile auth "$work_dir/authorization.json" \
       --slurpfile snapshot "$confirmed_queue_file" --slurpfile queue "$work_dir/queue.json" \
-      '.advances += [$reconciliation[0].perPr[] | select(.verdict != "unchanged") |
+      '.authorizedHeads = (((.authorizedHeads // []) +
+        [$snapshot[0].queue[] | {pr,sha:.headSha}] + [$queue[0][] | {pr,sha:.sha}]) | unique) |
+       .advances += [$reconciliation[0].perPr[] | select(.verdict != "unchanged") |
         {pr,kind:.verdict,from:.confirmedHeadSha,to:.liveHeadSha,base:.liveBase}] | .authorization=$auth[0] |
        .snapshot=($snapshot[0] | .queue=($queue[0] | map({pr,state,headSha:.sha,base,diffFingerprint})))' \
       "$work_dir/receipt.json" >"$work_dir/new-receipt.json" || die 'could not record authorization receipt'

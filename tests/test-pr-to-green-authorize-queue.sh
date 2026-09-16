@@ -43,10 +43,12 @@ if [[ $omit14 == 0 ]]; then
       $e + [{pr:14,issue:14,state:$state14,source:"plan",base:$base14,head:"feat/demo",sha:$sha,
        diffFingerprint:$fp14,hasOpenSuccessor:$hasSucc14}]')
 fi
+if [[ ${QUEUE_OMIT_15:-0} == 0 ]]; then
 entries=$(jq -cn --argjson e "$entries" --arg sha15 "$sha15" --arg base15 "$base15" \
     --arg state15 "$state15" --arg fp15 "$fp15" '
   $e + [{pr:15,issue:15,state:$state15,source:"plan",base:$base15,head:"feat/next",sha:$sha15,
    diffFingerprint:$fp15}]')
+fi
 if [[ $include16 == 1 ]]; then
     entries=$(jq -cn --argjson e "$entries" --arg sha16 "$sha16" --arg fp16 "$fp16" '
       $e + [{pr:16,issue:16,state:"RUNNABLE",source:"plan",base:"main",head:"feat/root2",sha:$sha16,
@@ -67,7 +69,16 @@ done
 case $endpoint in
 repos/owner/repo/compare/*)
     behind=${QUEUE_COMPARE_BEHIND:-0}
-    printf '{"behind_by":%s,"status":"ahead"}\n' "$behind"
+    files='[]'
+    [[ -z ${QUEUE_OLD_COMPARE:-} || $endpoint != *"/$QUEUE_OLD_COMPARE..."* ]] || files='[{"filename":"parent.txt","sha":"abc","patch":"+parent"}]'
+    printf '{"behind_by":%s,"status":"ahead","files":%s}\n' "$behind" "$files"
+    ;;
+repos/owner/repo) printf '{"default_branch":"main"}\n';;
+repos/owner/repo/git/ref/heads/main) printf '{"object":{"sha":"%s"}}\n' "$QUEUE_MAIN_SHA";;
+repos/owner/repo/pulls/15|repos/owner/repo/pulls/16)
+    if [[ $endpoint == */15 ]]; then head=$QUEUE_SHA_15; merge=$QUEUE_MERGE_15
+    else head=$QUEUE_SHA_16; merge=$QUEUE_MERGE_16; fi
+    printf '{"merged":true,"head":{"sha":"%s"},"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$head" "$merge"
     ;;
 repos/owner/repo/pulls/14)
     merged=${QUEUE_PR14_MERGED:-true}
@@ -1091,5 +1102,161 @@ QUEUE_SHA=$merge QUEUE_FP_14=$(printf '%064d' 1) run_padded --self-authored-proo
     >"$tmp/padded.out" 2>&1 || self_rc=$?
 assert_eq 1 "$self_rc" 'padded wc output still refuses a two-parent merge'
 assert_contains "$(cat "$tmp/padded.out")" 'merge commit requires mechanical proof' 'merge rejection remains the parent-count gate'
+
+# Real, disjoint parent histories plus a finding-backed own fix.
+git -C "$repo_root" checkout -q --detach "$old"
+printf 'parent one\n' >"$repo_root/parent-one"
+git -C "$repo_root" add parent-one
+git -C "$repo_root" commit -qm parent-one
+parent_one=$(git -C "$repo_root" rev-parse HEAD)
+git -C "$repo_root" checkout -q --detach "$old"
+printf 'parent two\n' >"$repo_root/parent-two"
+git -C "$repo_root" add parent-two
+git -C "$repo_root" commit -qm parent-two
+parent_two=$(git -C "$repo_root" rev-parse HEAD)
+git -C "$repo_root" checkout -q --detach "$old"
+git -C "$repo_root" merge -q --no-ff "$parent_one" -m merge-one
+merge_one=$(git -C "$repo_root" rev-parse HEAD)
+git -C "$repo_root" merge -q --no-ff "$parent_two" -m merge-two
+merge_two=$(git -C "$repo_root" rev-parse HEAD)
+printf 'own fix\n' >"$repo_root/src/fix.sh"
+git -C "$repo_root" commit -qam own-fix
+own_fix=$(git -C "$repo_root" rev-parse HEAD)
+lineage="$repo_root/.agent/lineage.json"
+run_lineage() {
+    QUEUE_INCLUDE_16=1 QUEUE_SHA_15=$parent_one QUEUE_SHA_16=$parent_two \
+      run_authorize_provider coderabbit:trigger:capability-default \
+      --run-id lineage --write-set-file "$tmp/write-set" "$@"
+}
+write_confirmed "$old"
+jq --arg one "$parent_one" --arg two "$parent_two" \
+  '.queue[1].headSha=$one | .queue += [{pr:16,state:"RUNNABLE",headSha:$two,base:"main",
+    diffFingerprint:"7a926b1b60d7bec13dd83edefa996ebb00047a95fa5f59bdfc52edc7fa057504"}]' \
+  "$confirmed" >"$tmp/changed"
+cp "$tmp/changed" "$confirmed"
+QUEUE_SHA=$old run_lineage >"$tmp/lineage-initial.out"
+lineage_receipt="$repo_root/.agent/pr-to-green-run-lineage.json"
+cp "$lineage_receipt" "$tmp/lineage-initial"
+jq -n --arg old "$old" --arg own "$own_fix" --arg m1 "$merge_one" --arg m2 "$merge_two" \
+  --arg ledger "$finding_ledger" '{runId:"lineage",repository:"owner/repo",pr:14,base:"main",
+    from:$old,to:$own,merges:[$m1,$m2],commits:[{sha:$own,pushed:true,finding:"fix:F2"}],findingLedger:$ledger}' >"$lineage"
+jq -n --arg own "$own_fix" '{repo:"owner/repo",pr:14,reviews:[{coverage:[{sha:$own,reason:"fix:F2"}]}]}' >"$finding_ledger"
+jq -cn --arg sha "$own_fix" '{tool:"worktree-commit",commit:$sha,paths_touched:["src/fix.sh"]}' \
+  >>"$repo_root/.agent/evidence/paths-touched.ndjson"
+chmod 600 "$lineage"
+old_fp=$(printf '[{"filename":"parent.txt","sha":"abc","patch":"+parent"}]' | jq -cS . | sha256sum | cut -d' ' -f1)
+new_fp=$(printf '[]\n' | sha256sum | cut -d' ' -f1)
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$old_fp run_lineage --lineage-proof "14:$lineage" \
+  >"$tmp/lineage.out" 2>&1 || lineage_rc=$?
+assert_eq 0 "$lineage_rc" 'two authorized parent merges compose with an evidenced own fix'
+cp "$lineage_receipt" "$tmp/lineage-after"
+cp "$lineage" "$tmp/lineage-proof"
+for bad in missing-merge extra-commit unrelated-parent parent-descendant manual-tree outside-path force-push provider queue method base; do
+    cp "$tmp/lineage-initial" "$lineage_receipt"
+    cp "$tmp/lineage-proof" "$lineage"
+    candidate=$own_fix
+    case $bad in
+        missing-merge) jq '.merges |= .[1:]' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage";;
+        extra-commit) candidate=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$own_fix" -m unproved);;
+        unrelated-parent|parent-descendant)
+            if [[ $bad == unrelated-parent ]]; then rogue=$(git -C "$repo_root" commit-tree "$parent_one^{tree}" -m unrelated)
+            else rogue=$(git -C "$repo_root" commit-tree "$parent_one^{tree}" -p "$parent_one" -m unproved-parent); fi
+            candidate=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$old" -p "$rogue" -m rogue-merge);;
+        manual-tree) candidate=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$old" -p "$parent_one" -m manual);;
+        outside-path) printf 'outside.sh\n' >"$tmp/write-set";;
+        force-push) candidate=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -m orphan);;
+        provider) jq '.predicate.providers[0].action="observe"' "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt";;
+        queue) jq '.predicate.prs=[14,15]' "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt";;
+        method) jq '.predicate.mergeMethod="squash"' "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt";;
+    esac
+    jq --arg to "$candidate" '.to=$to' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage"
+    if [[ $bad == manual-tree || $bad == unrelated-parent || $bad == parent-descendant ]]; then
+        jq --arg to "$candidate" '.commits=[] | .merges=[$to]' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage"
+    fi
+    lineage_rc=0
+    QUEUE_SHA=$candidate QUEUE_FP_14=$old_fp QUEUE_BASE_14=$([[ $bad == base ]] && printf other || printf main) \
+      run_lineage --lineage-proof "14:$lineage" >"$tmp/lineage.out" 2>&1 || lineage_rc=$?
+    assert_eq 1 "$lineage_rc" "composed proof refuses $bad"
+    printf 'src/fix.sh\n' >"$tmp/write-set"
+done
+# Main can remove inherited content from the PR diff without a head change.
+cp "$tmp/lineage-after" "$lineage_receipt"
+jq -n --arg own "$own_fix" --arg old "$old" --arg main "$merge_two" \
+  '{runId:"lineage",repository:"owner/repo",pr:14,base:"main",from:$own,to:$own,
+    commits:[],merges:[],defaultAdvance:{from:$old,to:$main,prs:[15,16]}}' >"$lineage"
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$merge_two \
+  QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two \
+  run_lineage --lineage-proof "14:$lineage" >"$tmp/main-advance.out" 2>&1 || lineage_rc=$?
+assert_eq 0 "$lineage_rc" 'verified queued main merges allow inherited diff shrink on an unchanged head'
+cp "$lineage" "$tmp/main-proof"
+for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
+    cp "$tmp/lineage-after" "$lineage_receipt"
+    cp "$tmp/main-proof" "$lineage"
+    tip=$merge_two
+    case $bad in
+        extra-main-commit|stale-tip)
+            tip=$(git -C "$repo_root" commit-tree "$merge_two^{tree}" -p "$merge_two" -m unrelated-main)
+            if [[ $bad == extra-main-commit ]]; then
+                jq --arg tip "$tip" '.defaultAdvance.to=$tip' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage"
+            fi;;
+        missing-pr) jq '.defaultAdvance.prs=[15]' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage";;
+    esac
+    lineage_rc=0
+    QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$tip \
+      QUEUE_OLD_COMPARE=$([[ $bad == wrong-fingerprint ]] && printf nope || printf '%s' "$old") \
+      QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two \
+      run_lineage --lineage-proof "14:$lineage" >"$tmp/default-bad.out" 2>&1 || lineage_rc=$?
+    assert_eq 1 "$lineage_rc" "default proof rejects $bad"
+done
+
+# A descendant is eligible only after its exact identity was authorized.
+descendant=$(git -C "$repo_root" commit-tree "$parent_one^{tree}" -p "$parent_one" -m proven-parent)
+desc_merge=$(git -C "$repo_root" commit-tree "$parent_one^{tree}" -p "$old" -p "$descendant" -m import-proven)
+cp "$tmp/lineage-initial" "$lineage_receipt"
+jq --arg sha "$descendant" '.authorizedHeads += [{pr:15,sha:$sha}]' "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt"
+jq --arg to "$desc_merge" '.to=$to | .commits=[] | .merges=[$to]' "$tmp/lineage-proof" >"$lineage"
+lineage_rc=0
+QUEUE_SHA=$desc_merge QUEUE_FP_14=$old_fp run_lineage --lineage-proof "14:$lineage" >"$tmp/descendant.out" 2>&1 || lineage_rc=$?
+assert_eq 0 "$lineage_rc" 'an exact independently authorized descendant can be imported'
+
+# Both parents alter src/fix.sh: even a manually selected tree is not a clean merge.
+git -C "$repo_root" checkout -q --detach "$old"
+printf 'conflicting parent\n' >"$repo_root/src/fix.sh"
+git -C "$repo_root" commit -qam conflicting-parent
+conflict_parent=$(git -C "$repo_root" rev-parse HEAD)
+conflict_merge=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$own_fix" -p "$conflict_parent" -m manual-resolution)
+cp "$tmp/lineage-after" "$lineage_receipt"
+jq --arg sha "$conflict_parent" '.authorizedHeads += [{pr:15,sha:$sha}]' "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt"
+jq --arg from "$own_fix" --arg to "$conflict_merge" '.from=$from | .to=$to | .commits=[] | .merges=[$to]' "$tmp/lineage-proof" >"$lineage"
+lineage_rc=0
+QUEUE_SHA=$conflict_merge QUEUE_FP_14=$old_fp run_lineage --lineage-proof "14:$lineage" >"$tmp/conflict.out" 2>&1 || lineage_rc=$?
+assert_eq 1 "$lineage_rc" 'a manual conflict resolution is refused even with both parents authorized'
+assert_contains "$(cat "$tmp/conflict.out")" 'merge conflicts' 'conflict refusal comes from merge-tree replay'
+
+# Retarget is still independently required after valid lineage verification.
+cp "$tmp/lineage-initial" "$lineage_receipt"
+jq '.base="other"' "$tmp/lineage-proof" >"$lineage"
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$old_fp QUEUE_BASE_14=other \
+  run_lineage --lineage-proof "14:$lineage" >"$tmp/lineage-retarget.out" 2>&1 || lineage_rc=$?
+assert_eq 1 "$lineage_rc" 'valid lineage cannot authorize a changed base without canonical retarget proof'
+assert_contains "$(cat "$tmp/lineage-retarget.out")" 'retarget-proof' 'lineage reaches the existing retarget gate'
+
+# Removing a verified merged PR keeps its authorized identity available later.
+cp "$tmp/lineage-after" "$lineage_receipt"
+QUEUE_SHA=$own_fix QUEUE_FP_14=$old_fp QUEUE_OMIT_15=1 QUEUE_MERGE_15=$merge_one \
+  run_lineage --allow-mechanical-advance >"$tmp/vanished-parent.out"
+assert_eq "$parent_one" "$(jq -r '.authorizedHeads[] | select(.pr == 15) | .sha' "$lineage_receipt")" \
+  'verified vanished parent identity survives in the receipt'
+later_merge=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$own_fix" -p "$parent_one" -m later-import)
+jq --arg from "$own_fix" --arg to "$later_merge" '.from=$from | .to=$to | .commits=[] | .merges=[$to] | del(.findingLedger)' \
+  "$tmp/lineage-proof" >"$lineage"
+mv "$repo_root/.agent/evidence/paths-touched.ndjson" "$tmp/saved-paths"
+lineage_rc=0
+QUEUE_SHA=$later_merge QUEUE_FP_14=$old_fp QUEUE_OMIT_15=1 \
+  run_lineage --lineage-proof "14:$lineage" >"$tmp/pure-merge.out" 2>&1 || lineage_rc=$?
+assert_eq 0 "$lineage_rc" 'pure proven merges need no invented own-finding or paths evidence'
 
 finish

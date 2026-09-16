@@ -210,10 +210,11 @@ failures on unchanged paths outside this diff as `baseline-red`. Publish them wi
 SKIPPED. Continue commit, push, review and receipt; ready-flip and merge remain blocked.
 Do not reformat unrelated paths. Other failures are `change-caused-red`: fix them.
 
-After a Phase A or C fix push, retain the run's receipt and invoke
+After a fix push, retain the receipt and invoke
 `authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.
-Record only this run's successful pushes, findings and commit SHAs; the proof format
-and independent checks are in ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md#self-authored-fix-advances).
+Use `--lineage-proof PR:FILE` for authorized parent merges or verified default
+advances; retarget proof remains required. Record this run's successful pushes and
+findings using the [proof format](references/auto-merge.md#self-authored-fix-advances).
 Verified own fixes need no new question, even in attended runs. Missing proof or
 outside changes require a fresh displayed queue and confirmation. Rewriting the
 display never overrides the receipt's last authorized head. All new heads still

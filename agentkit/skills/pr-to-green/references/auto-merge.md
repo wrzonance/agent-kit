@@ -73,42 +73,45 @@ way — deletion only ever touches the remote branch ref.
 
 ## Self-authored fix advances
 
-Use the same `--run-id ID --write-set-file FILE` from the initial authorization,
-with `--self-authored-proof PR:FILE` after a successful remediation push. This
-works with attended confirmation as well as `--fast-mode --yolo`. The latter
-requires both flags; neither grants merges or cross-provider consent.
+Retain the initial `--run-id ID --write-set-file FILE` and receipt. Use
+`--self-authored-proof PR:FILE` for own remediation pushes, or `--lineage-proof
+PR:FILE` to compose them with exact authorized parent merges. Neither option
+changes the selector, PR ceiling, providers, merge policy or operator write set.
+Changing those requires redisplay and confirmation under a new run ID.
 
-The run receipt preserves the selector and initial PR ceiling, provider decisions,
-merge choices, explicit write-set paths, and last authorized head/base snapshot.
-Keep it for the entire run. A refreshed display cannot replace that snapshot.
-Changed repository/providers/selector/merge policy/write set or added PRs require
-redisplay and confirmation under a new run ID; never generate that ID automatically.
-
-The coordinator writes the private proof from its own successful push results:
+Supply a private proof:
 
 ```json
 {"runId":"run-1","repository":"owner/repo","pr":14,"base":"main",
  "from":"<previous authorized SHA>","to":"<new SHA>",
+ "merges":["<clean merge SHA>"],
  "findingLedger":"<owned saved review-ledger JSON>",
- "commits":[{"sha":"<full SHA>","pushed":true,"finding":"fix:F1"}]}
+ "commits":[{"sha":"<own SHA>","pushed":true,"finding":"fix:F1"}]}
 ```
 
-Include **every** intervening commit this run created and successfully pushed;
-never infer run authorship from a Git author name or a live branch tip. Save the
-review-ledger JSON after `review-ledger.sh cover --reason fix:ID` records each
-commit's finding. Its `repo`, `pr`, and `reviews[].coverage[]` SHA/reason must match.
-Run authorization in the worktree holding the helper's
-`.agent/evidence/paths-touched.ndjson`; the owned records must corroborate each
-commit's actual paths. Keep the proof, ledger snapshot and receipt as run evidence.
+Every first-parent commit must appear once in `merges` or `commits`.
+Each merge must have two parents, import
+an exact receipt-authorized head, and reproduce the clean `git merge-tree` tree.
+Imported ancestry is accounted separately. Authorized heads persist after merge.
+Unknown parents, conflicts, edited trees and unaccounted commits are rejected.
+Bounds: 16 merges, 256 commits, 10 seconds per replay.
 
-The helper independently verifies live **and** local ancestry, same PR/base,
-exact commit-set equality, and every commit's paths against the initial write set.
-It checks individual commits, so touching then reverting an outside path is still
-rejected. Merge commits use the existing mechanical path instead. Missing evidence,
-outside pushes, force pushes or scope escapes fail closed. Successful proofs add
-`kind: self-authored` advances to the run receipt without another prompt; consumer
-authorization stays pinned to the newly read live head. CI, review-completion and
-pre-merge gates must all be refreshed for that head.
+Own commits require pushed assertions, `fix:ID` review-ledger coverage, and records in
+`.agent/evidence/paths-touched.ndjson`. Actual paths must fit the write set,
+including changes later reverted. Pure merges need no own-finding or paths evidence.
+Both local and live ancestry must hold.
+
+For a default advance, lineage proofs also carry
+`"defaultAdvance":{"from":"<old default SHA>","to":"<live default SHA>","prs":[15]}`.
+The old default must be an ancestor of the authorized head. Each intervening
+default commit must be the verified clean merge of an exact authorized queued
+head; the PR must report merged into the canonical default. Squash/rebase merges
+are unsupported. Both diff fingerprints are checked against their
+respective default bases. Unchanged heads may lose inherited diff; arbitrary default history is rejected.
+
+A changed PR base still requires canonical `--retarget-proof` approval and its
+fresh boundary epoch. Successful advances retain every run fence; all new heads
+still require fresh CI, review-completion and pre-merge gates. Missing proof requires redisplay and confirmation.
 
 ## Mechanical queue advance without redisplay
 
