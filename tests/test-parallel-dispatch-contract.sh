@@ -509,6 +509,10 @@ assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
     'dispatch defines durable per-issue report persistence'
 assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
     'dispatch atomically replaces one issue report without overwriting peers'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_report"' \
+    'dispatch report scratch is allocated beside its replacement destination'
+assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 

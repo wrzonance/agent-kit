@@ -19,31 +19,21 @@ FLAGS=''
 REPO=''
 BASE=''
 SCRATCH_LABEL=''
+SCRATCH_NEAR=''
 readonly RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME (--pr N | --run-id ID | --scratch-label LABEL | --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH) [--repo-root DIR]
+Usage: $PROGNAME (--pr N | --run-id ID | --scratch-label LABEL [--scratch-near PATH] | --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH) [--repo-root DIR]
 
-Prints a private run directory selected by PR, explicit/canonical run ID, or
-creates a unique mode-0600 scratch file under DIR/.agent/cache.
-
-Primary location: DIR/.agent/evidence/pr-N or DIR/.agent/evidence/run-ID.
-DIR defaults to the Git root. Unwritable state falls back under \${TMPDIR:-/tmp}.
-Existing targets must be owned, real mode-0700 directories.
+Prints a private run directory or creates unique mode-0600 scratch. Run state
+uses DIR/.agent/evidence; DIR defaults to the Git root with a private fallback.
 EOF
 }
 
-die() {
-    printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    exit 1
-}
+die() { printf '%s: %s\n' "$PROGNAME" "$1" >&2; exit 1; }
 
-die_usage() {
-    printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    usage >&2
-    exit 2
-}
+die_usage() { printf '%s: %s\n' "$PROGNAME" "$1" >&2; usage >&2; exit 2; }
 
 require_value() {
     [[ -n ${2:-} ]] || die_usage "option $1 requires a value"
@@ -59,6 +49,8 @@ parse_args() {
             --run-id=*) RUN_ID=${1#*=}; shift ;;
             --scratch-label) require_value "$1" "${2:-}"; SCRATCH_LABEL=$2; shift 2 ;;
             --scratch-label=*) SCRATCH_LABEL=${1#*=}; shift ;;
+            --scratch-near) require_value "$1" "${2:-}"; SCRATCH_NEAR=$2; shift 2 ;;
+            --scratch-near=*) SCRATCH_NEAR=${1#*=}; shift ;;
             --procedure-set|--scope|--flags|--repo|--base)
                 require_value "$1" "${2:-}"
                 case $1 in
@@ -76,14 +68,23 @@ parse_args() {
 }
 
 create_scratch() {
-    local agent_dir=$REPO_ROOT/.agent cache file
-    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
-    if [[ -e $agent_dir ]]; then [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
-    else mkdir -m 700 -- "$agent_dir" 2>/dev/null ||
-        [[ -d $agent_dir && ! -L $agent_dir ]] || die "could not create environment state directory: $agent_dir"; fi
-    cache=$agent_dir/cache
-    ensure_private_root "$cache" || die "could not create scratch cache: $cache"
-    file=$(mktemp "$cache/$SCRATCH_LABEL.XXXXXXXXXX") || die "could not create scratch file in: $cache"
+    local agent_dir cache file mode base
+    if [[ -n $SCRATCH_NEAR ]]; then
+        [[ $SCRATCH_NEAR == /* ]] || die_usage '--scratch-near must be absolute'
+        base=${SCRATCH_NEAR##*/}; cache=${SCRATCH_NEAR%/*}; [[ -n $base && -d $cache ]] || die_usage '--scratch-near parent must exist'
+        cache=$(cd -- "$cache" && pwd -P) || die 'could not resolve --scratch-near parent'
+        file=$(mktemp "$cache/.$base.$SCRATCH_LABEL.XXXXXXXXXX") || die "could not create scratch file in: $cache"
+    else
+        agent_dir=$REPO_ROOT/.agent
+        if [[ ! -e $agent_dir ]]; then
+            mkdir -m 700 -- "$agent_dir" 2>/dev/null || [[ -d $agent_dir && ! -L $agent_dir ]] || die "could not create environment state directory: $agent_dir"
+        fi
+        [[ -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] || die "environment state directory must be an owned directory: $agent_dir"
+        mode=$(stat -c %a -- "$agent_dir") || die "could not inspect: $agent_dir"
+        (( (8#$mode & 0022) == 0 )) || die "environment state directory must not be group- or world-writable: $agent_dir"
+        cache=$agent_dir/cache; ensure_private_root "$cache" || die "could not create scratch cache: $cache"
+        file=$(mktemp "$cache/$SCRATCH_LABEL.XXXXXXXXXX") || die "could not create scratch file in: $cache"
+    fi
     chmod 600 -- "$file" || die "could not secure scratch file: $file"
     [[ -f $file && ! -L $file && -O $file ]] || die "scratch file is not an owned regular file: $file"
     printf '%s\n' "$file"
@@ -177,10 +178,11 @@ parse_args "$@"
 if [[ -n $SCRATCH_LABEL ]]; then
     [[ $SCRATCH_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die_usage 'scratch label must use letters, numbers, ., _, or -'
     [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE ]] || die_usage '--scratch-label is mutually exclusive with run selectors'
-    resolve_repo_root
+    if [[ -n $SCRATCH_NEAR ]]; then [[ -z $REPO_ROOT ]] || die_usage '--scratch-near cannot be combined with --repo-root'; else resolve_repo_root; fi
     create_scratch
     exit 0
 fi
+[[ -z $SCRATCH_NEAR ]] || die_usage '--scratch-near requires --scratch-label'
 validate_selector
 resolve_repo_root
 

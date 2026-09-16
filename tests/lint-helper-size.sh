@@ -92,7 +92,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #776: terminal verification summaries and the composed runbook; exact total.
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
-readonly MAX_TREE_TOKENS=446633
+# #779: destination-adjacent atomic scratch and .agent parent validation.
+readonly MAX_TREE_TOKENS=446845
 
 violations=0
 checked=0

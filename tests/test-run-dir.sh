@@ -394,6 +394,41 @@ assert_eq 0 "$(find "$scratch_elsewhere" -mindepth 1 -maxdepth 1 | wc -l)" \
 assert_rc 2 'scratch labels reject path traversal' -- \
     /bin/bash "$script" --scratch-label '../escape' --repo-root "$scratch_repo"
 
+near_dir="$tmp/destination filesystem"
+mkdir -p "$near_dir"
+near_target="$near_dir/dispatch plan.json"
+near_scratch=$(/bin/bash "$script" --scratch-label dispatch-plan --scratch-near "$near_target")
+assert_eq "$near_dir" "${near_scratch%/*}" \
+    'destination-adjacent scratch stays on the replacement target filesystem'
+assert_eq 600 "$(stat -c %a -- "$near_scratch")" \
+    'destination-adjacent scratch is owner-private'
+
+ordinary_agent_repo="$tmp/ordinary-agent-repo"
+mkdir -p "$ordinary_agent_repo/.agent"
+chmod 755 "$ordinary_agent_repo/.agent"
+ordinary_scratch=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$ordinary_agent_repo")
+assert_eq 600 "$(stat -c %a -- "$ordinary_scratch")" \
+    'an owned ordinary mode-0755 .agent parent remains compatible'
+
+writable_agent_repo="$tmp/writable-agent-repo"
+mkdir -p "$writable_agent_repo/.agent"
+chmod 775 "$writable_agent_repo/.agent"
+writable_agent_rc=0
+/bin/bash "$script" --scratch-label pr-body --repo-root "$writable_agent_repo" >/dev/null 2>&1 || writable_agent_rc=$?
+assert_eq 1 "$writable_agent_rc" 'a group-writable .agent parent is refused'
+assert_eq no "$([[ -e $writable_agent_repo/.agent/cache ]] && printf yes || printf no)" \
+    'an unsafe .agent parent is rejected before scratch cache creation'
+
+unavailable_agent_repo="$tmp/unavailable-agent-repo"
+mkdir -p "$unavailable_agent_repo"
+chmod 555 "$unavailable_agent_repo"
+unavailable_agent_rc=0
+unavailable_agent_err=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$unavailable_agent_repo" 2>&1) || unavailable_agent_rc=$?
+chmod 755 "$unavailable_agent_repo"
+assert_eq 1 "$unavailable_agent_rc" 'scratch allocation fails when .agent cannot be created'
+assert_contains "$unavailable_agent_err" 'could not create environment state directory' \
+    'scratch creation failure names the unavailable .agent parent'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
     'run-dir.sh stays at or under 199 lines'
