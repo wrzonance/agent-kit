@@ -234,8 +234,8 @@ recipe_block=$(awk '
     found && infence && /^```$/ { exit }
     found && infence { print }
 ' "$review_skill_path")
-assert_contains "$recipe_block" 'tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX")' \
-    'the extracted recipe writes into a private mktemp under RUN_DIR'
+assert_contains "$recipe_block" 'tmp="$RUN_DIR/.baseline.pending"' \
+    'the extracted recipe stages baseline evidence privately under RUN_DIR'
 assert_not_contains "$recipe_block" '>"$RUN_DIR/baseline-evidence.md"' \
     'the extracted recipe never redirects the helper straight into baseline-evidence.md'
 

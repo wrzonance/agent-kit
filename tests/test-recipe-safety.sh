@@ -159,7 +159,7 @@ extract_recipe() {
 triage="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 bulk_recipe=$(extract_recipe "$triage" 'report_batch_failure()')
 needs_recipe=$(extract_recipe "$triage" 'mapfile -t needs_lines')
-handback_recipe=$(extract_recipe "$parallel_skill" 'validated_argv_file=$(mktemp')
+handback_recipe=$(extract_recipe "$parallel_skill" 'parallel-issues-handback.argv')
 reports_recipe=$(extract_recipe "$parallel_skill" 'dispatch_report_files=(')
 for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe" "$reports_recipe"; do
     assert_contains "$recipe" 'bash -c' 'runtime regression extracted a complete Bash fence'

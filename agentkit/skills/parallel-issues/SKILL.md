@@ -95,26 +95,18 @@ set the shared ledger identity before the first receipt:
 # `requested_issue_scope` comes from the invocation line. For automatic selection,
 # replace it with the canonical sorted `selected_issue_scope` before any receipt.
 issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
-invocation_flags="yolo=${yolo_invocation:-false};trust-trunk=${trust_trunk:-false};fast-mode=${fast_mode:-false};auto-review=${auto_review:-false};auto-serialize=${auto_serialize:-false}"
-normalize_run_input() {
-    local value=$1
-    value=${value//[^A-Za-z0-9._-]/-}
-    printf '%s' "$value"
-}
-run_inputs="scope=$(normalize_run_input "$issue_scope");flags=$(normalize_run_input "$invocation_flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"
+invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
 LEDGER="$repository_root/.agent/session-ledger.ndjson"
-RUN_ID="parallel-issues-$(printf '%s' "$run_inputs" | sha256sum | cut -c1-32)"
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues \
+    --scope "$issue_scope" --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
 : "$LEDGER" "$RUN_ID"
 ```
 
 The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
-invocation-level `RUN_ID` for every issue, never a worker-local value. Append every human grant, steer, or board adjudication
-immediately on receipt, passing the verbatim quote through a private temp file so a multi-line grant is
-stored with no reflow (CR normalized to LF):
-`quote_file=$(mktemp); chmod 600 "$quote_file"; printf '%s' "$QUOTE" >"$quote_file";
-"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-file "$quote_file"; rm -f "$quote_file"`.
+invocation-level `RUN_ID` for every issue, never a worker-local value. Append every human grant, steer, or board adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
@@ -569,7 +561,10 @@ script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
 # ("(no prior art selected by triage digest)") applies.
 prior_art_file=''
 if [[ -n ${prior_art_contents:-} ]]; then
-    prior_art_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-prior-art.XXXXXXXXXX") || exit 1
+    prior_art_file="$repository_root/.agent/cache/parallel-issues-prior-art.$RUN_ID"
+    mkdir -p -- "${prior_art_file%/*}" || exit 1
+    chmod 700 -- "${prior_art_file%/*}" || exit 1
+    : >"$prior_art_file" || exit 1
     chmod 600 -- "$prior_art_file" || exit 1
     printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
 fi
@@ -664,8 +659,8 @@ dispatch_verification_reports["$issue_number"]=$spec_verification
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
     [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
-    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"; dispatch_report_tmp=$(mktemp "$dispatch_reports_dir/.issue-$issue_number.XXXXXX") || return 1
-    if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
+    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"; dispatch_report_tmp="$dispatch_reports_dir/.issue-$issue_number.pending"
+    if ! { : >"$dispatch_report_tmp" && chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
         rm -f -- "$dispatch_report_tmp"; return 1
     fi
     [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
@@ -748,7 +743,7 @@ bash -c "$(cat <<'BASH_RECIPE'
 agentkit=$1 agentkit_provenance=$2 dispatch_plan=$3 worktree=$4 raw_handback=$5 issue_number=$6
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
-validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
+validated_argv_file="$worktree/.agent/cache/parallel-issues-handback.argv"; mkdir -p -- "${validated_argv_file%/*}"; chmod 700 -- "${validated_argv_file%/*}"; : >"$validated_argv_file"; chmod 600 -- "$validated_argv_file"; trap 'rm -f -- "$validated_argv_file"' EXIT
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
