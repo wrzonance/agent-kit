@@ -2249,6 +2249,43 @@ out=$(pre_input "$repo" "$inert_non_shell_fd" "$helper_session" | "$hooks/pre-to
 assert_eq 'allow' "$(decision "$out")" \
     'a quoted fd3 heredoc remains data when its consumer is not a shell'
 
+# PR #794 CodeRabbit batch 1: moving a descriptor copies its heredoc
+# provenance to the target before closing the source. These strings are only
+# classified by PreToolUse and are never executed by the test process.
+fd_move_helper=$'bash /dev/fd/4 3<<\'EOF\' 4<&3- 3</dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$fd_move_helper" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a moved nonstdin heredoc remains reachable by the shell consumer'
+
+inert_destructive='rm -r''f ~'
+fd_move_destructive=$(printf "bash /dev/fd/4 3<<'EOF' 4<&3- 3</dev/null\n%s\nEOF" "$inert_destructive")
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$fd_move_destructive" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a moved nonstdin heredoc retains destructive classification'
+assert_contains "$out" 'recursive force-remove' \
+    'the moved heredoc denial names the inert destructive class'
+
+# A heredoc opened by a shell inside command substitution belongs to that
+# inner command scope. It must finalize before body collection even while the
+# outer double-quoted substitution remains open.
+nested_heredoc_helper=$'printf %s "$(bash <<\'EOF\'\nagent-run.sh --cmd test\nEOF\n)"'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nested_heredoc_helper" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a shell heredoc inside quoted command substitution retains its helper guard'
+
+nested_heredoc_destructive=$'printf %s "$(bash <<\'EOF\'\n'
+nested_heredoc_destructive+="$inert_destructive"
+nested_heredoc_destructive+=$'\nEOF\n)"'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nested_heredoc_destructive" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a nested shell heredoc retains destructive classification'
+assert_contains "$out" 'recursive force-remove' \
+    'the nested heredoc denial names the inert destructive class'
+
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
 # meeting one had no way past it. They now run and are taught afterwards.
