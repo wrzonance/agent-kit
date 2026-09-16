@@ -219,10 +219,10 @@ poll_gap_fixture="$tmp/poll-telemetry-gap.jsonl"
 printf '%s\n' \
     '{"timestamp":"2026-09-16T01:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
     '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
-    '{"timestamp":"2026-09-16T01:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
-    '{"timestamp":"2026-09-16T01:00:01Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-1","output":"timed out"}}' \
-    '{"timestamp":"2026-09-16T01:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"other-1","name":"shell","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"other-1","name":"shell","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T01:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
     '{"timestamp":"2026-09-16T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900}}}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-1","output":"timed out"}}' \
     '{"timestamp":"2026-09-16T01:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
     '{"timestamp":"2026-09-16T01:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-2","output":"timed out"}}' \
     '{"timestamp":"2026-09-16T01:00:05Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-3","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
@@ -236,6 +236,47 @@ assert_eq '3' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
     'poll turns remain countable when their token telemetry is incomplete'
 assert_eq 'null' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
     'a nonpoll overwrite or consecutive poll reports input telemetry unavailable'
+
+poll_group_fixture="$tmp/poll-response-groups.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"group-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"group-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200}}}}' \
+    '{"timestamp":"2026-09-16T02:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T02:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"group-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-group-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":3,"exit_condition":"complete"}}' \
+    > "$poll_group_fixture"
+run "$poll_group_fixture" --timestamp 2026-09-16T02:01:00Z
+assert_eq '0' "$RUN_RC" 'a response containing multiple poll calls parses'
+assert_eq '2' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'every poll call in a response remains countable'
+assert_eq '1200' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'one response-level usage value is applied once to an all-poll group'
+
+malformed_id_fixture="$tmp/poll-malformed-ids.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":7,"name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1500}}}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":7,"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"duplicate","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"malformed-id-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-id-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":5,"exit_condition":"complete"}}' \
+    > "$malformed_id_fixture"
+run "$malformed_id_fixture" --timestamp 2026-09-16T03:01:00Z
+assert_eq '0' "$RUN_RC" 'malformed polling call IDs do not crash rollout parsing'
+assert_eq '5' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'malformed polling IDs do not hide poll turns'
+assert_eq 'null' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'missing, empty, non-string, or duplicate call IDs make interval telemetry unavailable'
 
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
