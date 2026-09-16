@@ -91,7 +91,7 @@ mkdir -p "$tmp/skills/example"
 for recipe in 'mapfile -t items' 'readarray -t items' 'read -a items' \
     'IFS=, read -ra items' 'read -r -a items' \
     'read -d "" -ra items' \
-    'true; mapfile -t items'; do
+    'true; mapfile -t items' 'true|shopt -s nullglob'; do
     printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
     output=$("$lint" "$tmp/skills" 2>&1)
     assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
@@ -114,6 +114,58 @@ for recipe in 'printf "%s\n" .markdownlint*' 'printf "%s\n" file?.md' \
     assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
         "lint rejects zsh-nomatch hazard $recipe"
 done
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if [[ $branch == feature/* ]]; then printf '%s\n' "$branch"; fi
+case $branch in
+    feature/*) printf '%s\n' "$branch" ;;
+esac
+```
+MARKDOWN
+assert_rc 0 'lint accepts conditional and case pattern syntax after control prefixes' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if ! [[ $ref =~ ^refs/heads/(.+)$ ]]; then exit 1; fi
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks regex syntax after repeated control prefixes'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+case $kind in
+    markdown) printf '%s\n' *.md ;;
+esac
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks executable commands inside case arms'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+globbed="$(printf '%s\n' *.md)"
+bash_state="$(shopt -p nullglob)"
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks globs in a quoted command substitution'
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks Bash-only commands in a quoted command substitution'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+product="$((6 * 7))"
+printf '%s\n' "$product"
+```
+MARKDOWN
+assert_rc 0 'lint does not treat quoted arithmetic expansion as a command substitution' -- \
+    "$lint" "$tmp/skills"
 
 # This is the failure boundary the lint prevents: Bash passes a non-matching
 # glob literally, while zsh aborts before the command can run.

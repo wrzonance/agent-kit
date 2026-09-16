@@ -36,9 +36,55 @@ recipe_portability_findings() {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
             return value
         }
+        function normalize_prefix(value, previous) {
+            do {
+                previous = value
+                sub(/^(if|then|do|while|until|elif|else)[[:space:]]+/, "", value)
+                sub(/^![[:space:]]+/, "", value)
+            } while (value != previous)
+            return trim(value)
+        }
+        function command_substitution_body(line, start,   j, c, next_c, depth, subquote, body) {
+            substitution_end = 0
+            depth = 1
+            for (j = start + 2; j <= length(line); j++) {
+                c = substr(line, j, 1)
+                next_c = substr(line, j + 1, 1)
+                if (subquote != sprintf("%c", 39) && c == "\\") {
+                    body = body c next_c
+                    j++
+                    continue
+                }
+                if (subquote != "") {
+                    body = body c
+                    if (c == subquote) subquote = ""
+                    continue
+                }
+                if (c == "\"" || c == sprintf("%c", 39)) {
+                    subquote = c
+                    body = body c
+                    continue
+                }
+                if (c == "$" && next_c == "(") {
+                    depth++
+                    body = body "$("
+                    j++
+                    continue
+                }
+                if (c == ")") {
+                    depth--
+                    if (!depth) {
+                        substitution_end = j
+                        return body
+                    }
+                }
+                body = body c
+            }
+            return ""
+        }
         # Preserve byte positions while masking non-executable text. Keeping
         # positions lets heredoc_delimiter read the corresponding raw token.
-        function command_text(line, result, j, c, next_c, brace_depth) {
+        function command_text(line, result, j, c, next_c, brace_depth, body, end, outer_quote, executable, tail, k) {
             result = ""
             for (j = 1; j <= length(line); j++) {
                 c = substr(line, j, 1)
@@ -49,6 +95,21 @@ recipe_portability_findings() {
                     continue
                 }
                 if (quote != "") {
+                    if (quote == "\"" && c == "$" && next_c == "(" &&
+                        substr(line, j + 2, 1) != "(") {
+                        body = command_substitution_body(line, j)
+                        end = substitution_end
+                        if (end) {
+                            outer_quote = quote
+                            quote = ""
+                            executable = command_text(body)
+                            quote = outer_quote
+                            for (k = j; k <= end; k++) result = result "Q"
+                            tail = tail "; " executable " ; "
+                            j = end
+                            continue
+                        }
+                    }
                     if (c == quote) quote = ""
                     result = result "Q"
                     continue
@@ -79,7 +140,7 @@ recipe_portability_findings() {
                 }
                 result = result c
             }
-            return result
+            return result tail
         }
         function heredoc_delimiter(raw, masked, start, tail, token) {
             start = index(masked, "<<")
@@ -95,7 +156,7 @@ recipe_portability_findings() {
             return token
         }
         function report_globs(segment, line, n, words, w, word, glob_at) {
-            if (in_test || in_arithmetic || in_case) return
+            if (in_test || in_arithmetic) return
             n = split(segment, words, /[[:space:]]+/)
             for (w = 1; w <= n; w++) {
                 word = words[w]
@@ -107,6 +168,43 @@ recipe_portability_findings() {
                 print "line " NR ": unquoted glob outside explicit Bash boundary: " line
                 return
             }
+        }
+        function split_commands(text, parts, separators,   n, j, c, next_c, remainder, close_at, terminator_at, pattern_pipe, buffer, operators, is_operator) {
+            n = 0
+            for (j = 1; j <= length(text); j++) {
+                c = substr(text, j, 1)
+                next_c = substr(text, j + 1, 1)
+                pattern_pipe = 0
+                if (c == "|") {
+                    remainder = substr(text, j + 1)
+                    close_at = index(remainder, ")")
+                    terminator_at = index(remainder, ";")
+                    pattern_pipe = (close_at && (!terminator_at || close_at < terminator_at))
+                }
+                is_operator = (c == ";" || c == "&" || (c == "|" && !pattern_pipe))
+                if (is_operator) {
+                    if (buffer != "") {
+                        n++
+                        parts[n] = buffer
+                        separators[n] = ""
+                        buffer = ""
+                    }
+                    operators = operators c
+                    continue
+                }
+                if (operators != "") {
+                    separators[n] = operators
+                    operators = ""
+                }
+                buffer = buffer c
+            }
+            if (buffer != "") {
+                n++
+                parts[n] = buffer
+                separators[n] = ""
+            }
+            if (operators != "") separators[n] = operators
+            return n
         }
         {
             if (heredoc != "") {
@@ -124,17 +222,44 @@ recipe_portability_findings() {
                 heredoc = delimiter
                 heredoc_tabs = (masked ~ /<<-/)
             }
-            count = split(masked, segments, /[;&|]+/)
+            if (in_case && trim(masked) ~ /^(;;|;&|;;&)$/) {
+                case_arm_body = 0
+                next
+            }
+            count = split_commands(masked, segments, separators)
             for (i = 1; i <= count; i++) {
                 segment = trim(segments[i])
                 if (segment == "") continue
-                if (segment ~ /^case([[:space:]]|$)/) in_case = 1
-                if (segment ~ /^\[\[([[:space:]]|$)/) in_test = 1
-                if (segment ~ /(^|[^$])\(\(/ || segment ~ /\$\(\(/) in_arithmetic = 1
+                context = normalize_prefix(segment)
+                if (context ~ /^case([[:space:]]|$)/) {
+                    in_case = 1
+                    case_arm_body = 0
+                    sub(/^case[[:space:]]+.*[[:space:]]in([[:space:]]|$)/, "", context)
+                    context = trim(context)
+                }
+                if (in_case && context ~ /^esac([[:space:]]|$)/) {
+                    in_case = 0
+                    case_arm_body = 0
+                    continue
+                }
+                if (in_case && !case_arm_body) {
+                    close_at = index(context, ")")
+                    if (!close_at) {
+                        if (separators[i] ~ /;;|;&/) case_arm_body = 0
+                        continue
+                    }
+                    context = trim(substr(context, close_at + 1))
+                    case_arm_body = 1
+                }
+                if (context == "") {
+                    if (separators[i] ~ /;;|;&/) case_arm_body = 0
+                    continue
+                }
+                if (context ~ /^\[\[([[:space:]]|$)/) in_test = 1
+                if (context ~ /(^|[^$])\(\(/ || context ~ /\$\(\(/) in_arithmetic = 1
                 test_context = in_test
-                report_globs(segment, $0)
-                sub(/^(if|then|do|while|until)[[:space:]]+/, "", segment)
-                n = split(segment, words, /[[:space:]]+/)
+                report_globs(context, $0)
+                n = split(context, words, /[[:space:]]+/)
                 p = 1
                 while (p <= n && words[p] ~ /^[[:alnum:]_]+=/) p++
                 while (words[p] ~ /^(!|command|builtin)$/) p++
@@ -149,11 +274,11 @@ recipe_portability_findings() {
                         if (words[p] ~ /^-[[:alpha:]]*A[[:alpha:]]*$/) found = 1
                 }
                 if (found) print "line " NR ": Bash-only syntax outside explicit Bash boundary: " $0
-                if (test_context && segment ~ /(^|[[:space:]])=~([[:space:]]|$)/)
+                if (test_context && context ~ /(^|[[:space:]])=~([[:space:]]|$)/)
                     print "line " NR ": Bash-only syntax outside explicit Bash boundary: " $0
-                if (segment ~ /\]\]([[:space:]]|$)/) in_test = 0
-                if (segment ~ /\)\)/) in_arithmetic = 0
-                if (segment ~ /(^|[[:space:]])esac([[:space:]]|$)/) in_case = 0
+                if (context ~ /\]\]([[:space:]]|$)/) in_test = 0
+                if (context ~ /\)\)/) in_arithmetic = 0
+                if (separators[i] ~ /;;|;&/) case_arm_body = 0
             }
         }
     ' "$1"
