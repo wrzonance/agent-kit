@@ -20,9 +20,10 @@ reported='also each PR is authorized to have one Claude Opus 5 xhigh adversarial
 
 grant_instruction() {
     local state=$1 instruction=$2 provider=${3:-claude} target_payload=${4:-$payload}
+    local destination=${5:-'Anthropic via Claude'} grant_purpose=${6:-$purpose}
     bash "$consent" grant --state "$state" --provider "$provider" --payload "$target_payload" \
         --source operator-instruction --operator-instruction "$instruction" \
-        --destination 'Anthropic via Claude' --model "$model" --purpose "$purpose" \
+        --destination "$destination" --model "$model" --purpose "$grant_purpose" \
         --paths-file "$tmp/paths"
 }
 
@@ -33,6 +34,32 @@ assert_eq 0 "$reported_rc" 'the reported 2026-09-16 operator instruction grants 
 assert_contains "$reported_out" 'source=operator-instruction' 'the reported instruction retains operator provenance'
 assert_eq "$reported" "$(jq -r .instruction "$reported_state.decision.json" 2>/dev/null)" \
     'the reported instruction is retained verbatim'
+
+for mismatch in destination purpose; do
+    mismatch_state="$tmp/state/mismatched-$mismatch"
+    mismatch_destination='Anthropic via Claude'
+    mismatch_purpose=$purpose
+    [[ $mismatch == destination ]] && mismatch_destination='Anthropic via Codex'
+    [[ $mismatch == purpose ]] && mismatch_purpose='publish the payload to an unrelated destination'
+    mismatch_rc=0
+    grant_instruction "$mismatch_state" "$reported" claude "$payload" \
+        "$mismatch_destination" "$mismatch_purpose" >/dev/null 2>&1 || mismatch_rc=$?
+    assert_eq 2 "$mismatch_rc" "a conflicting persisted $mismatch is not authorized"
+    assert_eq no "$([[ -e $mismatch_state || -e $mismatch_state.decision.json || -e $mismatch_state.consent-paths ]] && printf yes || printf no)" \
+        "a conflicting persisted $mismatch creates no grant evidence"
+done
+
+contradictory_state="$tmp/state/contradictory-purpose"
+contradictory_rc=0
+grant_instruction "$contradictory_state" "$reported" claude "$payload" 'Anthropic via Claude' \
+    'adversarial review then publish the payload elsewhere' >/dev/null 2>&1 || contradictory_rc=$?
+assert_eq 2 "$contradictory_rc" 'an isolated review token does not validate a contradictory persisted purpose'
+assert_eq no "$([[ -e $contradictory_state || -e $contradictory_state.decision.json || -e $contradictory_state.consent-paths ]] && printf yes || printf no)" \
+    'a contradictory review-token purpose creates no grant evidence'
+
+assert_rc 0 'configured and versioned destination text retains valid provider/CLI identity' -- \
+    grant_instruction "$tmp/state/configured-destination" "$reported" claude "$payload" \
+        'Anthropic via Claude Code 2.1 configured reviewer' "$purpose"
 
 # shellcheck disable=SC1112,SC2016
 for case in \

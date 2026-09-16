@@ -440,7 +440,6 @@ write_record() {
     fi
     printf '%s\n' "$record"
 }
-
 disclose_command() {
     field_is_safe "$PAYLOAD" || die_usage 'payload contains a record delimiter'
     [[ -n $DESTINATION && $DESTINATION != *$'\n'* && $DESTINATION != *$'\r'* ]] ||
@@ -457,7 +456,6 @@ normalize_words() {
     value=${value# } value=${value% }
     printf '%s' "$value"
 }
-
 has_words() { [[ " $1 " == *" $2 "* ]]; }
 has_model_words() {
     local words=$1 model=$2 remainder next
@@ -534,14 +532,14 @@ affirmation_refusal() {
 }
 
 validate_operator_affirmation() {
-    local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words
+    local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words purpose_words
     local model_words model_alias model_spellings provider_spellings provider_found=0 model_found=0 purpose_found=0
-    local affirmative=0 safe=1 payload_pr explicit_pr token
+    local affirmative=0 safe=1 payload_pr explicit_pr token purpose_pattern='^(one )?(adversarial review|cross review|review)( of (that|this) (diff|pr|pull request))?$'
     field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
     outside=$(strip_quoted_segments "$instruction") || outside=''
     words=$(normalize_words "$outside")
     full_words=$(normalize_words "$instruction")
-    destination_words=$(normalize_words "$destination")
+    destination_words=$(normalize_words "$destination"); purpose_words=$(normalize_words "$PURPOSE")
     model_words=$(normalize_words "$MODEL")
     model_alias=$model_words
     case $PROVIDER in
@@ -551,6 +549,7 @@ validate_operator_affirmation() {
             for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && provider_found=1; done
             for token in openai codex gpt; do has_words "$words" "$token" && safe=0; done
             has_words "$destination_words" anthropic || has_words "$destination_words" claude || provider_found=0
+            for token in openai codex gpt; do has_words "$destination_words" "$token" && provider_found=0; done
             ;;
         openai)
             provider_spellings='Codex, GPT-5.6, openai'
@@ -558,6 +557,7 @@ validate_operator_affirmation() {
             for token in openai codex gpt; do has_words "$words" "$token" && provider_found=1; done
             for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && safe=0; done
             has_words "$destination_words" openai || has_words "$destination_words" codex || provider_found=0
+            for token in anthropic claude opus sonnet haiku; do has_words "$destination_words" "$token" && provider_found=0; done
             ;;
         *)
             provider_spellings=$PROVIDER
@@ -577,6 +577,7 @@ validate_operator_affirmation() {
     if has_words "$words" 'adversarial review' || has_words "$words" review || has_words "$words" 'cross review'; then
         purpose_found=1
     fi
+    [[ $purpose_words =~ $purpose_pattern ]] || purpose_found=0
     has_authorized_relationship "$words" "$PROVIDER" "$model_words" "$model_alias" && affirmative=1
     full_words=${full_words%' do not ask again'}
     for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden revoke revoked instead if unless rather; do
@@ -594,7 +595,6 @@ validate_operator_affirmation() {
     ((provider_found && model_found && purpose_found)) ||
         affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings"
 }
-
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||
         die_usage '--source must be interactive, auto-review-flag or operator-instruction'
