@@ -6,7 +6,12 @@ set -euo pipefail
 # card that is not on the board at all -- a silent no-op that still exits 0.
 readonly ITEM_LIMIT=1000
 readonly FIELD_LIMIT=100
-readonly PROJECT_LIMIT=100
+
+mover_source=${BASH_SOURCE[0]}
+[[ $mover_source == */* ]] || mover_source=./$mover_source
+mover_dir=$(cd -- "${mover_source%/*}" && pwd)
+# shellcheck source=../../.shared/scripts/lib/board-cache.sh
+source "$mover_dir/../../.shared/scripts/lib/board-cache.sh"
 
 usage() {
     printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
@@ -458,48 +463,9 @@ invalidate_cached_item() {
 # The temporary file lives beside board.json, so mv makes the refresh atomic.
 refresh_board_metadata() {
     local board_owner=$1 project_number=$2 project_id=$3 project_title=$4 fields_json=$5
-    local status_field field_id options fingerprint_input fingerprint generated_at staged
-    local staged_substantive existing_substantive
-
     [[ -n $board_file ]] || return 0
-    status_field=$(jq -c 'first(.fields[]? | select((.name | ascii_downcase) == "status")) // empty' \
-        <<< "$fields_json") || return 1
-    field_id=$(jq -r '.id // empty' <<< "$status_field") || return 1
-    options=$(jq -c '[.options[]? | {key: .name, value: .id}] | from_entries' \
-        <<< "$status_field") || return 1
-    [[ -n $field_id && $options != '{}' ]] || return 1
-
-    fingerprint_input=$(jq -S -c -n --arg project "$project_id" --arg field "$field_id" \
-        --argjson options "$options" \
-        '{p: $project, f: $field, o: ($options | to_entries | sort_by(.key) | map(.value))}') || return 1
-    fingerprint="sha256:$(printf '%s' "$fingerprint_input" | sha256sum | cut -d' ' -f1)"
-    generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    staged=$(mktemp "$(dirname -- "$board_file")/.board.XXXXXX") || return 1
-
-    if ! jq -n --argjson version "$BOARD_SCHEMA_VERSION" --arg repository "$repository" \
-        --arg owner "$board_owner" \
-        --argjson number "$project_number" --arg project "$project_id" --arg title "$project_title" \
-        --arg field "$field_id" --argjson options "$options" --arg fingerprint "$fingerprint" \
-        --arg generated_at "$generated_at" \
-        '{schemaVersion: $version, repository: $repository, owner: $owner,
-          project: {number: $number, id: $project, title: $title},
-          statusField: {id: $field, name: "Status", options: $options},
-          generatedAt: $generated_at, fingerprint: $fingerprint}' > "$staged"; then
-        rm -f -- "$staged"
-        return 1
-    fi
-    staged_substantive=$(jq -S -c 'del(.generatedAt)' <"$staged") || {
-        rm -f -- "$staged"
-        return 1
-    }
-    if trusted_cache_file "$board_file" &&
-        existing_substantive=$(jq -S -c 'del(.generatedAt)' <"$board_file" 2>/dev/null); then
-        if [[ $staged_substantive == "$existing_substantive" ]]; then
-            rm -f -- "$staged"
-            return 0
-        fi
-    fi
-    chmod 600 -- "$staged" && mv -- "$staged" "$board_file"
+    board_cache_write "$repo_root" "$repository" "$board_owner" "$project_number" \
+        "$project_id" "$project_title" "$fields_json"
 }
 
 # Match on issue number AND repository. Project v2 boards are routinely shared
@@ -882,7 +848,8 @@ fi
 # Returns: 0 moved, 3 issue not on this board, 4 no-op reported for this board.
 process_project() {
     local project_number=$1 project_id=$2 project_title=$3
-    local items_json item_id current_status fields_json status_field_id option_id issue_number
+    local fields_json=${4:-}
+    local items_json item_id current_status status_field_id option_id issue_number
 
     # --limit is mandatory: gh defaults to 30 items, so on any real board the target
     # card is silently absent and this would report "not on any board" while exiting 0.
@@ -903,9 +870,11 @@ process_project() {
     done
     ((${#board_issues[@]} > 0)) || return 3
 
-    if ! fields_json=$(gh project field-list "$project_number" --owner "$owner" \
-        --limit "$FIELD_LIMIT" --format json); then
-        die "Could not list fields for project #$project_number."
+    if [[ -z $fields_json ]]; then
+        if ! fields_json=$(gh project field-list "$project_number" --owner "$owner" \
+            --limit "$FIELD_LIMIT" --format json); then
+            die "Could not list fields for project #$project_number."
+        fi
     fi
 
     status_field_id=$(jq -r \
@@ -957,34 +926,23 @@ process_project() {
     return 0
 }
 
-if ! projects_json=$(gh project list --owner "$owner" \
-    --limit "$PROJECT_LIMIT" --format json 2>/dev/null); then
-    die "Could not list projects for owner $owner."
-fi
-if [[ -z $projects_json ]]; then
+discover_rc=0
+board_cache_discover "$repo_root" "$repository" || discover_rc=$?
+if ((discover_rc == 2)); then
     for issue_number in "${issue_numbers[@]}"; do
         report_noop "no-op: issue #$issue_number is not on any project board"
     done
     report_summary
     exit 0
 fi
-
-while IFS=$'\t' read -r project_number project_id project_title; do
-    [[ -n $project_number && -n $project_id ]] || continue
-    [[ -n $project_title ]] || project_title='(untitled)'
-
-    board_rc=0
-    process_project "$project_number" "$project_id" "$project_title" || board_rc=$?
-    ((board_rc == 3)) && continue
-
-    if ((all_boards == 0)); then
-        all_complete=1
-        for issue_number in "${issue_numbers[@]}"; do
-            [[ ${completed_issues[$issue_number]+yes} == yes ]] || { all_complete=0; break; }
-        done
-        ((all_complete == 1)) && break
-    fi
-done < <(jq -r '.projects[]? | [.number, .id, (.title // "")] | @tsv' <<< "$projects_json")
+((discover_rc == 0)) || die "Could not discover the project linked to $repository."
+printf 'board: cache cold, discovered project #%s "%s" (written .agent/board.json)\n' \
+    "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE"
+owner=$BOARD_CACHE_DISCOVERED_OWNER
+if ! process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" \
+    "$BOARD_CACHE_DISCOVERED_TITLE" "$BOARD_CACHE_DISCOVERED_FIELDS"; then
+    :
+fi
 
 for issue_number in "${issue_numbers[@]}"; do
     [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue

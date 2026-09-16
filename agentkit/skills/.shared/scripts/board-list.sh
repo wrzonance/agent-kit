@@ -45,10 +45,11 @@ Options:
   --all            List Done items individually instead of as a count.
   --json           Emit the normalised records instead of the table.
 
-Reads the project number and owner from .agent/board.json, so it never
-rediscovers the board. Issue lookups are additionally bound to the repository
-declared by the target checkout. Exit 0 on success, 1 on a failed call, 2 on usage,
-3 when the environment cannot support the query.
+Reads the project number and owner from .agent/board.json. When that cache is
+absent, discovers the repository-linked board and writes it before listing.
+Issue lookups are additionally bound to the repository declared by the target
+checkout. Exit 0 on success, 1 on a failed call, 2 on usage, 3 when the
+environment cannot support the query.
 EOF
 }
 
@@ -105,8 +106,23 @@ done
 
 repo_root=${ARG_REPO_ROOT:-$(git rev-parse --show-toplevel 2> /dev/null || printf '%s' "$PWD")}
 board="$repo_root/.agent/board.json"
-[[ -r $board ]] ||
-    die_blocked "no .agent/board.json in $repo_root; run bootstrap-repo.sh first"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/board-cache.sh
+source "$script_dir/lib/board-cache.sh"
+if [[ ! -r $board ]]; then
+    repository=$("$script_dir/repo-config.sh" --repo-root "$repo_root" \
+        --get AGENT_REPO_SLUG 2>/dev/null || true)
+    if [[ -z $repository ]]; then
+        repository=$(cd -- "$repo_root" && \
+            gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    fi
+    [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+        die_blocked 'cannot resolve the repository for board discovery'
+    board_cache_discover "$repo_root" "$repository" ||
+        die_blocked "could not discover the project linked to $repository"
+    printf 'board: cache cold, discovered project #%s "%s" (written .agent/board.json)\n' \
+        "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE"
+fi
 
 number=$(jq -r '.project.number // empty' "$board" 2> /dev/null || true)
 owner=$(jq -r '.owner // empty' "$board" 2> /dev/null || true)
