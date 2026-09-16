@@ -69,7 +69,7 @@ while IFS= read -r line; do
         continue
     fi
     rel=${BASH_REMATCH[1]}
-    if [[ $rel != *.md || $rel == */../* || $rel == ../* || $rel == /* ]]; then
+    if [[ ( $rel != *.md && $rel != review-remote-pr/scripts/ci-artifacts.sh ) || $rel == */../* || $rel == ../* || $rel == /* ]]; then
         report "manifest entry is not a tree-relative markdown path: $rel"
         continue
     fi
@@ -102,6 +102,10 @@ done < <(
         [[ -d $skills_dir/.shared ]] &&
             find "$skills_dir/.shared" -maxdepth 1 -type f -name '*.md'
         find "$skills_dir" -mindepth 3 -maxdepth 3 -type f -path '*/references/*.md'
+        # This evidence helper is a worker-facing reference with a read-when gate.
+        if [[ -f $skills_dir/review-remote-pr/scripts/ci-artifacts.sh ]]; then
+            printf '%s\n' "$skills_dir/review-remote-pr/scripts/ci-artifacts.sh"
+        fi
     } | sort
 )
 

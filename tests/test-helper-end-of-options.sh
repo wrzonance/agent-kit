@@ -27,8 +27,8 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-# 70: #722 adds workflow-activation.sh alongside #729 and #725 helpers.
-assert_eq 70 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# 71: #764 adds ci-artifacts.sh with the same end-of-options contract.
+assert_eq 71 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
@@ -36,6 +36,7 @@ for helper in "${helpers[@]}"; do
         */apply-ledger.sh) args=(init --) ;;
         */bump-version.sh) args=(invalid --) ;;
         */classify-issue-comment-findings.sh) args=(count --) ;;
+        */ci-artifacts.sh) args=(--repo owner/repo --run-id 42 --dest "$tmp/cwd/.agent/ci" --) ;;
         */consent-record.sh) args=(payload --) ;;
         */cross-write-check.sh) args=(snapshot --) ;;
         */finding-ledger.sh) args=(add --) ;;

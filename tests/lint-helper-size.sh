@@ -66,7 +66,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #725 review repair: resolve siblings for bare filename invocation.
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
-readonly MAX_TREE_TOKENS=430842
+# #764: REST CI evidence collection with bounded, validated archive extraction (+2241).
+readonly MAX_TREE_TOKENS=433083
 
 violations=0
 checked=0

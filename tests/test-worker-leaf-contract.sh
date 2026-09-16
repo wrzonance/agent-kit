@@ -47,6 +47,9 @@ for model in gpt-5.6-luna gpt-5.6-terra gpt-6-astra claude-sonnet-5 claude-opus-
         assert_contains "$prompt" 'History freeze' "$model/$scenario preserves pushed history"
         assert_contains "$prompt" "worker_model='$model'" "$model/$scenario never substitutes the declared model"
         assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' "$model/$scenario preserves #729 handback"
+        assert_contains "$prompt" 'When the assigned CI failure does not reproduce locally' "$model/$scenario requires remote evidence"
+        assert_contains "$prompt" 'ci-artifacts.sh' "$model/$scenario names REST evidence helper"
+        assert_contains "$prompt" '0 files changed' "$model/$scenario requires zero-change evidence disclosure"
         assert_not_contains "$prompt" 'nesting is blocked by the' "$model/$scenario does not infer role from harness limits"
         bytes=$(printf '%s' "$prompt" | wc -c)
         printf 'variant-evidence model=%s scenario=%s prompt-bytes=%s estimated-tokens=%s runtime-tokens=unavailable correctness=synthetic-contract-only\n' \

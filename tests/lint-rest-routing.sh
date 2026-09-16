@@ -37,8 +37,8 @@ while IFS= read -r file; do
                     report("GraphQL call requires routing-allow: projects-v2 or routing-allow: review-threads")
                 }
             }
-            if (line ~ /gh[[:space:]]+(issue|pr|label)[[:space:]]+[^#]*--json([[:space:]]|$)/ ||
-                line ~ /gh[[:space:]]+(issue|pr|label)[[:space:]]+[^#]*--jq([[:space:]]|$)/) {
+            if (line ~ /gh[[:space:]]+(issue|pr|label|run)[[:space:]]+[^#]*--json([[:space:]]|$)/ ||
+                line ~ /gh[[:space:]]+(issue|pr|label|run)[[:space:]]+[^#]*--jq([[:space:]]|$)/) {
                 report("REST-able data must use gh api repos/...; porcelain JSON is forbidden")
             }
         }
