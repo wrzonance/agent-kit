@@ -73,12 +73,12 @@ still emitted -- with closing_issue.state "failed" -- when closing-issue
 verification exhausts its retries, so a caller (such as a bulk-apply ledger)
 can record the created number/html_url before deciding how to handle a
 verification-stage failure; the exit status still reports failure (1) in that
-case. The one-object guarantee covers exactly those two outcomes: a
-successful mutation, and a successful mutation whose closing-issue
-verification later failed. When the gh mutation itself fails (nothing was
-created or edited), no JSON object is emitted at all: stdout stays empty and
-gh's raw output moves to stderr alongside the failure diagnosis. Default
-text-mode output and exit codes are unchanged by this flag.
+case. The one-object guarantee also covers a created PR whose run-state
+recording fails: its assigned identity is emitted with closing_issue null and
+the exact repair command goes to stderr. When the gh mutation itself fails
+(nothing was created or edited), no JSON object is emitted at all: stdout
+stays empty and gh's raw output moves to stderr alongside the failure
+diagnosis. Default text-mode output and exit codes are unchanged by this flag.
 
 --tick TEXT [--note TEXT]  (edit only) flip the one unchecked "- [ ] TEXT..."
 checkbox, appending " (NOTE)", before the exact-verify edit.
@@ -257,6 +257,23 @@ validate_body() {
     command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 }
 
+validate_run_state_destination() {
+    [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    local existing='' rc=0
+    existing=$("$RUN_STATE_SH" get --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs) || rc=$?
+    case $rc in
+        0)
+            jq -e 'type == "array" and
+                all(.[]; type == "number" and . > 0 and floor == .) and
+                ((unique | length) == length)' <<<"$existing" >/dev/null ||
+                die 'existing opened_prs must be a unique array of positive integer PR numbers'
+            ;;
+        11) ;;
+        *) die 'run-state destination is unavailable; PR was not created' ;;
+    esac
+}
+
 validate_footer() {
     local last_line signature separator
     last_line=$(tail -n 1 -- "$BODY_FILE")
@@ -387,6 +404,10 @@ record_created_pr() {
         return 0
     fi
     printf 'created PR #%s: %s\n' "$TARGET_NUMBER" "$MUTATION_URL" >&2
+    if ((JSON_MODE)); then
+        jq -nc --argjson number "$TARGET_NUMBER" --arg html_url "$MUTATION_URL" \
+            '{number: $number, html_url: $html_url, closing_issue: null}'
+    fi
     printf -v repair '%q ' "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
         --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"
     repair=${repair% }
@@ -606,6 +627,7 @@ main() {
     parse_args "$@"
     validate_body
     apply_tick
+    validate_run_state_destination
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-body.XXXXXX")
     trap cleanup EXIT
     run_mutation

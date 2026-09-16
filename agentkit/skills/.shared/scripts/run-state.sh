@@ -81,11 +81,15 @@ parse_args() {
 }
 
 latest_state() {
-    local repo_root evidence candidate state_file mode mtime run_id
-    local selected_mtime=-1 selected_run_id='' selected_state=''
+    local repo_root agent_dir evidence candidate state_file mode mtime run_id
+    local selected_mtime='' selected_run_id='' selected_state=''
     [[ -d $REPO_ROOT ]] || die_usage "--repo-root is not a directory: $REPO_ROOT"
     repo_root=$(cd -P -- "$REPO_ROOT" && pwd -P) || die 'could not resolve --repo-root'
-    evidence=$repo_root/.agent/evidence
+    agent_dir=$repo_root/.agent
+    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
+    [[ -e $agent_dir ]] || exit 11
+    [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
+    evidence=$agent_dir/evidence
     [[ ! -L $evidence ]] || die "evidence directory must not be a symlink: $evidence"
     [[ -e $evidence ]] || exit 11
     [[ -d $evidence && -O $evidence ]] || die "evidence directory must be an owned directory: $evidence"
@@ -103,9 +107,10 @@ latest_state() {
         [[ -e $state_file ]] || continue
         FILE=$state_file
         read_state
-        mtime=$(stat -c %Y -- "$state_file") || die "state file mtime was unreadable: $state_file"
+        mtime=$(stat -c %y -- "$state_file") || die "state file mtime was unreadable: $state_file"
         run_id=${candidate##*/run-}
-        if ((mtime > selected_mtime)) || { ((mtime == selected_mtime)) && [[ $run_id > $selected_run_id ]]; }; then
+        if [[ -z $selected_mtime || $mtime > $selected_mtime ||
+            ($mtime == "$selected_mtime" && $run_id > $selected_run_id) ]]; then
             selected_mtime=$mtime
             selected_run_id=$run_id
             selected_state=$STATE
@@ -222,7 +227,7 @@ main() {
                       else error("not an array") end)
                  else setpath($p; [$v]) end' \
                 <<< "$STATE" 2>/dev/null) || die "append-unique target is not an array: $KEY_PATH"
-            write_state "$next"
+            [[ $next == "$STATE" ]] || write_state "$next"
             ;;
         unset)
             next=$(jq -c --argjson p "$path" 'delpaths([$p])' <<< "$STATE") || die 'could not unset the path'

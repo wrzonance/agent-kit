@@ -184,6 +184,26 @@ run_body() {
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "${helper_args[@]}"
 }
 
+: >"$tmp/gh.log"
+run_id='bad/run'
+invalid_context_rc=0
+run_body pr create --repo owner/repo --body-file "$body" >/dev/null 2>"$tmp/invalid-context.err" || invalid_context_rc=$?
+assert_eq 1 "$invalid_context_rc" 'invalid run identity refuses PR creation'
+assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+    'invalid run identity makes zero gh create calls'
+
+run_id='malformed-wave'
+assert_rc 0 'malformed opened_prs fixture begins as valid state' -- \
+    "$root/agentkit/skills/.shared/scripts/run-state.sh" set --run-id "$run_id" \
+    --repo-root "$run_state_repo" --path opened_prs --json '"not-an-array"'
+: >"$tmp/gh.log"
+malformed_context_rc=0
+run_body pr create --repo owner/repo --body-file "$body" >/dev/null 2>"$tmp/malformed-context.err" || malformed_context_rc=$?
+assert_eq 1 "$malformed_context_rc" 'malformed existing opened_prs refuses PR creation'
+assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+    'malformed opened_prs makes zero gh create calls'
+run_id='test-wave'
+
 output=$(run_body pr create --repo owner/repo --body-file "$body" --draft --title 'A `title`')
 assert_contains "$output" 'https://github.com/owner/repo/pull/41' \
     'PR create returns the gh result after exact verification'
@@ -684,19 +704,24 @@ assert_eq '[41,8]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$
 # identity and one exact repair command so callers never repeat pr create.
 cat >"$tmp/fail-run-state" <<'EOF'
 #!/usr/bin/env bash
+[[ ${1-} == get ]] && exit 11
 exit 1
 EOF
 chmod +x "$tmp/fail-run-state"
 export GH_BODY_RUN_STATE_SH="$tmp/fail-run-state"
 set +e
 record_failure_err="$tmp/record-failure.err"
-record_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" 2>"$record_failure_err")
+record_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" --json 2>"$record_failure_err")
 record_failure_rc=$?
 set -e
 unset GH_BODY_RUN_STATE_SH
 assert_eq 1 "$record_failure_rc" 'run-state recording failure exits nonzero after creation'
-assert_contains "$record_failure_output$(cat "$record_failure_err")" 'https://github.com/owner/repo/pull/41' \
-    'run-state recording failure preserves the created PR URL'
+assert_eq 1 "$(printf '%s\n' "$record_failure_output" | wc -l | tr -d '[:space:]')" \
+    'JSON run-state failure emits exactly one machine-readable identity'
+assert_eq 41 "$(jq -r '.number' <<<"$record_failure_output")" \
+    'JSON run-state failure preserves the created PR number'
+assert_eq 'https://github.com/owner/repo/pull/41' "$(jq -r '.html_url' <<<"$record_failure_output")" \
+    'JSON run-state failure preserves the created PR URL'
 assert_contains "$(cat "$record_failure_err")" 'append-unique --run-id test-wave' \
     'run-state recording failure prints the exact idempotent repair action'
 assert_contains "$(cat "$record_failure_err")" '--path opened_prs --json 41' \

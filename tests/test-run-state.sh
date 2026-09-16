@@ -36,6 +36,12 @@ assert_rc 0 'append-unique starts a numeric array' -- \
     "$script" append-unique --file "$state" --path opened_prs --json 41
 assert_rc 0 'append-unique ignores an equal value' -- \
     "$script" append-unique --file "$state" --path opened_prs --json 41
+touch -d '2030-09-16 01:00:00.123456789' "$state"
+duplicate_mtime=$(stat -c %y "$state")
+assert_rc 0 'append-unique accepts an already-recorded value idempotently' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+assert_eq "$duplicate_mtime" "$(stat -c %y "$state")" \
+    'append-unique does not rewrite state when the value already exists'
 assert_rc 0 'append-unique preserves first-seen order' -- \
     "$script" append-unique --file "$state" --path opened_prs --json 43
 assert_eq '[41,43]' "$("$script" get --file "$state" --path opened_prs)" \
@@ -120,6 +126,16 @@ latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
 assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" 'latest identifies the newest run'
 assert_eq '[11,13]' "$(jq -c '.value' <<<"$latest_json")" 'latest returns the selected path as JSON'
 
+assert_rc 0 'a same-second older run can record opened PRs' -- \
+    "$script" set --run-id z-nano-old --repo-root "$repo" --path opened_prs --json '[17]'
+touch -d '2031-09-16 01:00:00.100000000' "$repo/.agent/evidence/run-z-nano-old/run-state.json"
+assert_rc 0 'a same-second newer run can record opened PRs' -- \
+    "$script" set --run-id a-nano-new --repo-root "$repo" --path opened_prs --json '[19]'
+touch -d '2031-09-16 01:00:00.900000000' "$repo/.agent/evidence/run-a-nano-new/run-state.json"
+latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'a-nano-new' "$(jq -r '.run_id' <<<"$latest_json")" \
+    'latest uses sub-second state mtime before its deterministic run-ID tiebreak'
+
 no_runs_repo="$tmp/no-runs"
 mkdir -p "$no_runs_repo"
 latest_absent_rc=0
@@ -139,6 +155,12 @@ chmod 700 "$unsafe_repo/.agent/evidence"
 ln -s "$repo/.agent/evidence/run-newer" "$unsafe_repo/.agent/evidence/run-linked"
 assert_rc 1 'latest refuses a symlinked candidate run directory' -- \
     "$script" latest --repo-root "$unsafe_repo" --path opened_prs
+
+linked_agent_repo="$tmp/linked-agent"
+mkdir -p "$linked_agent_repo"
+ln -s "$repo/.agent" "$linked_agent_repo/.agent"
+assert_rc 1 'latest refuses an evidence root reached through a symlinked .agent directory' -- \
+    "$script" latest --repo-root "$linked_agent_repo" --path opened_prs
 
 malformed_repo="$tmp/malformed-latest"
 mkdir -p "$malformed_repo"
