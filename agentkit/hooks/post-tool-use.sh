@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# PostToolUse -> teach after the fact; structurally incapable of blocking. The
-# command has already run, so the agent pays for the call it wanted once and
-# knows the cheaper route before the second. Rests on a MEASURED fact:
-# additionalContext reaches the model (systemMessage was not shown to). NEVER
-# exits non-zero, never emits a decision.
+# PostToolUse teaches after a completed call; it never emits a decision.
 set -uo pipefail
 
 emit_empty() { printf '{}\n'; exit 0; }
@@ -14,10 +10,9 @@ self_dir=${BASH_SOURCE[0]%/*}
 [[ $self_dir != "${BASH_SOURCE[0]}" ]] || self_dir=.
 # shellcheck source=lib/guard-lib.sh
 source "$self_dir/lib/guard-lib.sh" 2> /dev/null || emit_empty
-
-# The literal "$agentkit/..." in every lesson is text for the agent to read and
-# retype. Expanding it would resolve against this hook's environment and hand
-# back a path instead of the resolver.
+# shellcheck source=lib/active-skill-reread.sh
+source "$self_dir/lib/active-skill-reread.sh" 2> /dev/null || emit_empty
+# Keep the literal "$agentkit/..." in lessons for the agent to retype.
 teach() {
     jq -nc --arg ctx "$1" \
         '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ctx}}'
@@ -72,6 +67,11 @@ guard_resolve_roots "$cwd" "$command_line"
 guard_resolve_scope_roots "$cwd"
 ((${#roots[@]})) || emit_empty
 state_root=$(guard_state_root)
+
+# The completed call is always allowed; this emits only an advisory.
+if guard_active_skill_reread "$state_root" "$session" "$command_line"; then
+    teach 'agentkit: this body is already in your context (injected at invocation)'
+fi
 
 # Board discovery. Every helper is named, and named ACCURATELY. Offered only a
 # status-mover, an agent hand-rolled GraphQL; offered a digest that reports open

@@ -21,6 +21,11 @@ unavailable, prints the serial worker path and exits successfully without
 requiring a runtime config file.  --multi-agent VALUE is the dispatch
 capability probe's own spelling of the same choice: false picks --no-spawn,
 anything else picks --spawn-capable.
+
+Recipe: read the dispatch cap
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --multi-agent "${multi_agent:-true}"
 EOF
 }
 

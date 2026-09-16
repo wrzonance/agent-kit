@@ -36,6 +36,26 @@ die_usage() {
     exit 2
 }
 
+usage() {
+    cat <<'EOF'
+Usage: triage-issues.sh [--repo-root DIR] [--limit N | --issues N,N,N] [--fuzzy N] [--json]
+
+Recipe: triage once
+  set -euo pipefail
+  command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  # Automatic selection: one GraphQL request for the recent open backlog.
+  "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
+  # Explicit issue selection is still one aliased GraphQL request.
+  "$agentkit/.shared/scripts/triage-issues.sh" --issues 57,54
+
+The digest is evidence: each line includes issue number, board Status,
+prior-art verdict, ADR candidates, and referencing PR. It also warms the
+project-item cache used by the board mover.
+EOF
+}
+
 # Deliberately crude, but defined precisely so it is reproducible -- same
 # posture as adr_candidates below: a miss is silence (verdict
 # "implementation"), never a blocked run, and a hit is a signal to read and
@@ -174,7 +194,7 @@ while (($#)); do
             classify_deps_file=$1
             classify_deps_supplied=1
             ;;
-        -h | --help) die_usage 'help requested' ;;
+        -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
     shift

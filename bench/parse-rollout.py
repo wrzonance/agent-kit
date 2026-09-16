@@ -57,6 +57,10 @@ PROGRAM = 'parse-rollout'
 # cites for the false-positive/false-negative cases this was checked
 # against before being adopted.
 REFERENCE_PATH_RE = re.compile(r'(?:^|[\s"\'])((?:[\w./-]*?)(?:references|\.shared)/[\w.-]+\.md)')
+PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|more)(?=\s)')
+CUSTOM_EXEC_CMD_RE = re.compile(
+    r'tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*"((?:\\.|[^"\\])*)"', re.DOTALL)
+INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
 TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
 
@@ -129,12 +133,81 @@ def call_command_text(payload):
         return ' '.join(str(part) for part in command)
     if isinstance(command, str):
         return command
+    custom_commands = custom_exec_commands(payload)
+    if len(custom_commands) == 1:
+        return custom_commands[0]
     return raw if isinstance(raw, str) else ''
 
 
 def is_log_read(payload):
     command = call_command_text(payload)
     return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:tail|sed)(?=\s)', command))
+
+
+def custom_exec_commands(payload):
+    raw = payload.get('input', '')
+    if payload.get('type') != 'custom_tool_call' or not isinstance(raw, str):
+        return []
+    commands = []
+    for match in CUSTOM_EXEC_CMD_RE.findall(raw):
+        try:
+            commands.append(json.loads(f'"{match}"'))
+        except json.JSONDecodeError:
+            return []
+    return commands
+
+
+def command_reads_prose(command):
+    return '.md' in command and bool(PROSE_READ_RE.search(command))
+
+
+def prose_read_kind(payload):
+    call_type = payload.get('type')
+    call_name = payload.get('name', '').rsplit('.', 1)[-1].lower()
+    if call_type == 'custom_tool_call':
+        if call_name != 'exec':
+            return 'none'
+        commands = custom_exec_commands(payload)
+        if len(commands) > 1:
+            return 'unavailable' if any(command_reads_prose(command) for command in commands) else 'none'
+        if len(commands) != 1:
+            return 'none'
+        return 'exact' if command_reads_prose(commands[0]) else 'none'
+    elif call_name not in {'exec_command', 'shell', 'bash'}:
+        return 'none'
+    return 'exact' if command_reads_prose(call_command_text(payload)) else 'none'
+
+
+def message_texts(payload):
+    content = payload.get('content')
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [part['text'] for part in content
+            if isinstance(part, dict) and isinstance(part.get('text'), str)]
+
+
+def injected_skill_chars(payload):
+    total = 0
+    for value in message_texts(payload):
+        marker = value.find(INJECTED_SKILL_MARKER)
+        if marker < 0:
+            continue
+        body = value.find('\n\n---\n', marker)
+        if body >= 0:
+            total += len(value[body + 2:])
+    return total
+
+
+def output_chars(payload):
+    output = payload.get('output', '')
+    if isinstance(output, str):
+        return len(output)
+    if isinstance(output, list):
+        return sum(len(part.get('text', '')) for part in output
+                   if isinstance(part, dict) and isinstance(part.get('text'), str))
+    return 0
 
 
 def token_count_input(payload):
@@ -225,6 +298,9 @@ def parse_session_file(path):
     churn = {'resume_calls': 0, 'min_yield_ms': None, 'log_reads_between_resumes': 0}
     resume_state = {}
     active_resume = None
+    prose_chars_injected = 0
+    prose_chars_read = 0
+    pending_prose_reads = set()
 
     records = read_records(path)
     try:
@@ -241,6 +317,8 @@ def parse_session_file(path):
         elif rtype == 'turn_context':
             model = payload.get('model', model)
             effort = payload.get('effort', effort)
+        elif rtype == 'response_item' and payload.get('type') == 'message':
+            prose_chars_injected += injected_skill_chars(payload)
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
@@ -252,6 +330,12 @@ def parse_session_file(path):
 
             call_name = payload.get('name', '').rsplit('.', 1)[-1]
             arguments = decoded_call_arguments(payload)
+            call_id = payload.get('call_id')
+            prose_kind = prose_read_kind(payload)
+            if prose_kind == 'unavailable':
+                prose_chars_read = None
+            elif prose_kind == 'exact' and isinstance(call_id, str) and call_id:
+                pending_prose_reads.add(call_id)
             if call_name == 'write_stdin' and not arguments.get('chars'):
                 resume_key = arguments.get('session_id', arguments.get('cell_id', 'unknown'))
                 slot = resume_state.setdefault(resume_key, {'seen': False, 'pending_reads': 0})
@@ -280,6 +364,10 @@ def parse_session_file(path):
             pending_input_tokens = None
         elif rtype == 'response_item' and payload.get('type') in {'function_call_output', 'custom_tool_call_output'}:
             call_id = payload.get('call_id')
+            if isinstance(call_id, str) and call_id in pending_prose_reads:
+                if prose_chars_read is not None:
+                    prose_chars_read += output_chars(payload)
+                pending_prose_reads.remove(call_id)
             if isinstance(call_id, str) and call_id in pending_poll_calls:
                 ended = record_timestamp(rec)
                 if ended is None:
@@ -323,6 +411,8 @@ def parse_session_file(path):
         'efficiency': efficiency,
         'polling': polling,
         'verification_churn': churn,
+        'prose_chars_injected': prose_chars_injected,
+        'prose_chars_read': prose_chars_read,
     }
 
 
@@ -502,6 +592,8 @@ def main(argv):
         'dynamic_efficiency': {
             'schema_version': 1,
             'actors': [{'actor': a['actor'], 'model': a['model'], 'effort': a['effort'],
+                        'prose_chars_injected': a['prose_chars_injected'],
+                        'prose_chars_read': a['prose_chars_read'],
                         **a['efficiency']} for a in parsed],
         },
     }

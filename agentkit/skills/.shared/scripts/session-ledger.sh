@@ -30,13 +30,13 @@ TIMESTAMP=''
 LOCK_FD=''
 
 usage() {
-    cat <<EOF
+    cat <<'EOF'
 Usage:
-  $PROGRAM append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
+  session-ledger.sh append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
     --decision TEXT --scope TEXT (--quote TEXT | --quote-file PATH | --quote-stdin) [--timestamp UTC]
-  $PROGRAM read --ledger FILE --run-id ID
-  $PROGRAM covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
-  $PROGRAM run-id --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH
+  session-ledger.sh read --ledger FILE --run-id ID
+  session-ledger.sh covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
+  session-ledger.sh run-id --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH
 
 append writes one validated, owner-private NDJSON decision record. read validates
 the complete ledger and emits only records for the requested run ID. covers exits 0
@@ -57,6 +57,19 @@ fidelity-preserving path for a multi-line human grant. --quote itself also
 accepts embedded newlines, under the same carriage-return normalization. A
 quote file containing a NUL byte is refused rather than silently truncated.
 --decision and --scope must remain single-line tokens.
+
+Recipe: establish and reuse one run ID
+  issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
+  invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
+  LEDGER="$repository_root/.agent/session-ledger.ndjson"
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
+  RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues --scope "$issue_scope" \
+    --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
+  "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" \
+    --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"
+  "$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" \
+    --decision "$DECISION" --scope "$SCOPE"
+  "$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"
 EOF
 }
 

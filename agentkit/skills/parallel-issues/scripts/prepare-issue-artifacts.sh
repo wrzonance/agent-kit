@@ -51,6 +51,30 @@ Exit status:
   12  a complete fenced artifact set already exists; delete it deliberately
       before re-fencing
   1   bad arguments, missing evidence, or any other failure
+
+Recipe: publish canonical issue artifacts
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
+  prior_art_file=''
+  if [[ -n ${prior_art_contents:-} ]]; then
+      : "${RUN_ID:?set the canonical run identity}" "${issue_number:?set the issue number}"
+      prior_art_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" \
+          --scratch-label "prior-art-$issue_number-$RUN_ID" --repo-root "$repository_root") || exit 1
+      printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
+  fi
+  fetch_rc=0
+  if [[ -n $prior_art_file ]]; then
+      "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" \
+          --prior-art "$prior_art_file" || fetch_rc=$?
+  else
+      "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" || fetch_rc=$?
+  fi
+  case $fetch_rc in
+      0)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file" ;;
+      12) printf '%s\n' 'fence artifacts already exist; use the printed exact --resume command' >&2; exit 1 ;;
+      *)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"; exit 1 ;;
+  esac
 EOF
 }
 

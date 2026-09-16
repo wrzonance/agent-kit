@@ -26,6 +26,57 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+assert_contains "$text" 'The injected body is authoritative' \
+    'the skill tells a root not to read its already-injected body again'
+assert_contains "$text" 'agent-preflight.sh" --help' \
+    'the body points at helper-owned Step 0 recipes'
+assert_contains "$text" 'session-ledger.sh" --help' \
+    'the body points at helper-owned ledger recipes'
+
+agent_preflight_help=$("$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help)
+session_ledger_help=$("$root/agentkit/skills/.shared/scripts/session-ledger.sh" --help)
+repo_config_help=$("$root/agentkit/skills/.shared/scripts/repo-config.sh" --help)
+triage_help=$("$root/agentkit/skills/.shared/scripts/triage-issues.sh" --help)
+concurrency_help=$("$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh" --help)
+move_help=$("$root/agentkit/skills/parallel-issues/scripts/move-github-project-item.sh" --help)
+boundary_help=$("$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh" --help)
+prepare_help=$("$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh" --help)
+assert_contains "$agent_preflight_help" 'Recipe: resolve, rehydrate, and run once' \
+    'agent-preflight help owns the removed Step 0 recipe'
+assert_contains "$agent_preflight_help" 'keyed_contract=' \
+    'the moved resolver preserves harness-keyed contract selection'
+assert_contains "$agent_preflight_help" '! -L $contract_root/.agent' \
+    'the moved resolver preserves symlink rejection'
+assert_contains "$agent_preflight_help" '-O $contract' \
+    'the moved resolver preserves owner validation'
+assert_contains "$agent_preflight_help" 'ls-files --error-unmatch' \
+    'the moved resolver preserves the untracked-contract proof'
+assert_contains "$agent_preflight_help" "printf '%s\\n' '.agent/*'" \
+    'the moved preflight preserves the local exclusion allowlist'
+assert_contains "$agent_preflight_help" 'contract skills path mismatch' \
+    'the moved preflight preserves contract provenance validation'
+assert_contains "$session_ledger_help" 'Recipe: establish and reuse one run ID' \
+    'session-ledger help owns the removed ledger recipe'
+assert_contains "$session_ledger_help" 'trust-trunk=${trust_trunk:-false}' \
+    'the moved ledger recipe preserves the invocation flag tuple'
+assert_contains "$repo_config_help" 'Recipe: establish repository facts' \
+    'repo-config help owns the removed repository-facts recipe'
+assert_contains "$triage_help" 'Recipe: triage once' \
+    'triage help owns the removed one-call recipe'
+assert_contains "$concurrency_help" 'Recipe: read the dispatch cap' \
+    'concurrency-cap help owns its removed invocation recipe'
+assert_contains "$move_help" 'Recipe: move a selected issue set' \
+    'project-item help owns its removed invocation recipe'
+assert_contains "$boundary_help" 'Recipe: select once before fetching' \
+    'boundary-mode help owns its removed selection recipe'
+assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \
+    'artifact helper help owns its removed preparation recipe'
+assert_contains "$prepare_help" '--scratch-label "prior-art-$issue_number-$RUN_ID"' \
+    'the moved artifact recipe preserves unique prior-art scratch allocation'
+assert_contains "$prepare_help" 'if [[ -n $prior_art_file ]]' \
+    'the moved artifact recipe passes --prior-art only when a digest exists'
+assert_contains "$prepare_help" 'rm -f -- "$prior_art_file"' \
+    'the moved artifact recipe preserves scratch cleanup'
 review_skill_text=$(<"$review_skill")
 normalized_review_text=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
 assert_contains "$normalized_text" 'worker=<model> <effort>' \
@@ -220,7 +271,7 @@ assert_contains "$triage_and_selection_text" 'merge-down' \
     'late overlap has an explicit merge-down disposition'
 assert_contains "$triage_and_selection_text" 'inherited #137' \
     'late overlap points at the inherited #137 response'
-assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
+assert_contains "$agent_preflight_help" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
     'parallel preflight passes its owned repository_root to contract-read.sh'
 assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
     'parallel preflight does not use the undefined contract_root'
@@ -352,10 +403,9 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
-dispatch_section=$(sed -n '/^### Dispatch /,/^When the runtime advertises/p' "$skill")
-assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
+assert_contains "$concurrency_help" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
-assert_contains "$dispatch_section" 'agentkit_provenance' \
+assert_contains "$concurrency_help" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
@@ -421,7 +471,7 @@ assert_contains "$root_fence_section" 'boundary_mode' \
     'root carries the selected boundary mode'
 assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]; then' \
     'trusted modes persist exact bytes without invoking the fence helper'
-assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
+assert_contains "$boundary_help" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
 dispatch_handoff=$(sed -n '/^Per-issue prompt:/,/^### Collect (per-completion/p' <<< "$text")
 assert_contains "$dispatch_handoff" 'Compose once, to a file; the spawn reads that file — never re-compose to re-read.' \
@@ -634,7 +684,7 @@ assert_contains "$text" 'one canonical issue-body fetch during preparation' \
     'triage digest limits surviving issue body reads to preparation'
 assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
-assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
+assert_contains "$move_help" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
 assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
@@ -1351,32 +1401,27 @@ assert_contains "$text" 'covers --ledger' \
 assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
     'an uncovered mutation still stops'
 
-# --- issue #224: references read once (WS2d); issue #336 reconciles the size
-# probe with this skill's own size. The blanket prohibition and a 1000+ line
-# mandatory read were jointly untenable: sizing is still barred as a routine
-# habit, with ONE bounded exception for a large first read.
-assert_contains "$normalized_text" 'References are read once and batched' \
+# --- issue #224: references read once (WS2d), now shared -------------------
+reading_discipline_text=$(<"$root/agentkit/skills/.shared/reading-discipline.md")
+normalized_reading_discipline=$(tr '\n' ' ' <<<"$reading_discipline_text" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_reading_discipline" 'fully once per uninterrupted context' \
     'parallel skill still reads each reference once, in batches'
-assert_contains "$normalized_text" 'Match conditions to the execution path' \
+assert_contains "$normalized_text" 'references whose conditions match' \
     'reference loading follows manifest conditions on the selected execution path'
-assert_contains "$normalized_text" 'read each named reference fully at its step' \
+assert_contains "$normalized_reading_discipline" 'Start the read directly' \
     'named references are fully loaded at their binding step'
-assert_contains "$normalized_text" 'batching reads' \
+assert_contains "$normalized_reading_discipline" 'batching independent reads' \
     'references reached together are batched'
-assert_contains "$normalized_text" 'reads and retaining them for the run' \
+assert_contains "$normalized_reading_discipline" 'Reuse loaded content' \
     'a loaded reference is not read twice'
-assert_contains "$text" 'wc -l' \
+assert_contains "$reading_discipline_text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
-assert_contains "$text" '`wc -l`, `stat`, `head`' \
+assert_contains "$reading_discipline_text" '`wc -l`, `stat`, `head`' \
     'routine reference sizing forbids all named probes'
-assert_contains "$normalized_text" 'each probe costs a turn' \
-    'the no-sizing default names its cost'
-assert_contains "$normalized_text" 'permits one bounded size probe' \
-    'a large first read may be sized once'
-assert_contains "$normalized_text" 'including this SKILL.md' \
-    'the size-probe exception admits this skill is over the threshold'
-assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
-    'the skill no longer claims nothing consumes a line count while permitting a probe'
+assert_contains "$normalized_reading_discipline" 'There is no size threshold to discover first' \
+    'the no-sizing default explains that no preliminary probe is needed'
+assert_contains "$normalized_reading_discipline" 'injected skill body is already authoritative context' \
+    'shared discipline forbids rereading an injected body'
 
 # --- issue #427: reference reads follow the selected execution path ----------
 assert_contains "$normalized_text" 'Single issue, no chain:' \

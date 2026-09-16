@@ -268,6 +268,8 @@ printf '%s\n' \
     '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","output":"timed out"}}' \
     '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"","output":"timed out"}}' \
     '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":7,"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":["not","hashable"],"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":{"also":"not hashable"},"output":"timed out"}}' \
     '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"duplicate","output":"timed out"}}' \
     '{"type":"bench_trial_meta","payload":{"run_id":"malformed-id-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-id-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":5,"exit_condition":"complete"}}' \
     > "$malformed_id_fixture"
@@ -277,6 +279,47 @@ assert_eq '5' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
     'malformed polling IDs do not hide poll turns'
 assert_eq 'null' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
     'missing, empty, non-string, or duplicate call IDs make interval telemetry unavailable'
+
+# --- prose context cost is measured per rollout session -------------------
+prose_fixture="$tmp/prose-cost.jsonl"
+injected_prefix='agentkit invocation boundary: explicit workflow delivery, not native registry evidence.'
+injected_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
+read_output=$'# Reading discipline\nRead this once.\n'
+custom_read_output=$'# Parallel Issues\nInjected bodies are authoritative.\n'
+jq -nc --arg prefix "$injected_prefix" --arg body "$injected_body" --arg read "$read_output" \
+    --arg custom_read "$custom_read_output" \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:($prefix+"\nInstalled skills root: /skills\n\n"+$body)}]}},
+     {type:"response_item",payload:{type:"function_call",call_id:"read-prose",name:"exec_command",arguments:"{\"cmd\":\"sed -n 1,40p agentkit/skills/.shared/reading-discipline.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"read-prose",output:$read}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"custom-read-prose",name:"functions.exec",input:"text(await tools.exec_command({cmd:\"cat agentkit/skills/parallel-issues/SKILL.md\",workdir:\"/repo\"}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"custom-read-prose",output:$custom_read}},
+     {type:"response_item",payload:{type:"function_call",call_id:"message-mention",name:"send_message",arguments:"{\"message\":\"please cat agentkit/skills/parallel-issues/SKILL.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"message-mention",output:"message delivered"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-cost",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_fixture"
+run "$prose_fixture" --timestamp 2026-09-16T03:02:00Z
+assert_eq '0' "$RUN_RC" 'a rollout with injected and tool-read prose parses'
+assert_eq "${#injected_body}" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_injected' <<< "$RUN_OUT")" \
+    'injected prose counts the exact delivered SKILL.md body, excluding the hook wrapper'
+assert_eq "$((${#read_output} + ${#custom_read_output}))" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'read prose counts exact output characters from direct and custom nested markdown reads'
+
+ambiguous_prose_fixture="$tmp/prose-cost-ambiguous.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"mixed-output",name:"functions.exec",input:"const a=await tools.exec_command({cmd:\"cat one.md\"}); const b=await tools.exec_command({cmd:\"git status\"}); text(a.output); text(b.output);"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"mixed-output",output:"prose plus unrelated status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-ambiguous",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$ambiguous_prose_fixture"
+run "$ambiguous_prose_fixture" --timestamp 2026-09-16T03:03:00Z
+assert_eq '0' "$RUN_RC" 'a mixed custom execution rollout still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'mixed custom execution marks prose-read characters unavailable instead of asserting zero'
 
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z

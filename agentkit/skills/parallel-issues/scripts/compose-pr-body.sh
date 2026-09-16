@@ -12,14 +12,14 @@ DECISIONS_FILE=''
 TESTING_FILE=''
 BASELINE_FILE=''
 BASELINE_EXCLUSION_FILE=''
-BLOCKER=''
+BLOCKER_FILE=''
 BLOCKER_PATHS=()
 AGENT=''
 OUTPUT=''
 OUTPUT_TMP=''
 
 usage() {
-    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE [--baseline-exclusion-file FILE] [--blocker PATH[,PATH]] --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
+    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE [--baseline-exclusion-file FILE] [--blocker PATH]... [--blocker-file FILE] --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
     printf '  --baseline-file FILE   optional verification-baseline.sh evidence block, appended as a "## Verification" section\n' >&2
     printf '  --baseline-exclusion-file FILE   optional worker baseline-exclusion checkbox appended inside Testing\n' >&2
 }
@@ -37,7 +37,7 @@ parse_args() {
     while (($#)); do
         case $1 in
             --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
-            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker|--agent|--output)
+            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker|--blocker-file|--agent|--output)
                 require_value "$1" "${2-}"
                 case $1 in
                     --issue) ISSUE=$2 ;;
@@ -47,7 +47,8 @@ parse_args() {
                     --testing-file) TESTING_FILE=$2 ;;
                     --baseline-file) BASELINE_FILE=$2 ;;
                     --baseline-exclusion-file) BASELINE_EXCLUSION_FILE=$2 ;;
-                    --blocker) BLOCKER=$2 ;;
+                    --blocker) BLOCKER_PATHS+=("$2") ;;
+                    --blocker-file) BLOCKER_FILE=$2 ;;
                     --agent) AGENT=$2 ;;
                     --output) OUTPUT=$2 ;;
                 esac
@@ -60,7 +61,8 @@ parse_args() {
             --testing-file=* ) TESTING_FILE=${1#*=}; shift ;;
             --baseline-file=* ) BASELINE_FILE=${1#*=}; shift ;;
             --baseline-exclusion-file=* ) BASELINE_EXCLUSION_FILE=${1#*=}; shift ;;
-            --blocker=* ) BLOCKER=${1#*=}; shift ;;
+            --blocker=* ) BLOCKER_PATHS+=("${1#*=}"); shift ;;
+            --blocker-file=* ) BLOCKER_FILE=${1#*=}; shift ;;
             --agent=* ) AGENT=${1#*=}; shift ;;
             --output=* ) OUTPUT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -123,9 +125,19 @@ validate_testing_file() {
 }
 
 validate_blockers() {
-    local path part
-    [[ -n $BLOCKER ]] || return 0
-    IFS=, read -r -a BLOCKER_PATHS <<<"$BLOCKER"
+    local path part last_byte
+    if [[ -n $BLOCKER_FILE ]]; then
+        [[ -f $BLOCKER_FILE && ! -L $BLOCKER_FILE && -r $BLOCKER_FILE && -O $BLOCKER_FILE ]] ||
+            die "--blocker-file must be an owned readable regular file: $BLOCKER_FILE"
+        if [[ -s $BLOCKER_FILE ]]; then
+            last_byte=$(tail -c 1 -- "$BLOCKER_FILE" | od -An -t u1)
+            [[ $last_byte =~ ^[[:space:]]*0[[:space:]]*$ ]] ||
+                die '--blocker-file must contain NUL-delimited paths'
+        fi
+        while IFS= read -r -d '' path; do
+            BLOCKER_PATHS+=("$path")
+        done <"$BLOCKER_FILE"
+    fi
     for path in "${BLOCKER_PATHS[@]}"; do
         [[ -n $path && $path != /* && $path != *\\* && $path != *'`'* &&
             $path != *$'\n'* && $path != *$'\r'* ]] ||

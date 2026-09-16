@@ -29,8 +29,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     # #727: open obligations and terminal evidence in the canonical recipe.
     [review-remote-pr]="474:8289:450"
-    # #774: Collect classifies pushed blocked handbacks for partial draft delivery.
-    [parallel-issues]="960:18395:900"
+    # #777: helper-owned recipes shrink the injected body toward the standard budget.
+    [parallel-issues]="748:15635:500"
 )
 
 readonly MAX_BODY_LINES=500
