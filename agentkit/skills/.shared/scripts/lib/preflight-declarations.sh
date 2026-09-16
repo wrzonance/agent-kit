@@ -39,6 +39,10 @@ preflight_native_format_fix() {
 
 preflight_required_declarations() {
     local listing key value missing=0 proposals='' fix rundir proposal_dir
+    local advisory=0
+    case ${ARG_WORKFLOW:-} in
+        pr-to-green|review-remote-pr|onboard-repo) advisory=1 ;;
+    esac
     local -A declared=() proposed=()
     [[ -e $WORKTREE/.agent/config.env || -L $WORKTREE/.agent/config.env ]] || return 0
     if [[ ! -x $SCRIPT_DIR/repo-config.sh ]]; then
@@ -55,6 +59,11 @@ preflight_required_declarations() {
     for key in "${!declared[@]}"; do
         [[ $key == AGENT_CMD_FORMAT || $key == AGENT_CMD_*_FORMAT ]] || continue
         [[ -n ${declared[$key]} && -z ${declared[${key}_FIX]:-} ]] || continue
+        if ((advisory)); then
+            # Print even when --ensure returns a cached contract below.
+            printf 'declarations= advisory workflow=%s missing=%s_FIX consumer=worker-format-fix\n' "$ARG_WORKFLOW" "$key" >&2
+            continue
+        fi
         if ((missing == 0)) && [[ -x $SCRIPT_DIR/detect-toolchains.sh ]]; then
             proposals=$("$SCRIPT_DIR/detect-toolchains.sh" --repo-root "$WORKTREE" --format suggestions) || return 1
             while IFS='=' read -r value fix; do

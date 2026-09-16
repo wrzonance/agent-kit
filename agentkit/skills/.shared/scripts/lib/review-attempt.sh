@@ -43,6 +43,7 @@ p.add_argument('--pid', type=int, default=0)
 p.add_argument('--parent-pid', type=int, default=0)
 p.add_argument('--state', choices=['completed', 'failed', 'unknown-outcome', 'parser-rejected'])
 p.add_argument('--authorization', default='')
+p.add_argument('--stopped-timeout-proof', default='')
 a = p.parse_args()
 def safe_file(path):
     s = os.lstat(path)
@@ -98,6 +99,40 @@ def process_identity(pid):
         return {'pid': pid, 'startTicks': fields[19], 'bootId': boot}
     except (OSError, IndexError):
         return {'pid': pid, 'identity': 'unavailable'}
+def stopped_timeout(record, entry):
+    proof_path = pathlib.Path(a.stopped_timeout_proof)
+    proof_bytes = safe_file(proof_path)
+    proof = json.loads(proof_bytes)
+    if not isinstance(proof, dict) or type(proof.get('schemaVersion')) is not int:
+        raise ValueError('malformed stopped-timeout proof')
+    if proof_path.stat().st_mode & 0o077:
+        raise ValueError('stopped-timeout proof must be private mode 0600')
+    expected = dict(schemaVersion=1, repo=entry['repo'], pr=entry['pr'], attemptId=record['id'],
+        head=entry['head'], payload=entry['payload'], authorization=a.authorization,
+        reason='operator-confirmed-timeout', helperProcess=record.get('helperProcess'),
+        providerProcess=record.get('providerProcess'))
+    if any(proof.get(k) != v for k, v in expected.items()):
+        raise ValueError('stopped-timeout proof identity mismatch')
+    duration, limit = proof.get('timeoutSeconds'), record.get('maxDurationSeconds')
+    if type(duration) is not int or type(limit) is not int or limit <= 0 or duration < limit:
+        raise ValueError('stopped-timeout proof must cover the recorded duration limit')
+    if not any(e.get('operation') == 'finish' and e.get('state') == 'unknown-outcome' for e in record['events']):
+        raise ValueError('unknown attempt has no finalization event')
+    boot = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    for field in ('helperProcess', 'providerProcess'):
+        identity = record.get(field)
+        if (not isinstance(identity, dict) or type(identity.get('pid')) is not int
+                or identity['pid'] <= 0 or identity.get('bootId') != boot
+                or not isinstance(identity.get('startTicks'), str) or not identity['startTicks'].isdigit()):
+            raise ValueError('missing or unverifiable stopped process identity: ' + field)
+    for pid in (record['helperProcess']['pid'], record['providerProcess']['pid'], record.get('launcherPid')):
+        if type(pid) is not int or pid <= 0:
+            raise ValueError('missing stopped launcher identity')
+        try: os.kill(pid, 0)
+        except ProcessLookupError: continue
+        # Permission errors are unknown, and any present PID (even reused) blocks.
+        raise ValueError('process remains live or PID was reused: ' + str(pid))
+    return proof, hashlib.sha256(proof_bytes).hexdigest()
 def save(path, value):
     fd, temp = tempfile.mkstemp(dir=path.parent)
     try:
@@ -141,6 +176,8 @@ try:
             or record.get('repo', '').lower() != entry['repo'].lower() or record.get('pr') != entry['pr']):
         raise ValueError('malformed durable attempt; reconciliation required')
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if a.stopped_timeout_proof and a.operation != 'retry':
+        raise ValueError('stopped-timeout proof is only valid for an explicit retry')
     if a.operation == 'reserve':
         if record is not None:
             print(json.dumps(record)); sys.exit(20)
@@ -168,9 +205,14 @@ try:
             raise ValueError('retry must name the current durable attempt ID')
         if not a.authorization.strip():
             raise ValueError('retry requires explicit user authorization')
-        if record.get('state') != 'failed' or not record.get('canonical'):
+        timeout_proof = None
+        if record.get('state') == 'unknown-outcome' and record.get('canonical') and a.stopped_timeout_proof:
+            timeout_proof, timeout_proof_hash = stopped_timeout(record, entry)
+        elif a.stopped_timeout_proof:
+            raise ValueError('stopped-timeout proof requires a canonical unknown attempt')
+        elif record.get('state') != 'failed' or not record.get('canonical'):
             raise ValueError('only a terminal failed canonical attempt can be retried')
-        if not any(e.get('operation') == 'finish' and e.get('state') == 'failed' for e in record['events']):
+        if timeout_proof is None and not any(e.get('operation') == 'finish' and e.get('state') == 'failed' for e in record['events']):
             raise ValueError('failed attempt has no terminal failure event')
         for field in ('repo', 'pr', 'provider', 'model', 'effort', 'base', 'reviewBase'):
             if attempt_value(record, field) != attempt_value(entry, field):
@@ -211,12 +253,20 @@ try:
         archived['resultArtifact'] = str(old_result)
         archived['transcriptArtifact'] = transcript
         archived['transcriptSha256'] = digest(transcript)
+        if timeout_proof is not None:
+            if (timeout_proof.get('resultSha256') != archived['resultSha256']
+                    or timeout_proof.get('transcriptSha256') != archived['transcriptSha256']
+                    or result_value.get('status') not in ('blocked', 'failed')):
+                raise ValueError('stopped-timeout proof artifact mismatch')
         new_record = dict(entry, version=1, id=str(uuid.uuid4()), state='reserved', events=[])
         new_record['launcherSha256'] = digest(entry['launcher'])
         new_record['payloadGateSha256'] = digest(pathlib.Path(entry['result']).parent / 'adversarial.payload-size')
         new_record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
         new_record['retryOf'] = record['id']
         new_record['retryAuthorization'] = a.authorization
+        if timeout_proof is not None:
+            new_record['stoppedTimeoutProof'] = timeout_proof
+            new_record['stoppedTimeoutProofSha256'] = timeout_proof_hash
         new_record['previousAttempts'] = list(record.get('previousAttempts', [])) + [archived]
         record = new_record
     elif record is None:
@@ -482,8 +532,10 @@ reserve_review_attempt() {
             maxDurationSeconds:($duration|tonumber)}' >"$ATTEMPT_ENTRY"
     local rc=0
     if [[ -n $retry_id ]]; then
+        local -a stopped_args=()
+        [[ -z ${STOPPED_TIMEOUT_PROOF:-} ]] || stopped_args=(--stopped-timeout-proof "$STOPPED_TIMEOUT_PROOF")
         ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt retry --repo-root "$CONTRACT_ROOT" \
-            --entry-file "$ATTEMPT_ENTRY" --id "$retry_id" --authorization "$RETRY_AUTHORIZATION") || rc=$?
+            --entry-file "$ATTEMPT_ENTRY" --id "$retry_id" --authorization "$RETRY_AUTHORIZATION" "${stopped_args[@]}") || rc=$?
         ((rc == 0)) || die 'authorized retry reservation failed; preserve prior attempt evidence'
     else
         ATTEMPT_RECORD=$("$SCRIPT_DIR/review-ledger.sh" attempt reserve --repo-root "$CONTRACT_ROOT" \

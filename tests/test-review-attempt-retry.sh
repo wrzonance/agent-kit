@@ -117,4 +117,62 @@ for state in reserved running completed unknown-outcome; do
         --id "$state_id" --authorization "$authorization"
 done
 
+# Explicit timeout recovery preserves unknown outcome and all original evidence.
+make_entry "$tmp/timed-out" "$old_head" oldpayload 5 20000 770
+timeout_entry="$tmp/timed-out/state/review-attempt.json"
+sleep 60 & launcher_pid=$!
+sleep 60 & helper_pid=$!
+sleep 60 & provider_pid=$!
+jq --argjson pid "$launcher_pid" '.launcherPid=$pid' "$timeout_entry" >"$tmp/changed"
+cp "$tmp/changed" "$timeout_entry"
+unknown=$(attempt reserve "$timeout_entry")
+unknown_id=$(jq -r .id <<<"$unknown")
+attempt start "$timeout_entry" --id "$unknown_id" --pid "$helper_pid" --parent-pid "$launcher_pid" >/dev/null
+attempt process "$timeout_entry" --id "$unknown_id" --pid "$provider_pid" >/dev/null
+printf '{"type":"assistant"' >"$tmp/timed-out/claude.ndjson"
+printf '{"status":"blocked","exitCode":1,"reason":"provider-failure"}\n' >"$tmp/timed-out/adversarial.result.json"
+attempt finish "$timeout_entry" --id "$unknown_id" --state unknown-outcome --parent-pid "$launcher_pid" >/dev/null
+unknown=$(attempt read "$timeout_entry")
+make_entry "$tmp/recovered" "$new_head" recoveredpayload 10 40000 770
+recovery_entry="$tmp/recovered/state/review-attempt.json"
+proof="$tmp/stopped-timeout.json"
+result_hash=$(sha256sum "$tmp/timed-out/adversarial.result.json" | cut -d' ' -f1)
+transcript_hash=$(sha256sum "$tmp/timed-out/claude.ndjson" | cut -d' ' -f1)
+jq -n --arg id "$unknown_id" --arg head "$new_head" --arg auth "$authorization" \
+    --arg result "$result_hash" --arg transcript "$transcript_hash" \
+    --argjson old "$unknown" '{schemaVersion:1,repo:"acme/widget",pr:770,attemptId:$id,
+      head:$head,payload:"recoveredpayload",authorization:$auth,reason:"operator-confirmed-timeout",
+      timeoutSeconds:900,resultSha256:$result,transcriptSha256:$transcript,
+      helperProcess:$old.helperProcess,providerProcess:$old.providerProcess}' >"$proof"
+chmod 600 "$proof"
+assert_rc 1 'live timeout processes cannot be recovered' -- attempt retry "$recovery_entry" \
+    --id "$unknown_id" --authorization "$authorization" --stopped-timeout-proof "$proof"
+kill "$launcher_pid" "$helper_pid" "$provider_pid"
+wait "$launcher_pid" "$helper_pid" "$provider_pid" 2>/dev/null || true
+assert_rc 1 'stopped unknown attempt still requires explicit proof' -- attempt retry "$recovery_entry" \
+    --id "$unknown_id" --authorization "$authorization"
+assert_rc 1 'proof alone never supplies operator authorization' -- attempt retry "$recovery_entry" \
+    --id "$unknown_id" --stopped-timeout-proof "$proof"
+for mutation in '.pr=771' '.attemptId="other"' '.payload="other"' '.head="other"' \
+    '.authorization="other"' '.resultSha256="other"' '.transcriptSha256="other"' \
+    '.helperProcess.bootId="other"' '.providerProcess.startTicks="other"' \
+    '.timeoutSeconds=1' '.reason="provider-failure"' 'del(.providerProcess)'; do
+    jq "$mutation" "$proof" >"$tmp/bad-proof"
+    chmod 600 "$tmp/bad-proof"
+    assert_rc 1 "recovery refuses mismatched evidence: $mutation" -- attempt retry "$recovery_entry" \
+        --id "$unknown_id" --authorization "$authorization" --stopped-timeout-proof "$tmp/bad-proof"
+done
+before=$(attempt read "$timeout_entry")
+recovered=$(attempt retry "$recovery_entry" --id "$unknown_id" --authorization "$authorization" \
+    --stopped-timeout-proof "$proof")
+assert_eq reserved "$(jq -r .state <<<"$recovered")" 'explicit stopped-timeout recovery reserves one fresh attempt'
+assert_eq "$unknown_id" "$(jq -r .retryOf <<<"$recovered")" 'recovery retains previous-attempt linkage'
+assert_eq unknown-outcome "$(jq -r '.previousAttempts[-1].state' <<<"$recovered")" 'recovery never invents a historical terminal outcome'
+assert_eq "$(jq -c .events <<<"$before")" "$(jq -c '.previousAttempts[-1].events' <<<"$recovered")" 'historical events remain unchanged'
+assert_eq "$result_hash" "$(sha256sum "$tmp/timed-out/adversarial.result.json" | cut -d' ' -f1)" 'old timeout result is byte-preserved'
+assert_eq "$transcript_hash" "$(sha256sum "$tmp/timed-out/claude.ndjson" | cut -d' ' -f1)" 'truncated transcript is byte-preserved'
+assert_eq "$authorization" "$(jq -r '.stoppedTimeoutProof.authorization' <<<"$recovered")" 'recovery retains the explicit proof and authorization'
+assert_rc 1 'recovery authorization cannot be replayed' -- attempt retry "$recovery_entry" \
+    --id "$unknown_id" --authorization "$authorization" --stopped-timeout-proof "$proof"
+
 finish

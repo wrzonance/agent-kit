@@ -994,6 +994,9 @@ assert_eq 0 "$self_rc" 'a fully evidenced scoped fix advances without another co
 if [[ -f $receipt ]]; then
     assert_eq self-authored "$(jq -r '.advances[-1].kind' "$receipt")" 'receipt audits self-authored advance'
 fi
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'authorized fix receipt is reusable with original write-set input'
 for failure in outside-commit outside-path base ancestry missing-finding; do
     cp "$tmp/initial-receipt" "$receipt"
     cp "$proof" "$tmp/proof-save"
@@ -1025,7 +1028,7 @@ QUEUE_SHA=$orphan QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof
     >"$tmp/self.out" 2>&1 || self_rc=$?
 assert_eq 1 "$self_rc" 'local ancestry independently refuses a force-pushed unrelated head'
 
-# Even a reverted escape is outside scope; a net diff alone would miss it.
+# Commit evidence cannot expand scope, even for a subsequently reverted path.
 printf 'outside\n' >"$repo_root/outside.sh"
 git -C "$repo_root" add outside.sh
 git -C "$repo_root" commit -qm escape
@@ -1044,11 +1047,48 @@ for sha in "$escape" "$reverted"; do
     jq -cn --arg sha "$sha" '{tool:"worktree-commit",commit:$sha,paths_touched:["outside.sh"]}' \
       >>"$repo_root/.agent/evidence/paths-touched.ndjson"
 done
+self_before=$(sha256sum "$receipt" "$auth")
 self_rc=0
 QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
     >"$tmp/self.out" 2>&1 || self_rc=$?
-assert_eq 1 "$self_rc" 'a fully recorded push still refuses a reverted out-of-scope path'
-assert_contains "$(cat "$tmp/self.out")" 'outside declared write set' 'scope refusal comes from actual per-commit paths'
+assert_eq 1 "$self_rc" 'fully evidenced reverted outside paths still require operator confirmation'
+assert_eq "$self_before" "$(sha256sum "$receipt" "$auth")" 'outside-path refusal preserves receipt and authorization bytes'
+assert_eq '["src/fix.sh"]' "$(jq -c .predicate.writeSet "$receipt")" 'original operator predicate remains immutable'
+self_rc=0
+QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'outside head remains unauthorized on reuse with original write-set input'
+self_rc=0
+QUEUE_SHA=$old run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'original confirmed head remains reusable with original write-set input'
+cp "$tmp/initial-receipt" "$receipt"
+cp "$repo_root/.agent/evidence/paths-touched.ndjson" "$tmp/touched-save"
+head -n 1 "$tmp/touched-save" >"$repo_root/.agent/evidence/paths-touched.ndjson"
+self_rc=0
+QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'unproven outside paths still fail closed'
+assert_eq "$(cat "$tmp/initial-receipt")" "$(cat "$receipt")" 'failed expansion never mutates receipt'
+cp "$tmp/touched-save" "$repo_root/.agent/evidence/paths-touched.ndjson"
+
+# A mutable receipt field cannot turn corroborated workflow edits into scope.
+mkdir -p "$repo_root/.github/workflows"
+printf 'name: outside\n' >"$repo_root/.github/workflows/outside.yml"
+git -C "$repo_root" add .github/workflows/outside.yml
+workflow_tree=$(git -C "$repo_root" write-tree)
+workflow_head=$(git -C "$repo_root" commit-tree "$workflow_tree" -p "$new" -m outside-workflow)
+jq --arg sha "$workflow_head" '.to=$sha | .commits += [{sha:$sha,pushed:true,finding:"fix:F1"}]' "$tmp/proof-save" >"$tmp/changed"
+cp "$tmp/changed" "$proof"
+jq --arg sha "$workflow_head" '.reviews[0].coverage += [{sha:$sha,reason:"fix:F1"}]' "$finding_ledger" >"$tmp/changed"
+cp "$tmp/changed" "$finding_ledger"
+jq -cn --arg sha "$workflow_head" '{tool:"worktree-commit",commit:$sha,paths_touched:[".github/workflows/outside.yml"]}' \
+    >>"$repo_root/.agent/evidence/paths-touched.ndjson"
+jq '.writeSet += ["outside.sh", ".github/workflows/outside.yml"]' "$tmp/initial-receipt" >"$receipt"
+self_before=$(sha256sum "$receipt" "$auth")
+self_rc=0
+QUEUE_SHA=$workflow_head QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'helper evidence and mutable receipt fields never authorize outside workflow paths'
+assert_eq "$self_before" "$(sha256sum "$receipt" "$auth")" 'workflow refusal preserves receipt and authorization bytes'
 
 run_attended() {
     run_authorize_provider coderabbit:trigger:capability-default \
@@ -1183,14 +1223,29 @@ for bad in missing-merge extra-commit unrelated-parent parent-descendant manual-
 done
 # Main can remove inherited content from the PR diff without a head change.
 cp "$tmp/lineage-after" "$lineage_receipt"
+mkdir "$tmp/anchor-bin"
+anchor_git=$(command -v git)
+anchor_tail=$(git -C "$repo_root" commit-tree "$old^{tree}" -m retained-unrelated-head)
+cat >"$tmp/anchor-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${3:-} == merge-base && ${4:-} == --is-ancestor && ${6:-} == "$ANCHOR_TAIL" ]]; then
+    printf '%s\n' "$*" >>"$ANCHOR_CALLS"
+fi
+exec "$ANCHOR_GIT" "$@"
+EOF
+chmod +x "$tmp/anchor-bin/git"
+jq --arg tail "$anchor_tail" '.authorizedHeads += [{pr:999,sha:$tail}]' "$lineage_receipt" >"$tmp/changed"
+cp "$tmp/changed" "$lineage_receipt"
 jq -n --arg own "$own_fix" --arg old "$old" --arg main "$merge_two" \
   '{runId:"lineage",repository:"owner/repo",pr:14,base:"main",from:$own,to:$own,
     commits:[],merges:[],defaultAdvance:{from:$old,to:$main,prs:[15,16]}}' >"$lineage"
 lineage_rc=0
-QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$merge_two \
+ANCHOR_GIT=$anchor_git ANCHOR_TAIL=$anchor_tail ANCHOR_CALLS="$tmp/anchor-calls" PATH="$tmp/anchor-bin:$PATH" \
+  QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$merge_two \
   QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two \
   run_lineage --lineage-proof "14:$lineage" >"$tmp/main-advance.out" 2>&1 || lineage_rc=$?
 assert_eq 0 "$lineage_rc" 'verified queued main merges allow inherited diff shrink on an unchanged head'
+assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'an old-head anchor avoids retained-head git subprocesses'
 cp "$lineage" "$tmp/main-proof"
 for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
     cp "$tmp/lineage-after" "$lineage_receipt"
@@ -1375,12 +1430,17 @@ assert_eq 1 "$lineage_rc" 'an ordinary queued merge after the imported default i
 cp "$tmp/lineage-after" "$lineage_receipt"
 jq --arg sha "$parent_two" --arg anchor "$merge_two" '.snapshot.queue[0].headSha=$sha | .authorizedHeads += [{pr:15,sha:$anchor}]' \
   "$lineage_receipt" >"$tmp/changed"; cp "$tmp/changed" "$lineage_receipt"
+jq --arg tail "$anchor_tail" '.authorizedHeads += [{pr:999,sha:$tail}]' "$lineage_receipt" >"$tmp/changed"
+cp "$tmp/changed" "$lineage_receipt"
+: >"$tmp/anchor-calls"
 jq --arg sha "$parent_two" --arg anchor "$merge_one" '.from=$sha | .to=$sha | .defaultAdvance.from=$anchor | .defaultAdvance.prs=[16]' \
   "$tmp/main-proof" >"$lineage"
 lineage_rc=0
-QUEUE_SHA=$parent_two QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$merge_two QUEUE_OLD_COMPARE=$merge_one \
+ANCHOR_GIT=$anchor_git ANCHOR_TAIL=$anchor_tail ANCHOR_CALLS="$tmp/anchor-calls" PATH="$tmp/anchor-bin:$PATH" \
+  QUEUE_SHA=$parent_two QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$merge_two QUEUE_OLD_COMPARE=$merge_one \
   QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two run_lineage --lineage-proof "14:$lineage" >"$tmp/anchor.out" 2>&1 || lineage_rc=$?
 assert_eq 0 "$lineage_rc" 'another exact authorized head can establish the default anchor'
+assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'a proven retained anchor stops later git subprocesses'
 [[ $lineage_rc == 0 ]] || cat "$tmp/anchor.out"
 
 for bad in valid wrong-ref unrelated-tip unrecorded-base missing-retarget; do

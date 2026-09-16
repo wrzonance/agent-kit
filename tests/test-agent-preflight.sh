@@ -1346,4 +1346,51 @@ assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budg
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
     'lib/sandbox-comparator.sh stays at or under 53 lines'
 
+# Declaration requirements belong to the consuming workflow, not discovery.
+declaration_repo=$(new_repo)
+mkdir -p "$declaration_repo/.agent" "$tmp/declaration-tools"
+printf 'AGENT_CMD_FORMAT=ruff format --check .\n' >"$declaration_repo/.agent/config.env"
+cat >"$tmp/declaration-tools/repo-config.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'AGENT_CMD_FORMAT=ruff format --check .\n'
+EOF
+chmod +x "$tmp/declaration-tools/repo-config.sh"
+for workflow in parallel-issues pr-to-green review-remote-pr ''; do
+    declaration_rc=0
+    declaration_out=$(WORKTREE="$declaration_repo" SCRIPT_DIR="$tmp/declaration-tools" ARG_WORKFLOW="$workflow" \
+      bash -c 'source "$1"; emit() { OUT_LINES+=("$1"); }; note() { printf "%s\n" "$*" >&2; }; preflight_required_declarations' \
+      bash "$root/agentkit/skills/.shared/scripts/lib/preflight-declarations.sh" 2>&1) || declaration_rc=$?
+    case $workflow in
+        pr-to-green|review-remote-pr)
+            assert_eq 0 "$declaration_rc" "$workflow treats unused FORMAT_FIX as advisory"
+            assert_contains "$declaration_out" 'declarations= advisory' 'advisory is visible even without flushing a new contract'
+            assert_not_contains "$declaration_out" 'parallel-issues' 'advisory names its actual workflow'
+            ;;
+        *) assert_eq 1 "$declaration_rc" "consumer or absent workflow stays fail closed: $workflow" ;;
+    esac
+done
+
+# Public contract output retains its first record on both --ensure paths.
+cat >"$ensure_build/.shared/scripts/workflow-activation.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+for workflow in pr-to-green review-remote-pr onboard-repo; do
+    header_repo=$(new_repo)
+    printf 'AGENT_CMD_FORMAT=ruff format --check .\n' >"$header_repo/.agent/config.env"
+    for temperature in cold cached; do
+        header_rc=0
+        header_out=$("$ensure_build_script" --ensure --worktree "$header_repo" \
+            --activation-session declaration-test --workflow "$workflow" 2>"$tmp/header.err") || header_rc=$?
+        assert_eq 0 "$header_rc" "$temperature $workflow preflight succeeds with an unused formatter declaration"
+        first_record=${header_out%%$'\n'*}
+        assert_eq skills= "${first_record%% *}" "$temperature $workflow stdout starts with the skills contract record"
+        assert_not_contains "$header_out" 'declarations= advisory' 'diagnostics never precede or enter contract stdout'
+        assert_contains "$(cat "$tmp/header.err")" "declarations= advisory workflow=$workflow missing=AGENT_CMD_FORMAT_FIX" \
+            "$temperature workflow advisory remains visible on stderr"
+        if [[ $temperature == cold ]]; then cold_header=$header_out
+        else assert_eq "$cold_header" "$header_out" 'cached ensure returns the original contract bytes'; fi
+    done
+done
+
 finish
