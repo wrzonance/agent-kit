@@ -39,6 +39,16 @@ done < "$collision_fixture"
 assert_rc 2 'an empty CSV member is rejected instead of canonicalized ambiguously' -- \
     "$ledger_script" run-id --procedure-set parallel-issues --scope '1,,2' \
     --repo owner/repo --base main
+ordinary_identity=$(run_id review-remote-pr 511 'auto-review=false' flask-sqlalchemy task-queue)
+assert_eq yes "$([[ $ordinary_identity =~ ^review-remote-pr-[0-9a-f]{32}$ ]] && printf yes || printf no)" \
+    'ordinary sk-prefixed repository and branch text is accepted for hashed identity inputs'
+
+review_skill=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
+assert_contains "$review_skill" '--base review-pr-v1' \
+    'review identity uses a stable version discriminator'
+# shellcheck disable=SC2016
+assert_not_contains "$(awk '/^## Session decision ledger/{on=1} /^## Runtime/{on=0} on' <<<"$review_skill")" \
+    '--base "$BASE_BRANCH"' 'review identity does not change when a stacked PR is retargeted'
 
 repo="$tmp/repo"
 mkdir -p "$repo"

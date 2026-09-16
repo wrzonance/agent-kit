@@ -396,9 +396,6 @@ automatic retarget.
 ```
 
 ```bash
-pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
-trap 'rm -f -- "$pr_body_file"' EXIT
-chmod 600 -- "$pr_body_file" || exit 1
 agent_identity=${agent_identity:?set the actual LLM/service/model identity}
 pr_why_file=${pr_why_file:?set the root-approved Why section file}
 pr_what_file=${pr_what_file:?set the root-approved What section file}
@@ -407,6 +404,8 @@ pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
 default_branch=${default_branch:?set the repository default branch}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
+trap 'rm -f -- "$pr_body_file"' EXIT
 "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
     --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
 # A baseline-red declared-verification outcome (review-remote-pr Step 2) writes

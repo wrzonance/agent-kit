@@ -227,6 +227,15 @@ require_commands() {
 
 validate_text() {
     local name=$1 value=$2 allow_multiline=${3:-single} normalized_value normalized_secret_re
+    validate_identity_text "$name" "$value" "$allow_multiline"
+    normalized_value=${value,,}
+    normalized_secret_re=${SECRET_RE,,}
+    [[ ! $normalized_value =~ $normalized_secret_re ]] ||
+        die_usage "$name resembles a secret; do not record credential material"
+}
+
+validate_identity_text() {
+    local name=$1 value=$2 allow_multiline=${3:-single}
     [[ -n $value ]] || die_usage "$name must be non-empty"
     ((${#value} <= MAX_TEXT_LENGTH)) ||
         die_usage "$name is too long (maximum $MAX_TEXT_LENGTH characters)"
@@ -234,10 +243,6 @@ validate_text() {
         [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
             die_usage "$name must be a single line"
     fi
-    normalized_value=${value,,}
-    normalized_secret_re=${SECRET_RE,,}
-    [[ ! $normalized_value =~ $normalized_secret_re ]] ||
-        die_usage "$name resembles a secret; do not record credential material"
 }
 
 load_quote_file() {
@@ -311,11 +316,11 @@ validate_append_inputs() {
 
 print_run_id() {
     local canonical digest prefix
-    validate_text '--procedure-set' "$PROCEDURE_SET"
-    validate_text '--scope' "$SCOPE"
-    [[ -z $FLAGS ]] || validate_text '--flags' "$FLAGS"
-    validate_text '--repo' "$REPO"
-    validate_text '--base' "$BASE"
+    validate_identity_text '--procedure-set' "$PROCEDURE_SET"
+    validate_identity_text '--scope' "$SCOPE"
+    [[ -z $FLAGS ]] || validate_identity_text '--flags' "$FLAGS"
+    validate_identity_text '--repo' "$REPO"
+    validate_identity_text '--base' "$BASE"
     canonical=$(jq -cn --arg procedure_set "$PROCEDURE_SET" --arg scope "$SCOPE" \
         --arg flags "$FLAGS" --arg repo "$REPO" --arg base "$BASE" '
         def csv:

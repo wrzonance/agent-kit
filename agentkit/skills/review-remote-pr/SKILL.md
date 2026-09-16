@@ -59,7 +59,7 @@ After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bi
 review_invocation_flags="auto-review=${auto_review:-false}"
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
 RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set review-remote-pr \
-    --scope "$PR" --flags "$review_invocation_flags" --repo "$REPO" --base "$BASE_BRANCH") || exit 1
+    --scope "$PR" --flags "$review_invocation_flags" --repo "$REPO" --base review-pr-v1) || exit 1
 : "$RUN_ID"
 ```
 
@@ -344,7 +344,7 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-tmp="$RUN_DIR/.baseline.pending"; : >"$tmp" && chmod 600 -- "$tmp"
+tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label baseline --repo-root "$REPO_ROOT") || exit 1
 rc=0
 "$agentkit/review-remote-pr/scripts/verification-baseline.sh" --base "origin/$BASE_BRANCH" \
     --log "$log" --check "$check" --paths "${failing_paths[@]}" >"$tmp" || rc=$?

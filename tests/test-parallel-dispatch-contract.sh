@@ -478,14 +478,16 @@ persist_report_function=$(awk '
 [[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
 durable_plan="$tmp/dispatch plan.md"
 : > "$durable_plan"
+durable_repo="$tmp/durable-repo"
+mkdir -p -- "$durable_repo"
 first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
 second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=57; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$first_report"
+dispatch_plan=\$1; issue_number=57; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$first_report" "$root/agentkit/skills" "$durable_repo"
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=54; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$second_report"
+dispatch_plan=\$1; issue_number=54; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$second_report" "$root/agentkit/skills" "$durable_repo"
 assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
     'first shell composition leaves its exact durable report'
 assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
@@ -958,8 +960,8 @@ assert_contains "$publication_section" 'This was written agentically; verify its
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
-    'draft PR publication secures the body file with mode 600'
+assert_contains "$publication_section" '--scratch-label pr-body' \
+    'draft PR publication allocates an owner-private body file beneath trusted repository state'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an LLM/service/model identity'
 assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
