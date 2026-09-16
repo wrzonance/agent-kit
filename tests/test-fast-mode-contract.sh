@@ -170,4 +170,56 @@ assert_eq '0' "$canonical_mismatches" \
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38642 ]] && printf yes || printf no)" \
     'triage-and-selection reference stays at or under 38642 bytes'
 
+# Companion acknowledgement is derived from the active skill's declared map.
+assert_rc 0 'delegated skills preserve the governing active receipt' -- python3 - "$root" "$tmp" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+root, tmp = map(Path, sys.argv[1:])
+repo = tmp / 'activation-repo'
+repo.mkdir()
+subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+skills = tmp / 'plugin/skills'
+(skills.parent / '.claude-plugin').mkdir(parents=True)
+(skills.parent / '.claude-plugin/plugin.json').write_text('{"version":"1.0"}')
+for name in ('pr-to-green', 'review-remote-pr', 'onboard-repo'):
+    (skills / name).mkdir(parents=True)
+    (skills / name / 'SKILL.md').write_text('# ' + name)
+body = '# Workflow\n## Resident call-site map\n\n| Boundary | Authority |\n|---|---|\n| Review | `../review-remote-pr/SKILL.md` and its lazy references |\n\n## Other\nExample `../onboard-repo/SKILL.md` is not a delegation.\n'
+(skills / 'pr-to-green/SKILL.md').write_text(body)
+helper = root / 'agentkit/skills/.shared/scripts/lib/workflow-activation.py'
+argv = ['python3', str(helper), '--skills', str(skills), '--digest', 'a' * 64]
+def run(*args, payload=None):
+    return subprocess.run(argv + list(args), input=json.dumps(payload) if payload else None,
+                          text=True, capture_output=True)
+run('hook', payload={'cwd':str(repo), 'session_id':'session', 'prompt':'/pr-to-green'})
+path = repo / '.agent/activation' / (hashlib.sha256(b'session').hexdigest() + '.json')
+record = json.loads(path.read_text())
+base = ['--repo-root', str(repo), '--session', 'session']
+assert run('ack', *base, '--skill', 'review-remote-pr', '--nonce', record['nonce']).returncode == 1
+assert run('ack', *base, '--skill', 'pr-to-green', '--nonce', record['nonce']).returncode == 0
+before = path.read_bytes()
+result = run('ack', *base, '--skill', 'review-remote-pr', '--nonce', record['nonce'])
+assert result.returncode == 0, result.stderr
+assert path.read_bytes() == before, 'companion must not replace governing receipt'
+assert run('check', *base, '--skill', 'review-remote-pr').returncode == 0
+assert run('check', *base, '--skill', 'onboard-repo').returncode == 1
+for skill, allowed in [('agentkit:review-remote-pr', True), ('agentkit:onboard-repo', False), ('agentkit:', False), (None, False)]:
+    result = run('hook', payload={'cwd':str(repo), 'session_id':'session', 'hook_event_name':'PreToolUse',
+                                 'tool_name':'Skill', 'tool_input':{'skill':skill}})
+    denied = json.loads(result.stdout).get('hookSpecificOutput', {}).get('permissionDecision') == 'deny'
+    assert denied != allowed, result.stdout
+assert json.loads(path.read_text())['workflow'] == 'pr-to-green'
+# Replacing the declaration replaces the allowance, proving it is not a pair list.
+(skills / 'pr-to-green/SKILL.md').write_text(body.replace('review-remote-pr/SKILL.md', 'onboard-repo/SKILL.md'))
+assert run('check', *base, '--skill', 'review-remote-pr').returncode == 1
+run('hook', payload={'cwd':str(repo), 'session_id':'session', 'prompt':'/pr-to-green'})
+record = json.loads(path.read_text())
+assert run('ack', *base, '--skill', 'pr-to-green', '--nonce', record['nonce']).returncode == 0
+assert run('check', *base, '--skill', 'onboard-repo').returncode == 0
+assert run('check', *base, '--skill', 'review-remote-pr').returncode == 1
+PY
+
 finish

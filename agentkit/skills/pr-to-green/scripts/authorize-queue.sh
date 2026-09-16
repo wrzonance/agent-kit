@@ -57,12 +57,7 @@ reject_writable_by_others() {
     (( (8#$mode & 0022) == 0 )) || die "$label must not be group- or world-writable: $path"
 }
 
-# issue #607 fix round 2 F2: a persisted proof outlives a later retarget -- if
-# a PR returns to the same base/head after another base change, a cached
-# proof would otherwise authorize a boundary its own CI never actually proved
-# fresh against. live_boundary_epoch reads the same timeline events
-# chain-advance.sh's boundary_for accepts (every page, last match) so the
-# caller can require the proof's boundaryEpoch= to equal the live one.
+# Match chain-advance's latest timeline boundary, never an older same-base proof.
 iso_to_epoch() {
     local value=$1 epoch
     [[ -n $value && $value != null ]] || return 1
@@ -429,6 +424,7 @@ if [[ -n $run_id ]]; then
         # against the run receipt even if the caller rewrote the display.
         jq '.snapshot' "$receipt" >"$work_dir/prior-snapshot.json"
         confirmed_queue_file=$work_dir/prior-snapshot.json
+        jq '.writeSet // .predicate.writeSet' "$receipt" >"$work_dir/paths.json"
     fi
 fi
 argv_diff=$(jq -r --argjson requested "$requested_argv" '
@@ -706,13 +702,15 @@ if ((full_match_ok == 0)); then
                         >"$work_dir/commit-paths" || die 'commit paths unreadable'
                     jq -Rs 'split("\u0000") | map(select(length > 0)) | unique' \
                         <"$work_dir/commit-paths" >"$work_dir/commit-paths.json"
-                    jq -e --slurpfile allowed "$work_dir/paths.json" \
-                        '(. - $allowed[0]) == []' "$work_dir/commit-paths.json" >/dev/null ||
-                        die 'self-authored path outside declared write set; redisplay and reconfirm'
                     jq -se --arg sha "$commit" --slurpfile paths "$work_dir/commit-paths.json" \
                       'any(.[]; .tool == "worktree-commit" and .commit == $sha and
                         (.paths_touched | sort | unique) == $paths[0])' "$touched" >/dev/null ||
                         die 'self-authored paths-touched evidence missing; redisplay and reconfirm'
+                    # Accumulate only independently corroborated run commits.
+                    # Persist after every PR's proof succeeds, never on failure.
+                    jq -s 'add | unique' "$work_dir/paths.json" "$work_dir/commit-paths.json" \
+                        >"$work_dir/expanded-paths.json" || die 'could not expand remediation write set'
+                    mv -- "$work_dir/expanded-paths.json" "$work_dir/paths.json"
                 done <"$work_dir/commits"
                 ;;
             retarget)
@@ -721,31 +719,10 @@ if ((full_match_ok == 0)); then
                 [[ -n $proof_file ]] || proof_file=$(default_retarget_proof "$recon_pr" "$recon_live_base") || proof_file=''
                 [[ -n $proof_file ]] ||
                     die "pr $recon_pr changed base with no --retarget-proof supplied and no persisted chain-advance.sh proof under Git metadata; redisplay and reconfirm before authorization"
-                # Every required token must be present on the SAME candidate
-                # line, never satisfied piecemeal across different lines --
-                # a proof file that accumulated several PRs' chain-advance.sh
-                # lines must not let one PR's line supply the ancestry/green/
-                # approval/closing-issues tokens for another PR's base/head
-                # match. Select only lines carrying this exact PR-and-base
-                # prefix, then require the remaining tokens on that one line.
-                # Approval is provider policy, not mechanical base safety
-                # (issue #455): a trigger/observe provider settles on the
-                # current head only after the ready/provider transition that
-                # follows this proof, and a disabled/none provider may never
-                # produce one at all. The proof's `approval=` token is
-                # therefore checked for a well-formed value, never required
-                # to be `current:post-retarget` -- ancestry, post-retarget
-                # CI, and closing linkage stay the mandatory mechanical proof.
-                # The `repo=` token (review finding) is required on the same
-                # line and must equal --repo: the filename alone is not
-                # trusted, since an explicit --retarget-proof file can be
-                # handed in from anywhere, and the auto-discovered file's name
-                # is merely a candidate path, not authenticated content.
-                # persist_proof_line (chain-advance.sh) appends -- it never
-                # truncates -- so a PR retargeted more than once accumulates
-                # several matching lines in this file. The newest one is the
-                # only one that can still be current; keep scanning past the
-                # first match instead of breaking on it (CodeRabbit #683).
+                # Require every token on one matching repo/PR/base/head line.
+                # Approval need only be well formed: providers settle after
+                # the ready transition. Ancestry, CI and closing linkage remain
+                # mandatory. Appended proofs require the newest matching line.
                 proof_ok=0
                 proof_line=''
                 while IFS= read -r candidate_line; do
@@ -762,14 +739,8 @@ if ((full_match_ok == 0)); then
                 done < <(grep -F "retargeted pr #$recon_pr base=$recon_live_base " "$proof_file" 2>/dev/null)
                 ((proof_ok)) ||
                     die "pr $recon_pr: the supplied retarget proof does not match the live base and head, or does not name repository $repo; redisplay and reconfirm before authorization"
-                # F2 (issue #607 fix round 2): a proof outlives a later
-                # retarget -- if the PR returns to this same base/head after
-                # another base change, the cached proof's own CI predates
-                # that later retarget and must not authorize it. The proof's
-                # boundaryEpoch= is trusted only when it equals the live
-                # timeline's own latest matching event, read fresh here
-                # (never from the proof file), for both an auto-discovered
-                # and an explicit --retarget-proof file alike.
+                # Same-base historical proofs cannot authorize a later retarget:
+                # compare every proof with the freshly read timeline boundary.
                 [[ $proof_line =~ boundaryEpoch=([1-9][0-9]*) ]] ||
                     die "pr $recon_pr: the retarget proof has no boundaryEpoch token; rerun chain-advance.sh --retarget to regenerate it, then redisplay and reconfirm"
                 proof_boundary_epoch=${BASH_REMATCH[1]}
@@ -832,9 +803,11 @@ if [[ -n $receipt ]]; then
     fi
     [[ -f $work_dir/reconcile.json ]] || printf '{"perPr":[]}' >"$work_dir/reconcile.json"
     jq --slurpfile reconciliation "$work_dir/reconcile.json" --slurpfile auth "$work_dir/authorization.json" \
+      --slurpfile paths "$work_dir/paths.json" \
       --slurpfile snapshot "$confirmed_queue_file" --slurpfile queue "$work_dir/queue.json" \
       '.advances += [$reconciliation[0].perPr[] | select(.verdict != "unchanged") |
         {pr,kind:.verdict,from:.confirmedHeadSha,to:.liveHeadSha,base:.liveBase}] | .authorization=$auth[0] |
+       .writeSet=$paths[0] |
        .snapshot=($snapshot[0] | .queue=($queue[0] | map({pr,state,headSha:.sha,base,diffFingerprint})))' \
       "$work_dir/receipt.json" >"$work_dir/new-receipt.json" || die 'could not record authorization receipt'
     output_tmp=$(mktemp "$repo_root/.agent/.pr-to-green-receipt.XXXXXX")

@@ -1013,7 +1013,7 @@ QUEUE_SHA=$orphan QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof
     >"$tmp/self.out" 2>&1 || self_rc=$?
 assert_eq 1 "$self_rc" 'local ancestry independently refuses a force-pushed unrelated head'
 
-# Even a reverted escape is outside scope; a net diff alone would miss it.
+# Proven remediation may expand scope; record even a subsequently reverted path.
 printf 'outside\n' >"$repo_root/outside.sh"
 git -C "$repo_root" add outside.sh
 git -C "$repo_root" commit -qm escape
@@ -1035,8 +1035,21 @@ done
 self_rc=0
 QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
     >"$tmp/self.out" 2>&1 || self_rc=$?
-assert_eq 1 "$self_rc" 'a fully recorded push still refuses a reverted out-of-scope path'
-assert_contains "$(cat "$tmp/self.out")" 'outside declared write set' 'scope refusal comes from actual per-commit paths'
+assert_eq 0 "$self_rc" 'a fully recorded remediation expands scope without reconfirmation'
+assert_eq '["outside.sh","src/fix.sh"]' "$(jq -c .writeSet "$receipt")" 'receipt records all per-commit paths including reverted paths'
+assert_eq '["src/fix.sh"]' "$(jq -c .predicate.writeSet "$receipt")" 'original operator predicate remains immutable'
+self_rc=0
+QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'expanded receipt is reusable with original write-set input'
+cp "$tmp/initial-receipt" "$receipt"
+cp "$repo_root/.agent/evidence/paths-touched.ndjson" "$tmp/touched-save"
+head -n 1 "$tmp/touched-save" >"$repo_root/.agent/evidence/paths-touched.ndjson"
+self_rc=0
+QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'unproven outside paths still fail closed'
+assert_eq "$(cat "$tmp/initial-receipt")" "$(cat "$receipt")" 'failed expansion never mutates receipt'
+cp "$tmp/touched-save" "$repo_root/.agent/evidence/paths-touched.ndjson"
 
 run_attended() {
     run_authorize_provider coderabbit:trigger:capability-default \

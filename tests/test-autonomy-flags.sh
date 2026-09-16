@@ -252,4 +252,61 @@ else
     _pass 'the advisory speaks once per session'
 fi
 
+# Explicit instruction is a distinct affirmative with verbatim bound evidence.
+consent="$skills/review-remote-pr/scripts/consent-record.sh"
+mkdir -m 700 "$tmp/instruction-consent"
+state="$tmp/instruction-consent/record"
+printf 'src/a.sh\n' >"$tmp/instruction-paths"
+instruction='Use Claude with Opus 5 for adversarial review of this PR.'
+payload="owner/repo:14:$(printf '%064d' 1)"
+instruction_rc=0
+instruction_out=$(bash "$consent" grant --state "$state" --provider claude --payload "$payload" \
+    --source operator-instruction --operator-instruction "$instruction" \
+    --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+    --paths-file "$tmp/instruction-paths" 2>&1) || instruction_rc=$?
+assert_eq 0 "$instruction_rc" 'explicit operator instruction grants consent without a flag'
+assert_contains "$instruction_out" "payload=$payload" 'instruction grant discloses payload'
+assert_contains "$instruction_out" 'destination=Claude' 'instruction grant discloses destination'
+assert_contains "$instruction_out" 'source=operator-instruction' 'decision credits the instruction'
+assert_eq yes "$([[ -f $state.decision.json ]] && printf yes || printf no)" 'instruction grant persists decision evidence'
+if [[ -f $state.decision.json ]]; then
+    assert_eq "$instruction" "$(jq -r .instruction "$state.decision.json")" 'instruction is preserved verbatim'
+    assert_eq "$payload" "$(jq -r .payload "$state.decision.json")" 'decision binds disclosed payload'
+fi
+assert_rc 0 'instruction consent satisfies exact payload check' -- bash "$consent" check \
+    --state "$state" --provider anthropic --payload "$payload"
+assert_rc 10 'instruction never authorizes another provider' -- bash "$consent" check \
+    --state "$state" --provider openai --payload "$payload"
+assert_rc 0 'instruction supports the same bounded reduced-payload rule as the flag' -- bash "$consent" check \
+    --state "$state" --provider claude --payload "owner/repo:14:$(printf '%064d' 2)" --paths-file "$tmp/instruction-paths"
+assert_rc 10 'instruction never authorizes a different PR' -- bash "$consent" check \
+    --state "$state" --provider claude --payload "owner/repo:15:$(printf '%064d' 2)" --paths-file "$tmp/instruction-paths"
+printf 'src/other.sh\n' >"$tmp/instruction-expanded-paths"
+assert_rc 10 'instruction never authorizes undisclosed additional paths' -- bash "$consent" check \
+    --state "$state" --provider claude --payload "owner/repo:14:$(printf '%064d' 2)" --paths-file "$tmp/instruction-expanded-paths"
+if [[ -f $state.decision.json ]]; then
+    printf 'tampered\n' >>"$state.decision.json"
+    assert_rc 10 'changed operator evidence invalidates consent' -- bash "$consent" check \
+        --state "$state" --provider claude --payload "$payload"
+fi
+assert_rc 2 'missing explicit instruction cannot manufacture an affirmative' -- bash "$consent" grant \
+    --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+    --destination Claude --model 'Opus 5' --purpose 'adversarial review' --paths-file "$tmp/instruction-paths"
+assert_rc 2 'instruction must name the requested model' -- bash "$consent" grant \
+    --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction "$instruction" --destination Claude --model Other --purpose 'adversarial review' \
+    --paths-file "$tmp/instruction-paths"
+for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Claude for adversarial review.' 'Use Opus 5 for adversarial review.' 'Use Claude with Opus 5.'; do
+    assert_rc 2 'negative or incomplete instructions are not an affirmative' -- bash "$consent" grant \
+        --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+        --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+        --paths-file "$tmp/instruction-paths"
+done
+for affirmative in 'I authorize Claude with Opus 5 for adversarial review.' 'Use Claude with Opus 5 for adversarial review; do not ask again.'; do
+    assert_rc 0 'explicit authorization needs no prescribed introductory phrase' -- bash "$consent" grant \
+        --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+        --operator-instruction "$affirmative" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+        --paths-file "$tmp/instruction-paths"
+done
+
 finish

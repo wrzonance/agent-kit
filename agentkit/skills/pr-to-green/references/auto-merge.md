@@ -78,10 +78,10 @@ with `--self-authored-proof PR:FILE` after a successful remediation push. This
 works with attended confirmation as well as `--fast-mode --yolo`. The latter
 requires both flags; neither grants merges or cross-provider consent.
 
-The run receipt preserves the selector and initial PR ceiling, provider decisions,
-merge choices, explicit write-set paths, and last authorized head/base snapshot.
-Keep it for the entire run. A refreshed display cannot replace that snapshot.
-Changed repository/providers/selector/merge policy/write set or added PRs require
+The receipt preserves selector, initial PR ceiling, providers, merge choices,
+initial paths and last authorized head/base. Keep it throughout the run;
+a refreshed display cannot replace its snapshot.
+Changed repository/providers/selector/merge policy/initial write set or added PRs require
 redisplay and confirmation under a new run ID; never generate that ID automatically.
 
 The coordinator writes the private proof from its own successful push results:
@@ -101,11 +101,12 @@ Run authorization in the worktree holding the helper's
 `.agent/evidence/paths-touched.ndjson`; the owned records must corroborate each
 commit's actual paths. Keep the proof, ledger snapshot and receipt as run evidence.
 
-The helper independently verifies live **and** local ancestry, same PR/base,
-exact commit-set equality, and every commit's paths against the initial write set.
-It checks individual commits, so touching then reverting an outside path is still
-rejected. Merge commits use the existing mechanical path instead. Missing evidence,
-outside pushes, force pushes or scope escapes fail closed. Successful proofs add
+The helper verifies live **and** local ancestry, PR/base, exact commit sets,
+and commit paths against its path ledger.
+Proven remediation extends receipt `writeSet` automatically, including reverted paths;
+the initial `predicate.writeSet` and input file stay unchanged. Never hand-edit the
+expanded set. Merge commits use mechanical proof. Missing evidence, outside pushes
+and force pushes fail closed. Successful proofs add
 `kind: self-authored` advances to the run receipt without another prompt; consumer
 authorization stays pinned to the newly read live head. CI, review-completion and
 pre-merge gates must all be refreshed for that head.
