@@ -2118,6 +2118,10 @@ for inert_helper in \
     $'printf "%s" "x\nagent-run.sh --cmd test"' \
     $'printf "%s" \'x\nagent-run.sh --cmd test\'' \
     $'printf %s \\\nagent-run.sh --cmd test' \
+    $'printf %s agent-run.sh \\' \
+    $'printf %s \\\nagent-run.sh \\' \
+    $'agent-run.sh "unfinished\\' \
+    $'agent-run.sh <<EOF\nunfinished\\' \
     $'printf %s "x\\\nagent-run.sh --cmd test"' \
     '# example; agent-run.sh --cmd test' \
     'printf %s x # example; agent-run.sh --cmd test'; do
@@ -2128,6 +2132,8 @@ for inert_helper in \
     assert_eq 'deny' "$(decision "$out")" 'inert helper text preserves the real diagnostic'
 done
 for actual_helper in \
+    $'agent-run.sh --cmd test \\' \
+    $'agent-run.sh \\\n--cmd test \\' \
     'printf %s x\ #data; agent-run.sh --cmd test' \
     'printf x | agent-run.sh --cmd test' \
     'printf x & agent-run.sh --cmd test' \

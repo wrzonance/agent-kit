@@ -179,6 +179,11 @@ guard_destructive_command_segments() {
             segment+=$'\n'
         fi
     done <<< "$input"
+    # A final continuation can leave a complete command pending at EOF.
+    # Keep unfinished quotes/heredocs and the legacy modes' output unchanged.
+    if [[ $mode == helper && -n $segment && -z $quote && -z $heredoc ]]; then
+        printf '%s\0' "$segment"
+    fi
 }
 
 # Helper diagnostics recognize only the existing literal command-prefix shapes.
