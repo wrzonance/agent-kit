@@ -119,14 +119,22 @@ if [[ ! -r $board ]]; then
     [[ $repository =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_blocked 'cannot resolve the repository for board discovery'
     board_cache_discover "$repo_root" "$repository" ||
-        die_blocked "could not discover the project linked to $repository"
-    printf 'board: cache cold, discovered project #%s "%s" (written .agent/board.json)\n' \
-        "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE"
+        die_blocked "could not discover one project linked to $repository"
+    number=$BOARD_CACHE_DISCOVERED_NUMBER
+    owner=$BOARD_CACHE_DISCOVERED_OWNER
+    board_title=$BOARD_CACHE_DISCOVERED_TITLE
+    case $BOARD_CACHE_WRITE_STATE in
+        written) cache_note='written .agent/board.json' ;;
+        uncacheable) cache_note='not cached: no Status metadata' ;;
+        *) cache_note='cache unavailable' ;;
+    esac
+    printf 'board: cache cold, discovered project #%s "%s" (%s)\n' \
+        "$number" "$board_title" "$cache_note" >&2
+else
+    number=$(jq -r '.project.number // empty' "$board" 2> /dev/null || true)
+    owner=$(jq -r '.owner // empty' "$board" 2> /dev/null || true)
+    board_title=$(jq -r '.project.title // empty' "$board" 2> /dev/null || true)
 fi
-
-number=$(jq -r '.project.number // empty' "$board" 2> /dev/null || true)
-owner=$(jq -r '.owner // empty' "$board" 2> /dev/null || true)
-board_title=$(jq -r '.project.title // empty' "$board" 2> /dev/null || true)
 [[ -n $number && -n $owner ]] ||
     die_blocked '.agent/board.json declares no project number or owner'
 
@@ -202,9 +210,10 @@ if [[ -n $ARG_ISSUE ]]; then
         | if . == null then "" else "#\(.number)  \(.status)  \(.title)" end
     ' <<< "$all_records" 2> /dev/null)
     if [[ -n $hit ]]; then
-        printf '%s project=%s owner=%s calls=1\n%s\n' "$board_field" "$number" "$owner" "$hit"
+        printf '%s project=%s owner=%s calls=1 %s\n' \
+            "$board_field" "$number" "$owner" "$hit"
     else
-        printf '%s project=%s owner=%s calls=1\n#%s is not on this board\n' \
+        printf '%s project=%s owner=%s calls=1 #%s is not on this board\n' \
             "$board_field" "$number" "$owner" "$ARG_ISSUE"
     fi
     exit 0

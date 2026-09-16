@@ -928,16 +928,49 @@ process_project() {
 
 discover_rc=0
 board_cache_discover "$repo_root" "$repository" || discover_rc=$?
+if ((discover_rc == 2 || discover_rc == 5)); then
+    cold_memberships='[]'
+    for issue_number in "${issue_numbers[@]}"; do
+        membership_rc=0
+        memberships=$(issue_project_items "$issue_number") || membership_rc=$?
+        if ((membership_rc != 0)); then
+            report_noop "no-op: issue #$issue_number project board membership could not be read; not moved (${memberships:-other})"
+            completed_issues[$issue_number]=1
+            continue
+        fi
+        cold_memberships=$(jq -c -n --argjson accumulated "$cold_memberships" \
+            --argjson current "$memberships" '$accumulated + $current') ||
+            die 'Could not combine issue project memberships.'
+    done
+    if [[ $(jq -r 'length' <<< "$cold_memberships") != 0 ]]; then
+        discover_rc=0
+        board_cache_select "$repo_root" "$repository" "$cold_memberships" || discover_rc=$?
+    fi
+fi
 if ((discover_rc == 2)); then
     for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         report_noop "no-op: issue #$issue_number is not on any project board"
     done
     report_summary
     exit 0
 fi
+if ((discover_rc == 5)); then
+    for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+        report_noop "no-op: issue #$issue_number is on multiple project boards; use --all-boards to inspect all project boards"
+    done
+    report_summary
+    exit 0
+fi
 ((discover_rc == 0)) || die "Could not discover the project linked to $repository."
-printf 'board: cache cold, discovered project #%s "%s" (written .agent/board.json)\n' \
-    "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE"
+case $BOARD_CACHE_WRITE_STATE in
+    written) cache_note='written .agent/board.json' ;;
+    uncacheable) cache_note='not cached: no Status metadata' ;;
+    *) cache_note='cache unavailable' ;;
+esac
+printf 'board: cache cold, discovered project #%s "%s" (%s)\n' \
+    "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE" "$cache_note" >&2
 owner=$BOARD_CACHE_DISCOVERED_OWNER
 if ! process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" \
     "$BOARD_CACHE_DISCOVERED_TITLE" "$BOARD_CACHE_DISCOVERED_FIELDS"; then

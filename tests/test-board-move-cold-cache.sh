@@ -23,13 +23,45 @@ cat > "$bin/gh" <<'EOF'
 set -uo pipefail
 printf '%s\n' "$*" >> "${GH_STUB_LOG:?}"
 case "$*" in
+  *'projectsV2(first:20'*)
+    case ${LINKED_MODE:-single} in
+      multiple)
+        printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_repo_board","number":7,"title":"Repository Board","closed":false,"owner":{"login":"example-org"}},{"id":"PVT_second","number":8,"title":"Second Board","closed":false,"owner":{"login":"example-org"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}'
+        ;;
+      none)
+        printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}'
+        ;;
+      paged)
+        printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_closed","number":1,"title":"Closed","closed":true,"owner":{"login":"example-org"}}],"pageInfo":{"hasNextPage":true,"endCursor":"page-1"}}}}}'
+        printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_page_two","number":21,"title":"Page Two Board","closed":false,"owner":{"login":"example-org"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}'
+        ;;
+      *)
+        printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_repo_board","number":7,"title":"Repository Board","closed":false,"owner":{"login":"example-org"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}'
+        ;;
+    esac
+    ;;
   *'api graphql'*)
-    printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_repo_board","number":7,"title":"Repository Board","closed":false,"owner":{"login":"example-org"}}]}}}}'
+    membership=${MEMBERSHIP_PROJECT:-none}
+    if [[ $membership == none ]]; then
+        printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
+    else
+        case $membership in
+          8) pid=PVT_second; title='Second Board' ;;
+          9) pid=PVT_unlinked; title='Unlinked Board' ;;
+          *) pid=PVT_repo_board; title='Repository Board' ;;
+        esac
+        jq -n --argjson number "$membership" --arg id "$pid" --arg title "$title" \
+          '{data:{repository:{issue:{projectItems:{nodes:[{id:"PVTI_781",project:{id:$id,number:$number,title:$title,owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
+    fi
     ;;
-  *'project field-list 7'*)
-    printf '%s\n' '{"fields":[{"id":"PVTSSF_status","name":"Status","options":[{"id":"opt-ready","name":"Ready"},{"id":"opt-inprog","name":"In progress"}]}]}'
+  *'project field-list'*)
+    if [[ -n ${NO_STATUS:-} ]]; then
+        printf '%s\n' '{"fields":[{"id":"PVTF_title","name":"Title"}]}'
+    else
+        printf '%s\n' '{"fields":[{"id":"PVTSSF_status","name":"Status","options":[{"id":"opt-ready","name":"Ready"},{"id":"opt-inprog","name":"In progress"}]}]}'
+    fi
     ;;
-  *'project item-list 7'*)
+  *'project item-list'*)
     printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_781","status":"Ready","content":{"type":"Issue","number":781,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/781"}}]}'
     ;;
   *'project item-edit'*)
@@ -96,7 +128,7 @@ symlink_out=$(GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
     --repo-root "$symlink_repo" --repo example-org/example-repo \
     --issue-number 781 --status 'In progress' 2>&1)
 symlink_rc=$?
-set -e
+set +e
 assert_eq 1 "$symlink_rc" 'a symlinked .agent directory blocks cold-cache discovery'
 assert_contains "$symlink_out" 'Could not discover the project linked to example-org/example-repo' \
     'the blocked cache write returns a terminal discovery error'
@@ -104,5 +136,90 @@ assert_eq false "$([[ -e $outside_agent/board.json ]] && printf true || printf f
     'a symlink cannot redirect board.json outside the repository'
 assert_not_contains "$(cat -- "$log")" 'project item-edit' \
     'a blocked cache write performs no mutation'
+
+# Multiple linked boards are selected by the issue's actual membership.
+multi_repo="$tmp/multi-repo"
+mkdir -p "$multi_repo/.agent"
+git -C "$multi_repo" init -q
+: > "$log"
+multi_out=$(LINKED_MODE=multiple MEMBERSHIP_PROJECT=8 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$multi_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+multi_rc=$?
+assert_eq 0 "$multi_rc" 'issue membership resolves multiple linked projects'
+assert_contains "$multi_out" 'moved #781 -> "In progress" on project #8 "Second Board"' \
+    'the membership-selected linked project is moved'
+assert_eq 8 "$(jq -r '.project.number // empty' "$multi_repo/.agent/board.json" 2>/dev/null)" \
+    'the membership-selected project is cached'
+
+# A board holding the issue remains discoverable even when it is not linked to
+# the repository; no organization-wide project enumeration is needed.
+unlinked_repo="$tmp/unlinked-repo"
+mkdir -p "$unlinked_repo/.agent"
+git -C "$unlinked_repo" init -q
+: > "$log"
+unlinked_out=$(LINKED_MODE=none MEMBERSHIP_PROJECT=9 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$unlinked_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+unlinked_rc=$?
+assert_eq 0 "$unlinked_rc" 'issue membership discovers an unlinked project'
+assert_contains "$unlinked_out" 'moved #781 -> "In progress" on project #9 "Unlinked Board"' \
+    'the unlinked membership board is moved'
+assert_not_contains "$(cat -- "$log")" 'project list' \
+    'unlinked discovery never enumerates organization projects'
+
+# Missing Status metadata is an existing terminal no-op, not a discovery error.
+no_status_repo="$tmp/no-status-repo"
+mkdir -p "$no_status_repo/.agent"
+git -C "$no_status_repo" init -q
+no_status_out=$(NO_STATUS=1 GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$no_status_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+no_status_rc=$?
+assert_eq 0 "$no_status_rc" 'a cold board without Status is a successful no-op'
+assert_contains "$no_status_out" 'has no Status field' \
+    'the cold board preserves the existing no-Status evidence'
+
+# Cache persistence is optional outside a checkout and in a read-only cache;
+# the live board move still completes and an empty root never becomes /.agent.
+outside_repo="$tmp/outside-repo"
+mkdir -p "$outside_repo"
+: > "$log"
+outside_out=$(cd -- "$outside_repo" && GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo example-org/example-repo --issue-number 781 --status 'In progress' 2>&1)
+outside_rc=$?
+assert_eq 0 "$outside_rc" 'a cacheless move outside a checkout succeeds'
+assert_contains "$outside_out" 'moved #781 -> "In progress"' \
+    'the cacheless invocation still moves the issue'
+assert_eq false "$([[ -e /.agent/board.json ]] && printf true || printf false)" \
+    'an empty repository root never targets /.agent'
+
+readonly_repo="$tmp/readonly-repo"
+mkdir -p "$readonly_repo/.agent"
+git -C "$readonly_repo" init -q
+chmod 500 "$readonly_repo/.agent"
+readonly_out=$(GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$readonly_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+readonly_rc=$?
+chmod 700 "$readonly_repo/.agent"
+assert_eq 0 "$readonly_rc" 'a read-only board cache does not block the move'
+assert_contains "$readonly_out" 'moved #781 -> "In progress"' \
+    'the read-only cache path preserves live mutation behavior'
+
+# Repository-linked projects are paginated before uniqueness is decided.
+paged_repo="$tmp/paged-repo"
+mkdir -p "$paged_repo/.agent"
+git -C "$paged_repo" init -q
+: > "$log"
+paged_out=$(LINKED_MODE=paged GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$paged_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+paged_rc=$?
+assert_eq 0 "$paged_rc" 'linked-board discovery consumes every page'
+assert_contains "$paged_out" 'project #21 "Page Two Board"' \
+    'the open project on the second page is selected'
+assert_contains "$(cat -- "$log")" 'api graphql --paginate' \
+    'repository project discovery requests GraphQL pagination'
 
 finish

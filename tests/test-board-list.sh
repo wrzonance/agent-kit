@@ -223,4 +223,47 @@ mkdir -p "$bare"
 assert_rc 3 'no board declared is exit 3, not a crash' -- \
     env PATH="$bin:$PATH" "$script" --repo-root "$bare"
 
+# Cold-cache diagnostics belong to stderr so machine-readable modes retain
+# their exact stdout contract.
+cold_bin="$tmp/cold-bin"
+mkdir -p "$cold_bin"
+cat > "$cold_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'projectsV2(first:20'*)
+    printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_cold","number":7,"title":"Cold Board","closed":false,"owner":{"login":"example-org"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}'
+    ;;
+  *'project field-list'*)
+    printf '%s\n' '{"fields":[{"id":"PVTSSF_status","name":"Status","options":[{"id":"opt-ready","name":"Ready"}]}]}'
+    ;;
+  *'project item-list'*)
+    printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_42","status":"Ready","title":"cold item","content":{"number":42,"type":"Issue","title":"cold item","repository":"example-org/example-repo"}}]}'
+    ;;
+  *) printf '%s\n' '{}' ;;
+esac
+EOF
+chmod +x "$cold_bin/gh"
+
+cold_json_repo="$tmp/cold-json-repo"
+mkdir -p "$cold_json_repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$cold_json_repo/.agent/config.env"
+PATH="$cold_bin:$PATH" "$script" --repo-root "$cold_json_repo" --json \
+    > "$tmp/cold-json.out" 2> "$tmp/cold-json.err"
+assert_eq array "$(jq -r type < "$tmp/cold-json.out" 2>/dev/null)" \
+    'cold --json stdout remains valid JSON'
+assert_contains "$(cat "$tmp/cold-json.err")" 'board: cache cold, discovered project #7' \
+    'cold --json sends discovery evidence to stderr'
+
+cold_issue_repo="$tmp/cold-issue-repo"
+mkdir -p "$cold_issue_repo/.agent"
+printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$cold_issue_repo/.agent/config.env"
+PATH="$cold_bin:$PATH" "$script" --repo-root "$cold_issue_repo" --issue 42 \
+    > "$tmp/cold-issue.out" 2> "$tmp/cold-issue.err"
+assert_eq 1 "$(wc -l < "$tmp/cold-issue.out")" \
+    'cold --issue emits exactly one stdout line'
+assert_contains "$(cat "$tmp/cold-issue.out")" '#42  Ready  cold item' \
+    'cold --issue preserves the issue result'
+assert_contains "$(cat "$tmp/cold-issue.err")" 'board: cache cold, discovered project #7' \
+    'cold --issue sends discovery evidence to stderr'
+
 finish

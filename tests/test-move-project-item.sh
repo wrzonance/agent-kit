@@ -26,7 +26,7 @@ cat > "$tmp/stub/gh" << EOF
 set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
-  *"projectsV2(first:20)"*)
+  *"projectsV2(first:20"*)
       [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
       if [[ -n \${EMPTY_PROJECT_LIST:-} ]]; then
           printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[]}}}}'
@@ -317,7 +317,7 @@ chmod 777 "$repo/.agent"
 : > "$tmp/gh.log"
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'projectsV2(first:20)' \
+assert_contains "$log" 'projectsV2(first:20' \
     'a group/world-writable .agent/ directory falls back to linked-board discovery'
 chmod 700 "$repo/.agent"
 
@@ -391,7 +391,7 @@ out=$(run_mv "$repo" --issue-number 58 --status Ready 2>&1)
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'projectItems' \
     'a declared-board miss checks the issue-owned project memberships'
-assert_not_contains "$log" 'projectsV2(first:20)' \
+assert_not_contains "$log" 'projectsV2(first:20' \
     'a declared-board miss never rediscovers the linked project'
 assert_not_contains "$out" 'Warning: could not list items for project' \
     'a declared-board miss suppresses unrelated-project warnings'
@@ -471,7 +471,7 @@ rm -f "$repo/.agent/cache/board-items.json"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
 assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone reads the declared board once before editing'
 log=$(cat "$tmp/gh.log")
-assert_not_contains "$log" 'projectsV2(first:20)' 'does not rediscover the declared board'
+assert_not_contains "$log" 'projectsV2(first:20' 'does not rediscover the declared board'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
 assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
@@ -505,7 +505,7 @@ out=$(FAIL_EDIT=1 GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     --issue-number 57 --status Done 2>&1 || true)
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'api graphql' 'a rejected edit checks issue-owned memberships'
-assert_not_contains "$log" 'projectsV2(first:20)' 'a rejected edit never rediscovers another project'
+assert_not_contains "$log" 'projectsV2(first:20' 'a rejected edit never rediscovers another project'
 assert_contains "$out" 'board changed' 'prints the regenerate-and-commit notice'
 edits=$(grep -c 'item-edit' "$tmp/gh.log" || true)
 assert_eq '1' "$edits" 'a rejected cached edit is never retried blindly'
@@ -515,7 +515,7 @@ repo=$(bare_repo)
 : > "$tmp/gh.log"
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'projectsV2(first:20)' \
+assert_contains "$log" 'projectsV2(first:20' \
     'with no board.json it discovers the repository-linked project'
 assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
     'full discovery writes board repository provenance'
@@ -529,7 +529,7 @@ mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
 : > "$tmp/gh.log"
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'projectsV2(first:20)' \
+assert_contains "$log" 'projectsV2(first:20' \
     'an unknown schemaVersion falls back to linked-board discovery'
 
 # --- corrupt board.json is ignored, not fatal -----------------------------
@@ -626,7 +626,7 @@ assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'all-boards updates the requested card on every board'
 assert_contains "$(cat "$tmp/gh.log")" 'api graphql --paginate' \
     'all-boards paginates the issue-owned project memberships'
-assert_not_contains "$(cat "$tmp/gh.log")" 'projectsV2(first:20)' \
+assert_not_contains "$(cat "$tmp/gh.log")" 'projectsV2(first:20' \
     'all-boards never performs single-board discovery'
 assert_not_contains "$(cat "$tmp/gh.log")" 'item-list' \
     'all-boards never lists every board card'

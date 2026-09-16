@@ -87,7 +87,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #781: shared repository-linked board discovery and atomic cache writer.
-readonly MAX_TREE_TOKENS=442500
+# #781 review: paginated discovery, membership selection and optional persistence.
+readonly MAX_TREE_TOKENS=443500
 
 violations=0
 checked=0
