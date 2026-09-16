@@ -194,6 +194,8 @@ assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
+assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
+    'issue-path extraction remains a seed for code-aware shared-root expansion'
 assert_contains "$triage_and_selection_text" '"schemaVersion": 2' \
     'dispatch-plan schema carries the ready-flip merge plan'
 assert_contains "$triage_and_selection_text" '"chains"' \

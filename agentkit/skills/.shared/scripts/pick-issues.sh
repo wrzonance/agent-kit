@@ -110,10 +110,7 @@ items=$(gh project item-list "$project_number" --owner "$board_owner" \
 declared_total=$(jq -r '.totalCount // empty' <<< "$items" 2> /dev/null || true)
 fetched=$(jq -r '(.items // []) | length' <<< "$items" 2> /dev/null || printf '0')
 
-# A truncated read must not produce a selection: selection is an eligibility
-# judgement over the whole board, and a partial read cannot make it. Reporting
-# a plausible-looking subset here is the exact defect this script exists to
-# avoid -- a confident, silently-wrong answer instead of a slow, honest one.
+# Eligibility requires the whole board; a truncated read cannot select safely.
 if [[ -n $declared_total ]] && ((fetched < declared_total)); then
     printf 'pick= project=%s owner=%s scanned=%s of=%s calls=1\n' \
         "$project_number" "$board_owner" "$fetched" "$declared_total" >&2
@@ -166,9 +163,7 @@ query+=' } }'
 
 deps=$(gh api graphql -f query="$query" -f owner="$owner" -f name="$name" 2> /dev/null) ||
     die 'could not read issue dependencies'
-# A rejected GraphQL query is an HTTP 200 with an errors array, so a zero exit
-# is not proof the answer is usable. Selecting on a partial answer would call a
-# blocked issue eligible, which is the one mistake this script exists to avoid.
+# GraphQL errors can accompany HTTP 200; partial data cannot prove eligibility.
 if [[ $(jq -r 'has("errors")' <<< "$deps" 2> /dev/null) == true ]] ||
     [[ $(jq -r '.data.repository | type' <<< "$deps" 2> /dev/null) != object ]]; then
     die "the dependency query was rejected: $(jq -rc '.errors[0].message // "no data"' <<< "$deps" 2> /dev/null)"
@@ -200,12 +195,10 @@ while IFS=$'\t' read -r issue body_b64; do
         jq -Rsc 'split("\n") | map(select(length > 0))')
     selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" \
         'map(if .number == $issue then .predictedWriteSet = $paths else . end)' <<<"$selection")
-done <<<"$(jq -r '.[] | [.number, (.body | @base64)] | @tsv' <<<"$selection")"
+done < <(jq -r '.[] | [.number, (.body | @base64)] | @tsv' <<<"$selection")
 selection=$(jq -c 'map(del(.body))' <<<"$selection")
 
-# The picker owns only mechanical eligibility. In fast mode it additionally
-# marks the first N eligible issues for this wave and leaves the remainder
-# explicitly queued for refill; the caller still performs conflict analysis.
+# Fast mode marks the first N eligible issues and queues the rest for refill.
 if ((fast_mode)); then
     selection=$(jq -c --argjson cap "$slot_cap" '
       [ .[] | select(.eligible) ] as $eligible |

@@ -15,6 +15,7 @@ printf 'tooling\n' >"$repo/tools/README.md"
 printf 'source\n' >"$repo/src/existing.sh"
 printf 'docs\n' >"$repo/docs/README.md"
 printf 'workflow\n' >"$repo/.github/workflows/ci.yml"
+printf 'readme\n' >"$repo/README.md"
 ln -s tools "$repo/link"
 git -C "$repo" init -q -b main
 git -C "$repo" config user.email test@example.invalid
@@ -25,19 +26,40 @@ git -C "$repo" commit -qm base
 body="$tmp/body.md"
 cat >"$body" <<'EOF'
 Add `tools/bootstrap-worktree.sh` beside the tooling docs and update src/existing.sh.
-The documentation output is docs/new-guide.md.
+The documentation output is docs/new-guide.md and README.md needs an update.
+Run `jq` with `--dry-run`; Status remains Ready.
 Ignore `missing/child.sh`, `link/escape.sh`, `../escape.sh`, `/tmp/escape.sh`,
 `.github/workflows/new.yml`, and `scripts/*.sh`.
 EOF
 
 script="$root/agentkit/skills/parallel-issues/scripts/issue-paths.sh"
 out=$("$script" --issue 202 --repo-root "$repo" --body-file "$body")
-assert_eq $'create docs/new-guide.md\ncreate tools/bootstrap-worktree.sh\nexists src/existing.sh' "$out" \
+assert_eq $'create docs/new-guide.md\ncreate tools/bootstrap-worktree.sh\nexists README.md\nexists src/existing.sh' "$out" \
     'the issue body yields deterministic literal exists/create predictions'
 assert_not_contains "$out" 'link/escape.sh' 'a symlink ancestor cannot escape the repository tree'
 assert_not_contains "$out" '.github/workflows' 'protected paths are excluded'
 assert_not_contains "$out" '../' 'traversal is excluded'
 assert_not_contains "$out" '*' 'glob-shaped text is not reported as a literal path'
+assert_not_contains "$out" 'dry-run' 'a command option is not reported as a path'
+assert_not_contains "$out" 'jq' 'a command name is not invented as a root file'
+assert_not_contains "$out" 'Status' 'a status word is not invented as a root file'
+
+mkdir -p "$tmp/failing-bin"
+real_git=$(command -v git)
+cat >"$tmp/failing-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " == *' ls-tree '* ]]; then
+    exit 42
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$tmp/failing-bin/git"
+rc=0
+out=$(REAL_GIT="$real_git" PATH="$tmp/failing-bin:$PATH" \
+    "$script" --issue 202 --repo-root "$repo" --body-file "$body" 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed repository tree read fails the public helper'
+assert_contains "$out" 'could not list repository tree' \
+    'the tree evidence failure is explicit'
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<EOF

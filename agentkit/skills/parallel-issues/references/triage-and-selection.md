@@ -407,8 +407,11 @@ actually ran. Root design review and adversarial review keep their own effort se
 regardless of any entry here.
 
 Seed each `predictedWriteSet` with `scripts/issue-paths.sh --issue N`, then
-record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
---validate-only` supply required manifest companions.
+expand it from the issue's code impact to include affected shared build config, lockfiles, and generated contracts
+even when the issue does not name them.
+Record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
+--validate-only` supply required manifest companions; extraction is a seed for
+code-aware conflict analysis, not a substitute for it.
 
 `AGENT_GENERATED_PATHS` (declared once in `.agent/config.env`) feeds both this write-set check and
 `gh-pr-state.sh`'s staleness exemption (a base advance confined to those paths reports `stale=no`).

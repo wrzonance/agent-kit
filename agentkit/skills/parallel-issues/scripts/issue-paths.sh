@@ -58,8 +58,17 @@ if [[ -x $config_reader ]]; then
     declared_protected=$("$config_reader" --repo-root "$repo_root" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
 fi
 
+tree_listing=$(mktemp) || die 'could not create repository tree buffer'
+trap 'rm -f -- "$tree_listing"' EXIT HUP INT TERM
+git -C "$repo_root" ls-tree -rz 'HEAD^{tree}' >"$tree_listing" ||
+    die 'could not list repository tree'
+
 declare -A modes=() directories=() symlinks=()
-while IFS=' ' read -r -d '' mode path; do
+while IFS= read -r -d '' record; do
+    [[ $record == *$'\t'* ]] || die 'repository tree returned malformed evidence'
+    metadata=${record%%$'\t'*}
+    path=${record#*$'\t'}
+    mode=${metadata%% *}
     modes["$path"]=$mode
     [[ $mode != 120000 ]] || symlinks["$path"]=1
     parent=$path
@@ -67,11 +76,12 @@ while IFS=' ' read -r -d '' mode path; do
         parent=${parent%/*}
         directories["$parent"]=1
     done
-done < <(git -C "$repo_root" ls-tree -rz --format='%(objectmode) %(path)' 'HEAD^{tree}')
+done <"$tree_listing"
 
 candidate_is_safe() {
     local candidate=$1 segment prefix=''
     [[ $candidate =~ ^[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*$ ]] || return 1
+    [[ $candidate != -* ]] || return 1
     [[ $candidate != . && $candidate != .. ]] || return 1
     IFS=/ read -ra segments <<<"$candidate"
     for segment in "${segments[@]}"; do
@@ -90,9 +100,9 @@ classify() {
         printf 'exists %s\n' "$candidate"
         return 0
     fi
-    parent=.
-    [[ $candidate != */* ]] || parent=${candidate%/*}
-    if [[ $parent == . || -n ${directories[$parent]+yes} ]]; then
+    [[ $candidate == */* ]] || return 0
+    parent=${candidate%/*}
+    if [[ -n ${directories[$parent]+yes} ]]; then
         printf 'create %s\n' "$candidate"
     fi
     return 0
@@ -102,5 +112,6 @@ while IFS= read -r candidate; do
     classify "$candidate"
 done < <(jq -Rrs -r '
   ([scan("`([^`\\r\\n]+)`") | .[0]]
-   + [scan("/?[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*[A-Za-z0-9_@+-])+")])[]
+   + [scan("/?[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*[A-Za-z0-9_@+-])+")]
+   + [scan("[A-Za-z0-9_@+-]+(?:\\.[A-Za-z0-9_@+-]+)+")])[]
 ' <<<"$body") | sort -u

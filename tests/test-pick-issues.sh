@@ -126,6 +126,17 @@ set_board "$items" \
 out=$(run)
 assert_not_contains "$out" '#10' 'a closed issue still on the board is dropped'
 
+# --- only closed candidates produce a successful empty selection ------------
+set_board '{"totalCount":1,"items":[
+  {"status":"Ready","content":{"number":15,"type":"Issue","title":"stale closed card",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i15":{"number":15,"state":"CLOSED","body":"","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+rc=0
+out=$(run --json) || rc=$?
+assert_eq '0' "$rc" 'closed Ready cards leave a successful empty selection'
+assert_eq '[]' "$out" 'closed Ready cards return an empty JSON array'
+
 # --- a truncated dependency read is treated as blocked ----------------------
 # Reporting "no open blockers" from a page that did not contain them all is the
 # same class of error as reporting a miss from a truncated board read.
