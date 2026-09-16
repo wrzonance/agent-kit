@@ -153,9 +153,32 @@ def validate_content(args, record):
         mismatch(record, "delivered workflow bytes differ from installed workflow")
 
 
+def delegated_skills(args, record):
+    """Only authority rows in the installed workflow's call-site map delegate.
+
+    Incidental links, examples and a companion's own delegates grant nothing.
+    validate_content binds this source to the acknowledged workflow bytes.
+    """
+    body = (Path(args.skills) / record["workflow"] / "SKILL.md").read_text()
+    section = re.search(r"^## Resident call-site map\s*\n(.*?)(?=^## |\Z)",
+                        body, re.MULTILINE | re.DOTALL)
+    if not section:
+        return set()
+    names = set()
+    for line in section[1].splitlines():
+        cells = line.split("|")
+        if len(cells) != 4 or cells[0].strip() or cells[-1].strip():
+            continue
+        for name in re.findall(r"`\.\./([a-z][a-z0-9-]*)/SKILL\.md`", cells[2]):
+            target = Path(args.skills) / name / "SKILL.md"
+            if name in WORKFLOWS and target.is_file() and not target.is_symlink():
+                names.add(name)
+    return names
+
+
 def validate(args, record, skill=None, require=()):
     validate_content(args, record)
-    if skill and record.get("workflow") != skill:
+    if skill and record.get("workflow") != skill and skill not in delegated_skills(args, record):
         fail("competing-workflow: requested " + skill + "; session workflow=" + str(record.get("workflow")))
     if record.get("status") != "active" or record.get("receiptSource") != "session-acknowledgement":
         fail("activation-unavailable: workflow delivery is pending session acknowledgement")
@@ -275,8 +298,12 @@ def hook(args):
         if inspection(args, evidence.root, tool, tool_input):
             return {}
         validate(args, record)
-        if tool == "Skill" and tool_input.get("skill") != "agentkit:" + record["workflow"]:
-            fail("competing-workflow: active workflow=" + record["workflow"])
+        if tool == "Skill":
+            requested = tool_input.get("skill", "")
+            if (not isinstance(requested, str) or not requested.startswith("agentkit:")
+                    or requested.removeprefix("agentkit:") not in WORKFLOWS):
+                fail("competing-workflow: active workflow=" + record["workflow"])
+            validate(args, record, requested.removeprefix("agentkit:"))
         return {}
     if event == "SessionStart":
         # Revalidation preserves historical receipt; never creates one for a compacted context.
@@ -329,9 +356,14 @@ def main():
         if args.action == "ack":
             if not args.nonce or not secrets.compare_digest(args.nonce, record.get("nonce", "")):
                 fail("activation-unavailable: session receipt challenge mismatch")
-            record["status"], record["receiptSource"] = "active", "session-acknowledgement"
-            validate(args, record, args.skill)
-            evidence.write(record)
+            if args.skill != record.get("workflow"):
+                # A companion consumes an already active receipt; it cannot
+                # acknowledge pending delivery on the parent's behalf.
+                validate(args, record, args.skill)
+            else:
+                record["status"], record["receiptSource"] = "active", "session-acknowledgement"
+                validate(args, record, args.skill)
+                evidence.write(record)
             print(f"agentkit: skill={args.skill} version={identity(args)} hash={args.digest[:12]}")
         else:
             validate(args, record, args.skill, args.require)

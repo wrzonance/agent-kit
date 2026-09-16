@@ -265,6 +265,21 @@ bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthr
     --payload "$retry_payload" --source interactive >/dev/null
 retry_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/timeout-proof.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_run" \
+    --retry-attempt "$prior_retry_id" --retry-authorization 'Operator authorized one retry' \
+    --stopped-timeout-proof "$tmp/not-a-proof" --max-output-tokens 128000) \
+    >"$tmp/timeout-proof.out" 2>"$tmp/timeout-proof.err" || retry_rc=$?
+assert_eq 1 "$retry_rc" 'canonical launcher forwards timeout proof to the attempt gate'
+assert_contains "$(cat "$tmp/timeout-proof.err")" 'stopped-timeout proof requires a canonical unknown attempt' \
+    'a timeout proof cannot repurpose a failed attempt'
+assert_eq no "$([[ -e $tmp/timeout-proof.calls ]] && printf yes || printf no)" 'rejected timeout proof never sends'
+# The failed preparation belongs only to this fresh test run, not the prior attempt.
+rm -rf -- "$retry_run"
+mkdir -m 700 "$retry_run"
+bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthropic \
+    --payload "$retry_payload" --source interactive >/dev/null
+retry_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
     FAKE_CLAUDE_CALLED="$tmp/retry.calls" bash "$script" --pr 42 --repo acme/widget --run-dir "$retry_run" \
     --retry-attempt "$prior_retry_id" --retry-authorization 'Operator authorized one retry' \
     --max-budget-usd 10 --max-output-tokens 128000 --max-duration-seconds 1800) \

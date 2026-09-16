@@ -332,4 +332,142 @@ assert_not_contains "$(cat -- "$tmp/chain-compose-err")" 'worktree-contract-less
 assert_contains "$chain_prompt" 'Repo: example-org/example-repo' \
     'the composed prompt is a real worker prompt, not an empty success'
 
+
+# Issue #759: execute the literal curriculum resolver in an installed layout.
+source "$hooks/lib/guard-lib.sh"
+source "$hooks/lib/guard-curriculum.sh"
+resolver_home="$tmp/resolver home"
+bootstrap="$resolver_home/plugins/cache/agent-kit/agentkit/9.0/skills"
+mkdir -p "${bootstrap%/skills}"
+cp -a "$skills_root" "$bootstrap"
+resolver_repo=$(make_repo)
+legacy="$resolver_repo/.agent/env-contract.txt"
+keyed="$resolver_repo/.agent/env-contract.codex.txt"
+printf 'skills= path=%s\n' "$tmp/retired/skills" > "$legacy"
+printf 'skills= path=%s\n' "$bootstrap" > "$keyed"
+run_hint() {
+    # shellcheck disable=SC2016  # the child shell expands agentkit after resolving it
+    (cd -- "$resolver_repo" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+        CODEX_HOME="$resolver_home" CLAUDE_CONFIG_DIR="$tmp/no-claude" \
+        bash -c "$RESOLVE_HINT"'; printf "%s" "$agentkit"')
+}
+resolved=$(run_hint 2> "$tmp/hint.err")
+assert_eq "$bootstrap" "$resolved" 'the keyed live pin wins over a retired legacy pin'
+live_pin="$tmp/other installed/skills"
+mkdir -p "$live_pin"
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+    'a different live keyed pin wins over both legacy and discovery'
+# A live legacy tree cannot mask the selected retired keyed pin.
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$tmp/retired/skills" > "$keyed"
+resolved=$(run_hint 2> "$tmp/hint.err")
+assert_eq "$bootstrap" "$resolved" 'a retired keyed pin retains an executable bootstrap'
+err=$(cat -- "$tmp/hint.err")
+assert_contains "$err" "$keyed" 'mismatch names the selected contract path'
+assert_contains "$err" "$tmp/retired/skills" 'mismatch names the recorded skills value'
+assert_contains "$err" "$bootstrap" 'mismatch names the installed skills value'
+assert_contains "$err" 'remedy (Bash): ' 'mismatch supplies an independently executable remedy'
+remedy=${err#*remedy (Bash): }
+if [[ $remedy != "$err" ]]; then
+    rc=0
+    env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT CODEX_HOME="$resolver_home" \
+        PATH="$stub_path" bash -c "$remedy" > "$tmp/remedy.out" 2> "$tmp/remedy.err" || rc=$?
+    assert_eq 0 "$rc" 'the printed remedy executes with spaces in the installed tree'
+    assert_contains "$(cat -- "$keyed")" "skills= path=$bootstrap" 'the remedy repairs the keyed file'
+fi
+
+# A cache library is neither required nor authoritative for selecting a pin.
+rm -- "$keyed"
+printf 'skills= path=%s\n' "$live_pin" > "$legacy"
+for broken_library in ':' 'contract_cache_contract_file() { return 1; }'; do
+    printf '%s\n' "$broken_library" > "$bootstrap/.shared/scripts/lib/contract-cache.sh"
+    assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+        'a missing or failing cache selector cannot discard a valid legacy pin'
+    assert_eq '' "$(cat -- "$tmp/hint.err")" 'unused cache library failures do not leak into resolver advice'
+done
+saved_home=$resolver_home
+resolver_home="$tmp/no-cache"
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+    'a keyed pin resolves without any discoverable bootstrap library'
+resolver_home=$saved_home
+cp -- "$skills_root/.shared/scripts/lib/contract-cache.sh" "$bootstrap/.shared/scripts/lib/contract-cache.sh"
+
+# Declarations may explain drift without authorizing execution from their tree.
+for untrusted_kind in tracked symlink; do
+    printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+    if [[ $untrusted_kind == tracked ]]; then
+        git -C "$resolver_repo" add -f -- "$keyed"
+    else
+        mv -- "$keyed" "$tmp/symlink-contract"
+        ln -s -- "$tmp/symlink-contract" "$keyed"
+    fi
+    assert_eq "$bootstrap" "$(run_hint 2> "$tmp/hint.err")" \
+        "$untrusted_kind declarations cannot select an executable tree"
+    assert_contains "$(cat -- "$tmp/hint.err")" "$live_pin" \
+        "$untrusted_kind declaration divergence is reported"
+    assert_contains "$(cat -- "$tmp/hint.err")" "$keyed" \
+        "$untrusted_kind divergence names the selected contract"
+    [[ $untrusted_kind != tracked ]] || git -C "$resolver_repo" rm -q --cached -- "$keyed"
+    rm -- "$keyed"
+done
+
+# Cache selection is harness-first, never a sort across unrelated home paths.
+for order in az za; do
+    dual_repo=$(make_repo)
+    cx="$tmp/dual-$order/${order:0:1}-codex"
+    cl="$tmp/dual-$order/${order:1:1}-claude"
+    cx_old="$cx/plugins/cache/agent-kit/agentkit/1.0/skills"
+    cx_new="$cx/plugins/cache/agent-kit/agentkit/2.0/skills"
+    cl_new="$cl/plugins/cache/agent-kit/agentkit/99.0/skills"
+    mkdir -p "$cx_old" "$cx_new" "$cl_new"
+    for active in codex claude; do
+        active_env=(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$cl")
+        want=$cx_new
+        [[ $active != claude ]] || { active_env+=(CLAUDECODE=1); want=$cl_new; }
+        # shellcheck disable=SC2016  # the child expands the resolved variable
+        dual_hint() { (cd -- "$dual_repo" && "${active_env[@]}" bash -c "$RESOLVE_HINT"'; printf "%s" "$agentkit"'); }
+        assert_eq "$want" "$(dual_hint)" "$active selects its own newest cache with $order root order"
+        printf 'skills= path=%s\n' "$live_pin" > "$dual_repo/.agent/env-contract.txt"
+        assert_eq "$live_pin" "$(dual_hint)" "$active trusted legacy pin outranks both caches"
+        printf 'skills= path=%s\n' "$cx_old" > "$dual_repo/.agent/env-contract.$active.txt"
+        assert_eq "$cx_old" "$(dual_hint)" "$active trusted keyed pin outranks legacy and both caches"
+        rm -- "$dual_repo/.agent/env-contract.txt" "$dual_repo/.agent/env-contract.$active.txt"
+        if [[ $active == codex ]]; then missing=$cx; peer=$cl_new; else missing=$cl; peer=$cx_new; fi
+        mv -- "$missing/plugins" "$missing/parked"
+        assert_eq "$peer" "$(dual_hint)" "$active falls back to the peer only when its cache is absent"
+        mv -- "$missing/parked" "$missing/plugins"
+    done
+done
+
+curriculum=$(guard_curriculum "$skills_root")
+assert_contains "$curriculum" 'onboard-state.sh --report' 'curriculum teaches the mandatory onboarding selector'
+assert_contains "$curriculum" 'repo-config.sh --resolve' 'curriculum teaches batch config resolution'
+assert_contains "$curriculum" '--list-adversarial-efforts' 'curriculum exposes supported adversarial efforts'
+# Parse each advertised script's options through its own help parser. Required
+# mode groups in usage must also have a selector in the advertised invocation;
+# --help alone would hide precisely the missing-mode defect this guards.
+while IFS= read -r line; do
+    # shellcheck disable=SC2016  # match the literal curriculum variable
+    [[ $line == '  $agentkit/'*.sh* ]] || continue
+    # shellcheck disable=SC2016  # strip the literal curriculum variable
+    invocation=${line#'  $agentkit/'}; invocation=${invocation%%  -- *}
+    read -r -a argv <<< "$invocation"
+    script="$skills_root/${argv[0]}"
+    help=$("$script" "${argv[@]:1}" --help 2>&1) || true
+    expected_help=$("$script" --help 2>&1) || true
+    assert_eq "$expected_help" "$help" "advertised options reach the help parser: ${argv[0]}"
+    while IFS= read -r group; do
+        [[ -n $group ]] || continue
+        selected=no
+        while IFS= read -r option; do
+            [[ " $invocation " == *" $option "* ]] && selected=yes
+        done < <(printf '%s\n' "$group" | grep -oE -- '--[a-z][a-z-]*')
+        assert_eq yes "$selected" "advertised invocation supplies required usage mode: ${argv[0]} $group"
+    done < <(printf '%s\n' "$help" | grep -oE '\(--[a-z][^)]*\)')
+done <<< "$curriculum"
+
 finish

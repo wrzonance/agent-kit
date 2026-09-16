@@ -7,6 +7,7 @@ MAX_OUTPUT_TOKENS=''
 MAX_DURATION_SECONDS=900
 RETRY_ATTEMPT_ID=''
 RETRY_AUTHORIZATION=''
+STOPPED_TIMEOUT_PROOF=''
 
 usage() {
     cat <<EOF
@@ -15,6 +16,7 @@ Usage: $PROGNAME --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-c
                  [--max-budget-usd AMOUNT] [--max-output-tokens N]
                  [--max-duration-seconds N]
                  [--retry-attempt ID --retry-authorization TEXT]
+                 [--stopped-timeout-proof FILE]
                  [--reaffirm-if-covered --comments FILE] [--provenance TEXT]
                  [--reviewer MODEL-EFFORT --override-authorization TEXT]
 
@@ -56,6 +58,9 @@ the ordinary current-base review.
 --retry-attempt ID and --retry-authorization TEXT request one new attempt after
 an explicitly named failed canonical attempt. Only an explicit operator retry
 authorization permits this; previous evidence is preserved, never reset.
+For a finalized unknown timeout, also pass --stopped-timeout-proof FILE: private
+operator evidence plus independently verified stopped processes. See the proof
+schema in references/adversarial-review.md; missing or live identities block.
 
 The consent record is always DIR/state/$CONSENT_STATE_FILENAME. There is no
 caller-supplied consent flag.
@@ -98,6 +103,7 @@ parse_args() {
             --max-duration-seconds) require_value "$1" "${2:-}"; MAX_DURATION_SECONDS=$2; shift 2 ;;
             --retry-attempt) require_value "$1" "${2:-}"; RETRY_ATTEMPT_ID=$2; shift 2 ;;
             --retry-authorization) require_value "$1" "${2:-}"; RETRY_AUTHORIZATION=$2; shift 2 ;;
+            --stopped-timeout-proof) require_value "$1" "${2:-}"; STOPPED_TIMEOUT_PROOF=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die_usage "unknown option: $1" ;;
         esac
@@ -122,6 +128,8 @@ validate_review_limits() {
         [[ -n $RETRY_ATTEMPT_ID && -n $RETRY_AUTHORIZATION ]] ||
             die_usage '--retry-attempt and --retry-authorization are required together'
     fi
+    [[ -z $STOPPED_TIMEOUT_PROOF || -n $RETRY_ATTEMPT_ID ]] ||
+        die_usage '--stopped-timeout-proof requires an explicitly authorized retry'
 }
 
 validate_provider_limits() {

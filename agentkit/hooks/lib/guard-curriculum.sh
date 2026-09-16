@@ -30,29 +30,26 @@ guard_subagent_curriculum() {
 guard_curriculum() {
     local skills=$1 entry rel desc out=''
     local -a entries=(
-        ".shared/scripts/board-list.sh|what is on the Project board by column; --issue N to confirm one item"
-        ".shared/scripts/ci-gap.sh|which CI gates no declared command covers"
-        ".shared/scripts/triage-issues.sh|open issues with board status and linked PRs, one call"
-        "parallel-issues/scripts/move-github-project-item.sh|set an issue's board Status, one call"
-        ".shared/scripts/agent-run.sh|run a command this repo declared, by name: --cmd <name>"
-        ".shared/scripts/worktree-commit.sh|stage and commit without sweeping working state"
-        "review-remote-pr/scripts/gh-pr-state.sh|CI and review state for a pull request"
-        ".shared/scripts/bootstrap-repo.sh|re-declare this repo facts; see the onboard-repo skill"
-        ".shared/scripts/onboard-refresh.sh|report onboarding drift without mutating config.env"
-        ".shared/scripts/onboard-state.sh|report the next resumable onboarding stage and environment preflight"
-        # Not a script: the manifest of every companion reference that ships,
-        # with its openable path and purpose. Named here because the
-        # references themselves live under .shared/ and <skill>/references/,
-        # which default enumeration hides -- an agent told only that they
-        # exist searches for them.
-        "references.md|every reference file that ships, with its path and purpose -- read it instead of searching"
+        ".shared/scripts/board-list.sh|board columns; --issue N for one item"
+        ".shared/scripts/ci-gap.sh|undeclared CI gates"
+        ".shared/scripts/triage-issues.sh|issues, board status and PRs"
+        "parallel-issues/scripts/move-github-project-item.sh|set board Status"
+        ".shared/scripts/agent-run.sh --cmd NAME|run declared command"
+        ".shared/scripts/worktree-commit.sh|commit explicit paths"
+        "review-remote-pr/scripts/gh-pr-state.sh|PR CI and review state"
+        ".shared/scripts/bootstrap-repo.sh|re-declare facts; see onboard-repo"
+        ".shared/scripts/onboard-refresh.sh|onboarding drift (read-only)"
+        ".shared/scripts/onboard-state.sh --report --repo-root DIR|next onboarding stage"
+        ".shared/scripts/repo-config.sh --resolve KEY1 --resolve KEY2|batch reads; --list for all; --list-adversarial-efforts for supported efforts"
+        # References under hidden .shared/ otherwise disappear from enumeration.
+        "references.md|reference paths and purposes"
     )
 
     [[ -d $skills ]] || return 1
     for entry in "${entries[@]}"; do
         rel=${entry%%|*}
         desc=${entry#*|}
-        [[ -e "$skills/$rel" ]] || continue
+        [[ -e "$skills/${rel%% *}" ]] || continue
         # shellcheck disable=SC2016  # $agentkit is literal text the agent retypes
         out+='  $agentkit/'"$rel  -- $desc"$'\n'
     done

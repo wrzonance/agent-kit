@@ -316,14 +316,27 @@ Claude Code setting. Accepted explicit values are 1–128000; the selected model
 applies. Fable 5.1 supports 128000 output tokens, including thinking. `--max-duration-seconds`
 defaults to 900 for either provider. These are per-run limits, not repository-wide defaults.
 
-An operator can explicitly authorize another attempt after a failed review. Use a fresh run
-directory and pass `--retry-attempt ORIGINAL_ID --retry-authorization VERBATIM_AUTHORIZATION`.
-Recompute and grant consent for the exact new payload before launching. This exception requires
-a terminal failed canonical attempt, the named current attempt ID, the same provider/model/effort
-and review bases, and a head descending from the failed attempt. It preserves the prior record,
-result and transcript evidence while recording a new ID and the operator's authorization. A failed
-run, increased budget, or an earlier `--auto-review` flag alone never authorizes a retry. Running,
-unknown, and completed attempts cannot use this path; replaying the old ID cannot buy a third run.
+Explicit retry: use a fresh directory and new payload consent, with
+`--retry-attempt ORIGINAL_ID --retry-authorization VERBATIM_AUTHORIZATION`.
+Canonical failed attempts qualify; provider/model/effort/bases must match,
+and head must descend from the old head. No automatic retry or old-ID replay is allowed.
+For finalized `unknown-outcome` timeouts, also supply `--stopped-timeout-proof FILE`,
+owned mode-0600 JSON:
+
+```json
+{"schemaVersion":1,"repo":"OWNER/REPO","pr":770,"attemptId":"ORIGINAL_ID",
+ "head":"NEW_HEAD","payload":"NEW_PAYLOAD","authorization":"VERBATIM_AUTHORIZATION",
+ "reason":"operator-confirmed-timeout","timeoutSeconds":900,
+ "resultSha256":"OLD_RESULT_HASH","transcriptSha256":"OLD_TRANSCRIPT_HASH",
+ "helperProcess":{"pid":123,"startTicks":"456","bootId":"BOOT_ID"},
+ "providerProcess":{"pid":124,"startTicks":"457","bootId":"BOOT_ID"}}
+```
+
+Copy identities from `attempt read`; SHA256 hashes bind unchanged artifacts.
+The attested timeout must cover the old limit. Missing identities, boot mismatch,
+live/reused helper/provider/launcher PIDs or permission errors block recovery.
+`previousAttempts` preserves unknown state/events/hashes; `retryOf` and proof/digest
+bind the new reservation. Never rewrite old evidence to enable retry.
 
 For detached executors only, use:
 
@@ -337,14 +350,13 @@ The scripts enforce explicit safety ceilings with --max-duration-seconds and --m
 
 ### Durable attempts and reconciliation
 
-`state/review-attempt.json` identifies the original payload, base/head, configured and selected
-reviewer, launcher and output path. `review-ledger.sh attempt` stores the authoritative record
-under `$(git rev-parse --git-common-dir)/agentkit-review-attempts/`, keyed by repository and PR.
-Reservation and transitions use an exclusive lock with a two-second acquisition bound, fsync, and atomic replacement
+`state/review-attempt.json` binds payload, base/head, reviewers, launcher and output.
+`review-ledger.sh attempt` stores authoritative repository/PR records under
+`$(git rev-parse --git-common-dir)/agentkit-review-attempts/`. Transitions use a two-second
+exclusive lock, fsync and atomic replacement
 ([Python flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock),
-[atomic replacement](https://docs.python.org/3/library/os.html#os.replace)). The record retains
-transition history, launcher/runtime hashes, helper and provider process identities, available
-provider session IDs, result and transcript hashes, and the completed result itself.
+[atomic replacement](https://docs.python.org/3/library/os.html#os.replace)). Records retain
+history, launcher/runtime and artifact hashes, process/session identities and completed results.
 
 | State | Meaning |
 |---|---|
@@ -359,15 +371,14 @@ Inspect with `review-ledger.sh attempt read --repo-root DIR --entry-file FILE`. 
 also reports `observedState`; missing or changed process identity is unknown, never a retry grant.
 If a validated original result arrived after acknowledgement was lost, use
 `review-ledger.sh attempt reconcile --repo-root DIR --entry-file FILE --id ORIGINAL_ID`.
-This validates that attempt's original result and records completion without launching a provider.
-If evidence is missing, preserve the record and report the unresolved attempt. No command resets
-the budget. The explicit operator-authorized retry above preserves the failed attempt and creates
-a separately identified attempt; it never turns failed evidence into successful review evidence. A repeated canonical invocation reuses a matching completed result; changed targets
-require the existing mechanical-lineage workflow, not a new review.
+Reconciliation validates the original result without a provider launch. Preserve and report
+missing evidence; no command resets the budget. Authorized retry preserves prior evidence under
+its original ID. Canonical replay reuses matching completed results; changed targets require
+mechanical lineage, not another review.
 
-A `parser-rejected` preparation can recover the same attempt only when its complete event history
-proves no provider start or process registration occurred. The supported launcher retries local
-preparation after consent and payload checks, preserving the original ID and preparation history.
+A `parser-rejected` preparation recovers only when complete history proves no provider start
+or process registration. Consent and payload checks precede local preparation retry;
+the original ID and history remain intact.
 Changed inputs, failed/running/unknown/completed sends, and legacy evidence cannot recover a new
 send. Lock timeout is unavailable/unknown evidence, not a successful transition or retry grant.
 After fixes advance the branch, publish using the original `state/review-attempt.json` head;

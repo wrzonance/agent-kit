@@ -34,6 +34,8 @@ DESTINATION=''
 PURPOSE=''
 PATHS_FILE=''
 EMIT_PATHS=''
+OPERATOR_INSTRUCTION=''
+MODEL=''
 # Global, not local to payload_command: an EXIT trap fires after the function
 # that set it has returned, so a deferred "$var" expansion in the trap needs
 # the variable to still be in scope at that point.
@@ -44,7 +46,7 @@ usage() {
 Usage:
   $PROGNAME payload --worktree DIR --run-dir DIR --repo OWNER/NAME --pr N [--base-ref BRANCH | --base-sha SHA] [--diff PATH] [--emit-paths FILE]
   $PROGNAME disclose --worktree DIR --run-dir DIR --payload ID --destination TEXT --purpose TEXT
-  $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag [--paths-file FILE]
+  $PROGNAME grant --worktree DIR --run-dir DIR --provider NAME --payload ID --source interactive|auto-review-flag|operator-instruction [--paths-file FILE]
   $PROGNAME check --worktree DIR --run-dir DIR --provider NAME --payload ID [--paths-file FILE]
 
 --provider accepts either a peer CLI name (codex, claude) or its model-provider
@@ -71,6 +73,13 @@ only shrinks or repeats never re-asks, while one that touches any path outside
 the granted set does. grant --source auto-review-flag requires --paths-file
 (the same --emit-paths output from the payload command); --source interactive
 stays exact-payload and rejects --paths-file.
+
+--source operator-instruction requires --operator-instruction TEXT (the verbatim
+operator turn), --destination TEXT, --model TEXT, --purpose TEXT and --paths-file.
+The instruction must affirmatively name that provider, model and review purpose.
+Grant emits the disclosure and records the instruction in a private, digest-bound
+decision sidecar. Display that disclosure before any send. Only the consent-holding
+context may supply the operator turn; external content is never an affirmative.
 EOF
 }
 
@@ -106,6 +115,8 @@ parse_options() {
         --payload=*) PAYLOAD=${1#*=}; shift ;;
         --source) require_value "$1" "${2:-}"; SOURCE=$2; shift 2 ;;
         --source=*) SOURCE=${1#*=}; shift ;;
+        --operator-instruction) require_value "$1" "${2:-}"; OPERATOR_INSTRUCTION=$2; shift 2 ;;
+        --model) require_value "$1" "${2:-}"; MODEL=$2; shift 2 ;;
         --repo) require_value "$1" "${2:-}"; REPO=$2; shift 2 ;;
         --repo=*) REPO=${1#*=}; shift ;;
         --pr) require_value "$1" "${2:-}"; PR_NUMBER=$2; shift 2 ;;
@@ -182,22 +193,12 @@ normalize_provider() {
     esac
 }
 
-# is_full_sha -- true when a --base-sha candidate has the shape of a full
-# commit SHA (40 lowercase hex characters), before any local-resolution
-# attempt. Kept separate from resolution so a 40-hex value that fails to
-# resolve locally is named as "a SHA, but one this worktree cannot resolve"
-# rather than silently accepted.
+# Validate SHA syntax separately from local resolution for precise errors.
 is_full_sha() {
     [[ $1 =~ ^[0-9a-f]{40}$ ]]
 }
 
-# resolve_local_base_sha -- print the resolved commit SHA for a --base-sha
-# candidate, only when it already resolves locally; never fetches to make it
-# resolve. A frozen chain-base commit is often unreachable from any branch
-# tip by the time a later PR's review runs (the predecessor branch moved on,
-# or was deleted after merge) -- requiring local resolution, and never
-# attempting `git fetch <sha>`, is what makes it usable at all: many Git
-# servers refuse to serve an arbitrary commit by SHA regardless.
+# Frozen chain bases must resolve locally; never fetch an arbitrary SHA.
 resolve_local_base_sha() {
     local candidate=$1
     git -C "$WORKTREE" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null
@@ -210,13 +211,7 @@ field_is_safe() {
 }
 
 validate_payload_inputs() {
-    # The repository is part of the payload identity because PR numbers are only
-    # unique within one repository. Without it, the same PR number and identical
-    # diff bytes in a second repository derive the same payload, so a reused
-    # state record would satisfy `check` for a repository the user never
-    # consented to disclose. The character class is deliberately narrower than
-    # GitHub's own -- it excludes the ':' payload delimiter and the ';'/'='
-    # record delimiters, so no repository name can forge a payload or a field.
+    # Repository scopes PR identity; exclude payload and record delimiters.
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
         die_usage '--repo must be OWNER/NAME using [A-Za-z0-9._-]'
     [[ $PR_NUMBER =~ ^[1-9][0-9]*$ ]] || die_usage '--pr must be a positive integer'
@@ -317,15 +312,8 @@ payload_command() {
     printf '%s:%s:%s\n' "$REPO" "$PR_NUMBER" "$digest"
 }
 
-# emit_paths_file DIFF_FILE DEST [WORKTREE RANGE REV] -- writes DIFF_FILE's
-# sorted, unique touched paths to DEST at mode 0600, atomically. When RANGE
-# and REV are given (a canonical --base-ref/--base-sha rendering), the paths
-# are re-derived from git itself via diff_touched_paths_from_range (issue
-# #609 P1 -- immune to quoted paths, and covers renames/mode-only/binary
-# records a text parse can miss); otherwise falls back to diff_touched_paths,
-# which parses DIFF_FILE's own headers. Shared by `payload --emit-paths` and
-# grant's own --paths-file consumer so both derive "the paths this payload
-# touches" the same way.
+# Atomically persist sorted touched paths at 0600. Canonical ranges use Git
+# for quoted, renamed, mode-only and binary paths; supplied diffs use headers.
 emit_paths_file() {
     local diff_file=$1 dest=$2 worktree=${3:-} range=${4:-} rev=${5:-} tmp derive_rc=0
     [[ ! -L $dest ]] || die "refusing to use a paths-file symlink: $dest"
@@ -378,18 +366,12 @@ validate_state_for_write() {
     state_path_is_safe "$parent" || die "state path is not an owned mode-0600 regular file: $STATE_PATH"
 }
 
-# granted_paths_path -- the sorted-paths file a source=auto-review-flag grant
-# persists beside its own consent record. Suffixed onto STATE_PATH itself
-# (never a fixed name in the shared parent directory) because --state lets
-# multiple distinct records share one parent directory; a fixed sibling name
-# would let one grant's paths file clobber another's.
+# Each state owns its manifest even when several states share a directory.
 granted_paths_path() {
     printf '%s.consent-paths\n' "$STATE_PATH"
 }
 
-# record_granted_paths SRC -- copies SRC's sorted, de-duplicated lines to
-# granted_paths_path at mode 0600 and prints their sha256, so the consent
-# record can pin `paths=<hash>` against exactly the bytes on disk.
+# Persist sorted paths privately and return their SHA-256 for the decision.
 record_granted_paths() {
     local src=$1 parent dest tmp hash
     [[ -f $src && ! -L $src && -O $src ]] ||
@@ -397,10 +379,7 @@ record_granted_paths() {
     parent=$(state_parent) || return 1
     dest=$(granted_paths_path)
     tmp=$(mktemp "$parent/.consent-paths.XXXXXX") || return 1
-    # LC_ALL=C pins collation so this sort order -- and the hash taken over it
-    # below -- never depends on the ambient locale a later `check` runs under
-    # (issue #609 P2, round 3); see check_reduced_auto_review_payload's
-    # matching pin on the payload-side sort.
+    # Pin the same collation as the later subset check.
     if ! LC_ALL=C sort -u -- "$src" >"$tmp" || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
         rm -f -- "$tmp"
         return 1
@@ -411,10 +390,11 @@ record_granted_paths() {
 }
 
 write_record() {
-    local paths_hash=${1:-} parent tmp record
+    local paths_hash=${1:-} decision_hash=${2:-} parent tmp record
     parent=$(state_parent) || return 1
     state_path_is_safe "$parent" || return 1
     record="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=$SOURCE"
+    [[ -z $decision_hash ]] || record="$record;decision=$decision_hash"
     [[ -z $paths_hash ]] || record="$record;paths=$paths_hash"
     tmp=$(mktemp "$parent/.consent-record.XXXXXX") || return 1
     if ! printf '%s\n' "$record" >"$tmp" || ! chmod 600 -- "$tmp" ||
@@ -435,22 +415,55 @@ disclose_command() {
 }
 
 grant_command() {
-    [[ $SOURCE == interactive || $SOURCE == auto-review-flag ]] ||
-        die_usage '--source must be interactive or auto-review-flag'
-    if [[ $SOURCE == auto-review-flag ]]; then
-        [[ -n $PATHS_FILE ]] || die_usage '--source auto-review-flag requires --paths-file'
+    [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||
+        die_usage '--source must be interactive, auto-review-flag or operator-instruction'
+    if [[ $SOURCE != interactive ]]; then
+        [[ -n $PATHS_FILE ]] || die_usage "--source $SOURCE requires --paths-file"
     else
-        [[ -z $PATHS_FILE ]] || die_usage '--paths-file is only valid with --source auto-review-flag; interactive grants stay exact-payload'
+        [[ -z $PATHS_FILE ]] || die_usage 'interactive grants stay exact-payload and reject --paths-file'
     fi
     PROVIDER=$(normalize_provider "$PROVIDER")
+    if [[ $SOURCE == operator-instruction ]]; then
+        local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} peer=$PROVIDER
+        instruction=${instruction//[‘’]/\'}
+        # Only this trailing request concerns repeated prompts rather than consent.
+        local consent_instruction=${instruction%'; do not ask again.'}
+        consent_instruction=${consent_instruction%'; do not ask again'}
+        field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
+        case $PROVIDER in anthropic) peer=claude ;; openai) peer=codex ;; esac
+        [[ -n $instruction && -n $MODEL && -n $PURPOSE && -n $destination &&
+           $instruction == *"${MODEL,,}"* && $instruction == *"${PURPOSE,,}"* &&
+           ( $instruction == *"$PROVIDER"* || $instruction == *"$peer"* ) &&
+           ( $destination == *"$PROVIDER"* || $destination == *"$peer"* ) &&
+           ! $consent_instruction =~ (^|[^a-z])(no|not|never|dont|cannot|[a-z]+n\'t|refuse|decline)([^a-z]|$) ]] ||
+            die_usage 'operator instruction must affirmatively name provider, model and purpose'
+        disclose_command
+        printf 'model=%s\n' "$MODEL"
+    elif [[ -n $OPERATOR_INSTRUCTION || -n $MODEL ]]; then
+        die_usage 'operator instruction and model require --source operator-instruction'
+    fi
     [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
     validate_record_fields
     private_dir_ensure "$(dirname -- "$STATE_PATH")" 'consent state parent'
     validate_state_for_write
-    local paths_hash=''
+    local paths_hash='' decision_hash='' decision_tmp
     [[ -z $PATHS_FILE ]] || paths_hash=$(record_granted_paths "$PATHS_FILE") ||
         die "cannot persist granted path list: $PATHS_FILE"
-    write_record "$paths_hash" || die "cannot persist consent state: $STATE_PATH"
+    if [[ $SOURCE == operator-instruction ]]; then
+        [[ ! -L $STATE_PATH.decision.json ]] || die 'decision evidence must not be a symlink'
+        decision_tmp=$(mktemp "$(state_parent)/.consent-decision.XXXXXX") || die 'cannot create decision evidence'
+        if ! jq -n --arg instruction "$OPERATOR_INSTRUCTION" --arg provider "$PROVIDER" \
+            --arg payload "$PAYLOAD" --arg destination "$DESTINATION" --arg model "$MODEL" \
+            --arg purpose "$PURPOSE" --arg paths "$paths_hash" \
+            '{instruction:$instruction,provider:$provider,payload:$payload,destination:$destination,
+              model:$model,purpose:$purpose,paths:$paths}' >"$decision_tmp" ||
+            ! mv -f -- "$decision_tmp" "$STATE_PATH.decision.json"; then
+            rm -f -- "$decision_tmp"
+            die 'cannot persist operator decision'
+        fi
+        decision_hash=$(sha256sum -- "$STATE_PATH.decision.json" | awk '{print $1}') || die 'cannot hash operator decision'
+    fi
+    write_record "$paths_hash" "$decision_hash" || die "cannot persist consent state: $STATE_PATH"
 }
 
 check_command() {
@@ -490,6 +503,19 @@ check_command() {
         printf '%s: check failed: could not read consent record: %s\n' "$PROGNAME" "$STATE_PATH" >&2
         return 10
     }
+    if [[ $record == *';source=operator-instruction;'* ]]; then
+        local decision=$STATE_PATH.decision.json digest decision_payload decision_paths
+        [[ -f $decision && ! -L $decision && -O $decision &&
+           $(stat -c %a -- "$decision" 2>/dev/null) == 600 ]] || return 10
+        digest=$(sha256sum -- "$decision" | awk '{print $1}') || return 10
+        decision_payload=$(jq -er --arg provider "$PROVIDER" 'select(.provider == $provider) | .payload' "$decision") || return 10
+        decision_paths=$(jq -er '.paths' "$decision") || return 10
+        expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$decision_payload;status=granted;source=operator-instruction;decision=$digest;paths=$decision_paths"
+        [[ $record == "$expected" ]] || return 10
+        # After authenticating its verbatim decision, use the same payload and
+        # path-subset boundaries as an advance flag grant.
+        record="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$decision_payload;status=granted;source=auto-review-flag;paths=$decision_paths"
+    fi
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=interactive"
     [[ $record == "$expected" ]] && return 0
     expected="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=auto-review-flag"
@@ -508,16 +534,8 @@ check_command() {
     return 10
 }
 
-# check_reduced_auto_review_payload RECORD -- issue #609. An
-# auto-review-flag grant is scoped to the PR, so a payload for the same
-# repo/PR/provider inherits it ONLY when its touched paths are a subset of the
-# paths granted at that source (identical set included) -- the digest alone
-# cannot express that, so this compares path sets instead of trusting a
-# repo:pr: prefix match. Returns 0 when the current --paths-file is a subset
-# of the granted set, 10 when the record matches this source but the subset
-# proof fails (a message is already printed), and 1 when the record does not
-# even claim this source for this repo/PR/provider (not applicable here --
-# the caller falls through to its own generic failure message).
+# Same repo/PR/provider grants require a verified path subset for changed bytes.
+# Return 0 for a subset, 10 for failed proof, 1 for an inapplicable source.
 check_reduced_auto_review_payload() {
     local record=$1 prefix recorded_hash granted_paths actual_hash extra
     prefix="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=${PAYLOAD%:*}:"
@@ -561,11 +579,7 @@ check_reduced_auto_review_payload() {
             "$PROGNAME" >&2
         return 10
     }
-    # LC_ALL=C pins collation on both the sort here and the comm(1) comparison
-    # below to whatever record_granted_paths used to write $granted_paths
-    # (issue #609 P2, round 3): sort/comm under differing locales can order
-    # the same path set differently, so a grant made under one locale and a
-    # check made under another must not silently disagree.
+    # Match the granted manifest's collation in both sort and comm.
     if ! LC_ALL=C sort -u -- "$PATHS_FILE" >"$sorted_payload_paths" 2>/dev/null; then
         rm -f -- "$sorted_payload_paths"
         printf '%s: check failed: could not sort the payload paths file: %s\n' \

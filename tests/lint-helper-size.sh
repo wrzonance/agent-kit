@@ -32,8 +32,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
-    # #711: predicate receipts and independently checked self-authored advances.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="851:11680:800"
+    # #711/#765: receipt fences and bounded exact-parent proof composition.
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16457:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -72,7 +72,15 @@ readonly MAX_HELPER_TOKENS=10000
 # #761 review repair: refresh record/release transition timestamps.
 # #764/#761/#763 merge-down: measured combined helper bytes / 4.
 # PR771: remeasure final parent heads and the gh minimum-version declaration.
-readonly MAX_TREE_TOKENS=434707
+# #760 recovery: 1,726,607 final bytes / 4 = 431,651 tokens (430,842 + 809).
+# #760 Opus repairs: 1,726,679 bytes / 4 = 431,669 tokens (431,651 + 18).
+# #765: conflict evidence, generated default history and parked rows; measured growth.
+# #761: line-addressable ledger diagnostics and locked conservative repair.
+# #761 review repair: refresh record/release transition timestamps.
+# #763 + predecessor #772: exact combined helper total; no spare allowance.
+# #760 + predecessor #769: 1,750,963 bytes / 4 = 437,740 tokens; exact combined total.
+# #764 + predecessor #770: 1,763,705 bytes / 4 = 440,926 tokens; exact combined total.
+readonly MAX_TREE_TOKENS=440926
 
 violations=0
 checked=0
