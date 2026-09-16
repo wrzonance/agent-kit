@@ -325,13 +325,14 @@ assert_rc 2 'instruction must name the requested model' -- bash "$consent" grant
     --state "$state" --provider claude --payload "$payload" --source operator-instruction \
     --operator-instruction "$instruction" --destination Claude --model Other --purpose 'adversarial review' \
     --paths-file "$tmp/instruction-paths"
-for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Claude for adversarial review.' 'Use Opus 5 for adversarial review.' 'Use Claude with Opus 5.'; do
+for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Claude for adversarial review.' 'Use Claude with Opus 5.'; do
     assert_rc 2 'negative or incomplete instructions are not an affirmative' -- bash "$consent" grant \
         --state "$state" --provider claude --payload "$payload" --source operator-instruction \
         --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
         --paths-file "$tmp/instruction-paths"
 done
 for affirmative in 'I authorize Claude with Opus 5 for adversarial review.' \
+    'Use Opus 5 for adversarial review.' \
     'Use Claude with Opus 5 for adversarial review; do not ask again.' \
     'USE ANTHROPIC WITH OPUS 5 FOR ADVERSARIAL REVIEW OF THIS PR; DO NOT ASK AGAIN.'; do
     assert_rc 0 'explicit authorization needs no prescribed introductory phrase' -- bash "$consent" grant \
