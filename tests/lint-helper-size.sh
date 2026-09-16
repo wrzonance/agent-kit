@@ -71,7 +71,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #761: line-addressable ledger diagnostics and locked conservative repair.
 # #761 review repair: refresh record/release transition timestamps.
 # #764/#761/#763 merge-down: measured combined helper bytes / 4.
-readonly MAX_TREE_TOKENS=434704
+# PR771: remeasure final parent heads and the gh minimum-version declaration.
+readonly MAX_TREE_TOKENS=434707
 
 violations=0
 checked=0

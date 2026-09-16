@@ -2,7 +2,7 @@
 # Fetch evidence for one assigned CI failure. Run from the assigned worktree.
 # REST docs: https://docs.github.com/en/rest/actions/artifacts
 # https://docs.github.com/en/rest/actions/workflow-jobs
-# Requires gh, git, Python 3. Exit 0 includes reported ABSENT/EXPIRED evidence;
+# Requires gh >= 2.48.0, git, Python 3. Exit 0 includes reported ABSENT/EXPIRED evidence;
 # exit 2 means invalid input, unsafe archive, or incomplete API collection.
 # --dest must be a dedicated directory strictly below this worktree's .agent/.
 # Downloads are cached by immutable artifact/job IDs and bound to repo/run.
