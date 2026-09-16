@@ -18,7 +18,11 @@ if [[ $prompt_type != string ]]; then
 fi
 token=$(python3 "$here/../skills/.shared/scripts/lib/workflow-activation.py" \
     --skills "$here/../skills" --digest '' classify <<<"$input") || {
-    printf '%s\n' "$unknown"
+    token=$(jq -r 'try (.prompt | capture("^\\s*[$/](?<t>(?:agentkit:)?[a-z][a-z0-9-]*)(?=\\s|$)").t) catch ""' <<<"$input")
+    case $token in
+        agentkit:*|parallel-issues|pr-to-green|review-remote-pr|review-pr|onboard-repo) printf '%s\n' "$blocked" ;;
+        *) printf '{}\n' ;;
+    esac
     exit 0
 }
 

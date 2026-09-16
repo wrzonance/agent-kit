@@ -39,7 +39,7 @@ def select_workflow(prompt):
     if text == "why are the guards inert?":
         text = text[:-1]
     # Deliberately conservative: ambiguous prose can use the documented selector.
-    if re.search(r'["`\n\r?]|\b(?:not|never|don\x27t|do not)\b', text):
+    if re.search(r'["`\n\r?]|\b(?:not|never|don[\x27’]t|do not)\b', text):
         return None
     text = re.sub(r"^please\s+", "", text)
     phrases = {
@@ -223,7 +223,7 @@ def hook(args):
         if not workflow:
             return {}
         named = {name for name in WORKFLOWS if re.search(r"\b" + re.escape(name) + r"\b", prompt)}
-        if len(named) > 1:
+        if not re.match(r"^\s*[$/]", prompt) and len(named) > 1:
             fail("competing-workflow: name one workflow per invocation; existing receipt preserved")
         skill = Path(args.skills) / workflow / "SKILL.md"
         if workflow not in WORKFLOWS or not skill.is_file() or skill.is_symlink():

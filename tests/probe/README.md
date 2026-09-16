@@ -124,7 +124,10 @@ Acceptance requires all three independent observations:
 `$agentkit:NAME`, `/agentkit:NAME`, bare workflow selectors, and `/review-pr`.
 Advertised direct natural-language triggers and “resume saved parallel-issues run”
 deliver through the same boundary. Quoted reports, negation, and incidental mentions
-do not activate; ambiguous multiple-workflow requests preserve the existing receipt.
+do not activate; ambiguous natural-language requests preserve the existing receipt.
+A leading explicit selector takes precedence over workflow names in attached prose.
+If Python classification is unavailable, a shell fallback blocks explicit workflow
+selectors while keeping ordinary chat available; no activation receipt is created.
 The supported path delivers the selected installed workflow explicitly even when
 the native skill registry lacks it. Missing workflow files fail `workflow-unavailable`;
 changed installed content fails `activation-mismatch` during checks; conflicting

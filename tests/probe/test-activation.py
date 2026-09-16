@@ -70,6 +70,43 @@ class Activation(unittest.TestCase):
         self.payload["prompt"] = "run the unit tests"
         self.assertEqual(self.prompt(), {})
 
+    def test_missing_or_corrupt_classifier_preserves_chat_and_blocks_selectors(self):
+        library = self.helper.parent / "lib/workflow-activation.py"
+        original = library.read_bytes()
+        for failure in ("missing", "corrupt"):
+            if failure == "missing":
+                library.unlink()
+            else:
+                library.write_text("invalid python syntax !")
+            for prompt in ("hello", "run the unit tests", "$other:skill", "/help",
+                           "$agentkit:parallel-issues", "/pr-to-green", "/review-pr", "$agentkit:unknown"):
+                with self.subTest(failure=failure, prompt=prompt):
+                    self.payload["prompt"] = prompt
+                    output = self.prompt()
+                    if prompt.startswith(("$agentkit:", "/pr-to-green", "/review-pr")):
+                        self.assertEqual(output.get("decision"), "block")
+                    else:
+                        self.assertEqual(output, {})
+            library.write_bytes(original)
+
+    def test_missing_python_preserves_chat_and_blocks_selector(self):
+        commands = self.root / "without-python"
+        commands.mkdir()
+        for name in ("bash", "cat", "dirname", "jq"):
+            (commands / name).symlink_to(shutil.which(name))
+        for prompt in ("hello", "$agentkit:parallel-issues"):
+            with self.subTest(prompt=prompt):
+                result = subprocess.run([str(self.hook)],
+                                        input=json.dumps(dict(self.payload, prompt=prompt)),
+                                        text=True, capture_output=True, cwd=self.repo,
+                                        env={"PATH": str(commands)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                if prompt == "hello":
+                    self.assertEqual(output, {})
+                else:
+                    self.assertEqual(output.get("decision"), "block")
+
     def test_failed_activation_helper_blocks_workflow_invocation(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
         self.payload["prompt"] = "  $agentkit:parallel-issues 722"
@@ -316,6 +353,21 @@ class Activation(unittest.TestCase):
         self.payload["prompt"] = "resume parallel-issues and pr-to-green"
         self.assertIn("competing-workflow", json.dumps(self.prompt()))
         self.assertEqual(self.record(), before)
+
+    def test_unicode_negation_preserves_active_workflow(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        before = self.record()
+        self.payload["prompt"] = "resume pr-to-green but don’t merge anything"
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.record(), before)
+
+    def test_explicit_selector_precedes_attached_workflow_mentions(self):
+        for selector in ("$agentkit:parallel-issues", "/parallel-issues"):
+            with self.subTest(selector=selector):
+                self.payload["prompt"] = selector + " 57 54 — issue text mentions pr-to-green"
+                self.assertIn("--skill parallel-issues", json.dumps(self.prompt()))
+                self.assertEqual(self.record()["workflow"], "parallel-issues")
 
     def test_pending_upgrade_resume_does_not_offer_stale_ack(self):
         self.prompt()
