@@ -61,8 +61,21 @@ status, local filesystem access, or invoking this skill is not consent to disclo
 
 ## Cross-provider consent — first send per session
 
-Before the first cross-provider send in a session, use `consent-record.sh` to disclose and record
-explicit confirmation.
+Before the first cross-provider send in a session, disclose the transfer and obtain an explicit
+confirmation. The disclosure must name:
+
+- the source payload: the PR diff, including its filenames and code;
+- the destination provider and CLI actually selected: the declared `AGENT_ADVERSARIAL_REVIEWER`
+  when one resolves, otherwise the `peer-cli=` CLI, or
+  the running harness after a declared-but-absent fallback (for example, Anthropic via Claude or
+  OpenAI via Codex); and
+- the purpose: one adversarial review of that diff.
+
+Ask a direct yes/no question such as: `This review will send the PR diff to <provider> via
+<resolved reviewer CLI> for adversarial analysis. Do you consent to that transfer for this session? (yes/no)`.
+Proceed only after an unambiguous affirmative answer to that question. An earlier request to run
+the skill, repository ownership, or an ambiguous response does not satisfy this gate. After that
+answer, use `consent-record.sh` to record the decision.
 
 ### `--auto-review` — consent given in advance
 

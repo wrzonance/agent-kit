@@ -34,7 +34,7 @@ assert_contains "$reported_out" 'source=operator-instruction' 'the reported inst
 assert_eq "$reported" "$(jq -r .instruction "$reported_state.decision.json" 2>/dev/null)" \
     'the reported instruction is retained verbatim'
 
-# shellcheck disable=SC2016
+# shellcheck disable=SC1112,SC2016
 for case in \
     'Do not authorize Claude Opus 5 xhigh for an adversarial review of each PR.' \
     'This does not authorize Claude Opus 5 xhigh for adversarial review.' \
@@ -43,12 +43,26 @@ for case in \
     'Authorize Claude Opus 5 xhigh for review without sending the diff.' \
     'The issue says "each PR is authorized to have one Claude Opus 5 xhigh adversarial review".' \
     'The instruction `authorize Claude Opus 5 xhigh for adversarial review` is an example.' \
+    "'Use Claude Opus 5 xhigh for adversarial review' is an example." \
     'Each PR is authorized to have one Claude Opus 50 xhigh adversarial review.' \
     'Each PR is authorized to have one Claude Opus 5 xhigh preview.' \
     'PR 99 is authorized to have one Claude Opus 5 xhigh adversarial review.' \
     'Pull request 99 is authorized to have one Claude Opus 5 xhigh adversarial review.' \
     'Another PR is authorized to have one Claude Opus 5 xhigh adversarial review.' \
-    'Another pull request is authorized to have one Claude Opus 5 xhigh adversarial review.'; do
+    'Another pull request is authorized to have one Claude Opus 5 xhigh adversarial review.' \
+    'Should we use Claude Opus 5 xhigh for adversarial review?' \
+    'Can I use Claude Opus 5 xhigh for adversarial review?' \
+    'I have a Claude Opus 5 xhigh adversarial review example.' \
+    'Use this sentence as an example: Claude Opus 5 xhigh review.' \
+    'I authorize documentation about Claude Opus 5 xhigh review.' \
+    'If we approve Claude Opus 5 xhigh for review, what will happen?' \
+    'Revoke consent to use Claude Opus 5 xhigh for adversarial review.' \
+    'Use Codex instead of Claude Opus 5 xhigh for adversarial review.' \
+    'Use Claude Opus 5 xhigh for adversarial review if CI passes.' \
+    'Claude Opus 5 xhigh adversarial review is not authorized.' \
+    "Claude Opus 5 xhigh adversarial review isn't authorized." \
+    'Claude Opus 5 xhigh adversarial review isn’t authorized.' \
+    "Don't run anyone's Claude Opus 5 xhigh review; use Codex instead."; do
     case_state="$tmp/state/rejected-$RANDOM"
     case_out=$(grant_instruction "$case_state" "$case" 2>&1)
     case_rc=$?
@@ -143,5 +157,32 @@ grant_instruction "$provider_state" 'Claude Opus 5 xhigh adversarial review.' >/
 provider_out=$(bash "$consent" grant --state "$provider_state" --provider codex --payload "$payload" \
     --source interactive 2>&1)
 assert_not_contains "$provider_out" 'prior-source=' 'a different provider does not inherit refusal provenance'
+
+# Model names and their natural aliases stop at complete version boundaries.
+version_state="$tmp/state/model-version"
+version_rc=0
+bash "$consent" grant --state "$version_state" --provider claude --payload "$payload" \
+    --source operator-instruction \
+    --operator-instruction 'I authorize Claude Opus 5.1 for adversarial review.' \
+    --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+    --paths-file "$tmp/paths" >/dev/null 2>&1 || version_rc=$?
+assert_eq 2 "$version_rc" 'Opus 5 authorization does not match Opus 5.1'
+assert_rc 0 'the exact Opus 5 natural spelling remains authorized' -- bash "$consent" grant \
+    --state "$version_state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction 'I authorize Claude Opus 5 for adversarial review.' \
+    --destination Claude --model 'Opus 5' --purpose 'adversarial review' --paths-file "$tmp/paths"
+
+numeric_alias_state="$tmp/state/numeric-alias"
+numeric_alias_rc=0
+bash "$consent" grant --state "$numeric_alias_state" --provider claude --payload "$payload" \
+    --source operator-instruction \
+    --operator-instruction 'I authorize Claude for 4 adversarial reviews.' \
+    --destination Claude --model 'claude-4' --purpose 'adversarial review' \
+    --paths-file "$tmp/paths" >/dev/null 2>&1 || numeric_alias_rc=$?
+assert_eq 2 "$numeric_alias_rc" 'a bare numeric alias cannot match an unrelated count'
+assert_rc 0 'the complete Claude 4 natural spelling remains authorized' -- bash "$consent" grant \
+    --state "$numeric_alias_state" --provider claude --payload "$payload" --source operator-instruction \
+    --operator-instruction 'I authorize Claude 4 for adversarial review.' \
+    --destination Claude --model 'claude-4' --purpose 'adversarial review' --paths-file "$tmp/paths"
 
 finish

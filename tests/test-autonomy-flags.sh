@@ -95,6 +95,16 @@ assert_contains "$review_adversarial" 'Make the grant legible to harness approva
     'the consent reference requires launch-site provenance'
 assert_contains "$review_adversarial" 'answerable from the command itself' \
     'launch-site provenance answers the authorization question locally'
+assert_contains "$review_adversarial" 'the source payload: the PR diff' \
+    'interactive consent discloses the payload bytes leaving the machine'
+assert_contains "$review_adversarial" 'destination provider and CLI actually selected' \
+    'interactive consent names the resolved destination'
+assert_contains "$review_adversarial" 'Ask a direct yes/no question' \
+    'interactive consent requires a direct confirmation question'
+assert_contains "$review_adversarial" 'Proceed only after an unambiguous affirmative answer' \
+    'interactive consent rejects ambiguous responses'
+assert_contains "$review_adversarial" 'repository ownership, or an ambiguous response does not satisfy this gate' \
+    'interactive consent is not inferred from ownership or skill invocation'
 
 # --- --fast-mode removes the gate, not the analysis -------------------------
 # Two workers editing one file in separate worktrees is the failure Step 3

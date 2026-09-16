@@ -87,7 +87,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #780: affirmative consent parsing and refused-source provenance; exact total.
-readonly MAX_TREE_TOKENS=442390
+# #780 PR #793 review: bind authorization, reviewer/model, and review purpose; exact total.
+readonly MAX_TREE_TOKENS=443062
 
 violations=0
 checked=0

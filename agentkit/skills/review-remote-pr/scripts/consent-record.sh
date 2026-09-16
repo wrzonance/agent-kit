@@ -193,7 +193,6 @@ normalize_provider() {
     *) printf '%s' "$1" ;;
     esac
 }
-
 # Validate SHA syntax separately from local resolution for precise errors.
 is_full_sha() {
     [[ $1 =~ ^[0-9a-f]{40}$ ]]
@@ -459,14 +458,59 @@ normalize_words() {
     printf '%s' "$value"
 }
 
-has_words() {
-    [[ " $1 " == *" $2 "* ]]
+has_words() { [[ " $1 " == *" $2 "* ]]; }
+has_model_words() {
+    local words=$1 model=$2 remainder next
+    [[ -n $model && ! $model =~ ^[0-9]+$ ]] || return 1
+    remainder=" $words "
+    while [[ $remainder == *" $model "* ]]; do
+        remainder=${remainder#*" $model "}
+        next=${remainder%% *}
+        [[ ! $next =~ ^[0-9]+$ ]] && return 0
+    done; return 1
 }
-
+authorization_clause() {
+    local words=$1
+    case $words in
+        please\ use\ *) printf '%s' "${words#please use }" ;;
+        use\ *) printf '%s' "${words#use }" ;;
+        i\ authorize\ *) printf '%s' "${words#i authorize }" ;;
+        authorize\ *) printf '%s' "${words#authorize }" ;;
+        i\ approve\ *) printf '%s' "${words#i approve }" ;;
+        i\ consent\ to\ *) printf '%s' "${words#i consent to }" ;;
+        also\ each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#also each pr is authorized to have one }" ;;
+        each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#each pr is authorized to have one }" ;;
+        this\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#this pr is authorized to have one }" ;;
+        *) return 1 ;;
+    esac
+}
+has_authorized_relationship() {
+    local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
+    clause=$(authorization_clause "$words") || return 1
+    case $provider in
+        anthropic) lead='((claude|anthropic)( with)? )?' ;;
+        openai) lead='((codex|openai)( with)? )?' ;;
+        *) lead="($(normalize_words "$provider")( with)? )?" ;;
+    esac
+    scope='(of this (pr|pull request|diff)|for this pr|on this pr|on it|of (the|that) diff|of (pr|pull request) [0-9]+)'
+    tail="(for )?(adversarial review|cross review|review)( $scope)?( do not ask again)?"
+    for model in "$model_words" "$model_alias"; do
+        [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
+        pattern="^${lead}${model} ${tail}$"
+        [[ $clause =~ $pattern ]] && return 0
+    done; return 1
+}
 strip_quoted_segments() {
-    local input=$1 output='' quote='' char close='' i
+    local input=$1 output='' quote='' char close='' previous='' following='' i
     for ((i = 0; i < ${#input}; i++)); do
         char=${input:i:1}
+        previous='' following=''
+        ((i == 0)) || previous=${input:i-1:1}
+        ((i + 1 >= ${#input})) || following=${input:i+1:1}
+        if [[ $char == "'" && $previous =~ [[:alnum:]] && $following =~ [[:alnum:]] ]]; then
+            [[ -n $quote ]] || output+=$char
+            continue
+        fi
         if [[ -n $quote ]]; then
             [[ $char == "$close" ]] && quote=''
             continue
@@ -480,7 +524,6 @@ strip_quoted_segments() {
     [[ -z $quote ]] || return 1
     printf '%s' "$output"
 }
-
 affirmation_refusal() {
     local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
     record_refused_grant || die 'cannot persist refused-grant provenance'
@@ -491,12 +534,13 @@ affirmation_refusal() {
 }
 
 validate_operator_affirmation() {
-    local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words destination_words
+    local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words
     local model_words model_alias model_spellings provider_spellings provider_found=0 model_found=0 purpose_found=0
     local affirmative=0 safe=1 payload_pr explicit_pr token
     field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
     outside=$(strip_quoted_segments "$instruction") || outside=''
     words=$(normalize_words "$outside")
+    full_words=$(normalize_words "$instruction")
     destination_words=$(normalize_words "$destination")
     model_words=$(normalize_words "$MODEL")
     model_alias=$model_words
@@ -505,12 +549,14 @@ validate_operator_affirmation() {
             provider_spellings='Claude, Opus, anthropic'
             model_alias=${model_alias#claude }
             for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && provider_found=1; done
+            for token in openai codex gpt; do has_words "$words" "$token" && safe=0; done
             has_words "$destination_words" anthropic || has_words "$destination_words" claude || provider_found=0
             ;;
         openai)
             provider_spellings='Codex, GPT-5.6, openai'
             model_alias=${model_alias#openai }
             for token in openai codex gpt; do has_words "$words" "$token" && provider_found=1; done
+            for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && safe=0; done
             has_words "$destination_words" openai || has_words "$destination_words" codex || provider_found=0
             ;;
         *)
@@ -525,19 +571,19 @@ validate_operator_affirmation() {
     esac
     if [[ $MODEL == *'['* || $MODEL == *']'* || $MODEL == *'*'* || $MODEL == *'?'* ]]; then
         [[ $instruction == *"${MODEL,,}"* ]] && model_found=1
-    elif has_words "$words" "$model_words" || has_words "$words" "$model_alias"; then
+    elif has_model_words "$words" "$model_words" || has_model_words "$words" "$model_alias"; then
         model_found=1
     fi
     if has_words "$words" 'adversarial review' || has_words "$words" review || has_words "$words" 'cross review'; then
         purpose_found=1
     fi
-    for token in authorize authorized authorizes approve approved consent consented use run have; do
-        has_words "$words" "$token" && affirmative=1
+    has_authorized_relationship "$words" "$PROVIDER" "$model_words" "$model_alias" && affirmative=1
+    full_words=${full_words%' do not ask again'}
+    for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden revoke revoked instead if unless rather; do
+        has_words "$full_words" "$token" && safe=0
     done
-    words=${words%' do not ask again'}
-    for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden; do
-        has_words "$words" "$token" && safe=0
-    done
+    [[ $instruction != *'?'* ]] || safe=0
+    [[ ! $full_words =~ (^|[[:space:]])[[:alnum:]]+n[[:space:]]+t($|[[:space:]]) ]] || safe=0
     payload_pr=${PAYLOAD#*:}; payload_pr=${payload_pr%%:*}
     [[ ! $words =~ (^|[[:space:]])(another|other|different)[[:space:]]+(pr|pull[[:space:]]+request)($|[[:space:]]) ]] || safe=0
     if [[ $words =~ (^|[[:space:]])(pr|pull[[:space:]]+request)[[:space:]]+([0-9]+)($|[[:space:]]) ]]; then
