@@ -3004,6 +3004,53 @@ for command_765 in 'printf "%s" "{ tee .github/workflows/ci.yml; }"' \
     'xargs -I tee printf "%s" .github/workflows/ci.yml'; do
     assert_eq '' "$(write_targets_765 "$command_765")" "wrapper data is never a write operand: $command_765"
 done
+# Shell-consumer heredocs execute; ordinary heredoc data and FD operations do not.
+for command_765 in \
+    $'bash <<\'EOF\'\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'env bash <<EOF\ntee .github/workflows/ci.yml\nEOF' \
+    $'sh <<-EOF\n\tprintf hi > .github/workflows/ci.yml\n\tEOF' \
+    $'cat <<EOF\n$(printf hi > .github/workflows/ci.yml)\nEOF' \
+    'printf hi >&.github/workflows/ci.yml' \
+    'printf hi &>.github/workflows/ci.yml' \
+    'printf hi &>>.github/workflows/ci.yml'; do
+    assert_eq '.github/workflows/ci.yml' "$(write_targets_765 "$command_765")" \
+        "executed heredoc or output redirect retains target: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" "executed output protects workflow: $command_765"
+    assert_eq '.github/workflows/ci.yml' \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "executed output records workflow evidence: $command_765"
+done
+for command_765 in \
+    $'cat <<\'EOF\'\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'cat <<EOF\nprintf hi > .github/workflows/ci.yml\nEOF' \
+    $'cat <<\'EOF\'\n$(tee .github/workflows/ci.yml)\nEOF' \
+    'cat < .github/workflows/ci.yml' \
+    'printf "%s" ">&.github/workflows/ci.yml"' \
+    'printf hi >&1' 'printf hi 2>&1' 'printf hi >&-' 'printf hi 2>&-' \
+    'printf hi >&2-' 'cat <&0'; do
+    assert_eq '' "$(write_targets_765 "$command_765")" "data or FD operation has no write path: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "data or FD operation stays allowed: $command_765"
+    assert_eq '' \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "data or FD operation creates no path evidence: $command_765"
+done
+for command_765 in 'printf hi &>123' 'printf hi &>>123' 'printf hi &>-' 'printf hi &>>-'; do
+    expected_765=${command_765##*>}
+    assert_eq "$expected_765" "$(write_targets_765 "$command_765")" "combined output retains literal filename: $command_765"
+    sid_765=$(fresh_sid)
+    out=$(pre_input "$review_repo_765" "$command_765" "$sid_765" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" "unprotected combined output stays allowed: $command_765"
+    assert_eq "$expected_765" \
+        "$(jq -r --arg sid "$sid_765" 'select(.session == $sid) | .paths_touched[]' \
+            "$review_repo_765/.agent/evidence/paths-touched.ndjson" 2>/dev/null)" \
+        "combined output records literal filename: $command_765"
+done
 touch "$observer_repo/EOF"
 assert_eq '/tmp/x.sh' "$(write_targets_765 $'cat > /tmp/x.sh <<EOF\nEOF\n')" \
     'an existing filename used as a heredoc delimiter is not a write target'
