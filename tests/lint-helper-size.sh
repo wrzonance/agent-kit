@@ -67,6 +67,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #725 review repair: resolve siblings for bare filename invocation.
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
+# #764: REST CI evidence collection with bounded, validated archive extraction (+2241).
+# #764 review: aggregate transfer/retention limits and independent log collection (+894).
+# #761: line-addressable ledger diagnostics and locked conservative repair.
+# #761 review repair: refresh record/release transition timestamps.
+# #764/#761/#763 merge-down: measured combined helper bytes / 4.
+# PR771: remeasure final parent heads and the gh minimum-version declaration.
 # #760 recovery: 1,726,607 final bytes / 4 = 431,651 tokens (430,842 + 809).
 # #760 Opus repairs: 1,726,679 bytes / 4 = 431,669 tokens (431,651 + 18).
 # #765: conflict evidence, generated default history and parked rows; measured growth.
@@ -74,10 +80,13 @@ readonly MAX_HELPER_TOKENS=10000
 # #761 review repair: refresh record/release transition timestamps.
 # #763 + predecessor #772: exact combined helper total; no spare allowance.
 # #760 + predecessor #769: 1,750,963 bytes / 4 = 437,740 tokens; exact combined total.
+# #764 + predecessor #770: 1,763,705 bytes / 4 = 440,926 tokens; exact combined total.
 # #765: recover executable heredocs and retain combined-output file targets.
+# #764 + #772 security repair: 1,763,940 bytes / 4 = 440,985 tokens; exact total.
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
-readonly MAX_TREE_TOKENS=437843
+# #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
+readonly MAX_TREE_TOKENS=441028
 
 violations=0
 checked=0

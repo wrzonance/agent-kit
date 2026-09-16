@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -uo pipefail
+TEST_NAME=ci-artifacts
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$here/lib/assert.sh"
+helper="$here/../agentkit/skills/review-remote-pr/scripts/ci-artifacts.sh"
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/repo/.agent" "$tmp/bin"
+git -C "$tmp/repo" init -q
+export FIXTURE="$tmp" PATH="$tmp/bin:$PATH"
+cat > "$tmp/bin/gh" <<'PY'
+#!/usr/bin/env python3
+import io,json,os,stat,sys,zipfile
+from pathlib import Path
+p=Path(os.environ['FIXTURE'])
+with (p/'calls').open('a') as f: f.write(' '.join(sys.argv[1:])+'\n')
+assert sys.argv[1]=='api'
+endpoint=sys.argv[2]
+mode=(p/'mode').read_text().strip()
+if '/runs/42/artifacts' in endpoint:
+ assert '--paginate' in sys.argv and '--slurp' in sys.argv
+ artifacts=[] if mode=='absent' else [{'id':7,'name':'results','expired':mode=='expired'}]
+ if mode=='aggregate': artifacts += [{'id':8,'name':'second','expired':False}]
+ print(json.dumps([{'artifacts':[]},{'artifacts':artifacts}]))
+elif '/runs/42/jobs' in endpoint:
+ assert '--paginate' in sys.argv and '--slurp' in sys.argv
+ print(json.dumps([{'jobs':[{'id':9,'conclusion':'failure'},{'id':10,'conclusion':'success'},{'id':11,'conclusion':'failure'}]}]))
+elif endpoint.endswith('/jobs/9/logs'):
+ if mode=='log-gone':
+  print('gh: Gone (HTTP 410)',file=sys.stderr); sys.exit(1)
+ print('failure detail')
+elif endpoint.endswith('/jobs/11/logs'):
+ print('second failure')
+elif endpoint.endswith(('/artifacts/7/zip','/artifacts/8/zip')):
+ if mode=='denied':
+  print('gh: Forbidden (HTTP 403)',file=sys.stderr); sys.exit(1)
+ if mode=='gone':
+  print('gh: Gone (HTTP 410)',file=sys.stderr); sys.exit(1)
+ b=io.BytesIO()
+ with zipfile.ZipFile(b,'w',compression=zipfile.ZIP_DEFLATED) as z:
+  name='../escape' if mode=='traversal' else '/absolute' if mode=='absolute' else 'actual.txt'
+  if mode=='symlink':
+   i=zipfile.ZipInfo('link'); i.external_attr=(stat.S_IFLNK|0o777)<<16; z.writestr(i,'../../escape')
+  else: z.writestr(name,'x'*2000000 if mode=='bomb' else 'actual evidence')
+ sys.stdout.buffer.write(b.getvalue())
+else: sys.exit('unexpected endpoint: '+endpoint)
+PY
+chmod +x "$tmp/bin/gh"
+run() { (cd "$tmp/repo" && "$helper" --repo owner/repo --run-id 42 --dest "$1" "${@:2}") > "$tmp/out" 2>&1; }
+printf normal > "$tmp/mode"
+run "$tmp/outside"; assert_eq 2 "$?" 'reject outside cache'
+assert_eq no "$([[ -e $tmp/outside ]] && echo yes || echo no)" 'invalid destination creates nothing'
+ln -s "$tmp" "$tmp/repo/.agent/escape"
+run "$tmp/repo/.agent/escape/output"; assert_eq 2 "$?" 'reject escaping destination symlink'
+run "$tmp/repo/.agent/evidence"; assert_eq 0 "$?" 'download artifacts and failed logs'
+assert_eq 'actual evidence' "$(cat "$tmp/repo/.agent/evidence/artifact-7/files/actual.txt" 2>/dev/null)" 'archive extracted'
+assert_contains "$(cat "$tmp/repo/.agent/evidence/job-9.log" 2>/dev/null)" 'failure detail' 'failed job log retained'
+before=$(rg -c '/artifacts/7/zip|/jobs/9/logs' "$tmp/calls")
+run "$tmp/repo/.agent/evidence"; assert_eq 0 "$?" 'repeat succeeds'
+assert_eq "$before" "$(rg -c '/artifacts/7/zip|/jobs/9/logs' "$tmp/calls")" 'repeat reuses completed downloads'
+for mode in expired absent gone; do
+ printf '%s' "$mode" > "$tmp/mode"
+ run "$tmp/repo/.agent/$mode"
+ assert_eq 0 "$?" "$mode still collects logs"
+ expected=EXPIRED; [[ $mode == absent ]] && expected=ABSENT
+ assert_contains "$(cat "$tmp/out")" "$expected" "$mode distinguished"
+done
+printf normal > "$tmp/mode"
+run "$tmp/repo/.agent/filter" --name missing; assert_eq 0 "$?" 'unmatched name succeeds with logs'
+assert_contains "$(cat "$tmp/out")" ABSENT 'unmatched name is absent'
+run "$tmp/repo/.agent/job" --job 12; assert_eq 2 "$?" 'job must belong to selected run'
+run "$tmp/repo/.agent/selected-job" --job 9; assert_eq 0 "$?" 'selected job downloads'
+run "$tmp/repo/.agent/end-options" --; assert_eq 0 "$?" 'trailing end-of-options marker is accepted'
+run "$tmp/repo/.agent/evidence" --run-id 43; assert_eq 2 "$?" 'cache cannot be reused across runs'
+printf denied > "$tmp/mode"
+run "$tmp/repo/.agent/denied"; assert_eq 2 "$?" 'API authorization failure is incomplete evidence'
+assert_contains "$(cat "$tmp/out")" 'HTTP 403' 'API error context retained'
+printf log-gone > "$tmp/mode"
+run "$tmp/repo/.agent/log-gone"; assert_eq 0 "$?" 'expired job log does not abort collection'
+assert_contains "$(cat "$tmp/out")" 'EXPIRED job logs: 9' 'expired job log reported distinctly'
+assert_contains "$(cat "$tmp/repo/.agent/log-gone/job-11.log" 2>/dev/null)" 'second failure' 'later failed log still collected'
+assert_eq yes "$([[ -f $tmp/repo/.agent/log-gone/artifacts.json && -f $tmp/repo/.agent/log-gone/jobs.json ]] && echo yes || echo no)" 'inventories persist after expired log'
+printf aggregate > "$tmp/mode"
+run "$tmp/repo/.agent/aggregate" --max-expanded-bytes 20
+assert_eq 0 "$?" 'aggregate expanded budget skips later artifacts'
+assert_contains "$(cat "$tmp/out")" 'SKIPPED artifact 8' 'aggregate budget reported'
+assert_eq no "$([[ -e $tmp/repo/.agent/aggregate/artifact-8 ]] && echo yes || echo no)" 'aggregate expanded data stays capped'
+run "$tmp/repo/.agent/aggregate" --max-expanded-bytes 20
+assert_eq 0 "$?" 'existing cache counts toward aggregate budget on retry'
+assert_contains "$(cat "$tmp/out")" 'SKIPPED artifact 8' 'retry does not grow past budget'
+run "$tmp/repo/.agent/retained" --max-download-bytes 180 --max-expanded-bytes 100
+assert_eq 0 "$?" 'small transfer allowance bounds first collection'
+run "$tmp/repo/.agent/retained" --max-download-bytes 180 --max-expanded-bytes 100
+assert_eq 0 "$?" 'retained archive bytes count on later invocations'
+assert_contains "$(cat "$tmp/out")" 'SKIPPED artifact 8' 'retained budget prevents growth across retries'
+run "$tmp/repo/.agent/oversize" --max-download-bytes 20
+assert_eq 0 "$?" 'oversize download skips artifacts without losing logs'
+assert_contains "$(cat "$tmp/out")" 'SKIPPED artifact 7' 'download size skip is explicit'
+assert_contains "$(cat "$tmp/repo/.agent/oversize/job-11.log" 2>/dev/null)" 'second failure' 'logs have separate allowance'
+assert_eq no "$([[ -e $tmp/repo/.agent/oversize/artifact-7 ]] && echo yes || echo no)" 'partial download not retained'
+run "$tmp/repo/.agent/log-limit" --max-log-bytes 20
+assert_eq 0 "$?" 'aggregate log budget handled explicitly'
+assert_contains "$(cat "$tmp/out")" 'SKIPPED job logs: 11' 'log budget is bounded separately'
+printf normal > "$tmp/mode"
+run "$tmp/repo/.agent/raised-limit" --max-download-bytes 9999999999
+assert_eq 2 "$?" 'caller cannot raise fixed maximum'
+for mode in traversal absolute symlink bomb; do
+ printf '%s' "$mode" > "$tmp/mode"
+ run "$tmp/repo/.agent/$mode"; assert_eq 2 "$?" "reject $mode archive"
+ assert_eq no "$([[ -e $tmp/repo/.agent/$mode/artifact-7 ]] && echo yes || echo no)" 'unsafe archive not published'
+done
+printf normal > "$tmp/mode"
+mkdir "$tmp/repo/.agent/preexisting"
+ln -s "$tmp/out" "$tmp/repo/.agent/preexisting/job-9.log"
+run "$tmp/repo/.agent/preexisting"; assert_eq 2 "$?" 'reject preexisting output symlink'
+assert_not_contains "$(cat "$tmp/calls")" 'run view' 'REST only'
+mkdir -p "$tmp/manifest/review-remote-pr/scripts" "$tmp/manifest/.shared"
+cp "$helper" "$tmp/manifest/review-remote-pr/scripts/ci-artifacts.sh"
+printf '# Reference\n' > "$tmp/manifest/.shared/example.md"
+# shellcheck disable=SC2016  # The manifest records literal $agentkit paths.
+printf '%s\n' '- `$agentkit/.shared/example.md` -- example | Read when: testing' > "$tmp/manifest/references.md"
+"$here/lint-reference-manifest.sh" "$tmp/manifest" > "$tmp/lint" 2>&1
+assert_eq 1 "$?" 'manifest gate requires shipped evidence helper entry'
+# shellcheck disable=SC2016  # The manifest records literal $agentkit paths.
+printf '%s\n' '- `$agentkit/review-remote-pr/scripts/ci-artifacts.sh` -- CI evidence | Read when: assigned CI does not reproduce' >> "$tmp/manifest/references.md"
+"$here/lint-reference-manifest.sh" "$tmp/manifest" > "$tmp/lint" 2>&1
+assert_eq 0 "$?" 'manifest accepts helper with read condition'
+mkdir "$tmp/routing"
+printf '%s\n' 'gh run view 42 --json artifacts' > "$tmp/routing/bad.sh"
+"$here/lint-rest-routing.sh" "$tmp/routing" > "$tmp/lint" 2>&1
+assert_eq 1 "$?" 'routing gate forbids run JSON porcelain'
+assert_contains "$(cat "$here/../agentkit/skills/parallel-issues/references/implementation-worker.md")" 'evidence-collection failure, not a privileged refusal' 'worker distinguishes evidence exit 2'
+assert_contains "$(cat "$here/../agentkit/skills/.shared/six-step-loop.md")" 'evidence-collection failure, not a privileged refusal' 'shared loop distinguishes evidence exit 2'
+finish

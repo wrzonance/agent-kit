@@ -1,13 +1,11 @@
 # Reference manifest
 
-Every companion reference this plugin ships, with the path to open it and what it is for. Read this file
-instead of searching the tree; it sits undotted under the skills tree because `.shared/` is invisible to
-`rg --files`, plain globs, and naive `find`.
+Reference paths and purposes. Use this index: plain globs and default `rg --files` miss `.shared/`.
 
-`$agentkit` is the resolved skills tree from the session contract's `skills= path=` line
-(`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get skills.path` if you need it again), so every
-entry below is an openable path — never reconstruct the prefix or fall back to a filesystem search; a path
-that does not resolve is a manifest mismatch, and `tests/lint-reference-manifest.sh` is the gate that says so.
+`$agentkit` is the contract's resolved `skills= path=` tree
+(`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get skills.path` retrieves it).
+Open these paths directly; do not reconstruct prefixes or search. An unresolved path is a manifest
+mismatch, enforced by `tests/lint-reference-manifest.sh`.
 
 Shared executable helpers live in `$agentkit/.shared/scripts/`; skill-specific helpers in
 `$agentkit/<skill>/scripts/`; name each helper by its complete `$agentkit`-relative path at first mention
@@ -47,6 +45,7 @@ per line, checked by that gate:
 
 ## review-remote-pr (`review-remote-pr/references/`)
 
+- `$agentkit/review-remote-pr/scripts/ci-artifacts.sh` -- REST artifact and failed-job log collection into the assigned worktree's .agent cache | Read when: an assigned CI failure does not reproduce locally, before a zero-change hand-back
 - `$agentkit/review-remote-pr/references/adversarial-review.md` -- the Step 1b adversarial-review contract: materiality, attribution, external-service authorization, cross-provider consent, and the exit-code table | Read when: review Phase A reaches Step 1b or any skill runs an adversarial cross-review
 - `$agentkit/review-remote-pr/references/environment-contract.md` -- the runtime-neutrality contract and the Step 0a environment-contract mechanics behind it | Read when: starting `review-remote-pr` Step 0a
 - `$agentkit/review-remote-pr/references/grooming.md` -- the post-loop Backlog grooming pass that proposes Ready candidates and never auto-promotes | Read when: the post-loop Backlog grooming pass is requested
