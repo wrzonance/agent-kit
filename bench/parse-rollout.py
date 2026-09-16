@@ -90,6 +90,70 @@ def empty_token_bucket():
     return dict.fromkeys(TOKEN_CLASSES, 0)
 
 
+def record_timestamp(record):
+    raw = record.get('timestamp')
+    if not isinstance(raw, str):
+        payload = record.get('payload')
+        raw = payload.get('timestamp') if isinstance(payload, dict) else None
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace('Z', '+00:00')).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def decoded_call_arguments(payload):
+    raw = payload.get('arguments', payload.get('input', ''))
+    if isinstance(raw, dict):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def is_poll_call(payload):
+    name = payload.get('name', '').rsplit('.', 1)[-1]
+    if name in {'wait_agent', 'wait'}:
+        return True
+    return name == 'write_stdin' and not decoded_call_arguments(payload).get('chars')
+
+
+def token_count_input(payload):
+    info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
+    usage = info.get('last_token_usage') if isinstance(info.get('last_token_usage'), dict) else info
+    value = usage.get('input_tokens')
+    return int(value) if isinstance(value, (int, float)) and value >= 0 else None
+
+
+def merge_polling_report(actors):
+    turns = sum(actor['polling']['turns'] for actor in actors)
+    inputs_complete = all(actor['polling']['inputs_complete'] for actor in actors)
+    poll_input_tokens = sum(actor['polling']['input_tokens'] for actor in actors) if inputs_complete else None
+    intervals = [interval for actor in actors for interval in actor['polling']['intervals']]
+    intervals_complete = all(actor['polling']['intervals_complete'] for actor in actors)
+    wait_seconds = None
+    if intervals_complete:
+        elapsed = 0.0
+        current_end = None
+        for start, end in sorted(intervals):
+            if end < start:
+                intervals_complete = False
+                break
+            if current_end is None or start > current_end:
+                elapsed += end - start
+                current_end = end
+            elif end > current_end:
+                elapsed += end - current_end
+                current_end = end
+        if intervals_complete:
+            wait_seconds = round(elapsed, 3)
+    rate = round(turns / (wait_seconds / 60), 3) if wait_seconds else None
+    return turns, poll_input_tokens, wait_seconds, rate
+
+
 def extract_reference_hits(arguments_raw):
     """Reference paths mentioned in one function_call's arguments -- the
     arguments field is itself a JSON-encoded string (Codex's own
@@ -137,6 +201,11 @@ def parse_session_file(path):
     tokens = empty_token_bucket()
     reference_hits = {}
     trial_meta = None
+    pending_input_tokens = None
+    awaiting_usage = None
+    polling = {'turns': 0, 'input_tokens': 0, 'inputs_complete': True,
+               'intervals': [], 'intervals_complete': True}
+    pending_poll_calls = {}
 
     records = read_records(path)
     try:
@@ -153,20 +222,60 @@ def parse_session_file(path):
         elif rtype == 'turn_context':
             model = payload.get('model', model)
             effort = payload.get('effort', effort)
-        elif rtype == 'response_item' and payload.get('type') == 'function_call':
+        elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
+            if is_poll_call(payload):
+                polling['turns'] += 1
+                if pending_input_tokens is None:
+                    awaiting_usage = 'poll'
+                else:
+                    polling['input_tokens'] += pending_input_tokens
+                    awaiting_usage = None
+                started = record_timestamp(rec)
+                if started is None:
+                    polling['intervals_complete'] = False
+                else:
+                    pending_poll_calls[payload.get('call_id')] = started
+            else:
+                awaiting_usage = 'other'
+            pending_input_tokens = None
+        elif rtype == 'response_item' and payload.get('type') in {'function_call_output', 'custom_tool_call_output'}:
+            call_id = payload.get('call_id')
+            if call_id in pending_poll_calls:
+                ended = record_timestamp(rec)
+                if ended is None:
+                    polling['intervals_complete'] = False
+                else:
+                    polling['intervals'].append((pending_poll_calls[call_id], ended))
+                del pending_poll_calls[call_id]
         elif rtype == 'event_msg' and payload.get('type') == 'token_count':
             info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
             tokens['input'] += int(info.get('input_tokens', 0) or 0)
             tokens['cache_read'] += int(info.get('cached_input_tokens', 0) or 0)
             tokens['cache_write'] += int(info.get('cache_write_tokens', 0) or 0)
             tokens['output'] += int(info.get('output_tokens', 0) or 0)
+            usage_input = token_count_input(payload)
+            if awaiting_usage == 'poll':
+                if usage_input is None:
+                    polling['inputs_complete'] = False
+                else:
+                    polling['input_tokens'] += usage_input
+                awaiting_usage = None
+            elif awaiting_usage == 'other':
+                awaiting_usage = None
+            else:
+                pending_input_tokens = usage_input
         elif rtype == 'bench_trial_meta':
             trial_meta = payload
 
     if not actor:
         die(f'{path}: no session_meta record carries an "originator" -- cannot attribute this file to an actor')
+
+    if pending_poll_calls:
+        polling['intervals_complete'] = False
+    if awaiting_usage == 'poll':
+        polling['inputs_complete'] = False
 
     return {
         'actor': actor,
@@ -176,6 +285,7 @@ def parse_session_file(path):
         'reference_hits': reference_hits,
         'trial_meta': trial_meta,
         'efficiency': efficiency,
+        'polling': polling,
     }
 
 
@@ -309,6 +419,7 @@ def main(argv):
         overrides = load_json_file(args.pricing, 'pricing file')
         pricing.update(overrides)
     blended_usd = compute_blended_usd(parsed, pricing)
+    poll_turns, poll_input_tokens, wait_seconds, requests_per_wait_minute = merge_polling_report(parsed)
 
     acceptance = None
     if args.acceptance:
@@ -332,6 +443,10 @@ def main(argv):
         'void_reasons': void_reasons,
         'tokens': token_report,
         'blended_usd': blended_usd,
+        'poll_turns': poll_turns,
+        'poll_input_tokens': poll_input_tokens,
+        'wait_seconds': wait_seconds,
+        'requests_per_wait_minute': requests_per_wait_minute,
         'reference_hits': reference_report,
         'wall_clock_seconds': trial_meta['wall_clock_seconds'],
         'worker_count': trial_meta['worker_count'],

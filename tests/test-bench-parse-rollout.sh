@@ -147,6 +147,50 @@ assert_eq '8' "$(get .acceptance.score)" 'the run-accept.sh acceptance JSON is e
 assert_eq '10' "$(get .acceptance.total)" 'the acceptance JSON total is embedded verbatim'
 assert_eq 'fail' "$(get '.acceptance.results["tally-05"]')" 'per-issue acceptance results are embedded verbatim'
 
+# --- polling cost is reconstructed from rollout events, not model prose ---
+poll_fixture="$tmp/root-wait-2026-09-16.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    > "$poll_fixture"
+for n in $(seq 1 92); do
+    start_epoch=$((1789516800 + (n - 1) * 30))
+    end_epoch=$((start_epoch + 30))
+    start=$(date -u -d "@$start_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    end=$(date -u -d "@$end_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    if ((n <= 43)); then
+        tool=collaboration.wait_agent
+        args='{"timeout_ms":60000}'
+    elif ((n <= 82)); then
+        tool='wait'
+        args='{"cell_id":"cell","yield_time_ms":30000}'
+    else
+        tool=write_stdin
+        args='{"session_id":7,"chars":"","yield_time_ms":30000}'
+    fi
+    printf '%s\n' \
+        "{\"timestamp\":\"$start\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"poll-$n\",\"name\":\"$tool\",\"arguments\":\"${args//\"/\\\"}\"}}" \
+        "{\"timestamp\":\"$start\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":121000}}}}" \
+        "{\"timestamp\":\"$end\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"poll-$n\",\"output\":\"timed out\"}}" \
+        >> "$poll_fixture"
+done
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"response_item","payload":{"type":"function_call","call_id":"input-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":121000}}}}' \
+    '{"timestamp":"2026-09-16T00:46:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"input-1","output":"written"}}' \
+    >> "$poll_fixture"
+printf '%s\n' '{"type":"bench_trial_meta","payload":{"run_id":"wait-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-polls","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":2760,"exit_condition":"complete"}}' >> "$poll_fixture"
+run "$poll_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the 2026-09-16 polling fixture parses successfully'
+assert_eq '92' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll_turns counts wait_agent, yielded waits, and empty write_stdin resumes'
+assert_eq '11132000' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'poll_input_tokens attributes each polling request input cost post hoc'
+assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'wait_seconds is the union of timestamped polling call intervals'
+assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
+    'requests_per_wait_minute is derived from measured turns and elapsed waits'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'

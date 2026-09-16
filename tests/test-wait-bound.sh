@@ -26,10 +26,13 @@ assert_contains "$wait_text" 'Worker implementation wait' \
 worker_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline" | grep -oE '[0-9]+' | head -n1)
 assert_eq yes "$([[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] && printf yes || printf no)" \
     'the worker-wait row names a positive numeric bound'
-assert_contains "$wait_text" 'At the effective cap, repeat that capped wait' \
-    'timeouts at the runtime cap do not force premature stall checks'
-assert_contains "$wait_text" 'requests_per_wait_minute' 'handoff defines wait cost metric'
-assert_contains "$wait_text" 'synthetic' 'synthetic evidence is labelled'
+# shellcheck disable=SC2016  # Markdown backticks are literal assertion text.
+assert_contains "$wait_text" 'use the `yield-cap=` value from the environment contract' \
+    'native collection uses the measured or explicitly-labelled default cap'
+assert_contains "$wait_text" 'one call per cap' \
+    'native collection spends one request for each cap interval'
+assert_not_contains "$wait_text" 'requests_per_wait_minute' \
+    'the model is no longer asked to calculate rollout metrics'
 assert_contains "$skill_text" 'Before the threshold elapses, do not call' 'stall checks are threshold-gated'
 prompts=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
 assert_contains "$prompts" '## Throwaway waiter prompt' 'fresh waiter template exists'
@@ -49,11 +52,9 @@ assert_not_contains "$skill_text" 'Use the shared fresh waiter template for CI/r
 assert_not_contains "$wait_text" 'Re-issuing a wait the instant it returns empty is the failure mode' 'empty capped waits are not simultaneously forbidden'
 assert_contains "$wait_text" 'Root calls already-blocking bounded helpers directly' 'bounded helper default is direct'
 assert_contains "$wait_text" 'genuinely unbounded or long-lived producer' 'waiter exception has a purpose'
-assert_contains "$wait_text" 'timeout_ms' 'native worker wait names runtime parameter'
-assert_contains "$wait_text" '3600000 ms' 'native worker wait names advertised cap'
-assert_contains "$wait_text" 'collection deadline' 'native worker collection has a finite overall bound'
-assert_contains "$wait_text" 'does not terminate the worker' 'collection expiry is not worker termination'
-assert_contains "$wait_text" 'No empty-wait narration' 'silent empty returns remain required'
+assert_not_contains "$wait_text" '3600000 ms' 'the runbook does not promise a runtime cap it did not measure'
+assert_contains "$wait_text" 'expiry does not terminate a worker' 'collection expiry is not worker termination'
+assert_contains "$wait_text" 'no narration between calls' 'silent empty returns remain required'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.
@@ -69,6 +70,8 @@ assert_contains "$compose_source" 'Worker implementation wait' \
     'the composer greps for the documented row name, not a bare literal'
 assert_contains "$compose_source" "printf 'wait-bound= issue=%s seconds=%s class=worker\\n'" \
     'the composer emits a wait-bound line beside each worker'\''s own identifier'
+assert_contains "$compose_source" "printf '%s\\n' \"\$yield_cap_line\"" \
+    'the composer emits the contract yield-cap beside each worker wait bound'
 
 # The dispatch step in SKILL.md captures that line from the composer's stdout
 # and reprints it beside the same issue's prompt=/issue= digest line, so the
@@ -89,7 +92,9 @@ assert_contains "$skill_text" '**900 s** minimum, draft-loop/review/CI waits **6
 assert_contains "$skill_text" 'Dispatch already printed this worker'\''s own bound as a `wait-bound=`' \
     'polling discipline points at the printed dispatch-time value instead of only the recalled rule'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/wait-discipline.md") -le 10700 ]] && printf yes || printf no)" \
-    'wait-discipline policy stays at or under 10700 bytes (fresh waiter and metrics contract)'
+base_lines=$(git -C "$root" show origin/main:agentkit/skills/.shared/wait-discipline.md | wc -l)
+current_lines=$(wc -l < "$wait_discipline")
+assert_eq yes "$([[ $((base_lines - current_lines)) -ge 30 ]] && printf yes || printf no)" \
+    'wait-discipline policy shrinks by at least 30 lines'
 
 finish

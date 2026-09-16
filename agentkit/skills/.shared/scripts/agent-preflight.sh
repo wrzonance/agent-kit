@@ -7,7 +7,7 @@
 # is probed; writes only under <worktree>/.agent/. Output: one key per line, the
 # first `skills= path=/abs` (literal "skills=" then "path="; consumers parse that
 # exact prefix), then `skills-content= sha256=` (#453) -- see --help.
-#   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= yield-cap= peer-cli=
 set -euo pipefail
 
 if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
@@ -73,7 +73,7 @@ fi
 
 # Optional probe libraries disclose missing facts; required declarations above
 # remain fail-closed. Issues #332 F3, #453, #474.
-for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache; do
+for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache yield-cap; do
     preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
     if [[ -r $preflight_lib_path ]]; then
         # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -126,7 +126,7 @@ Options:
                      This script never infers "escalated" itself.
   -h, --help         Print this help and exit 0.
 
-Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= yield-cap= peer-cli=
 
 Exit: 0 for reported facts; 1 for failed activation or required declarations;
       2 for invalid usage.
@@ -1137,11 +1137,18 @@ probe_runtime_pin() {
 }
 
 probe_harness() {
-    local line
+    local line harness
     line=$("$SCRIPT_DIR/harness-id.sh" 2>/dev/null || true)
     [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
     HARNESS_OTHER=${line##*other=}
     emit "harness= $line"
+    harness=${line#name=}
+    harness=${harness%% *}
+    if declare -F yield_cap_line > /dev/null; then
+        emit "$(yield_cap_line "$harness")"
+    else
+        emit "yield-cap= ms=30000 source=default harness=$harness"
+    fi
 }
 
 # The peer CLI, for a cross-harness adversarial review. Named from the harness
@@ -1257,7 +1264,8 @@ main() {
             # preserving in-place legacy migrations as well as keyed repairs.
             ARG_WRITE=$(contract_cache_contract_file "$WORKTREE")
             if existing="$(cat -- "$ARG_WRITE")"; then
-                if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
+                if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing" &&
+                    grep -q '^yield-cap=' <<< "$existing"; then
                     # Presence proves the KEYS exist, not that their VALUES
                     # describe this tree (issue #453 review): recompute both
                     # live values (the cost a fresh preflight already pays) and
@@ -1281,7 +1289,7 @@ main() {
                         note "trusted contract's skills-content= no longer matches the running tree's content -- continuing with a fresh preflight"
                     fi
                 else
-                    note 'trusted contract predates protected= or skills-content= -- continuing with a fresh preflight'
+                    note 'trusted contract predates protected=, skills-content=, or yield-cap= -- continuing with a fresh preflight'
                 fi
             else
                 note 'trusted contract changed while it was being read -- continuing with a fresh preflight'
