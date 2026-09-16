@@ -93,7 +93,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
-readonly MAX_TREE_TOKENS=446845
+readonly MAX_TREE_TOKENS=446881
 
 violations=0
 checked=0

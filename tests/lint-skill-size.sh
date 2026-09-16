@@ -30,7 +30,8 @@ declare -A KNOWN_OVERSIZE=(
     # #727: open obligations and terminal evidence in the canonical recipe.
     [review-remote-pr]="474:8289:450"
     # #777: helper-owned recipes shrink the injected body toward the standard budget.
-    [parallel-issues]="748:15635:500"
+    # #779: retain destination-adjacent plan publication in the extracted body.
+    [parallel-issues]="752:15756:500"
 )
 
 readonly MAX_BODY_LINES=500

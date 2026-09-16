@@ -19,6 +19,24 @@ trap 'rm -rf -- "$tmp"' EXIT
 for skill in "$root"/agentkit/skills/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
     text=$(<"$skill")
+    if [[ $name == parallel-issues ]]; then
+        preflight_help=$("$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help)
+        assert_contains "$preflight_help" '! -L $contract' \
+            "$name helper-owned resolver rejects symlinked contracts"
+        assert_contains "$preflight_help" '-O $contract' \
+            "$name helper-owned resolver rejects foreign-owned contracts"
+        assert_contains "$preflight_help" 'git -C "$contract_root" ls-files --error-unmatch -- "$contract"' \
+            "$name helper-owned resolver anchors tracked checks to the repository root"
+        assert_contains "$preflight_help" '[[ $tracked_rc == 1 ]]' \
+            "$name helper-owned resolver requires proven untracked status"
+        assert_contains "$preflight_help" 'contract-read.sh" --repo-root "$repository_root" --get skills.path' \
+            "$name helper-owned warm-up validates the resolved skills path"
+        assert_contains "$preflight_help" '"$cache_reader" --read-session-context' \
+            "$name helper-owned recipe rehydrates through the trusted cache reader"
+        assert_contains "$text" 'THE CACHE REHYDRATION' \
+            "$name later guarded blocks name cache rehydration"
+        continue
+    fi
     assert_contains "$text" '! -L $contract' \
         "$name rejects symlinked contracts"
     assert_contains "$text" '-O $contract' \

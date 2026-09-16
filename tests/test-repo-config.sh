@@ -740,8 +740,8 @@ assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds
 # reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
 # model_family itself recognizes but adversarial-run.sh cannot launch (+4
 # lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1134 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1134 lines (issue #731 verification declarations)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1154 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1154 lines (issue #777 helper-owned recipe)'
 
 verify_repo=$(mktemp -d "$tmp/verification.XXXXXX")
 mkdir -p "$verify_repo/.agent"
