@@ -67,7 +67,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
 # #764: REST CI evidence collection with bounded, validated archive extraction (+2241).
-readonly MAX_TREE_TOKENS=433083
+# #764 review: aggregate transfer/retention limits and independent log collection (+894).
+readonly MAX_TREE_TOKENS=433977
 
 violations=0
 checked=0

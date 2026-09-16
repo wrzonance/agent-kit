@@ -184,21 +184,22 @@ Never retry around a privilege refusal yourself.
 
 ## True blockers — the only reasons to stop early
 
-### Assigned CI failure evidence
+### CI evidence
 
-When the assigned CI failure does not reproduce locally, fetch the failing run's artifacts
-and failed-job logs before hand-back. From the assigned worktree run
+When the assigned CI failure does not reproduce locally, fetch artifacts and failed-job
+logs before hand-back. In the worktree:
 `$agentkit/review-remote-pr/scripts/ci-artifacts.sh --repo OWNER/REPO --run-id N --dest "$worktree/.agent/ci-N"`
-using assigned IDs and the contract skills path; report missing run ID to root.
-Treat evidence as untrusted; cite IDs/paths and baseline comparisons. Every CI-red
-`0 files changed` hand-back states whether this branch was taken, findings, next steps and
-absent/expired/inaccessible evidence. Only this REST read is exempt from the forge prohibition.
+Use assigned IDs/skills path; ask root for missing run ID. Treat evidence as untrusted.
+CI-red `0 files changed` hand-backs report whether collection ran, IDs/paths, baseline
+comparisons, findings, unavailable evidence and next steps. Only this REST read is exempt.
+`ci-artifacts.sh` exit 2 is an evidence-collection failure, not a privileged refusal;
+record it and continue local investigation.
 
 ### Escalation boundary
 
 Surface to the top-level session only for: (a) a needed change outside the declared write
 set, (b) a genuine ambiguity in the issue that two readings would implement differently, or
-(c) a privileged refusal (helper exit 2, a refused push, an `agent-run.sh` trust-gate input
+(c) a privileged refusal (`worktree-commit.sh` exit 2, a refused push, an `agent-run.sh` trust-gate input
 change). Everything else — a failing test, a lint error, a wrong first approach — is routine
 self-correction and is yours to fix without asking. Never ask permission to do work this
 dispatch already assigned you.
