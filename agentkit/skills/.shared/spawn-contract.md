@@ -277,8 +277,8 @@ Locking reference: [upstream flock manual](https://www.man7.org/linux/man-pages/
 
 ## Throwaway waiters and runtime caps
 
-Only root dispatches a fresh read-only waiter for one bounded CI/review wait; never resume
-a setup or fix-batch worker as a poller. Use the compact waiter template in
+Apply [wait-discipline](wait-discipline.md)'s waiter criterion.
+Only root dispatches; never reuse setup/fix workers as pollers. Use the compact waiter template in
 `parallel-issues/references/worker-prompts.md` with no repository history or diff. Keep its
 filled prompt below approximately 2K tokens; count runtime-injected context in telemetry too.
 Use `fork_turns: "none"` when advertised; otherwise use the runtime's documented
