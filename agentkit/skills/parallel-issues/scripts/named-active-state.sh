@@ -16,7 +16,7 @@ attempt='' run_id='' worker_id='' worktree='' branch='' disposition='' evidence=
 
 usage() {
     printf 'usage: %s --repo-root DIR --ledger FILE --issue N --open-pr N|none --fresh-hours N [--now-epoch EPOCH]\n' "$PROGRAM" >&2
-    printf '%s\n' 'Lifecycle: --action reserve|record|release|inventory (same root/ledger)' \
+    printf '%s\n' 'Lifecycle: --action reserve|record|release|inventory|prune (same root/ledger)' \
         'reserve: --issue N --worktree DIR --branch B --run-id ID --attempt UNIQUE' \
         'record: --attempt ID --worker-id ID; release: --attempt ID --disposition rejected|stopped|completed|handed-back --evidence RECEIPT' >&2
     exit "${1:-2}"
@@ -46,7 +46,7 @@ while (($#)); do
     esac
 done
 
-case $action in classify|reserve|record|release|inventory) ;; *) die 'invalid action' ;; esac
+case $action in classify|reserve|record|release|inventory|prune) ;; *) die 'invalid action' ;; esac
 [[ $action != classify && $action != reserve || $issue =~ ^[1-9][0-9]*$ ]] || die '--issue must be a positive integer'
 [[ $open_pr == none || $open_pr =~ ^[1-9][0-9]*$ ]] ||
     die '--open-pr must be a positive integer or none'
@@ -102,15 +102,21 @@ else
     : >"$ledger_path"
 fi
 
-# Every row is validated before one issue is selected. A malformed unrelated
-# row means the root-owned evidence set is not trustworthy enough to dispatch.
-jq -e -s '
-    all(.[];
-        type == "object" and
-        ((keys_unsorted - (["version", "issue", "worktree", "branch", "state", "heartbeatEpoch"] +
-          (if .version == 2 then ["runId", "attempt", "workerId", "disposition", "evidence"] else [] end))) | length == 0) and
-        (has("version") and has("issue") and has("worktree") and has("branch") and has("state") and has("heartbeatEpoch")) and
-        (.version == 1 or (.version == 2 and has("workerId") and
+# Parse each physical NDJSON line independently so corruption remains inspectable.
+# Age only exempts terminal validation, never erases evidence used to select owners.
+entries=$(jq -Rnc --argjson now "$now_epoch" --argjson hours "$fresh_hours" '
+    def failure($keys; $predicate): {keys:$keys, predicate:$predicate};
+    def validate:
+        if type != "object" then failure([]; "object")
+        else
+        ["version","issue","worktree","branch","state","heartbeatEpoch"] as $base |
+        ($base + ["runId","attempt","workerId","disposition","evidence"]) as $v2 |
+        (keys_unsorted - $v2) as $extra |
+        ($base - keys_unsorted) as $missing |
+        if .version != 1 and .version != 2 then failure(["version"]; "version")
+        elif .version == 2 and ($extra | length) > 0 then failure($extra; "allowed-keys")
+        elif ($missing | length) > 0 then failure($missing; "required-fields")
+        elif (.version == 1 or (.version == 2 and has("workerId") and
             ([.runId, .attempt, .disposition] | all(type == "string" and length > 0)) and
             (.workerId == null or (.workerId | type == "string" and length > 0)) and
             (.evidence | type == "string") and
@@ -118,25 +124,62 @@ jq -e -s '
              elif .state == "unknown" then .workerId == null and .disposition == "reserved"
              else .state == "terminal" and (.evidence | length > 0) and
                 (.disposition == "rejected" or .disposition == "stopped" or
-                 .disposition == "completed" or .disposition == "handed-back") end))) and
-        (.issue | type == "number" and . > 0 and floor == .) and
-        (.worktree | type == "string" and startswith("/")) and
-        (.branch | type == "string" and length > 0) and
-        (.state == "active" or .state == "terminal" or (.version == 2 and .state == "unknown")) and
-        ((.heartbeatEpoch == null) or
-         (.heartbeatEpoch | type == "number" and . >= 0 and floor == .)))
-' "$ledger_path" >/dev/null || die 'ledger contains malformed worker evidence'
+                 .disposition == "completed" or .disposition == "handed-back") end))) | not
+          then failure(["runId","attempt","workerId","disposition","evidence","state"]; "v2-ownership")
+        elif (.issue | type == "number" and . > 0 and floor == .) | not then failure(["issue"]; "positive-integer")
+        elif (.worktree | type == "string" and startswith("/")) | not then failure(["worktree"]; "absolute-path")
+        elif (.branch | type == "string" and length > 0) | not then failure(["branch"]; "nonempty-string")
+        elif (.state == "active" or .state == "terminal" or (.version == 2 and .state == "unknown")) | not then failure(["state"]; "state")
+        elif ((.heartbeatEpoch == null) or (.heartbeatEpoch | type == "number" and . >= 0 and floor == .)) | not
+          then failure(["heartbeatEpoch"]; "heartbeat")
+        else null end end;
+    [inputs | {line:input_line_number, raw:.} |
+        . + (try {row:(.raw | fromjson)} catch {error:., keys:[], predicate:"json"}) |
+        if has("row") then
+            . + {aged:(.row | if type == "object" then
+                .state == "terminal" and (.heartbeatEpoch | type == "number" and . >= 0 and floor == . and . < ($now - $hours * 3600))
+                else false end)} |
+            . + {diagnostic:(.row | validate)}
+        else . end]
+' "$ledger_path") || die 'could not inspect worker evidence'
+
+if [[ $action == prune ]]; then
+    # Even historical active rows and incomplete/unknown parsed reservations are
+    # conservative holds. Unparseable bytes can be removed only with no such row.
+    jq -e 'all(.[] | select(has("row"));
+        .row | type == "object" and .state == "terminal")' <<<"$entries" >/dev/null ||
+        die 'prune refused: active, unknown or indeterminate worker evidence; reconcile runtime first'
+    staged=$(mktemp "$parent/.active-workers.XXXXXX")
+    trap 'rm -f -- "$staged"' EXIT
+    jq -r '.[] | select(has("row") and (.aged | not)) | .raw' <<<"$entries" >"$staged"
+    mv -f -- "$staged" "$ledger_path"
+    jq -r '.[] | select((has("row") | not) or .aged) |
+        "pruned line \(.line) reason=\(if .aged then "aged-terminal" else "unparseable" end)"' <<<"$entries"
+    printf 'prune complete\n'
+    exit 0
+fi
+
+if [[ $action != inventory ]]; then
+    diagnostic=$(jq -r '.[] | select((has("row") | not) or ((.aged | not) and .diagnostic != null)) |
+        "line \(.line) keys=\((.diagnostic.keys // .keys) | join(",")) predicate=\(.diagnostic.predicate // .predicate)"' <<<"$entries")
+    [[ -z $diagnostic ]] || die "ledger contains malformed worker evidence: $diagnostic"
+fi
 
 if [[ $action != classify ]]; then
-    rows=$(jq -cs '.' "$ledger_path")
+    rows=$(jq -c '[.[] | select(has("row")) | .row | select(type == "object")]' <<<"$entries")
     # Canonicalize legacy rows too: lexical aliases must not hide an older owner.
     while IFS= read -r old_path; do
         canonical=$(realpath -m -- "$old_path") || die 'invalid worktree path'
         rows=$(jq -c --arg old "$old_path" --arg new "$canonical" \
             'map(if .worktree == $old then .worktree = $new else . end)' <<<"$rows")
-    done < <(jq -r '.[].worktree' <<<"$rows" | sort -u)
+    done < <(jq -r '.[].worktree | select(type == "string" and startswith("/"))' <<<"$rows" | sort -u)
     latest=$(jq -c 'group_by(.worktree) | map(last)' <<<"$rows")
-    if [[ $action == inventory ]]; then printf '%s\n' "$latest"; exit 0; fi
+    if [[ $action == inventory ]]; then
+        jq -c --argjson latest "$latest" '$latest + [.[] |
+            select((has("row") | not) or .diagnostic != null) |
+            {line, raw} + (.diagnostic // {keys, predicate, error})]' <<<"$entries"
+        exit 0
+    fi
     [[ $attempt =~ ^[A-Za-z0-9_-]+$ ]] || die '--attempt must be a stable unique identifier'
     if [[ $action == reserve ]]; then
         [[ -n $run_id && -n $branch && -d $worktree ]] || die 'reserve needs run, branch and existing worktree'

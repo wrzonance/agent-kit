@@ -138,9 +138,33 @@ assert_eq switched-455 "$(owner inventory | jq -r '.[] | select(.issue == 455) |
 
 cp -- "$ledger" "$tmp/valid-ledger"
 jq -c 'if .state == "unknown" then del(.workerId) else . end' "$tmp/valid-ledger" >"$ledger"
-assert_rc 2 'incomplete v2 ownership evidence blocks' -- owner inventory
+assert_rc 0 'inventory exposes incomplete v2 ownership evidence' -- owner inventory
+assert_rc 2 'incomplete v2 ownership evidence blocks mutations' -- reserve 459 "$tmp/w459" malformed
 cp -- "$tmp/valid-ledger" "$ledger"
 chmod 644 "$ledger"
 assert_rc 2 'worker identities require owner-private ledger' -- owner inventory
 chmod 600 "$ledger"
+
+# Legacy extensions, inspectable corruption, and conservative maintenance.
+printf '%s\n' '{"version":1,"issue":423,"worktree":"/old","branch":"feat/old","state":"terminal","heartbeatEpoch":1789317596,"result":"blocked-protected-migration"}' >"$ledger"
+assert_rc 0 'legacy result extension is tolerated even inside freshness window' -- owner reserve --issue 423 --worktree "$worker" --branch feat/test --run-id legacy --attempt legacy --now-epoch 1789317597
+assert_rc 0 'inventory reads legacy result row' -- owner inventory
+assert_rc 2 'prune refuses unknown reservations regardless of age' -- owner prune --now-epoch 2000000000
+assert_rc 0 'record unknown reservation' -- record legacy legacy-worker
+assert_rc 2 'prune refuses active rows' -- owner prune
+printf '%s\n' '{"version":2,"issue":423,"worktree":"/old","branch":"feat/old","state":"terminal","heartbeatEpoch":1999999999,"runId":"r","attempt":"a","workerId":null,"disposition":"completed","evidence":"receipt","result":"extra"}' >"$ledger"
+assert_rc 2 'fresh v2 unknown key remains invalid' -- run_state none
+diagnostic=$(run_state none 2>&1)
+assert_eq yes "$(case "$diagnostic" in *'line 1'*'keys=result'*'predicate=allowed-keys'*) echo yes;; *) echo no;; esac)" 'diagnostic names original line, key and predicate'
+assert_rc 0 'inventory exposes invalid v2 keys' -- owner inventory
+assert_rc 0 'aged terminal rows are filtered before validation' -- run_state none --now-epoch 2000010000
+printf '%s\n' '{not-json' >>"$ledger"
+assert_rc 0 'inventory survives unparseable lines' -- owner inventory
+assert_eq 2 "$(owner inventory | jq '.[] | select(.predicate == "json") | .line')" 'inventory identifies unparseable line'
+assert_rc 0 'prune repairs unparseable and aged terminal rows' -- owner prune --now-epoch 2000010000
+assert_eq 0 "$(wc -l <"$ledger" | tr -d ' ')" 'prune drops exactly damaged and expired rows'
+assert_eq 600 "$(stat -c %a "$ledger")" 'repair preserves owner-private ledger mode'
+printf '%s\n' '{"version":1,"issue":511,"worktree":"/old","branch":"feat/old","state":"active","heartbeatEpoch":1}' '{"version":1,"issue":511,"worktree":"/old","branch":"feat/old","state":"terminal","heartbeatEpoch":2,"result":"legacy"}' >"$ledger"
+assert_eq 'stale-active=1[#511]' "$(run_state none)" 'aging terminal validation never resurrects earlier active ownership'
+assert_rc 2 'prune conservatively refuses even historical active rows' -- owner prune
 finish
