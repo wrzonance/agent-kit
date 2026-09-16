@@ -97,7 +97,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #778: one harness-to-runtime-tool mapping and contract/composer integration.
-readonly MAX_TREE_TOKENS=447483
+readonly MAX_TREE_TOKENS=447520
 
 violations=0
 checked=0

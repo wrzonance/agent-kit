@@ -26,14 +26,22 @@ chmod +x "$tmp/skills/.shared/scripts/agent-preflight.sh" \
 
 for skill in parallel-issues review-remote-pr pr-to-green onboard-repo; do
     recipe="$tmp/$skill.sh"
-    awk '
-        /^```bash$/ { inside=1; block=""; next }
-        /^```$/ {
-            if (inside && block ~ /agentkit=\$\(sed -n/) { printf "%s", block; exit }
-            inside=0
-        }
-        inside { block=block $0 "\n" }
-    ' "$root/agentkit/skills/$skill/SKILL.md" > "$recipe"
+    if [[ $skill == parallel-issues ]]; then
+        "$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help | awk '
+            /^Recipe: resolve, rehydrate, and run once$/ { inside=1; next }
+            /^Cache rehydration for each later guarded block/ { exit }
+            inside { sub(/^  /, ""); print }
+        ' > "$recipe"
+    else
+        awk '
+            /^```bash$/ { inside=1; block=""; next }
+            /^```$/ {
+                if (inside && block ~ /agentkit=\$\(sed -n/) { printf "%s", block; exit }
+                inside=0
+            }
+            inside { block=block $0 "\n" }
+        ' "$root/agentkit/skills/$skill/SKILL.md" > "$recipe"
+    fi
     assert_eq yes "$([[ -s $recipe ]] && printf yes || printf no)" "$skill warm-up extracted"
     # shellcheck disable=SC2016  # the extracted recipe expands this variable.
     printf '\nprintf "WARMUP_SELECTED=%%s\\n" "$agentkit"\n' >> "$recipe"
