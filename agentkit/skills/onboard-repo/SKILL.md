@@ -22,7 +22,8 @@ Recovery: resubmit `$agentkit:onboard-repo`; natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
 a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 
-`$agentkit/.shared/scripts/bootstrap-repo.sh` leaves uncertain commands and labels commented rather than guessing. This skill records the decisions.
+Read [reading discipline](../.shared/reading-discipline.md) in full first; use `$agentkit/references.md` for reference paths.
+`$agentkit/.shared/scripts/bootstrap-repo.sh` comments uncertain commands and labels; record the decisions here.
 
 ## Resumable stage contract
 
@@ -149,7 +150,8 @@ providers) itself, and `suggestions` is Step 4's candidate list — one call cov
 "$agentkit/.shared/scripts/detect-toolchains.sh" --format gaps,suggestions
 ```
 
-Run the detector even when config looks complete; report "nothing NEW was found" rather than treating quiet as proof.
+Run once even if config looks complete; use `--format gaps` for post-refresh confirmation.
+Reuse Step 1's dry-run and Step 3's suggestions; do not reprint either unchanged block.
 
 Anything still commented is a blank the script would not guess:
 
@@ -170,12 +172,10 @@ Never bypass hooks with `--no-verify`, `core.hooksPath`, aliases, or any equival
 
 ## Step 4 — work out the commands
 
-This is the part worth thinking about. Look at what the repository actually runs: CI workflow steps, a
-pre-commit hook, a `Makefile`, `package.json` scripts, a `tools/` directory, `CONTRIBUTING.md`. Start from
-the detector rather than hand-guessing — Step 3's combined call above already printed the suggestions.
+Check CI, pre-commit, `Makefile`, `package.json`, `tools/`, and `CONTRIBUTING.md` against
+Step 3's saved detector suggestions.
 
-Treat every line as a CANDIDATE: it inspects marker files without running anything, so nothing here is
-proven until Step 6 runs it.
+Detector output is CANDIDATE data from markers; Step 6 must prove it by execution.
 
 The kit enforces observed coverage only for targets matching `^feat/issue-[1-9][0-9]*$`;
 release/backport and other targets keep their ordinary CI policy.
@@ -226,9 +226,9 @@ contract.
 
 ## Step 5 — propose everything at once
 
-Give the user one message of additions — commands, provider choice, labels, ADR directory — with reasons.
-Ask which providers are installed, including `none`. State unknowns and consequences; e.g., "no
-root test command means there is nothing for `agent-run.sh --cmd test` to run until a dispatcher exists."
+Present additions (commands, providers, labels, ADR directory) with reasons.
+Ask which providers are installed, including `none`. Explain unknowns and consequences:
+without a root test command, `agent-run.sh --cmd test` needs a dispatcher.
 
 ## Step 6 — write and validate
 

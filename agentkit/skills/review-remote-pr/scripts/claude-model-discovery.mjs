@@ -36,8 +36,46 @@ async function* pendingPrompt() {
   await new Promise(() => {});
 }
 
+// Inspect only declarations, through the kit's data-only config parser. This is
+// intentionally separate from supportedModels(): configuration is not a live probe.
+async function showDeclared(repoRoot) {
+  const { spawnSync } = await import('node:child_process');
+  const { resolve, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = resolve(repoRoot);
+  const resolver = fileURLToPath(new URL('../../.shared/scripts/repo-config.sh', import.meta.url));
+  const values = {};
+  for (const key of ['AGENT_ADVERSARIAL_REVIEWER', 'AGENT_ADVERSARIAL_REVIEW_MODEL', 'AGENT_ADVERSARIAL_REVIEW_EFFORT']) {
+    const result = spawnSync(resolver, ['--repo-root', root, '--config-file', join(root, '.agent/config.env'), '--get', key],
+      { encoding: 'utf8', timeout: 10000 });
+    if (result.error || result.signal || ![0, 1].includes(result.status)) {
+      fail(`declared reviewer validation failed for ${key}; inspect it with repo-config.sh --get ${key}`);
+      return;
+    }
+    values[key] = result.status === 0 ? result.stdout.trim() : '';
+  }
+  const reviewer = values.AGENT_ADVERSARIAL_REVIEWER;
+  const model = values.AGENT_ADVERSARIAL_REVIEW_MODEL;
+  if (!(reviewer === 'claude' || reviewer.startsWith('claude-')) ||
+      (reviewer === 'claude' && !model) || (model && !model.startsWith('claude-'))) {
+    fail('no complete, valid declared Claude reviewer/model; use --list-models only for optional live discovery');
+    return;
+  }
+  process.stdout.write('Declared Claude configuration (validated syntax/family; not live availability; no SDK needed):\n');
+  for (const [key, value] of Object.entries(values)) if (value) process.stdout.write(`${key}=${value}\n`);
+}
+
 async function main(args) {
   const mode = args[0];
+  const usage = 'Usage: node claude-model-discovery.mjs --declared --repo-root DIR | --list-models [--claude PATH] [--sdk-dir DIR]\n';
+  if (mode === '--help' || mode === '-h') { process.stdout.write(usage); return; }
+  if (mode === '--declared') {
+    if (args.length !== 3 || args[1] !== '--repo-root' || !args[2] || args[2].startsWith('--')) {
+      process.stderr.write(usage); process.exitCode = 2; return;
+    }
+    await showDeclared(args[2]);
+    return;
+  }
   let errorText = '';
   let claudePath = '';
   let sdkDir = '';
@@ -46,13 +84,13 @@ async function main(args) {
     else if (args[i] === '--sdk-dir' && args[i + 1]) sdkDir = args[++i];
     else if (mode === '--for-error' && !errorText) errorText = args[i];
     else {
-      process.stderr.write('Usage: node claude-model-discovery.mjs --list-models [--claude PATH] [--sdk-dir DIR]\n');
+      process.stderr.write(usage);
       process.exitCode = 2;
       return;
     }
   }
   if (mode !== '--list-models' && (mode !== '--for-error' || !errorText)) {
-    process.stderr.write('Usage: node claude-model-discovery.mjs --list-models [--claude PATH] [--sdk-dir DIR]\n');
+    process.stderr.write(usage);
     process.exitCode = 2;
     return;
   }
@@ -65,7 +103,7 @@ async function main(args) {
     if (error?.code === 'ERR_AGENTKIT_SDK_OUTSIDE_ROOT') {
       fail(`the SDK package resolves outside its authorized directory. ${installHint}`);
     } else {
-      fail(`the optional Agent SDK is unavailable in its authorized directory (${errorClass(error)}). ${installHint}`);
+      fail(`the optional Agent SDK is unavailable in its authorized directory (${errorClass(error)}). This does not block declaration validation: use --declared --repo-root DIR; live discovery remains unavailable. ${installHint}`);
     }
     return;
   }
