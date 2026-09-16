@@ -198,12 +198,14 @@ if [[ $action != classify ]]; then
         if [[ $action == record ]]; then
             [[ -n $worker_id ]] || die '--worker-id is required'
             jq -e --arg id "$worker_id" '.workerId == null or .workerId == $id' <<<"$current" >/dev/null || die 'worker ID cannot change'
-            next=$(jq -c --arg id "$worker_id" '.workerId=$id | .state="active" | .disposition="returned"' <<<"$current")
+            next=$(jq -c --arg id "$worker_id" --argjson t "$now_epoch" \
+                '.workerId=$id | .state="active" | .disposition="returned" | .heartbeatEpoch=$t' <<<"$current")
         else
             case $disposition in rejected|stopped|completed|handed-back) ;; *) die 'invalid terminal disposition' ;; esac
             [[ -n $evidence ]] || die 'release requires confirmed runtime evidence'
             [[ $disposition != rejected || $(jq -r .state <<<"$current") == unknown ]] || die 'a returned worker cannot be rejected'
-            next=$(jq -c --arg d "$disposition" --arg e "$evidence" '.state="terminal" | .disposition=$d | .evidence=$e' <<<"$current")
+            next=$(jq -c --arg d "$disposition" --arg e "$evidence" --argjson t "$now_epoch" \
+                '.state="terminal" | .disposition=$d | .evidence=$e | .heartbeatEpoch=$t' <<<"$current")
         fi
     fi
     staged=$(mktemp "$parent/.active-workers.XXXXXX")

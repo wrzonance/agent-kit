@@ -167,4 +167,17 @@ assert_eq 600 "$(stat -c %a "$ledger")" 'repair preserves owner-private ledger m
 printf '%s\n' '{"version":1,"issue":511,"worktree":"/old","branch":"feat/old","state":"active","heartbeatEpoch":1}' '{"version":1,"issue":511,"worktree":"/old","branch":"feat/old","state":"terminal","heartbeatEpoch":2,"result":"legacy"}' >"$ledger"
 assert_eq 'stale-active=1[#511]' "$(run_state none)" 'aging terminal validation never resurrects earlier active ownership'
 assert_rc 2 'prune conservatively refuses even historical active rows' -- owner prune
+
+# Transition freshness is measured from the transition, not a long-ago reservation.
+: >"$ledger"
+assert_rc 0 'reserve a long-running worker' -- owner reserve --issue 511 --worktree "$worker" --branch feat/test --run-id long --attempt long --now-epoch 1
+assert_rc 0 'record a worker after the reservation freshness window' -- owner record --attempt long --worker-id long-worker --now-epoch 10801
+assert_eq 10801 "$(owner inventory | jq -r '.[] | select(.attempt == "long") | .heartbeatEpoch')" 'record publishes its transition timestamp'
+assert_rc 0 'release after another freshness window' -- owner release --attempt long --disposition completed --evidence runtime:completed --now-epoch 21601
+assert_eq 21601 "$(owner inventory | jq -r '.[] | select(.attempt == "long") | .heartbeatEpoch')" 'inventory dates completion from release time'
+assert_eq 1 "$(head -n 1 "$ledger" | jq -r .heartbeatEpoch)" 'transition timestamps preserve original reservation history'
+assert_rc 2 'historical active ownership still prevents pruning a completed lifecycle' -- owner prune --now-epoch 21602
+cp -- "$ledger" "$tmp/completed-ledger"
+jq -c 'if .state == "terminal" then .result="unexpected" else . end' "$tmp/completed-ledger" >"$ledger"
+assert_rc 2 'fresh completion of a long-lived reservation still receives strict validation' -- run_state none --now-epoch 21602
 finish

@@ -67,7 +67,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
 # #761: line-addressable ledger diagnostics and locked conservative repair.
-readonly MAX_TREE_TOKENS=431468
+# #761 review repair: refresh record/release transition timestamps.
+readonly MAX_TREE_TOKENS=431500
 
 violations=0
 checked=0
