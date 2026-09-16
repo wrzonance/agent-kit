@@ -631,6 +631,10 @@ assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
 assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
     'receipt recovery is tracked per PR in run-state for a one-shot limit'
+assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path receipt_prs --json "$pr"' \
+    'successful review receipts are stored as numeric PR identities'
+assert_contains "$final_sweep_section" '--path skipped_prs' \
+    'verified skips use their own durable PR collection'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
     'duplicate or invalid receipts are explicitly non-recoverable'
 assert_contains "$final_sweep_section" 'handed-back' \
