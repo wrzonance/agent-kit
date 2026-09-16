@@ -3,20 +3,34 @@
 
 # The one quote/heredoc lexer. mode=recover (default): a heredoc BODY is dropped
 # only when inert -- a quoted-delimiter body to a data sink stays dropped (issue
-# #351); an UNQUOTED body's substitutions and any body that is effective stdin
-# for a shell are recovered and recursively re-segmented (issues #364 and #756).
+# #351); an UNQUOTED body's substitutions and any body reachable by a shell
+# through an input descriptor are recovered and recursively re-segmented
+# (issues #364 and #756).
 # mode=drop: every body is dropped (guard_gh_command_segments, issue #661).
 # mode=helper: recover bodies, but emit NUL records, join line continuations,
 # and discard shell comments so inert text cannot create diagnostic boundaries.
 # mode=writes: recover executable bodies, preserving >| and >& operators.
 # shellcheck disable=SC2059  # record_format is one of two fixed literals, never input.
+guard_mark_reachable_heredocs() {
+    local -n __gmrh_effects=$1 __gmrh_descriptors=$2
+    local start=$3 end=$4 index source
+    for ((index = start; index < end; index++)); do
+        __gmrh_effects[index]=0
+    done
+    for source in "${__gmrh_descriptors[@]}"; do
+        [[ $source =~ ^[0-9]+$ ]] && __gmrh_effects[source]=1
+    done
+}
+
 guard_destructive_command_segments() {
     local input=$1 mode=${2:-recover} line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
     local i length char next third rest k delimiter delimiter_quote terminator_line
     local owner='' heredoc_no_expand=0 heredoc_effective=0 body='' bodyline sub recovered
-    local heredoc_index=0 active_stdin_heredoc=-1 queue_index redirects_stdin
+    local heredoc_index=0 queue_index command_heredoc_start=0 substitution_depth=0
+    local target_fd source_fd redirect_word redirect_offset
     local -a heredoc_delimiters=() heredoc_tabstrips=() heredoc_no_expands=()
     local -a heredoc_owners=() heredoc_effectives=()
+    local -A descriptor_heredocs=()
     local record_format='%s\n' record_delimiter=$'\n' continued=0 word_start=1
     [[ $mode != helper ]] || { record_format='%s\0'; record_delimiter=''; }
 
@@ -62,7 +76,8 @@ guard_destructive_command_segments() {
                 heredoc_owners=()
                 heredoc_effectives=()
                 heredoc_index=0
-                active_stdin_heredoc=-1
+                command_heredoc_start=0
+                descriptor_heredocs=()
                 # Flush the owner line (through the heredoc opener) as its own
                 # segment now, or the next command merges into it and the
                 # one-segment-per-command contract breaks.
@@ -121,6 +136,30 @@ guard_destructive_command_segments() {
                 continue
             fi
 
+            if [[ $char == '$' && $next == '(' ]]; then
+                substitution_depth=$((substitution_depth + 1))
+                segment+="$char("
+                i=$((i + 2))
+                continue
+            fi
+            if ((substitution_depth)); then
+                case $char in
+                    '(') substitution_depth=$((substitution_depth + 1));;
+                    ')') substitution_depth=$((substitution_depth - 1));;
+                    '<')
+                        segment+=$char
+                        ((i++))
+                        continue
+                        ;;
+                esac
+            fi
+            if [[ ( $char == '<' || $char == '>' ) && $next == '(' ]]; then
+                substitution_depth=$((substitution_depth + 1))
+                segment+="$char("
+                i=$((i + 2))
+                continue
+            fi
+
             if [[ $mode == writes && $char == '>' && ( $next == '|' || $next == '&' ) ]]; then
                 segment+=">$next"
                 i=$((i + 2))
@@ -145,24 +184,19 @@ guard_destructive_command_segments() {
                     printf "$record_format" "$segment"
                     segment=''
                     word_start=1
-                    active_stdin_heredoc=-1
+                    if ((substitution_depth == 0)); then
+                        guard_mark_reachable_heredocs heredoc_effectives descriptor_heredocs \
+                            "$command_heredoc_start" "${#heredoc_delimiters[@]}"
+                        descriptor_heredocs=()
+                        command_heredoc_start=${#heredoc_delimiters[@]}
+                    fi
                     ((i++))
                     ;;
                 '<')
                     word_start=0
-                    # Redirections are applied from left to right. Only fd 0
-                    # supersedes a queued stdin heredoc; <(...) is argument
-                    # process substitution, not an input redirection.
-                    redirects_stdin=1
-                    if [[ $next == '(' ]]; then
-                        redirects_stdin=0
-                    elif [[ $segment =~ (^|[[:space:]])([0-9]+)$ ]] &&
-                        [[ ! ${BASH_REMATCH[2]} =~ ^0+$ ]]; then
-                        redirects_stdin=0
-                    fi
-                    if ((redirects_stdin && active_stdin_heredoc >= 0)); then
-                        heredoc_effectives[active_stdin_heredoc]=0
-                        active_stdin_heredoc=-1
+                    target_fd=0
+                    if [[ $segment =~ (^|[[:space:]])([0-9]+)$ ]]; then
+                        target_fd=$((10#${BASH_REMATCH[2]}))
                     fi
                     if [[ $next == '<' && $third != '<' ]]; then
                         owner=$segment
@@ -199,17 +233,53 @@ guard_destructive_command_segments() {
                             heredoc_tabstrips[queue_index]=$heredoc_tabstrip
                             heredoc_no_expands[queue_index]=$heredoc_no_expand
                             heredoc_owners[queue_index]=$owner
-                            heredoc_effectives[queue_index]=$redirects_stdin
-                            if ((redirects_stdin)); then
-                                active_stdin_heredoc=$queue_index
-                            fi
+                            heredoc_effectives[queue_index]=0
+                            descriptor_heredocs[$target_fd]=$queue_index
                         fi
                     elif [[ $next == '<' && $third == '<' ]]; then
+                        unset 'descriptor_heredocs[$target_fd]'
                         segment+='<<<'
                         i=$((i + 3))
+                    elif [[ $next == '&' ]]; then
+                        rest=${line:i+2}
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        redirect_word=${rest%%[[:space:];|&<>]*}
+                        if [[ $redirect_word =~ ^[0-9]+$ ]]; then
+                            source_fd=$((10#$redirect_word))
+                            if [[ ${descriptor_heredocs[$source_fd]+present} ]]; then
+                                descriptor_heredocs[$target_fd]=${descriptor_heredocs[$source_fd]}
+                            else
+                                unset 'descriptor_heredocs[$target_fd]'
+                            fi
+                        elif [[ $redirect_word == '-' ]]; then
+                            unset 'descriptor_heredocs[$target_fd]'
+                        fi
+                        segment+='<&'
+                        i=$((i + 2))
                     else
-                        segment+=$char
-                        ((i++))
+                        redirect_offset=1
+                        [[ $next != '>' ]] || redirect_offset=2
+                        rest=${line:i+redirect_offset}
+                        rest="${rest#"${rest%%[![:space:]]*}"}"
+                        redirect_word=${rest%%[[:space:];|&<>]*}
+                        source_fd=''
+                        if [[ $redirect_word == '/dev/stdin' ]]; then
+                            source_fd=0
+                        elif [[ $redirect_word =~ ^/dev/fd/([0-9]+)$ ]] ||
+                            [[ $redirect_word =~ ^/proc/self/fd/([0-9]+)$ ]]; then
+                            source_fd=$((10#${BASH_REMATCH[1]}))
+                        fi
+                        if [[ -n $source_fd ]]; then
+                            if [[ ${descriptor_heredocs[$source_fd]+present} ]]; then
+                                descriptor_heredocs[$target_fd]=${descriptor_heredocs[$source_fd]}
+                            else
+                                unset 'descriptor_heredocs[$target_fd]'
+                            fi
+                        elif [[ $redirect_word =~ ^[-A-Za-z0-9_./,:+]+$ ]]; then
+                            unset 'descriptor_heredocs[$target_fd]'
+                        fi
+                        segment+=${line:i:redirect_offset}
+                        i=$((i + redirect_offset))
                     fi
                     ;;
                 *)
@@ -225,6 +295,10 @@ guard_destructive_command_segments() {
             continued=0
             continue
         fi
+        if ((substitution_depth == 0)); then
+            guard_mark_reachable_heredocs heredoc_effectives descriptor_heredocs \
+                "$command_heredoc_start" "${#heredoc_delimiters[@]}"
+        fi
         if ((${#heredoc_delimiters[@]} > 0)) && [[ -z $heredoc ]]; then
             heredoc_index=0
             heredoc=${heredoc_delimiters[0]}
@@ -238,7 +312,8 @@ guard_destructive_command_segments() {
             printf "$record_format" "$segment"
             segment=''
             word_start=1
-            active_stdin_heredoc=-1
+            command_heredoc_start=${#heredoc_delimiters[@]}
+            descriptor_heredocs=()
         else
             segment+=$'\n'
         fi

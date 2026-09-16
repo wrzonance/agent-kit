@@ -87,7 +87,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
-readonly MAX_TREE_TOKENS=441782
+# PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
+readonly MAX_TREE_TOKENS=442669
 
 violations=0
 checked=0

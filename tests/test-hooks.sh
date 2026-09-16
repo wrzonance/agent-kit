@@ -2210,6 +2210,45 @@ out=$(pre_input "$repo" "$nonstdin_redirect" "$helper_session" | "$hooks/pre-too
 assert_eq 'deny' "$(decision "$out")" \
     'a redirect on another file descriptor does not supersede shell stdin'
 
+# PR #794 review: descriptor aliases and nonstdin shell scripts retain the
+# heredoc guard. These fixtures only pass command text to PreToolUse; the
+# helper line is an inert diagnostic marker and is never executed.
+for retained_heredoc in \
+    $'bash /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF' \
+    $'source /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </dev/stdin\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </dev/fd/0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </proc/self/fd/0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <&0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' 0<&0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' 3<&0 </dev/null 0<&3\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' $(printf %s < /dev/null)\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' $((1 < 2))\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <"$input"\nagent-run.sh --cmd test\nEOF'; do
+    helper_session=$(fresh_sid)
+    out=$(pre_input "$repo" "$retained_heredoc" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "an aliased, nonstdin, or uncertain shell heredoc retains its guard: $retained_heredoc"
+done
+
+for proven_superseded in \
+    $'bash /dev/fd/3 3<<\'EOF\' 3</dev/null\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <<<:\nagent-run.sh --cmd test\nEOF'; do
+    helper_session=$(fresh_sid)
+    out=$(pre_input "$repo" "$proven_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a provably superseded shell heredoc remains inert: $proven_superseded"
+    out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        'a provably superseded heredoc does not consume the real helper diagnostic'
+done
+
+inert_non_shell_fd=$'cat /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$inert_non_shell_fd" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted fd3 heredoc remains data when its consumer is not a shell'
+
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
 # meeting one had no way past it. They now run and are taught afterwards.
