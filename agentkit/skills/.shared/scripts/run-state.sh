@@ -19,17 +19,19 @@ readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
         if .p and (.c | type) == "object" and (.c | has($seg)) then {p: true, c: .c[$seg]}
         else {p: false, c: null} end)
     | .p;'
-ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0
+ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME get|set|append|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
+       $PROGNAME summary --run-id ID [--repo-root DIR]
 get     print the value at --path (scalars raw, objects/arrays compact JSON, null as "null");
         exit 11 when the key is absent -- a key explicitly set to JSON null is present, not absent
 set     store --value (string), --json (parsed), or true when neither is given
 append  append --value/--json to the array at --path (created when absent; a non-array, including
         an existing null-valued key, refuses)
 unset   remove --path
+summary print handoff coverage from durable run state and active-worker lifecycle evidence
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
 Writes are atomic (temp file beside it, mode 0600, rename).
@@ -43,7 +45,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|unset) ACTION=$1; shift ;;
+        get|set|append|unset|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -61,13 +63,42 @@ parse_args() {
             *) die_usage "unknown argument: $1" ;;
         esac
     done
-    [[ -n $KEY_PATH ]] || die_usage '--path is required'
-    [[ $KEY_PATH =~ $PATH_RE ]] || die_usage "--path must be dot-separated [A-Za-z0-9_-] segments: $KEY_PATH"
     [[ -z $VALUE || -z $JSON_VALUE ]] || die_usage '--value and --json are mutually exclusive'
-    [[ $ACTION != get && $ACTION != unset || $VALUE_SET == 0 ]] || die_usage "$ACTION takes no --value/--json"
-    if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
-    [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
+    if [[ $ACTION == summary ]]; then
+        [[ -z $FILE ]] || die_usage 'summary requires --run-id, not --file'
+        [[ -n $RUN_ID ]] || die_usage 'summary requires --run-id'
+        [[ -z $KEY_PATH && $VALUE_SET == 0 ]] || die_usage 'summary takes no --path/--value/--json'
+    else
+        [[ -n $KEY_PATH ]] || die_usage '--path is required'
+        [[ $KEY_PATH =~ $PATH_RE ]] || die_usage "--path must be dot-separated [A-Za-z0-9_-] segments: $KEY_PATH"
+        [[ $ACTION != get && $ACTION != unset || $VALUE_SET == 0 ]] || die_usage "$ACTION takes no --value/--json"
+        if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
+        [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
+    fi
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
+}
+
+resolve_summary_ledger() {
+    [[ $ACTION == summary ]] || return 0
+    local selected_root checkout_root primary_root
+    if [[ -n $REPO_ROOT ]]; then
+        [[ -d $REPO_ROOT ]] || die_usage "--repo-root is not a directory: $REPO_ROOT"
+        selected_root=$(cd -P -- "$REPO_ROOT" && pwd -P) || die 'could not resolve --repo-root'
+    else
+        selected_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
+            die 'could not resolve the repository root (pass --repo-root outside a Git worktree)'
+        selected_root=$(cd -P -- "$selected_root" && pwd -P) || die 'could not resolve the repository root'
+    fi
+    checkout_root=$(git -C "$selected_root" rev-parse --show-toplevel 2>/dev/null) ||
+        die '--repo-root must be a Git checkout'
+    checkout_root=$(realpath -e -- "$checkout_root") || die 'could not resolve the Git checkout root'
+    [[ $selected_root == "$checkout_root" ]] || die_usage '--repo-root must name the Git checkout root'
+    primary_root=$(git -C "$checkout_root" worktree list --porcelain |
+        sed -n 's/^worktree //p' | head -n 1)
+    [[ -n $primary_root ]] || die 'could not resolve the primary checkout for active-workers evidence'
+    primary_root=$(realpath -e -- "$primary_root") || die 'could not resolve the primary checkout'
+    REPO_ROOT=$selected_root
+    LEDGER=$primary_root/.agent/runs/active-workers.ndjson
 }
 
 resolve_file() {
@@ -118,14 +149,66 @@ write_state() {
     mv -f -- "$staged" "$FILE" || { rm -f -- "$staged"; die "could not replace the state file: $FILE"; }
 }
 
+print_summary() {
+    local counts ledger_mode parked_rows parked_count
+    counts=$(jq -er '
+        def positive_ids($name; $required):
+            (if has($name) then .[$name]
+             elif $required then error($name + " is required")
+             else [] end) as $value |
+            if ($value | type) == "array" and all($value[]; type == "number" and . > 0 and floor == .)
+                and (($value | length) == ($value | unique | length))
+            then $value else error($name + " must be a unique positive-integer array") end;
+        positive_ids("opened_prs"; true) as $prs |
+        positive_ids("queued"; true) as $queued |
+        positive_ids("receipt_prs"; false) as $receipts |
+        positive_ids("skipped_prs"; false) as $skipped |
+        if (($receipts - $prs) | length) > 0 then error("receipt_prs must be a subset of opened_prs")
+        elif (($skipped - $prs) | length) > 0 then error("skipped_prs must be a subset of opened_prs")
+        elif (($receipts + $skipped | length) != ($receipts + $skipped | unique | length))
+            then error("receipt_prs and skipped_prs must be disjoint")
+        else [($prs | length), ($receipts | length), ($skipped | length), ($queued | length)] | @tsv end
+    ' <<<"$STATE" 2>/dev/null) ||
+        die 'summary state requires valid opened_prs, queued, receipt_prs, and skipped_prs collections'
+
+    [[ ! -L $LEDGER && -f $LEDGER && -r $LEDGER && -O $LEDGER ]] ||
+        die "active-workers evidence must be an owned readable regular file: $LEDGER"
+    ledger_mode=$(stat -c %a -- "$LEDGER") || die "could not inspect active-workers evidence: $LEDGER"
+    (( (8#$ledger_mode & 8#077) == 0 )) || die "active-workers evidence must be owner-private: $LEDGER"
+    parked_rows=$(jq -Rsc --arg run "$RUN_ID" '
+        (split("\n") | map(select(length > 0) | fromjson)) as $rows |
+        if all($rows[]; type == "object") | not then error("row is not an object") else . end |
+        [$rows[] | select(.runId? == $run)] as $run_rows |
+        if all($run_rows[];
+            .version == 2 and (.issue | type == "number" and . > 0 and floor == .) and
+            (.attempt | type == "string" and length > 0) and
+            (.state == "unknown" or .state == "active" or .state == "terminal") and
+            (.disposition | type == "string") and (.evidence | type == "string")) | not
+        then error("malformed current-run lifecycle row") else . end |
+        reduce $run_rows[] as $row ({}; .[$row.issue | tostring] = $row) |
+        [.[] | select(.state == "terminal" and .disposition == "handed-back") |
+            if (.evidence | length > 0 and (explode | all(. >= 32 and . != 127)))
+            then . else error("invalid handback evidence") end] |
+        sort_by(.issue)
+    ' "$LEDGER" 2>/dev/null) || die "unparseable active-workers evidence: $LEDGER"
+    parked_count=$(jq 'length' <<<"$parked_rows")
+
+    local prs receipts skipped queued
+    IFS=$'\t' read -r prs receipts skipped queued <<<"$counts"
+    printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s\n' \
+        "$prs" "$receipts" "$skipped" "$parked_count" "$queued"
+    jq -r '.[] | "blocked=\(.issue):\(.evidence)"' <<<"$parked_rows"
+}
+
 main() {
     parse_args "$@"
+    resolve_summary_ledger
     resolve_file
     # Lock a stable inode, not the JSON inode replaced by write_state. Resolve
     # parent aliases so independent writers cannot lose successful updates.
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
-    if [[ $ACTION != get ]]; then
+    if [[ $ACTION == set || $ACTION == append || $ACTION == unset ]]; then
         parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
         FILE=$parent/$(basename -- "$FILE")
         lock=$FILE.lock
@@ -134,8 +217,8 @@ main() {
         flock -w 10 "$lock_fd" || die 'state lock unavailable after 10 seconds'
     fi
     read_state
-    local path next present value=''
-    path=$(jq_path)
+    local path='' next present value=''
+    [[ $ACTION == summary ]] || path=$(jq_path)
     if [[ $ACTION == set || $ACTION == append ]]; then
         value=$(value_json) || exit $?
     fi
@@ -161,6 +244,9 @@ main() {
         unset)
             next=$(jq -c --argjson p "$path" 'delpaths([$p])' <<< "$STATE") || die 'could not unset the path'
             write_state "$next"
+            ;;
+        summary)
+            print_summary
             ;;
     esac
 }

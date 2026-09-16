@@ -65,6 +65,33 @@ assert_rc 0 'composer supports stdout output' -- bash "$compose" \
     --decisions-file "$decisions" --testing-file "$testing" \
     --agent 'Codex gpt-5.6-luna'
 
+blocker_output="$tmp/blocker-body.md"
+blocker_file="$tmp/blockers.list"
+printf '%s\0' 'addin/AGENTS.md' '.github/workflows/release.yml' \
+    'secrets/with,comma.conf' >"$blocker_file"
+assert_rc 0 'composer accepts protected blocker paths' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$testing" \
+    --blocker-file "$blocker_file" \
+    --agent 'Codex gpt-5.6-luna' --output "$blocker_output"
+blocker_text=$(<"$blocker_output")
+assert_contains "$blocker_text" '## Operator action required' \
+    'a partial-pushed PR body discloses the operator action section'
+assert_contains "$blocker_text" '- `addin/AGENTS.md`' \
+    'the blocker section names the first protected path'
+assert_contains "$blocker_text" '- `.github/workflows/release.yml`' \
+    'the blocker section names every protected path'
+assert_contains "$blocker_text" '- `secrets/with,comma.conf`' \
+    'the blocker section preserves a literal comma in one protected path'
+assert_contains "$blocker_text" 'Verification limitation:' \
+    'a partial-pushed PR body discloses that retained verification is unbound'
+assert_contains "$blocker_text" 'may include the protected worktree paths above' \
+    'the limitation states that protected bytes may have affected verification'
+assert_rc 1 'composer rejects an unsafe blocker path' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$testing" \
+    --blocker '../outside' --agent 'Codex gpt-5.6-luna' --output "$output"
+
 assert_rc 1 'composer rejects a zero issue number' -- bash "$compose" \
     --issue 0 --why-file "$why" --what-file "$what" \
     --decisions-file "$decisions" --testing-file "$testing" \

@@ -1,0 +1,5 @@
+# procedure-a	scope-a	flags-a	repo-a	base-a	procedure-b	scope-b	flags-b	repo-b	base-b
+parallel-issues	1,23	yolo=true	owner/repo	main	parallel-issues	12,3	yolo=true	owner/repo	main
+parallel-issues	1,2	a=bc	owner/repo	main	parallel-issues	1,2	ab=c	owner/repo	main
+parallel-issues	1,2	yolo=true	owner/repo-a	main	parallel-issues	1,2	yolo=true	owner/repo	a-main
+review-remote-pr	511	auto-review=false	owner/repo	main	review-remote-pr	511	auto-review=true	owner/repo	main

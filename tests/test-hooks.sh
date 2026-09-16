@@ -2187,6 +2187,31 @@ post_input() {
 }
 ctx_of() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
 
+# The workflow body arrives in UserPromptSubmit additionalContext. Reading that
+# same active SKILL.md again is allowed, but PostToolUse reminds the model that
+# the bytes are already present. The receipt is session-scoped, so an inactive
+# skill read stays quiet.
+active_repo=$(make_repo)
+active_sid='active-skill-reread'
+mkdir -p "$active_repo/.agent/activation"
+active_receipt="$active_repo/.agent/activation/$(printf '%s' "$active_sid" | sha256sum | awk '{print $1}').json"
+jq -nc --arg session "$active_sid" --arg root "$active_repo" --arg skills "$skills_root" \
+    '{schemaVersion:1,session:$session,repoRoot:$root,workflow:"parallel-issues",
+      skillsRoot:$skills,status:"active",receiptSource:"session-acknowledgement"}' \
+    > "$active_receipt"
+active_skill_path="$skills_root/parallel-issues/SKILL.md"
+out=$(post_input "$active_repo" "sed -n '1,40p' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'reading the active SKILL.md emits the exact advisory'
+assert_not_contains "$out" 'permissionDecision' 'the active-skill reread advisory cannot refuse the completed call'
+out=$(post_input "$active_repo" "cat '$skills_root/pr-to-green/SKILL.md'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a different skill body does not claim it was injected'
+out=$(post_input "$active_repo" "printf '%s' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'mentioning the active skill path as data is not a reread'
+
 out=$(post_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_hook_output "$out" post-tool-use 'PostToolUse emits schema-valid JSON'
 ctx=$(ctx_of "$out")

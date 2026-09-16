@@ -80,10 +80,8 @@ __DECLARED_FOCUS__
 
 __BLOCKER_CONTRACT__
 
-agent-run.sh supplies the run's caches, CA bundle, source roots, and repo runner and suppresses output:
-success is one PASS line; failure prints a bounded diagnostic summary plus the log path under
-<worktree>/.agent/logs/ — read the NAMED LOG when the summary is insufficient; never re-run for verbosity or repair the
-environment. Its exit status IS the wrapped command's. Pass `--` before the command (always is simplest).
+Follow this composed verification runbook; it is the only worker yield, resume, and log-read contract:
+__VERIFY_RUNBOOK__
 A usage error prints "agent-run: error: …" on stderr and no PASS/FAIL line at all.
 For a formatting failure, use `--cmd format --fix`, then `--cmd format` through agent-run.sh
 (or the component's equivalent). This requires the declared FORMAT_FIX pair; do not reconstruct

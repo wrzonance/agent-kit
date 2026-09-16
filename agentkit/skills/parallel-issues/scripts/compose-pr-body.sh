@@ -12,12 +12,14 @@ DECISIONS_FILE=''
 TESTING_FILE=''
 BASELINE_FILE=''
 BASELINE_EXCLUSION_FILE=''
+BLOCKER_FILE=''
+BLOCKER_PATHS=()
 AGENT=''
 OUTPUT=''
 OUTPUT_TMP=''
 
 usage() {
-    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE [--baseline-exclusion-file FILE] --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
+    printf 'Usage: %s --issue N --why-file FILE --what-file FILE --decisions-file FILE --testing-file FILE [--baseline-exclusion-file FILE] [--blocker PATH]... [--blocker-file FILE] --agent ID [--baseline-file FILE] [--output FILE]\n' "$PROGNAME" >&2
     printf '  --baseline-file FILE   optional verification-baseline.sh evidence block, appended as a "## Verification" section\n' >&2
     printf '  --baseline-exclusion-file FILE   optional worker baseline-exclusion checkbox appended inside Testing\n' >&2
 }
@@ -35,7 +37,7 @@ parse_args() {
     while (($#)); do
         case $1 in
             --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
-            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--agent|--output)
+            --issue|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker|--blocker-file|--agent|--output)
                 require_value "$1" "${2-}"
                 case $1 in
                     --issue) ISSUE=$2 ;;
@@ -45,6 +47,8 @@ parse_args() {
                     --testing-file) TESTING_FILE=$2 ;;
                     --baseline-file) BASELINE_FILE=$2 ;;
                     --baseline-exclusion-file) BASELINE_EXCLUSION_FILE=$2 ;;
+                    --blocker) BLOCKER_PATHS+=("$2") ;;
+                    --blocker-file) BLOCKER_FILE=$2 ;;
                     --agent) AGENT=$2 ;;
                     --output) OUTPUT=$2 ;;
                 esac
@@ -57,6 +61,8 @@ parse_args() {
             --testing-file=* ) TESTING_FILE=${1#*=}; shift ;;
             --baseline-file=* ) BASELINE_FILE=${1#*=}; shift ;;
             --baseline-exclusion-file=* ) BASELINE_EXCLUSION_FILE=${1#*=}; shift ;;
+            --blocker=* ) BLOCKER_PATHS+=("${1#*=}"); shift ;;
+            --blocker-file=* ) BLOCKER_FILE=${1#*=}; shift ;;
             --agent=* ) AGENT=${1#*=}; shift ;;
             --output=* ) OUTPUT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -118,6 +124,32 @@ validate_testing_file() {
     done <"$path"
 }
 
+validate_blockers() {
+    local path part last_byte
+    if [[ -n $BLOCKER_FILE ]]; then
+        [[ -f $BLOCKER_FILE && ! -L $BLOCKER_FILE && -r $BLOCKER_FILE && -O $BLOCKER_FILE ]] ||
+            die "--blocker-file must be an owned readable regular file: $BLOCKER_FILE"
+        if [[ -s $BLOCKER_FILE ]]; then
+            last_byte=$(tail -c 1 -- "$BLOCKER_FILE" | od -An -t u1)
+            [[ $last_byte =~ ^[[:space:]]*0[[:space:]]*$ ]] ||
+                die '--blocker-file must contain NUL-delimited paths'
+        fi
+        while IFS= read -r -d '' path; do
+            BLOCKER_PATHS+=("$path")
+        done <"$BLOCKER_FILE"
+    fi
+    for path in "${BLOCKER_PATHS[@]}"; do
+        [[ -n $path && $path != /* && $path != *\\* && $path != *'`'* &&
+            $path != *$'\n'* && $path != *$'\r'* ]] ||
+            die "--blocker contains an unsafe repository path: $path"
+        IFS=/ read -r -a parts <<<"$path"
+        for part in "${parts[@]}"; do
+            [[ -n $part && $part != . && $part != .. ]] ||
+                die "--blocker contains an unsafe repository path: $path"
+        done
+    done
+}
+
 validate_args() {
     [[ $ISSUE =~ $UINT_RE ]] || die '--issue must be a positive integer'
     [[ -n $AGENT && $AGENT != *$'\n'* && $AGENT != *$'\r'* ]] ||
@@ -129,6 +161,7 @@ validate_args() {
     normalize_testing_file '--testing-file' "$TESTING_FILE" >/dev/null
     [[ -z $BASELINE_FILE ]] || validate_section '--baseline-file' "$BASELINE_FILE"
     [[ -z $BASELINE_EXCLUSION_FILE ]] || validate_testing_file '--baseline-exclusion-file' "$BASELINE_EXCLUSION_FILE"
+    validate_blockers
     [[ $OUTPUT != *$'\n'* && $OUTPUT != *$'\r'* ]] || die '--output must be a single-line path'
     if [[ -n $OUTPUT && $OUTPUT != - ]]; then
         [[ ! -L $OUTPUT ]] || die "refusing symlink output: $OUTPUT"
@@ -153,6 +186,11 @@ emit_body() {
     emit_section '## Why' "$WHY_FILE"
     emit_section '## What' "$WHAT_FILE"
     emit_section '## Decisions' "$DECISIONS_FILE"
+    if ((${#BLOCKER_PATHS[@]})); then
+        printf '%s\n\n' '## Operator action required'
+        printf -- "- \`%s\`\n" "${BLOCKER_PATHS[@]}"
+        printf '\n%s\n\n' '**Verification limitation:** The retained successful log is not bound to the published commit and may include the protected worktree paths above.'
+    fi
     testing_contents=$(normalize_testing_file '--testing-file' "$TESTING_FILE")
     printf '## Testing\n\n%s' "$testing_contents"
     if [[ -n $BASELINE_EXCLUSION_FILE ]]; then
