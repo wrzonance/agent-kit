@@ -29,6 +29,9 @@ trap 'rm -rf -- "$tmp"' EXIT
 # recent source), computed live rather than hardcoded so the suite passes
 # under whichever CLI actually runs it.
 current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
+current_harness_name=$("$harness_id_script" --name 2> /dev/null)
+clean_harness_env=(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CODEX_HOME \
+    -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE -u OPENCODE -u OPENCODE_PID)
 
 new_repo() {
     local d
@@ -40,8 +43,12 @@ new_repo() {
 
 # --- the ordinary case ------------------------------------------------------
 repo=$(new_repo)
-out=$("$script" --worktree "$repo" 2> /dev/null)
+unknown_home="$tmp/unknown-home"
+mkdir -p "$unknown_home"
+out=$("${clean_harness_env[@]}" HOME="$unknown_home" "$script" --worktree "$repo" 2> /dev/null)
 assert_contains "$out" 'harness=' 'the block names the harness it ran under'
+assert_contains "$out" 'yield-cap= ms=30000 source=default harness=unknown' \
+    'a signal-free runner advertises the conservative unknown-harness default'
 assert_rc 0 'a preflight in a bare repository still exits 0' -- \
     "$script" --worktree "$repo"
 if [[ -f "$repo/.agent/env-contract.txt" ]]; then
@@ -49,6 +56,23 @@ if [[ -f "$repo/.agent/env-contract.txt" ]]; then
 else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
+
+codex_repo=$(new_repo)
+codex_out=$("${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
+    "$script" --worktree "$codex_repo" 2> /dev/null)
+assert_contains "$codex_out" 'yield-cap= ms=30000 source=default harness=codex' \
+    'an explicit Codex signal advertises the conservative Codex default'
+
+claude_repo=$(new_repo)
+claude_out=$("${clean_harness_env[@]}" CLAUDECODE=1 "$script" --worktree "$claude_repo" 2> /dev/null)
+assert_contains "$claude_out" 'yield-cap= ms=60000 source=default harness=claude' \
+    'Claude contracts advertise the harness default yield cap and its provenance'
+
+measured_repo=$(new_repo)
+measured_out=$("${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" AGENT_YIELD_CAP_MS=27000 \
+    "$script" --worktree "$measured_repo" 2> /dev/null)
+assert_contains "$measured_out" 'yield-cap= ms=27000 source=measured harness=codex' \
+    'an explicit measured cap supersedes the default without losing provenance'
 
 # --- .agent/.agent/logs are created 0700 regardless of the ambient umask ----
 # (issue #474) A plain `mkdir -p` inherits the ambient umask; on a `umask 002`
@@ -547,7 +571,7 @@ assert_eq '0' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
 out=$("$script" --ensure --worktree "$repo" 2> "$tmp/ensure-stderr")
 assert_eq '1' "$(grep -c '^skills-content=' <<< "$out")" \
     '--ensure regenerates a contract that predates skills-content= rather than serving it'
-assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected= or skills-content=' \
+assert_contains "$(cat "$tmp/ensure-stderr")" 'predates protected=, skills-content=, or yield-cap=' \
     'and says why it fell through to a fresh preflight'
 assert_eq '1' "$(grep -c '^skills-content=' "$repo/.agent/env-contract.txt")" \
     'the regenerated contract on disk carries skills-content= too'
@@ -1155,7 +1179,7 @@ assert_contains "$(grep '^sandbox=' <<< "$loose_stale_out")" 'active=yes' \
 noguard_root="$tmp/no-comparator-lib"
 mkdir -p "$noguard_root"
 cp -r "$root/agentkit/skills/.shared" "$noguard_root/.shared"
-rm -f "$noguard_root/.shared/scripts/lib/sandbox-comparator.sh"
+rm -f "$noguard_root/.shared/scripts/lib/sandbox-comparator.sh" "$noguard_root/.shared/scripts/lib/yield-cap.sh"
 chmod +x "$noguard_root/.shared/scripts/agent-preflight.sh" "$noguard_root/.shared/scripts/harness-id.sh"
 noguard_script="$noguard_root/.shared/scripts/agent-preflight.sh"
 noguard_repo=$(new_repo)
@@ -1173,6 +1197,8 @@ noguard_out=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$n
 assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
     "$(grep '^sandbox=' <<< "$noguard_out")" \
     'an unavailable comparator fails CLOSED -- the recorded line is kept, never silently treated as "not widened"'
+assert_contains "$noguard_out" "yield-cap= ms=30000 source=default harness=$current_harness_name" \
+    'a missing yield-cap library degrades to a labelled conservative default'
 
 # The same revalidate-not-discard behaviour for caches= (issue #372), using
 # caches_widened -- HOME writability is directly controllable, which gives a

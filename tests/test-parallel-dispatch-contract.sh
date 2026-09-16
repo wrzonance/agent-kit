@@ -247,8 +247,8 @@ assert_contains "$wait_discipline_text" 'worker completion marker' \
     'parallel wait rule names the worker completion bound'
 assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
-assert_contains "$wait_discipline_text" 'test-runner logs' \
-    'parallel wait rule covers test-runner logs'
+assert_not_contains "$wait_discipline_text" 'collect test-runner logs inside one bounded harness cell' \
+    'worker test-runner guidance lives only in the composed verify line'
 six_step_loop_flat=$(tr '\n' ' ' <<<"$six_step_loop_text" | tr -s '[:space:]' ' ')
 assert_contains "$six_step_loop_flat" '## How to write a file' \
     'the shared loop names the write-mechanism section'
@@ -1308,8 +1308,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
-    'a capped timed-out wait does not force a premature stall check'
+assert_contains "$normalized_wait_text" 'one call per cap' \
+    'native collection uses each full contract cap without short polling'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 
