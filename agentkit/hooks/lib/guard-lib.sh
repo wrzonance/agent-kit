@@ -13,20 +13,24 @@
 # a contract-absent checkout.
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
-readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
-      "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-      -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
-  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
+readonly RESOLVE_HINT='  h=unknown
+  if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then h=claude
+  elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then h=codex
+  elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then h=opencode
+  elif [[ -d $HOME/.codex ]]; then h=codex
+  fi
+  cx="${CODEX_HOME:-$HOME/.codex}" cl="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  [[ $h != claude ]] || { cache=$cx; cx=$cl; cl=$cache; }
+  for cache in "$cx" "$cl"; do
+      agentkit=$(find "$cache/plugins/cache" -maxdepth 4 -type d \
+          -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
+      [[ -z $agentkit ]] || break
+  done
+  agentkit=${agentkit:-${CODEX_HOME:-$HOME/.codex}/skills}
   croot=$(git rev-parse --show-toplevel 2>/dev/null) || croot=
   contract=
   if [[ -n "$croot" ]]; then
       contract="$croot/.agent/env-contract.txt"
-      h=unknown
-      if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then h=claude
-      elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then h=codex
-      elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then h=opencode
-      elif [[ -d $HOME/.codex ]]; then h=codex
-      fi
       keyed="$croot/.agent/env-contract.$h.txt"
       [[ ! -e "$keyed" && ! -L "$keyed" ]] || contract="$keyed"
   fi
