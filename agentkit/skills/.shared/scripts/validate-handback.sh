@@ -636,10 +636,34 @@ def classify_completion(root, handback_path):
         if pushed_match is None:
             return f"disposition=blocked pr=none blocker={blocker}"
         pushed_sha = pushed_match.group(1)
+        branch_match = re.search(r"(?im)^\s*branch\s*:\s*(\S+)\s*$", report)
+        if branch_match is None:
+            return f"disposition=blocked pr=none blocker={blocker}"
         head = run_evidence(
             ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
         ).stdout.strip()
-        if head != pushed_sha:
+        branch = run_evidence(
+            ["git", "-C", str(root), "branch", "--show-current"], text=True
+        ).stdout.strip()
+        remote = run_evidence(
+            ["git", "-C", str(root), "config", "--get", f"branch.{branch}.remote"],
+            text=True,
+        ).stdout.strip()
+        upstream = run_evidence(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "@{upstream}"],
+            text=True,
+        ).stdout.strip()
+        upstream_sha = run_evidence(
+            ["git", "-C", str(root), "rev-parse", f"{upstream}^{{commit}}"], text=True
+        ).stdout.strip()
+        if (
+            head != pushed_sha
+            or branch != branch_match.group(1)
+            or not remote
+            or remote == "."
+            or not upstream.startswith(f"{remote}/")
+            or upstream_sha != pushed_sha
+        ):
             return f"disposition=blocked pr=none blocker={blocker}"
 
         log_match = re.search(
@@ -657,7 +681,10 @@ def classify_completion(root, handback_path):
             r"=== agent-run exited rc=0 after [0-9]+s", exits[-1]
         ):
             return f"disposition=blocked pr=none blocker={blocker}"
-        return f"disposition=partial-pushed pr=open blocker={blocker}"
+        return (
+            f"disposition=partial-pushed pr=open blocker={blocker} "
+            "verification=unbound"
+        )
     except (InvalidHandback, UnavailableEvidence, OSError, UnicodeError, ValueError):
         return f"disposition=blocked pr=none blocker={blocker}"
 

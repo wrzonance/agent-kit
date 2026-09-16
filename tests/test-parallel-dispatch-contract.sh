@@ -577,11 +577,17 @@ assert_contains "$normalized_text" '--blocker' \
     'partial-pushed publication carries protected paths into the PR body'
 assert_contains "$normalized_text" 'Operator action required' \
     'partial-pushed publication names the PR body disclosure section'
+assert_contains "$normalized_text" 'Completion report' \
+    'ordinary clean completion retains its direct publication route'
+assert_contains "$normalized_text" 'verification=unbound' \
+    'partial publication carries the unresolved verification limitation'
+assert_contains "$normalized_text" 'both completion paths' \
+    'clean and partial delivery retain chain dispatch guidance'
 
 # issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
 # before the redrive runs, with the set write recorded only after it succeeds.
-blocked_bullet=$(grep '^- \*\*Completion or BLOCKED\*\*' "$skill")
+blocked_bullet=$(grep '^- \*\*BLOCKED\*\*' "$skill")
 assert_contains "$blocked_bullet" 'exit 11 (absent)' \
     'the BLOCKED bullet names the absent-key exit code before redriving'
 if [[ $blocked_bullet == *'run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>'*'exit 11 (absent)'*'run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>'* ]]; then

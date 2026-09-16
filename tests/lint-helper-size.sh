@@ -86,7 +86,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #774: classify partial pushed handbacks and disclose their protected paths.
-readonly MAX_TREE_TOKENS=442089
+readonly MAX_TREE_TOKENS=442394
 
 violations=0
 checked=0

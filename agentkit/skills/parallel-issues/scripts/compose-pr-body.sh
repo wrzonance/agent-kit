@@ -177,7 +177,7 @@ emit_body() {
     if ((${#BLOCKER_PATHS[@]})); then
         printf '%s\n\n' '## Operator action required'
         printf -- "- \`%s\`\n" "${BLOCKER_PATHS[@]}"
-        printf '\n'
+        printf '\n%s\n\n' '**Verification limitation:** The retained successful log is not bound to the published commit and may include the protected worktree paths above.'
     fi
     testing_contents=$(normalize_testing_file '--testing-file' "$TESTING_FILE")
     printf '## Testing\n\n%s' "$testing_contents"

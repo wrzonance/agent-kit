@@ -78,6 +78,10 @@ assert_contains "$blocker_text" '- `addin/AGENTS.md`' \
     'the blocker section names the first protected path'
 assert_contains "$blocker_text" '- `.github/workflows/release.yml`' \
     'the blocker section names every protected path'
+assert_contains "$blocker_text" 'Verification limitation:' \
+    'a partial-pushed PR body discloses that retained verification is unbound'
+assert_contains "$blocker_text" 'may include the protected worktree paths above' \
+    'the limitation states that protected bytes may have affected verification'
 assert_rc 1 'composer rejects an unsafe blocker path' -- bash "$compose" \
     --issue 137 --why-file "$why" --what-file "$what" \
     --decisions-file "$decisions" --testing-file "$testing" \
