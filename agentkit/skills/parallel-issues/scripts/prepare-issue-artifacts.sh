@@ -52,6 +52,9 @@ Exit status:
       before re-fencing
   1   bad arguments, missing evidence, or any other failure
 
+Re-running the script for an existing complete set is churn; delete the
+affected generated file deliberately before re-fencing, or use --resume.
+
 Recipe: publish canonical issue artifacts
   [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
       printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }

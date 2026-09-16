@@ -159,7 +159,11 @@ assert_eq '1' "$resolver_lines" \
 
 for skill in "$skills"/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
-    assert_contains "$(<"$skill")" 'skills= path=' \
+    contract_documentation=$(<"$skill")
+    if [[ $name == parallel-issues ]]; then
+        contract_documentation+=$'\n'"$("$skills/.shared/scripts/agent-preflight.sh" --help)"
+    fi
+    assert_contains "$contract_documentation" 'skills= path=' \
         "$name documents the contract field"
     # $agentkit IS the skills tree root -- agent-preflight.sh publishes it as
     # `skills= path=/abs/skills-tree`. So `$agentkit/skills/...` re-appends the
@@ -422,7 +426,7 @@ assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable
 # SKILL.md itself); its own jq guard is the evidence-unavailable failure mode now.
 assert_contains "$(<"$gh_pr_state_script")" 'jq not found on PATH; evidence unavailable' \
     'the absorbed classification recipe names jq parser failures as unavailable evidence'
-assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailable' \
+assert_contains "$("$skills/.shared/scripts/triage-issues.sh" --help)" 'jq is not installed; evidence unavailable' \
     'parallel recipes name jq parser failures as unavailable evidence'
 assert_contains "$(<"$prepare_issue_script")" 'issue_payload_file="$agent_dir/fetched-issue.json"' \
     'parallel fetch persists raw issue bytes before parsing'
@@ -627,7 +631,7 @@ done < <(find "$shared_dir" -maxdepth 1 -name '*.md' -print0)
 declare -A shared_canonical_phrase=(
     [six-step-loop.md]='Worker prompts render this content verbatim, not as a pointer'
     [spawn-contract.md]='omission can silently inherit an expensive parent'
-    [wait-discipline.md]='empty wait cycles'
+    [wait-discipline.md]='Between waits, wait again; read durable state only when a wait reports an actual completion.'
 )
 for shared_name in "${!shared_canonical_phrase[@]}"; do
     phrase=${shared_canonical_phrase[$shared_name]}
