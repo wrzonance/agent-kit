@@ -69,7 +69,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #765: conflict evidence, generated default history and parked rows; measured growth.
 # #761: line-addressable ledger diagnostics and locked conservative repair.
 # #761 review repair: refresh record/release transition timestamps.
-readonly MAX_TREE_TOKENS=436291
+# #765: recover executable heredocs and retain combined-output file targets.
+readonly MAX_TREE_TOKENS=436350
 
 violations=0
 checked=0
