@@ -66,7 +66,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #725 review repair: resolve siblings for bare filename invocation.
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
-readonly MAX_TREE_TOKENS=430842
+# #760 recovery: 1,726,607 final bytes / 4 = 431,651 tokens (430,842 + 809).
+readonly MAX_TREE_TOKENS=431651
 
 violations=0
 checked=0
