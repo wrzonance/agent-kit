@@ -658,7 +658,7 @@ persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
     [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
     chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
-    dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --repo-root "$repository_root") || return 1
+    dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
     if ! { printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
         rm -f -- "$dispatch_report_tmp"; return 1
     fi
