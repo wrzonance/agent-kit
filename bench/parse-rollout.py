@@ -150,20 +150,24 @@ def is_spawn_call(payload):
 def classify_pre_spawn_call(payload):
     name = str(payload.get('name', '')).lower()
     text = function_call_text(call_arguments(payload)).lower()
-    if re.search(r'(^|\s)gh\s|/issues/|/pulls/|project item-', text):
-        return 'issue_forge_data'
+    matches = []
+    if re.search(r'\bgh\s|/issues/|/pulls/|project item-', text):
+        matches.append('issue_forge_data')
     if ('all_tools' in text
             or any(marker in name for marker in ('tool_search', 'list_mcp', 'list_tools'))):
-        return 'tool_interface_discovery'
+        matches.append('tool_interface_discovery')
     if re.search(r'(references/|\.shared/)[^\s"\']+\.md\b|(^|[/\s])skill\.md\b', text):
-        return 'skill_reference_prose'
+        matches.append('skill_reference_prose')
     if re.search(r'(^|[ /])(agents|claude)\.md\b|\.(py|sh|js|ts|json|ya?ml)\b', text):
-        return 'repository_source_docs'
-    return 'unknown_other'
+        matches.append('repository_source_docs')
+    if len(matches) == 1:
+        return matches[0], False
+    return 'unknown_other', len(matches) > 1
 
 
 def stable_call_id(value):
-    return value if isinstance(value, (str, int)) and not isinstance(value, bool) else None
+    return value if ((isinstance(value, str) and value) or
+                     (isinstance(value, int) and not isinstance(value, bool))) else None
 
 
 def item_payload(record):
@@ -192,7 +196,13 @@ def collect_pre_spawn_chars(records):
         if payload.get('type') in CALL_TYPES:
             call_id = stable_call_id(payload.get('call_id'))
             if call_id is not None:
-                call_categories[call_id] = classify_pre_spawn_call(payload)
+                category, ambiguous = classify_pre_spawn_call(payload)
+                if call_id in call_categories or ambiguous:
+                    category = 'unknown_other'
+                    missing_attribution = True
+                call_categories[call_id] = category
+            else:
+                missing_attribution = True
         elif payload.get('type') in CALL_OUTPUT_TYPES:
             length = captured_text_length(payload.get('output'))
             call_id = stable_call_id(payload.get('call_id'))

@@ -211,6 +211,32 @@ assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'ambi
 assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
     'ambiguous call ids name missing category attribution'
 
+jq -c 'if .payload.call_id? == "c-forge" and .payload.type == "function_call" then
+    .payload |= (.type = "custom_tool_call" | .name = "functions.exec" |
+      .input = {code: "await tools.exec_command({cmd: \"gh issue view 784; cat agentkit/skills/parallel-issues/SKILL.md\"})"} |
+      del(.arguments))
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/mixed-wrapper.jsonl"
+run "$tmp/mixed-wrapper.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'a mixed-category functions wrapper parses without guessing'
+assert_eq '0' "$(jq -r '.pre_spawn_chars.issue_forge_data' <<< "$RUN_OUT")" 'mixed wrapper output is not assigned wholesale to forge data'
+assert_eq '20' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'mixed wrapper output moves to the unknown bucket'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'mixed wrapper attribution is explicitly partial'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'mixed wrapper names missing category attribution'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "c2" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/duplicate-call-id.jsonl"
+run "$tmp/duplicate-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '1' "$RUN_RC" 'duplicate call ids fail the rollout instead of overwriting attribution silently'
+assert_contains "$RUN_OUT" 'conflicting event identity' 'the duplicate-id refusal names the ambiguous identity evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/empty-call-id.jsonl"
+run "$tmp/empty-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'empty call ids do not become a shared attribution key'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'empty call ids make category evidence partial'
+assert_eq '25' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'empty-id output moves to the unknown bucket'
+
 jq -c 'if .payload.call_id? == "c-spawn" then .timestamp = "2026-08-20T10:03:00" else . end' \
     "$sessions/orchestrator.jsonl" > "$tmp/mixed-timestamps.jsonl"
 run "$tmp/mixed-timestamps.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"

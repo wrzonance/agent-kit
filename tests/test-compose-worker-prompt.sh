@@ -1206,14 +1206,14 @@ assert_contains "$ledger_partial_err" 'given together' \
 
 # A worker that still asks for approval after a yolo dispatch is a resumable
 # authorization handoff, not a successful completion or a new user question.
-worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
-assert_contains "$(<"$worker_prompts")" 'needs-authorization' \
+implementation_worker="$root/agentkit/skills/parallel-issues/references/implementation-worker.md"
+assert_contains "$(<"$implementation_worker")" 'needs-authorization' \
     'Collect names the authorization-question completion class'
-assert_contains "$(<"$worker_prompts")" 'reply yes' \
+assert_contains "$(<"$implementation_worker")" 'reply yes' \
     'Collect detects the reply-yes completion shape'
-assert_contains "$(<"$worker_prompts")" 'followup_task' \
+assert_contains "$(<"$implementation_worker")" 'followup_task' \
     'Collect resumes the same worker through followup_task'
-assert_contains "$(<"$worker_prompts")" 'exactly once' \
+assert_contains "$(<"$implementation_worker")" 'exactly once' \
     'Collect limits automatic authorization resumption to one attempt'
 
 # --- three-hop integration: select-boundary-mode.sh -> prepare-issue-artifacts.sh
