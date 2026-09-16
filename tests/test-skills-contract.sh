@@ -54,6 +54,21 @@ printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude' > "$declared_repo/.agent/confi
 assert_rc 1 'missing model does not fabricate a default declaration' -- node "$discovery" --declared --repo-root "$declared_repo"
 assert_rc 2 'declaration mode requires an explicit repository' -- node "$discovery" --declared
 
+for slot in '' '_FALLBACK'; do
+    for form in roster bare-cli; do
+        if [[ $form == roster ]]; then
+            printf 'AGENT_ADVERSARIAL_REVIEWER%s=claude--high\n' "$slot" > "$declared_repo/.agent/config.env"
+        else
+            printf 'AGENT_ADVERSARIAL_REVIEWER%s=claude\nAGENT_ADVERSARIAL_REVIEW_MODEL%s=claude-\n' \
+                "$slot" "$slot" > "$declared_repo/.agent/config.env"
+        fi
+        declared_rc=0
+        declared_out=$(node "$discovery" --declared --repo-root "$declared_repo" 2>&1) || declared_rc=$?
+        assert_eq 1 "$declared_rc" "incomplete Claude model is rejected in $slot $form"
+        assert_not_contains "$declared_out" 'Declared Claude candidate' "incomplete $slot $form never reports a validated candidate"
+    done
+done
+
 printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
     'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' > "$declared_repo/.agent/config.env"
 declared_rc=0
