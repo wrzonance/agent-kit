@@ -119,10 +119,18 @@ for bad in '2298:25215' 'foo:25215:800' '2298:08:800' '2298:1+1:800' '2298:25215
 done
 
 # --- tree total ---------------------------------------------------------
-# Forty-six helpers each under both per-file caps, together over the tree
-# ceiling: diffuse growth must fail even when no single file does.
+# Keep each helper below both per-file caps, but measure enough copies to exceed
+# the live tree ceiling: diffuse growth must fail even when no single file does.
 root=$tmp/tree-total
-for ((n = 0; n < 46; n++)); do
+tree_ceiling=$(sed -n 's/^readonly MAX_TREE_TOKENS=\([0-9][0-9]*\)$/\1/p' "$lint")
+[[ $tree_ceiling =~ ^[1-9][0-9]{0,8}$ ]] || {
+    printf 'invalid live tree ceiling for fixture sizing\n' >&2
+    exit 1
+}
+write_script "$root" skills/x/scripts/part-0.sh 790 48
+helper_bytes=$(wc -c <"$root/skills/x/scripts/part-0.sh")
+helper_count=$(( ((tree_ceiling + 1) * 4 + helper_bytes - 1) / helper_bytes ))
+for ((n = 1; n < helper_count; n++)); do
     write_script "$root" "skills/x/scripts/part-$n.sh" 790 48
 done
 run_lint "$root"

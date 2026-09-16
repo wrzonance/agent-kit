@@ -218,30 +218,28 @@ after its immediate predecessor's commit is pushed. A fast-mode disclosure there
 
 ### Named active issue adjudication
 
-An explicit issue number is a request to account for that number, not permission to lose it in the
-active filter. The triage digest keeps the winning open-PR evidence even when the board Status is
-`In progress` or `In review`; use it as the first liveness check. Then use the repository-wide,
-root-owned worker ledger at `$repository_root/.agent/runs/active-workers.ndjson`. This path is
-shared across resumptions and invocation IDs so a new run cannot overlook a worker dispatched by
-an earlier run.
+Account for each named issue. Check the triage digest's open PR first, including
+`In progress`/`In review` issues, then the root-owned, repository-wide ledger at
+`$repository_root/.agent/runs/active-workers.ndjson`, shared across runs and resumptions.
+It is owner-only (`0600`), append-only NDJSON: one transition per line; legacy version 1
+rows remain readable.
 
-The ledger is owner-only (`0600`), append-only NDJSON with one transition per line. Legacy
-version 1 rows remain readable:
-
-```json
-{"version":1,"issue":511,"worktree":"/absolute/repo/.worktrees/feat/issue-511","branch":"feat/issue-511","state":"active","heartbeatEpoch":1787932800}
-```
-
-Use `.shared/spawn-contract.md`'s durable sole-writer gate for all new writes through
-`named-active-state.sh`. Version 2 adds `runId`, `attempt`, `workerId`, `disposition`, and
+Write through `named-active-state.sh` per `.shared/spawn-contract.md`. Version 2 adds
+`runId`, `attempt`, `workerId`, `disposition`, and
 `evidence`; `unknown` reserves before submission, `active` holds the returned ID, and only
 confirmed terminal evidence releases ownership. Neither interruption requests nor parking
 release a worker. Inventory selects the latest row per canonical worktree across runs.
 Version 2 unknown/active rows never expire and hold before legacy worktree/heartbeat checks.
-Malformed evidence blocks dispatch. Never append a legacy row over version 2 ownership.
-Legacy active rows lack attempt/worker identity: reservation fails closed even if legacy
-triage calls them stale. This helper cannot reconcile those identities; park and report that
-limitation. Existing legacy terminal rows permit a new reservation.
+Legacy extra keys are ignored; version 2 stays strict. Inventory precedes schema validation
+and reports malformed line/key/predicate diagnostics. Nonexpired malformed evidence blocks
+dispatch. Aged terminal rows skip validation but still prevent older active rows resurfacing.
+Root repairs with `named-active-state.sh --repo-root ROOT --ledger LEDGER --action prune
+--fresh-hours N`: under the same lock, it reports dropped unparseable/aged terminal lines.
+Any parsed active, unknown, or indeterminate row (including history) refuses pruning;
+reconcile runtime first. Never replace the ledger by hand.
+Never append a legacy row over version 2 ownership.
+Legacy active rows lack attempt/worker identity: reservation fails closed even when triage
+calls them stale. Park and report missing reconciliation; legacy terminal rows permit reservation.
 
 Run the boundary helper for every operator-named triage record whose verdict is `active`:
 
