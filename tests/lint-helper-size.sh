@@ -67,7 +67,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
 # #760 recovery: 1,726,607 final bytes / 4 = 431,651 tokens (430,842 + 809).
-readonly MAX_TREE_TOKENS=431651
+# #760 Opus repairs: 1,726,679 bytes / 4 = 431,669 tokens (431,651 + 18).
+readonly MAX_TREE_TOKENS=431669
 
 violations=0
 checked=0

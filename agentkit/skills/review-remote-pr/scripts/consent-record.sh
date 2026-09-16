@@ -425,13 +425,17 @@ grant_command() {
     PROVIDER=$(normalize_provider "$PROVIDER")
     if [[ $SOURCE == operator-instruction ]]; then
         local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} peer=$PROVIDER
+        instruction=${instruction//[‘’]/\'}
+        # Only this trailing request concerns repeated prompts rather than consent.
+        local consent_instruction=${instruction%'; do not ask again.'}
+        consent_instruction=${consent_instruction%'; do not ask again'}
         field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
         case $PROVIDER in anthropic) peer=claude ;; openai) peer=codex ;; esac
         [[ -n $instruction && -n $MODEL && -n $PURPOSE && -n $destination &&
            $instruction == *"${MODEL,,}"* && $instruction == *"${PURPOSE,,}"* &&
            ( $instruction == *"$PROVIDER"* || $instruction == *"$peer"* ) &&
            ( $destination == *"$PROVIDER"* || $destination == *"$peer"* ) &&
-           ! $instruction =~ (^|[^a-z])(not|never|don\'t)[[:space:]]+(use|send|review|perform|run|authorize|consent|approve|want)([^a-z]|$) ]] ||
+           ! $consent_instruction =~ (^|[^a-z])(no|not|never|dont|cannot|[a-z]+n\'t|refuse|decline)([^a-z]|$) ]] ||
             die_usage 'operator instruction must affirmatively name provider, model and purpose'
         disclose_command
         printf 'model=%s\n' "$MODEL"

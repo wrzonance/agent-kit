@@ -424,7 +424,7 @@ if [[ -n $run_id ]]; then
         # against the run receipt even if the caller rewrote the display.
         jq '.snapshot' "$receipt" >"$work_dir/prior-snapshot.json"
         confirmed_queue_file=$work_dir/prior-snapshot.json
-        jq '.writeSet // .predicate.writeSet' "$receipt" >"$work_dir/paths.json"
+        jq '.predicate.writeSet' "$receipt" >"$work_dir/paths.json"
     fi
 fi
 argv_diff=$(jq -r --argjson requested "$requested_argv" '
@@ -706,11 +706,9 @@ if ((full_match_ok == 0)); then
                       'any(.[]; .tool == "worktree-commit" and .commit == $sha and
                         (.paths_touched | sort | unique) == $paths[0])' "$touched" >/dev/null ||
                         die 'self-authored paths-touched evidence missing; redisplay and reconfirm'
-                    # Accumulate only independently corroborated run commits.
-                    # Persist after every PR's proof succeeds, never on failure.
-                    jq -s 'add | unique' "$work_dir/paths.json" "$work_dir/commit-paths.json" \
-                        >"$work_dir/expanded-paths.json" || die 'could not expand remediation write set'
-                    mv -- "$work_dir/expanded-paths.json" "$work_dir/paths.json"
+                    jq -e --slurpfile allowed "$work_dir/predicate.json" \
+                        '(. - $allowed[0].writeSet) == []' "$work_dir/commit-paths.json" >/dev/null ||
+                        die 'self-authored commit exceeds operator write set; redisplay and reconfirm'
                 done <"$work_dir/commits"
                 ;;
             retarget)

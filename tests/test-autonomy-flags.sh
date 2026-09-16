@@ -284,6 +284,25 @@ assert_rc 10 'instruction never authorizes a different PR' -- bash "$consent" ch
 printf 'src/other.sh\n' >"$tmp/instruction-expanded-paths"
 assert_rc 10 'instruction never authorizes undisclosed additional paths' -- bash "$consent" check \
     --state "$state" --provider claude --payload "owner/repo:14:$(printf '%064d' 2)" --paths-file "$tmp/instruction-expanded-paths"
+for refusal in "Don’t use Claude with Opus 5 for adversarial review." \
+    "Don‘t use Claude with Opus 5 for adversarial review." \
+    'dont use Claude with Opus 5 for adversarial review.' \
+    'Do not ever use Claude with Opus 5 for adversarial review.' \
+    'Never under any circumstances authorize Claude with Opus 5 for adversarial review.'; do
+    before_refusal=$(sha256sum "$state" "$state.decision.json" "$state.consent-paths")
+    assert_rc 2 'negated instructions preserve existing valid consent' -- bash "$consent" grant \
+        --state "$state" --provider claude --payload "$payload" --source operator-instruction \
+        --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+        --paths-file "$tmp/instruction-paths"
+    assert_eq "$before_refusal" "$(sha256sum "$state" "$state.decision.json" "$state.consent-paths")" \
+        'refusal leaves consent and its evidence byte-identical'
+    assert_rc 2 'negated instructions cannot create fresh consent' -- bash "$consent" grant \
+        --state "$state-rejected" --provider claude --payload "$payload" --source operator-instruction \
+        --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
+        --paths-file "$tmp/instruction-paths"
+    assert_eq no "$([[ -e $state-rejected || -e $state-rejected.decision.json || -e $state-rejected.consent-paths ]] && printf yes || printf no)" \
+        'refusal creates no consent or decision artifact'
+done
 if [[ -f $state.decision.json ]]; then
     printf 'tampered\n' >>"$state.decision.json"
     assert_rc 10 'changed operator evidence invalidates consent' -- bash "$consent" check \

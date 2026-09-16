@@ -982,6 +982,9 @@ assert_eq 0 "$self_rc" 'a fully evidenced scoped fix advances without another co
 if [[ -f $receipt ]]; then
     assert_eq self-authored "$(jq -r '.advances[-1].kind' "$receipt")" 'receipt audits self-authored advance'
 fi
+self_rc=0
+QUEUE_SHA=$new QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'authorized fix receipt is reusable with original write-set input'
 for failure in outside-commit outside-path base ancestry missing-finding; do
     cp "$tmp/initial-receipt" "$receipt"
     cp "$proof" "$tmp/proof-save"
@@ -1013,7 +1016,7 @@ QUEUE_SHA=$orphan QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof
     >"$tmp/self.out" 2>&1 || self_rc=$?
 assert_eq 1 "$self_rc" 'local ancestry independently refuses a force-pushed unrelated head'
 
-# Proven remediation may expand scope; record even a subsequently reverted path.
+# Commit evidence cannot expand scope, even for a subsequently reverted path.
 printf 'outside\n' >"$repo_root/outside.sh"
 git -C "$repo_root" add outside.sh
 git -C "$repo_root" commit -qm escape
@@ -1032,15 +1035,19 @@ for sha in "$escape" "$reverted"; do
     jq -cn --arg sha "$sha" '{tool:"worktree-commit",commit:$sha,paths_touched:["outside.sh"]}' \
       >>"$repo_root/.agent/evidence/paths-touched.ndjson"
 done
+self_before=$(sha256sum "$receipt" "$auth")
 self_rc=0
 QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
     >"$tmp/self.out" 2>&1 || self_rc=$?
-assert_eq 0 "$self_rc" 'a fully recorded remediation expands scope without reconfirmation'
-assert_eq '["outside.sh","src/fix.sh"]' "$(jq -c .writeSet "$receipt")" 'receipt records all per-commit paths including reverted paths'
+assert_eq 1 "$self_rc" 'fully evidenced reverted outside paths still require operator confirmation'
+assert_eq "$self_before" "$(sha256sum "$receipt" "$auth")" 'outside-path refusal preserves receipt and authorization bytes'
 assert_eq '["src/fix.sh"]' "$(jq -c .predicate.writeSet "$receipt")" 'original operator predicate remains immutable'
 self_rc=0
 QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
-assert_eq 0 "$self_rc" 'expanded receipt is reusable with original write-set input'
+assert_eq 1 "$self_rc" 'outside head remains unauthorized on reuse with original write-set input'
+self_rc=0
+QUEUE_SHA=$old run_fast >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 0 "$self_rc" 'original confirmed head remains reusable with original write-set input'
 cp "$tmp/initial-receipt" "$receipt"
 cp "$repo_root/.agent/evidence/paths-touched.ndjson" "$tmp/touched-save"
 head -n 1 "$tmp/touched-save" >"$repo_root/.agent/evidence/paths-touched.ndjson"
@@ -1050,6 +1057,26 @@ QUEUE_SHA=$reverted QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-pro
 assert_eq 1 "$self_rc" 'unproven outside paths still fail closed'
 assert_eq "$(cat "$tmp/initial-receipt")" "$(cat "$receipt")" 'failed expansion never mutates receipt'
 cp "$tmp/touched-save" "$repo_root/.agent/evidence/paths-touched.ndjson"
+
+# A mutable receipt field cannot turn corroborated workflow edits into scope.
+mkdir -p "$repo_root/.github/workflows"
+printf 'name: outside\n' >"$repo_root/.github/workflows/outside.yml"
+git -C "$repo_root" add .github/workflows/outside.yml
+workflow_tree=$(git -C "$repo_root" write-tree)
+workflow_head=$(git -C "$repo_root" commit-tree "$workflow_tree" -p "$new" -m outside-workflow)
+jq --arg sha "$workflow_head" '.to=$sha | .commits += [{sha:$sha,pushed:true,finding:"fix:F1"}]' "$tmp/proof-save" >"$tmp/changed"
+cp "$tmp/changed" "$proof"
+jq --arg sha "$workflow_head" '.reviews[0].coverage += [{sha:$sha,reason:"fix:F1"}]' "$finding_ledger" >"$tmp/changed"
+cp "$tmp/changed" "$finding_ledger"
+jq -cn --arg sha "$workflow_head" '{tool:"worktree-commit",commit:$sha,paths_touched:[".github/workflows/outside.yml"]}' \
+    >>"$repo_root/.agent/evidence/paths-touched.ndjson"
+jq '.writeSet += ["outside.sh", ".github/workflows/outside.yml"]' "$tmp/initial-receipt" >"$receipt"
+self_before=$(sha256sum "$receipt" "$auth")
+self_rc=0
+QUEUE_SHA=$workflow_head QUEUE_FP_14=$(printf '%064d' 1) run_fast --self-authored-proof "14:$proof" \
+    >"$tmp/self.out" 2>&1 || self_rc=$?
+assert_eq 1 "$self_rc" 'helper evidence and mutable receipt fields never authorize outside workflow paths'
+assert_eq "$self_before" "$(sha256sum "$receipt" "$auth")" 'workflow refusal preserves receipt and authorization bytes'
 
 run_attended() {
     run_authorize_provider coderabbit:trigger:capability-default \
