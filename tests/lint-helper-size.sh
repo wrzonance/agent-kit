@@ -33,7 +33,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="976:14074:800"
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16457:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -66,8 +66,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #725 review repair: resolve siblings for bare filename invocation.
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
-# #765: clean merge replay and default-advance proof composition; measured growth.
-readonly MAX_TREE_TOKENS=433202
+# #765: conflict evidence, generated default history and parked rows; measured growth.
+readonly MAX_TREE_TOKENS=435586
 
 violations=0
 checked=0

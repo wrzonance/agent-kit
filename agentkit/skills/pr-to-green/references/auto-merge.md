@@ -73,13 +73,10 @@ way — deletion only ever touches the remote branch ref.
 
 ## Self-authored fix advances
 
-Retain the initial `--run-id ID --write-set-file FILE` and receipt. Use
-`--self-authored-proof PR:FILE` for own remediation pushes, or `--lineage-proof
-PR:FILE` to compose them with exact authorized parent merges. Neither option
-changes the selector, PR ceiling, providers, merge policy or operator write set.
-Changing those requires redisplay and confirmation under a new run ID.
-
-Supply a private proof:
+Keep `--run-id ID --write-set-file FILE` and receipt. Use `--self-authored-proof
+PR:FILE` for own fixes or `--lineage-proof PR:FILE` for parent integration.
+Neither changes selectors, PR ceiling, providers, merge policy or write set.
+Changes require confirmation under a new run ID. Private proof:
 
 ```json
 {"runId":"run-1","repository":"owner/repo","pr":14,"base":"main",
@@ -89,29 +86,31 @@ Supply a private proof:
  "commits":[{"sha":"<own SHA>","pushed":true,"finding":"fix:F1"}]}
 ```
 
-Every first-parent commit must appear once in `merges` or `commits`.
-Each merge must have two parents, import
-an exact receipt-authorized head, and reproduce the clean `git merge-tree` tree.
-Imported ancestry is accounted separately. Authorized heads persist after merge.
-Unknown parents, conflicts, edited trees and unaccounted commits are rejected.
-Bounds: 16 merges, 256 commits, 10 seconds per replay.
+Partition first-parent commits into `merges`, `commits`, or
+`resolutions:[{sha,pushed:true,finding:"fix:ID"}]`. Parents must be exact authorized
+heads; account imported ancestry separately. Clean trees must match replay.
+Resolutions require regular-file content conflicts with unchanged modes;
+only reported conflict paths may differ from replay. Those paths must fit the
+write set. BLOCKED advances need verified resolutions.
+Bounds: 16 merges, 256 commits, 10s/replay.
 
-Own commits require pushed assertions, `fix:ID` review-ledger coverage, and records in
-`.agent/evidence/paths-touched.ndjson`. Actual paths must fit the write set,
-including changes later reverted. Pure merges need no own-finding or paths evidence.
-Both local and live ancestry must hold.
+Own work needs `fix:ID` ledger coverage and records in
+`.agent/evidence/paths-touched.ndjson`. Resolution records list the full actual
+first-parent diff; scope checks cover resolutions. Other own commits stay in scope.
 
-For a default advance, lineage proofs also carry
-`"defaultAdvance":{"from":"<old default SHA>","to":"<live default SHA>","prs":[15]}`.
-The old default must be an ancestor of the authorized head. Each intervening
-default commit must be the verified clean merge of an exact authorized queued
-head; the PR must report merged into the canonical default. Squash/rebase merges
-are unsupported. Both diff fingerprints are checked against their
-respective default bases. Unchanged heads may lose inherited diff; arbitrary default history is rejected.
+`defaultAdvance:{from,to,prs:[15]}` anchors default first-parent history within
+an exact authorized head. Commits must be verified queued merges or generated-only
+nonmerge declared by owned config through `repo-config.sh`. Undeclared paths,
+empty/nonregular changes and squash/rebase PR merges fail closed. For stacked bases,
+`oldBase:{pr,sha}` must name an authorized parent, its live PR branch must match
+the saved base, and contain the historical SHA. An earlier imported default is
+allowed only when its remaining verified tail is entirely generated-only.
 
-A changed PR base still requires canonical `--retarget-proof` approval and its
-fresh boundary epoch. Successful advances retain every run fence; all new heads
-still require fresh CI, review-completion and pre-merge gates. Missing proof requires redisplay and confirmation.
+Changed WAITING rows are parked: no executable authority or authorized-head
+growth; original snapshots stay intact. Pending drift is diagnostic;
+an independent RUNNABLE root is required. Unparking still needs original-head
+proof. Retargets retain canonical approval/boundary checks. All new heads need
+fresh CI, review-completion and merge gates.
 
 ## Mechanical queue advance without redisplay
 
