@@ -26,45 +26,134 @@ extract() {
     ' "$file"
 }
 
-# Like the recipe safety scanner, inspect command positions rather than words
-# in prose, comments, or printf arguments. This is a bounded builtin check,
-# not a claim that every other shell construct is portable.
-bash_only_commands() {
+# Inspect the shell text that the parent harness will execute. Quoted strings,
+# comments, parameter-expansion patterns, and heredoc bodies are data at this
+# boundary; scanning their words would turn documentation examples into false
+# positives. An explicit Bash subprocess owns its quoted command or stdin body.
+recipe_portability_findings() {
     awk '
-        # Mask quoted text before splitting commands, so a semicolon in a
-        # printed negative example never turns its text into a command.
-        function command_text(line, result, j, c) {
+        function trim(value) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            return value
+        }
+        # Preserve byte positions while masking non-executable text. Keeping
+        # positions lets heredoc_delimiter read the corresponding raw token.
+        function command_text(line, result, j, c, next_c, brace_depth) {
             result = ""
             for (j = 1; j <= length(line); j++) {
                 c = substr(line, j, 1)
-                if (quote != sprintf("%c", 39) && c == "\\") { j++; result = result "Q"; continue }
-                if (quote != "") {
-                    if (c == quote) quote = ""
+                next_c = substr(line, j + 1, 1)
+                if (quote != sprintf("%c", 39) && c == "\\") {
+                    result = result "QQ"
+                    j++
                     continue
                 }
-                if (c == "\"" || c == sprintf("%c", 39)) { quote = c; result = result "Q"; continue }
+                if (quote != "") {
+                    if (c == quote) quote = ""
+                    result = result "Q"
+                    continue
+                }
+                if (c == "\"" || c == sprintf("%c", 39)) {
+                    quote = c
+                    result = result "Q"
+                    continue
+                }
                 if (c == "#" && (j == 1 || substr(line, j - 1, 1) ~ /[[:space:];&|]/)) break
+                if (c == "$" && next_c == "{") {
+                    brace_depth = 1
+                    result = result "QQ"
+                    j++
+                    while (j < length(line) && brace_depth) {
+                        j++
+                        c = substr(line, j, 1)
+                        if (c == "{") brace_depth++
+                        if (c == "}") brace_depth--
+                        result = result "Q"
+                    }
+                    continue
+                }
+                if (c == "$" && next_c ~ /[?*#@!$0-9-]/) {
+                    result = result "QQ"
+                    j++
+                    continue
+                }
                 result = result c
             }
             return result
         }
+        function heredoc_delimiter(raw, masked, start, tail, token) {
+            start = index(masked, "<<")
+            if (!start) return ""
+            if (substr(masked, start, 3) == "<<<") return ""
+            tail = substr(raw, start + 2)
+            sub(/^-[[:space:]]*/, "", tail)
+            sub(/^[[:space:]]*/, "", tail)
+            token = tail
+            sub(/[[:space:];|&].*$/, "", token)
+            gsub(/^\047|\047$/, "", token)
+            gsub(/^"|"$/, "", token)
+            return token
+        }
+        function report_globs(segment, line, n, words, w, word, glob_at) {
+            if (in_test || in_arithmetic || in_case) return
+            n = split(segment, words, /[[:space:]]+/)
+            for (w = 1; w <= n; w++) {
+                word = words[w]
+                glob_at = index(word, "*")
+                if (!glob_at) glob_at = index(word, "?")
+                if (!glob_at && word !~ /\[[^]]+\]/) continue
+                # A plain scalar-assignment RHS is not pathname-expanded.
+                if (word ~ /^[[:alnum:]_]+=/ && word !~ /\(/) continue
+                print "line " NR ": unquoted glob outside explicit Bash boundary: " line
+                return
+            }
+        }
         {
-            count = split(command_text($0), segments, /[;&|]+/)
+            if (heredoc != "") {
+                candidate = $0
+                if (heredoc_tabs) sub(/^\t+/, "", candidate)
+                if (candidate == heredoc) {
+                    heredoc = ""
+                    heredoc_tabs = 0
+                }
+                next
+            }
+            masked = command_text($0)
+            delimiter = heredoc_delimiter($0, masked)
+            if (delimiter != "") {
+                heredoc = delimiter
+                heredoc_tabs = (masked ~ /<<-/)
+            }
+            count = split(masked, segments, /[;&|]+/)
             for (i = 1; i <= count; i++) {
-                segment = segments[i]
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
+                segment = trim(segments[i])
+                if (segment == "") continue
+                if (segment ~ /^case([[:space:]]|$)/) in_case = 1
+                if (segment ~ /^\[\[([[:space:]]|$)/) in_test = 1
+                if (segment ~ /(^|[^$])\(\(/ || segment ~ /\$\(\(/) in_arithmetic = 1
+                test_context = in_test
+                report_globs(segment, $0)
                 sub(/^(if|then|do|while|until)[[:space:]]+/, "", segment)
                 n = split(segment, words, /[[:space:]]+/)
                 p = 1
                 while (p <= n && words[p] ~ /^[[:alnum:]_]+=/) p++
                 while (words[p] ~ /^(!|command|builtin)$/) p++
                 command = words[p]
-                found = (command == "mapfile" || command == "readarray")
+                found = (command == "mapfile" || command == "readarray" || command == "shopt")
                 if (command == "read") {
                     for (p++; p <= n && words[p] !~ /^[<>]/; p++)
                         if (words[p] ~ /^-[[:alpha:]]*a[[:alpha:]]*$/) found = 1
                 }
-                if (found) print "line " NR ": Bash-only builtin outside explicit Bash boundary: " $0
+                if (command == "declare") {
+                    for (p++; p <= n && words[p] !~ /^[<>]/; p++)
+                        if (words[p] ~ /^-[[:alpha:]]*A[[:alpha:]]*$/) found = 1
+                }
+                if (found) print "line " NR ": Bash-only syntax outside explicit Bash boundary: " $0
+                if (test_context && segment ~ /(^|[[:space:]])=~([[:space:]]|$)/)
+                    print "line " NR ": Bash-only syntax outside explicit Bash boundary: " $0
+                if (segment ~ /\]\]([[:space:]]|$)/) in_test = 0
+                if (segment ~ /\)\)/) in_arithmetic = 0
+                if (segment ~ /(^|[[:space:]])esac([[:space:]]|$)/) in_case = 0
             }
         }
     ' "$1"
@@ -110,7 +199,7 @@ while IFS= read -r skill_file; do
                 printf 'FAILED: %s block %s body\n' "$skill_file" "$(basename "$block")" >&2
             fi
         fi
-        findings=$(bash_only_commands "$scan_block")
+        findings=$(recipe_portability_findings "$scan_block")
         if [[ -n $findings ]]; then
             failed=$((failed + 1))
             printf 'FAILED: %s block %s\n%s\n' "$skill_file" "$(basename "$block")" "$findings" >&2

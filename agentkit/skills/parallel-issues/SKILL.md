@@ -553,10 +553,10 @@ boundary_args=(--visibility "$repository_visibility")
 if [[ $yolo_invocation == true ]]; then boundary_args+=(--yolo); else boundary_args+=(--no-yolo); fi
 boundary_output=$("$agentkit/parallel-issues/scripts/select-boundary-mode.sh" "${boundary_args[@]}") || exit 1
 boundary_mode=${boundary_output#boundary mode: }
-[[ $boundary_mode =~ ^(public-fenced|private-trusted|yolo-trusted)$ ]] || {
+case $boundary_mode in public-fenced|private-trusted|yolo-trusted) ;; *)
     printf '%s\n' 'Boundary selector returned an invalid mode.' >&2
     exit 1
-}
+esac
 printf 'boundary mode: %s\n' "$boundary_mode"
 ```
 
@@ -653,17 +653,15 @@ spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verificatio
 spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
 wait_bound=$(printf '%s\n' "$compose_output" | grep -E '^wait-bound= ' || true); [[ -n $wait_bound && $wait_bound != *$'\n'* ]] || exit 1
 plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
-plan_sha=${spec_verification_plan##* plan-sha=}; [[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
+plan_sha=${spec_verification_plan##* plan-sha=}; [[ ${#plan_sha} -eq 64 && $plan_sha != *[!0-9a-f]* ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
 if [[ $plan_update != none ]]; then
     [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
     chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
 fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
-declare -A dispatch_verification_reports
-dispatch_verification_reports["$issue_number"]=$spec_verification
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
-    [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
+    case $issue_number in ''|*[!0-9]*) return 1 ;; esac; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
     chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"; dispatch_report_tmp=$(mktemp "$dispatch_reports_dir/.issue-$issue_number.XXXXXX") || return 1
     if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
         rm -f -- "$dispatch_report_tmp"; return 1
@@ -671,7 +669,7 @@ persist_dispatch_verification_report() {
     [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
 }
 persist_dispatch_verification_report || exit 1
-printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${dispatch_verification_reports["$issue_number"]}" "$spec_verification_plan"
+printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "$spec_verification" "$spec_verification_plan"
 printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 printf '%s\n' "$wait_bound"
 ```

@@ -449,10 +449,10 @@ assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
     'dispatch records uncovered verification atomically before spawn'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
-assert_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
-    'dispatch declares report storage as associative'
-assert_contains "$dispatch_handoff" 'dispatch_verification_reports["$issue_number"]=$spec_verification' \
-    'dispatch preserves the coverage report for the final handoff'
+assert_not_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
+    'dispatch does not require parent-shell associative-array state'
+assert_contains "$dispatch_handoff" '"$spec_verification" "$spec_verification_plan"' \
+    'dispatch prints the current coverage report without Bash-only storage'
 assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
     'dispatch derives durable report storage from the root-owned run plan'
 assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
@@ -462,14 +462,6 @@ assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 
-report_declaration=$(grep -F -m1 'declare -A dispatch_verification_reports' <<< "$dispatch_handoff")
-report_assignment=$(grep -F -m1 'dispatch_verification_reports["$issue_number"]=$spec_verification' <<< "$dispatch_handoff")
-multi_issue_reports=$(bash -c "$report_declaration
-issue_number=57; spec_verification=first; $report_assignment
-issue_number=54; spec_verification=second; $report_assignment
-printf '%s|%s' \"\${dispatch_verification_reports[57]}\" \"\${dispatch_verification_reports[54]}\"")
-assert_eq 'first|second' "$multi_issue_reports" \
-    'associative dispatch reporting preserves two issue handoff records'
 persist_report_function=$(awk '
     /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
     capture { print }
