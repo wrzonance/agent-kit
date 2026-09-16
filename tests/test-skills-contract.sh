@@ -31,6 +31,10 @@ for term in '--reviewer' '--override-authorization' '--provenance' 'required tog
 done
 config_help=$("$skills/.shared/scripts/repo-config.sh" --help 2>&1 || true)
 assert_contains "$config_help" '--list-adversarial-efforts' 'resolver help exposes effort roster'
+effort_rc=0
+effort_out=$("$skills/.shared/scripts/repo-config.sh" --list-adversarial-efforts) || effort_rc=$?
+assert_eq 0 "$effort_rc" 'advertised effort-list command succeeds'
+assert_eq $'low\nmedium\nhigh\nxhigh\nmax' "$effort_out" 'effort-list command emits the authoritative roster'
 declared_repo="$tmp/declared repo"
 mkdir -p "$declared_repo/.agent"
 discovery="$skills/review-remote-pr/scripts/claude-model-discovery.mjs"
@@ -49,6 +53,37 @@ assert_rc 1 'invalid reviewer efforts do not become declared success' -- node "$
 printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude' > "$declared_repo/.agent/config.env"
 assert_rc 1 'missing model does not fabricate a default declaration' -- node "$discovery" --declared --repo-root "$declared_repo"
 assert_rc 2 'declaration mode requires an explicit repository' -- node "$discovery" --declared
+
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' > "$declared_repo/.agent/config.env"
+declared_rc=0
+declared_out=$(node "$discovery" --declared --repo-root "$declared_repo" 2>&1) || declared_rc=$?
+assert_eq 0 "$declared_rc" 'Claude roster fallback validates behind a GPT primary'
+assert_contains "$declared_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' 'inspector identifies the selected fallback declaration'
+assert_not_contains "$declared_out" 'gpt-6-astra' 'Claude output does not mislabel the GPT candidate'
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=codex' 'AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-6-astra' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude' 'AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=claude-opus-5' \
+    > "$declared_repo/.agent/config.env"
+assert_rc 0 'bare Claude fallback uses its own declared model' -- node "$discovery" --declared --repo-root "$declared_repo"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-ultra' > "$declared_repo/.agent/config.env"
+assert_rc 1 'invalid fallback effort cannot become a valid Claude declaration' -- node "$discovery" --declared --repo-root "$declared_repo"
+
+trusted_repo="$tmp/trusted declarations"
+mkdir -p "$trusted_repo/.agent"
+git -C "$trusted_repo" init -q
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' > "$trusted_repo/.agent/config.env"
+git -C "$trusted_repo" add -f .agent/config.env
+git -C "$trusted_repo" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'trusted declarations'
+git -C "$trusted_repo" update-ref refs/remotes/origin/main HEAD
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude-attacker-high' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-attacker-max' > "$trusted_repo/.agent/config.env"
+declared_rc=0
+declared_out=$(node "$discovery" --declared --repo-root "$trusted_repo" 2>&1) || declared_rc=$?
+assert_eq 0 "$declared_rc" 'inspector reads effective trusted-base configuration'
+assert_contains "$declared_out" 'claude-opus-5-xhigh' 'trusted Claude candidate survives malicious checkout replacement'
+assert_not_contains "$declared_out" 'claude-attacker' 'checkout declarations cannot impersonate effective launch settings'
 
 # --- standing security posture contract ------------------------------------
 # This is intentionally structural: the document's prose and evidence links

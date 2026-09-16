@@ -40,13 +40,16 @@ async function* pendingPrompt() {
 // intentionally separate from supportedModels(): configuration is not a live probe.
 async function showDeclared(repoRoot) {
   const { spawnSync } = await import('node:child_process');
-  const { resolve, join } = await import('node:path');
+  const { resolve } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
   const root = resolve(repoRoot);
   const resolver = fileURLToPath(new URL('../../.shared/scripts/repo-config.sh', import.meta.url));
   const values = {};
-  for (const key of ['AGENT_ADVERSARIAL_REVIEWER', 'AGENT_ADVERSARIAL_REVIEW_MODEL', 'AGENT_ADVERSARIAL_REVIEW_EFFORT']) {
-    const result = spawnSync(resolver, ['--repo-root', root, '--config-file', join(root, '.agent/config.env'), '--get', key],
+  const slots = ['', '_FALLBACK'];
+  const keys = slots.flatMap(suffix => [`AGENT_ADVERSARIAL_REVIEWER${suffix}`, `AGENT_ADVERSARIAL_REVIEW_MODEL${suffix}`]);
+  keys.push('AGENT_ADVERSARIAL_REVIEW_EFFORT');
+  for (const key of keys) {
+    const result = spawnSync(resolver, ['--repo-root', root, '--get', key],
       { encoding: 'utf8', timeout: 10000 });
     if (result.error || result.signal || ![0, 1].includes(result.status)) {
       fail(`declared reviewer validation failed for ${key}; inspect it with repo-config.sh --get ${key}`);
@@ -54,15 +57,20 @@ async function showDeclared(repoRoot) {
     }
     values[key] = result.status === 0 ? result.stdout.trim() : '';
   }
-  const reviewer = values.AGENT_ADVERSARIAL_REVIEWER;
-  const model = values.AGENT_ADVERSARIAL_REVIEW_MODEL;
-  if (!(reviewer === 'claude' || reviewer.startsWith('claude-')) ||
-      (reviewer === 'claude' && !model) || (model && !model.startsWith('claude-'))) {
+  const suffix = slots.find(slot => /^claude(?:-|$)/.test(values[`AGENT_ADVERSARIAL_REVIEWER${slot}`]));
+  const reviewerKey = `AGENT_ADVERSARIAL_REVIEWER${suffix ?? ''}`;
+  const modelKey = `AGENT_ADVERSARIAL_REVIEW_MODEL${suffix ?? ''}`;
+  const reviewer = values[reviewerKey];
+  const model = values[modelKey];
+  if (suffix === undefined || (reviewer === 'claude' && !model.startsWith('claude-'))) {
     fail('no complete, valid declared Claude reviewer/model; use --list-models only for optional live discovery');
     return;
   }
-  process.stdout.write('Declared Claude configuration (validated syntax/family; not live availability; no SDK needed):\n');
-  for (const [key, value] of Object.entries(values)) if (value) process.stdout.write(`${key}=${value}\n`);
+  process.stdout.write('Declared Claude candidate from effective configuration (validated syntax/family; not live availability; no SDK needed):\n');
+  // A roster compound owns its model; legacy bare CLI entries use their own
+  // model key. Do not label the other provider's primary model as Claude.
+  const selectedKeys = [reviewerKey, ...(reviewer === 'claude' ? [modelKey] : []), 'AGENT_ADVERSARIAL_REVIEW_EFFORT'];
+  for (const key of selectedKeys) if (values[key]) process.stdout.write(`${key}=${values[key]}\n`);
 }
 
 async function main(args) {
