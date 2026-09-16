@@ -15,6 +15,76 @@ preflight="$skills/.shared/scripts/agent-preflight.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
+# Facts already declared by the kit need no SDK or reference-size probes.
+reading="$skills/.shared/reading-discipline.md"
+assert_eq yes "$([[ -f $reading ]] && printf yes || printf no)" 'shared reading discipline exists'
+reading_text=$(cat "$reading" 2>/dev/null || true)
+assert_contains "$reading_text" 'Never probe reference sizes' 'shared policy bans size probes'
+assert_not_contains "$reading_text" '800' 'reading policy has no circular size threshold'
+assert_contains "$(<"$skills/pr-to-green/SKILL.md")" '../.shared/reading-discipline.md' 'pr-to-green reaches reading discipline'
+assert_contains "$(<"$skills/references.md")" '$agentkit/.shared/reading-discipline.md' 'manifest routes every workflow to reading discipline'
+assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'kit-state-red' 'queue separates repairable kit state from code failures'
+assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'confirm the recovery helper exists' 'queue forbids invented recovery tools'
+help_out=$("$skills/review-remote-pr/scripts/adversarial-run.sh" --help)
+for term in '--reviewer' '--override-authorization' '--provenance' 'required together' 'claude-*' 'gpt-6-*' '--list-adversarial-efforts'; do
+    assert_contains "$help_out" "$term" "review help exposes $term"
+done
+config_help=$("$skills/.shared/scripts/repo-config.sh" --help 2>&1 || true)
+assert_contains "$config_help" '--list-adversarial-efforts' 'resolver help exposes effort roster'
+effort_rc=0
+effort_out=$("$skills/.shared/scripts/repo-config.sh" --list-adversarial-efforts) || effort_rc=$?
+assert_eq 0 "$effort_rc" 'advertised effort-list command succeeds'
+assert_eq $'low\nmedium\nhigh\nxhigh\nmax' "$effort_out" 'effort-list command emits the authoritative roster'
+declared_repo="$tmp/declared repo"
+mkdir -p "$declared_repo/.agent"
+discovery="$skills/review-remote-pr/scripts/claude-model-discovery.mjs"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude' 'AGENT_ADVERSARIAL_REVIEW_MODEL=claude-opus-5' > "$declared_repo/.agent/config.env"
+declared_rc=0
+declared_out=$(node "$discovery" --declared --repo-root "$declared_repo" 2>&1) || declared_rc=$?
+assert_eq 0 "$declared_rc" 'declared Claude model validates without optional SDK'
+assert_contains "$declared_out" 'claude-opus-5' 'declaration inspector reports configured model'
+assert_contains "$declared_out" 'not live availability' 'declaration provenance cannot masquerade as SDK discovery'
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude-opus-5-xhigh' > "$declared_repo/.agent/config.env"
+assert_rc 0 'compound reviewer declarations need no SDK' -- node "$discovery" --declared --repo-root "$declared_repo"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude' 'AGENT_ADVERSARIAL_REVIEW_MODEL=bad/model' > "$declared_repo/.agent/config.env"
+assert_rc 1 'declaration inspector rejects a non-Claude model' -- node "$discovery" --declared --repo-root "$declared_repo"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude-opus-5-ultra' > "$declared_repo/.agent/config.env"
+assert_rc 1 'invalid reviewer efforts do not become declared success' -- node "$discovery" --declared --repo-root "$declared_repo"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude' > "$declared_repo/.agent/config.env"
+assert_rc 1 'missing model does not fabricate a default declaration' -- node "$discovery" --declared --repo-root "$declared_repo"
+assert_rc 2 'declaration mode requires an explicit repository' -- node "$discovery" --declared
+
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' > "$declared_repo/.agent/config.env"
+declared_rc=0
+declared_out=$(node "$discovery" --declared --repo-root "$declared_repo" 2>&1) || declared_rc=$?
+assert_eq 0 "$declared_rc" 'Claude roster fallback validates behind a GPT primary'
+assert_contains "$declared_out" 'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' 'inspector identifies the selected fallback declaration'
+assert_not_contains "$declared_out" 'gpt-6-astra' 'Claude output does not mislabel the GPT candidate'
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=codex' 'AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-6-astra' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude' 'AGENT_ADVERSARIAL_REVIEW_MODEL_FALLBACK=claude-opus-5' \
+    > "$declared_repo/.agent/config.env"
+assert_rc 0 'bare Claude fallback uses its own declared model' -- node "$discovery" --declared --repo-root "$declared_repo"
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-ultra' > "$declared_repo/.agent/config.env"
+assert_rc 1 'invalid fallback effort cannot become a valid Claude declaration' -- node "$discovery" --declared --repo-root "$declared_repo"
+
+trusted_repo="$tmp/trusted declarations"
+mkdir -p "$trusted_repo/.agent"
+git -C "$trusted_repo" init -q
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=gpt-6-astra-xhigh' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-opus-5-xhigh' > "$trusted_repo/.agent/config.env"
+git -C "$trusted_repo" add -f .agent/config.env
+git -C "$trusted_repo" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'trusted declarations'
+git -C "$trusted_repo" update-ref refs/remotes/origin/main HEAD
+printf '%s\n' 'AGENT_ADVERSARIAL_REVIEWER=claude-attacker-high' \
+    'AGENT_ADVERSARIAL_REVIEWER_FALLBACK=claude-attacker-max' > "$trusted_repo/.agent/config.env"
+declared_rc=0
+declared_out=$(node "$discovery" --declared --repo-root "$trusted_repo" 2>&1) || declared_rc=$?
+assert_eq 0 "$declared_rc" 'inspector reads effective trusted-base configuration'
+assert_contains "$declared_out" 'claude-opus-5-xhigh' 'trusted Claude candidate survives malicious checkout replacement'
+assert_not_contains "$declared_out" 'claude-attacker' 'checkout declarations cannot impersonate effective launch settings'
+
 # --- standing security posture contract ------------------------------------
 # This is intentionally structural: the document's prose and evidence links
 # remain reviewable, while deletion or removal of a rationale class fails the
@@ -506,6 +576,12 @@ shared_dir="$skills/.shared"
 consuming_skills=(parallel-issues review-remote-pr)
 while IFS= read -r -d '' shared_file; do
     shared_name=$(basename "$shared_file")
+    if [[ $shared_name == reading-discipline.md ]]; then
+        for consumer in parallel-issues review-remote-pr onboard-repo pr-to-green; do
+            assert_contains "$(<"$skills/$consumer/SKILL.md")" 'references.md' "$consumer reaches the shared reading rule through the manifest"
+        done
+        continue
+    fi
     shared_pointer="../.shared/$shared_name"
     for consumer in "${consuming_skills[@]}"; do
         consumer_body="$skills/$consumer/SKILL.md"

@@ -370,6 +370,13 @@ out=$("$dt_sh" --repo-root "$repo" --format gaps,suggestions)
 assert_contains "$out" 'gaps= detected=' 'a comma-joined --format runs the gaps section'
 assert_contains "$out" '# component:' 'and the suggestions section, in one call'
 
+printf 'AGENT_CMD_TEST=npm test\n' >> "$repo/.agent/config.env"
+out=$("$dt_sh" --repo-root "$repo" --format gaps)
+assert_contains "$out" 'declared=1 undeclared=0' 'post-refresh confirmation reflects the new declaration'
+assert_not_contains "$out" '# component:' 'post-refresh confirmation does not repeat suggestion blocks'
+assert_contains "$(<"$root/agentkit/skills/onboard-repo/SKILL.md")" '--format gaps` for post-refresh confirmation' \
+    'onboarding directs subsequent confirmations to gaps-only output'
+
 assert_rc 2 'an unknown format inside a comma list is still a usage error' -- \
     "$dt_sh" --repo-root "$repo" --format gaps,nonsense
 

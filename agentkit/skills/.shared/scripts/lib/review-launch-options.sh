@@ -26,13 +26,18 @@ Reviewer selection comes from the running harness and peer-cli facts in the
 untracked environment contract at the repository root. The optional
 --peer-cli-absent flag must agree with a peer-cli= ... absent contract fact.
 
---provenance TEXT carries launch authorization (the session-ledger RUN_ID, the
-recorded cross_provider_consent record, the user's verbatim invocation quote)
-as one argv element, so a harness approval layer can see it in the launch
-command itself. It is taken verbatim -- never eval'd, never re-parsed -- echoed
-to stderr with a "provenance:" prefix, and written to DIR/state/provenance
-(mode 600) before any external call. Pass it as data from a shell variable at
-the call site; never compose it into shell source.
+--reviewer MODEL-EFFORT and --override-authorization TEXT are required together.
+MODEL is a claude-*, gpt-5.6-*, or gpt-6-* model ID; EFFORT is low, medium,
+high, xhigh, or max (repo-config.sh --list-adversarial-efforts is authoritative).
+Example: --reviewer claude-opus-5-xhigh --override-authorization "\$OPERATOR_AUTHORIZATION"
+The authorization records the operator's explicit override; it does not replace
+payload consent or prove live model availability. It overrides configured model/effort.
+
+--provenance TEXT carries launch authorization (session-ledger RUN_ID, consent
+record, verbatim invocation) as one argv element visible to harness approval.
+Never eval'd or re-parsed: echoed to stderr as "provenance:" and saved to
+DIR/state/provenance (mode 600) before any external call. Pass a shell variable;
+never compose the text into shell source.
 
 This is the real PR-diff review path. Capability probes use the provider helper
 with --mode probe --no-payload, send only a synthetic snippet, and never spend
