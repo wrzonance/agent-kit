@@ -143,8 +143,7 @@ fi
 
 # Keep legacy helper-path diagnostics bounded to one denial per session.
 # Successful rewrites return above; this fallback never changes tool input.
-if grep -qE "(^|[;&|])[[:space:]]*((sudo|bash|sh|env)[[:space:]]+)*($HELPERS)\.sh([[:space:]]|$)" \
-    <<< "$(guard_destructive_command_segments "$command_line")"; then
+if guard_has_bare_helper_command "$command_line"; then
     guard_resolve_roots "$cwd" "$command_line"
     if guard_should_deny "$(guard_state_root)" "$session" helper-path; then
         # shellcheck disable=SC2016  # literal text, see deny()
