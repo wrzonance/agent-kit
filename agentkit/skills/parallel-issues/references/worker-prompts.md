@@ -119,10 +119,8 @@ Helper argv: <one trusted bounded helper invocation, including numeric rounds/in
 Helper bound: <seconds>; effective tool caps: <advertised names and milliseconds>.
 Output: <absolute dedicated result file>; diagnostics: <absolute dedicated log file>.
 Run exactly that helper once in the supplied worktree, redirecting stdout/stderr to those files.
-Use the largest permitted yield and wait parameters; higher-priority tool/communication limits
-prevail. Continue the SAME running session/cell after a yield; never restart the command or
-hand-poll CI. No repository exploration, edits, review launches, messages to other actors,
-stall checks, or additional commands. Never treat a timeout as success.
+Follow the composed `verify=` line for yield, resume, and read behavior. No repository exploration,
+edits, review launches, messages to other actors, stall checks, or additional commands. Never treat a timeout as success.
 At helper completion/expiry/error, return exactly one result line:
 wait-result status=<complete|expired|error> exit=<code> elapsed_seconds=<measured>
 result=<path> log=<path> waiter_requests=<observed|unavailable>
@@ -566,7 +564,9 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    `RED: WAIVED — <named existing oracle, e.g. focused suite X>` instead of simulating a failing
    check or using a tautological grep for the fix's own text. The waiver is explicit and never
    silent.
-3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
+3. Follow this composed verification runbook:
+   __VERIFY_RUNBOOK__
+   Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
 4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
    operands, Conventional Commit subject, the expanded `--trailer "$worker_attribution"`

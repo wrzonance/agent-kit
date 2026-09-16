@@ -247,8 +247,8 @@ assert_contains "$wait_discipline_text" 'worker completion marker' \
     'parallel wait rule names the worker completion bound'
 assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
-assert_contains "$wait_discipline_text" 'test-runner logs' \
-    'parallel wait rule covers test-runner logs'
+assert_not_contains "$wait_discipline_text" 'collect test-runner logs inside one bounded harness cell' \
+    'worker test-runner guidance lives only in the composed verify line'
 six_step_loop_flat=$(tr '\n' ' ' <<<"$six_step_loop_text" | tr -s '[:space:]' ' ')
 assert_contains "$six_step_loop_flat" '## How to write a file' \
     'the shared loop names the write-mechanism section'
@@ -571,6 +571,20 @@ assert_contains "$normalized_text" 'every active worker' \
     'write-set recovery rechecks every active worker'
 assert_contains "$normalized_text" 'same lead is unavailable' \
     'blocked recovery falls back to a fresh lead when needed'
+assert_contains "$normalized_text" 'partial-pushed' \
+    'Collect classifies pushed green BLOCKED handbacks as partial delivery'
+assert_contains "$normalized_text" 'pr=open' \
+    'partial-pushed completion opens a draft PR'
+assert_contains "$normalized_text" '--blocker' \
+    'partial-pushed publication carries protected paths into the PR body'
+assert_contains "$normalized_text" 'Operator action required' \
+    'partial-pushed publication names the PR body disclosure section'
+assert_contains "$normalized_text" 'Completion report' \
+    'ordinary clean completion retains its direct publication route'
+assert_contains "$normalized_text" 'verification=unbound' \
+    'partial publication carries the unresolved verification limitation'
+assert_contains "$normalized_text" 'both completion paths' \
+    'clean and partial delivery retain chain dispatch guidance'
 
 # issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
@@ -1296,8 +1310,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
-    'a capped timed-out wait does not force a premature stall check'
+assert_contains "$normalized_wait_text" 'one call per cap' \
+    'native collection uses each full contract cap without short polling'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 

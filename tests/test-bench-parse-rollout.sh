@@ -147,6 +147,137 @@ assert_eq '8' "$(get .acceptance.score)" 'the run-accept.sh acceptance JSON is e
 assert_eq '10' "$(get .acceptance.total)" 'the acceptance JSON total is embedded verbatim'
 assert_eq 'fail' "$(get '.acceptance.results["tally-05"]')" 'per-issue acceptance results are embedded verbatim'
 
+# --- polling cost is reconstructed from rollout events, not model prose ---
+poll_fixture="$tmp/root-wait-2026-09-16.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    > "$poll_fixture"
+for n in $(seq 1 92); do
+    start_epoch=$((1789516800 + (n - 1) * 30))
+    end_epoch=$((start_epoch + 30))
+    start=$(date -u -d "@$start_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    end=$(date -u -d "@$end_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    if ((n <= 43)); then
+        tool=collaboration.wait_agent
+        args='{"timeout_ms":60000}'
+    elif ((n <= 82)); then
+        tool='wait'
+        args='{"cell_id":"cell","yield_time_ms":30000}'
+    else
+        tool=write_stdin
+        args='{"session_id":7,"chars":"","yield_time_ms":30000}'
+    fi
+    printf '%s\n' \
+        "{\"timestamp\":\"$start\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"poll-$n\",\"name\":\"$tool\",\"arguments\":\"${args//\"/\\\"}\"}}" \
+        "{\"timestamp\":\"$start\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":121000}}}}" \
+        "{\"timestamp\":\"$end\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"poll-$n\",\"output\":\"timed out\"}}" \
+        >> "$poll_fixture"
+done
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"response_item","payload":{"type":"function_call","call_id":"input-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":121000}}}}' \
+    '{"timestamp":"2026-09-16T00:46:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"input-1","output":"written"}}' \
+    >> "$poll_fixture"
+printf '%s\n' '{"type":"bench_trial_meta","payload":{"run_id":"wait-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-polls","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":2760,"exit_condition":"complete"}}' >> "$poll_fixture"
+run "$poll_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the 2026-09-16 polling fixture parses successfully'
+assert_eq '92' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll_turns counts wait_agent, yielded waits, and empty write_stdin resumes'
+assert_eq '11132000' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'poll_input_tokens attributes each polling request input cost post hoc'
+assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'wait_seconds is the union of timestamped polling call intervals'
+assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
+    'requests_per_wait_minute is derived from measured turns and elapsed waits'
+
+# --- worker verification churn is attributed per rollout session ---------
+worker_churn_fixture="$tmp/worker-churn.jsonl"
+printf '%s\n' \
+    '{"type":"session_meta","payload":{"originator":"worker:776","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"launch","name":"exec_command","arguments":"{\"cmd\":\"agent-run.sh --cmd test --summary\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":30000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-1","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-2","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":1000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-2","name":"shell","arguments":"{\"command\":[\"sed\",\"-n\",\"1,20p\",\"/repo/.agent/logs/test.log\"]}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-3","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-after-final","name":"exec_command","arguments":"{\"cmd\":\"tail -1 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"input","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":10}"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"worker-churn","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-worker-churn","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":1,"wall_clock_seconds":90,"exit_condition":"complete"}}' \
+    > "$worker_churn_fixture"
+run "$worker_churn_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the worker verification-churn fixture parses successfully'
+assert_eq '3' "$(jq -r '.worker_resume_calls["worker:776"]' <<< "$RUN_OUT")" \
+    'empty write_stdin calls are counted per worker session'
+assert_eq '1000' "$(jq -r '.worker_min_yield_ms["worker:776"]' <<< "$RUN_OUT")" \
+    'minimum worker yield ignores missing values and non-empty writes'
+assert_eq '2' "$(jq -r '.log_reads_between_resumes["worker:776"]' <<< "$RUN_OUT")" \
+    'only tail or sed log reads bracketed by resumes of the same command are counted'
+
+poll_gap_fixture="$tmp/poll-telemetry-gap.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"other-1","name":"shell","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T01:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900}}}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-2","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-3","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000}}}}' \
+    '{"timestamp":"2026-09-16T01:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-3","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"gap-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-gap-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":6,"exit_condition":"complete"}}' \
+    > "$poll_gap_fixture"
+run "$poll_gap_fixture" --timestamp 2026-09-16T01:01:00Z
+assert_eq '0' "$RUN_RC" 'a rollout with missing poll telemetry still parses'
+assert_eq '3' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll turns remain countable when their token telemetry is incomplete'
+assert_eq 'null' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'a nonpoll overwrite or consecutive poll reports input telemetry unavailable'
+
+poll_group_fixture="$tmp/poll-response-groups.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"group-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"group-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200}}}}' \
+    '{"timestamp":"2026-09-16T02:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T02:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"group-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-group-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":3,"exit_condition":"complete"}}' \
+    > "$poll_group_fixture"
+run "$poll_group_fixture" --timestamp 2026-09-16T02:01:00Z
+assert_eq '0' "$RUN_RC" 'a response containing multiple poll calls parses'
+assert_eq '2' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'every poll call in a response remains countable'
+assert_eq '1200' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'one response-level usage value is applied once to an all-poll group'
+
+malformed_id_fixture="$tmp/poll-malformed-ids.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":7,"name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1500}}}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":7,"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"duplicate","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"malformed-id-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-id-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":5,"exit_condition":"complete"}}' \
+    > "$malformed_id_fixture"
+run "$malformed_id_fixture" --timestamp 2026-09-16T03:01:00Z
+assert_eq '0' "$RUN_RC" 'malformed polling call IDs do not crash rollout parsing'
+assert_eq '5' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'malformed polling IDs do not hide poll turns'
+assert_eq 'null' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'missing, empty, non-string, or duplicate call IDs make interval telemetry unavailable'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'

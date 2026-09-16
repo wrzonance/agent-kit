@@ -100,6 +100,24 @@ printf 'AGENT_CMD_FORMAT=false\nAGENT_CMD_FORMAT_KIND=format\n' > "$repo/.agent/
 out=$("$run" --dir "$repo" --cmd format 2>&1)
 assert_contains "$out" '#724' 'formatter without pair routes to current config action'
 
+# --summary makes the final line sufficient to classify a completed run without
+# reading the growing log between runtime yields.
+printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd test --summary 2>&1)
+terminal=$(tail -n1 <<< "$out")
+assert_contains "$terminal" 'agent-run-summary status=pass rc=0 duration_seconds=' \
+    'summary success terminal carries status, exit code, and duration'
+assert_contains "$terminal" ' log=' 'summary success terminal carries the retained log path'
+assert_not_contains "$out" 'tail it instead of waiting blind' \
+    'summary mode does not invite intermediate log reads'
+printf 'AGENT_CMD_TEST=false\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd test --summary 2>&1)
+assert_eq 1 "$?" 'summary failure preserves the command status'
+terminal=$(tail -n1 <<< "$out")
+assert_contains "$terminal" 'agent-run-summary status=fail rc=1 duration_seconds=' \
+    'summary failure terminal carries status, exit code, and duration'
+assert_contains "$terminal" ' log=' 'summary failure terminal carries the retained log path'
+
 # Optional fix absence must skip before fallback and preserve the next link.
 for check_declared in no yes; do
     for runner_declared in no yes; do

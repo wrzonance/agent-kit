@@ -16,7 +16,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--only NAME[,NAME...]]
+Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--summary] [--only NAME[,NAME...]]
                     [--baseline-ref REF --baseline-path PATH --baseline-id ID]
                     (--cmd NAME | [--] <command> ...)
 
@@ -27,6 +27,7 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Require fresh execution, including recovery of unknown evidence.
                  An identical in-flight local command still returns its handle.
+  --summary      End with status, exit code, duration, and log path on one line.
   --verification-key  Read-only query for one local, generic, full-checkout
                  command. Prints only its current fingerprint; creates no execution
                  records or logs. Rejects execution modifiers and unsupported inputs.
@@ -139,6 +140,7 @@ build_chain_argv() {
     # --force is whole-invocation (issue #697 finding 2): carry it into every
     # queued link, or a later link reuses cached evidence the caller bypassed.
     ((force_cmd)) && chain_argv+=(--force)
+    ((summary_cmd)) && chain_argv+=(--summary)
     local i
     for ((i = 0; i < ${#remaining_queue[@]}; i++)); do
         chain_argv+=(--cmd "${remaining_queue[i]}")
@@ -167,6 +169,7 @@ cmd=()
 focus_opt=''
 focus_requested=0
 force_cmd=0
+summary_cmd=0
 verification_key=0
 fix_cmd=0
 baseline_ref=''
@@ -202,6 +205,10 @@ while (($#)); do
             ;;
         --force)
             force_cmd=1
+            shift
+            ;;
+        --summary)
+            summary_cmd=1
             shift
             ;;
         --only)
@@ -247,7 +254,7 @@ while (($#)); do
 done
 
 if ((verification_key)); then
-    if ((${#cmd_queue[@]} != 1 || ${#cmd[@]} != 0 || force_cmd || focus_requested)) ||
+    if ((${#cmd_queue[@]} != 1 || ${#cmd[@]} != 0 || force_cmd || summary_cmd || focus_requested)) ||
         [[ -n $resolve_name || -n $baseline_ref || -n $baseline_path || -n $baseline_id || -n $label ]] ||
         ((cmd_queue_if_declared[0] || cmd_queue_fix[0])); then
         die '--verification-key requires exactly one --cmd without execution modifiers.'
@@ -272,7 +279,7 @@ if [[ -n $resolve_name ]]; then
     [[ -z $cmd_name ]] || die '--cmd NAME and --resolve NAME are mutually exclusive.'
     ((${#cmd[@]} == 0)) || die '--resolve NAME and a literal command are mutually exclusive.'
     ((focus_requested == 0)) || die '--resolve NAME cannot be combined with --only.'
-    ((force_cmd == 0)) ||
+    ((force_cmd == 0 && summary_cmd == 0)) ||
         die '--resolve NAME cannot be combined with execution flags.'
     ((if_declared == 0)) || die '--resolve NAME cannot be combined with --if-declared.'
 elif [[ -n $cmd_name ]]; then
@@ -1776,17 +1783,22 @@ export AGENT_RUN_LABEL="$label"
 # A declared AGENT_CMD_* value is the entire command: the repository has already
 # said exactly what to run, so it is not handed to the runner as a subcommand.
 if [[ $cmd_declared == no ]] && resolve_runner; then
-    printf 'delegating: runner=%s source=%s cwd=%s\n' "$runner_path" "$runner_src" "$work_dir" >&2
-    print_notes '' >&2
-    # A mid-chain link (issue #697 finding 1) runs as a child, not an exec,
-    # so finish can continue the queue on success; a lone link still execs.
-    if ((${#remaining_queue[@]})); then
-        rc=0
-        (cd -- "$work_dir" && exec "$runner_path" "${cmd[@]}") || rc=$?
-        finish "$rc"
+    if ((summary_cmd)); then
+        cmd=("$runner_path" "${cmd[@]}")
+        refresh_cmd_str
+    else
+        printf 'delegating: runner=%s source=%s cwd=%s\n' "$runner_path" "$runner_src" "$work_dir" >&2
+        print_notes '' >&2
+        # A mid-chain link (issue #697 finding 1) runs as a child, not an exec,
+        # so finish can continue the queue on success; a lone link still execs.
+        if ((${#remaining_queue[@]})); then
+            rc=0
+            (cd -- "$work_dir" && exec "$runner_path" "${cmd[@]}") || rc=$?
+            finish "$rc"
+        fi
+        cd -- "$work_dir"
+        exec "$runner_path" "${cmd[@]}"
     fi
-    cd -- "$work_dir"
-    exec "$runner_path" "${cmd[@]}"
 fi
 
 log_file=$(choose_log)
@@ -1798,8 +1810,12 @@ trap failure_result EXIT
 # command looks identical to a hung one until it exits -- and an agent watching
 # a five-minute suite went hunting with ps and `ls -t .agent/logs` to find
 # something to tail. Naming the file up front costs one line and saves that.
-printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waiting blind)\n' \
-    "$cmd_str" "$log_file" >&2
+if ((summary_cmd)); then
+    printf 'running: %s (wait for the terminal agent-run-summary marker)\n' "$cmd_str" >&2
+else
+    printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waiting blind)\n' \
+        "$cmd_str" "$log_file" >&2
+fi
 printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 
 # The log is bracketed, and the closing marker is the point: a log that once
@@ -1878,5 +1894,14 @@ if ((rc == 0)); then
     fi
 else
     report_failure "$rc" "$log_file"
+fi
+if ((summary_cmd)); then
+    summary_status=fail
+    ((rc != 0)) || summary_status=pass
+    [[ $baseline_excluded != yes ]] || summary_status=baseline-excluded
+    trap - EXIT
+    cleanup_suite_run
+    printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q\n' \
+        "$summary_status" "$rc" "$elapsed" "$log_file"
 fi
 finish "$rc"
