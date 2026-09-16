@@ -267,6 +267,10 @@ yield_cap_ms=${yield_cap_line#yield-cap= ms=}
 yield_cap_ms=${yield_cap_ms%% *}
 
 emit_verify_runbook() {
+    if [[ -z $verify_command ]]; then
+        printf 'verify= unavailable reason=no-scoped-command\n'
+        return
+    fi
     printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
         "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
 }
@@ -360,7 +364,6 @@ while IFS='=' read -r key value; do
     command_names+=("$name")
     command_keys+=("$key")
 done <<< "$command_list"
-((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
 
 # --- write-set scoping of the declared-command list (issue #336) -----------
 # A dispatch whose write set is `frontend/src/**` cannot make a .NET backend
@@ -431,7 +434,9 @@ scope_commands() {
     # declared component (a docs-only dispatch in a fully-componentised
     # monorepo) keeps the full list, exactly as before the filter existed.
     # Refusing here would convert a legitimate dispatch into a blocker.
-    if ((${#scoped_command_names[@]} == 0)); then
+    if ((${#scoped_command_names[@]} == 0 && ${#command_names[@]} > 0)); then
+        # A lone scoped-out test has no safe substitute; leave it unavailable.
+        ((${#command_names[@]} != 1)) || [[ ${command_keys[0]} != AGENT_CMD_TEST ]] || return 0
         scoped_command_names=("${command_names[@]}")
         scoped_command_keys=("${command_keys[@]}")
         dropped_commands=()
@@ -461,16 +466,8 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
-# focus_declared is read from the FULL declaration list, but `--cmd test --only`
-# selects one specific command -- and the write-set filter may have scoped that
-# command out. Emitting the focused selector anyway points the worker at a suite
-# this dispatch has no business running, and (when that suite drives Compose)
-# does so without the isolation prose, since compose_reachable only inspects
-# scoped commands. Both the selector and the Compose decision must therefore
-# follow the SCOPED test command, not the mere existence of a declaration.
-#
-# A repo with no AGENT_CMD_TEST resolves `test` through its runner instead;
-# there is no per-command rundir to scope by, so that case is never scoped out.
+# A scoped-out test must lose both its focused selector and Compose prose. A
+# runner-resolved test has no per-command rundir and therefore stays in scope.
 focus_test_scoped_out=0
 if ((focus_declared)) && ((test_declared)); then
     focus_test_in_scope=0
@@ -493,7 +490,11 @@ elif query_test_resolution; then
     runbook_test_runnable=1
 fi
 if ((runbook_test_runnable == 0)); then
-    verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+    if ((${#scoped_command_names[@]})); then
+        verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+    else
+        verify_command=''
+    fi
 fi
 
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'

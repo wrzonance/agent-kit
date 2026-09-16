@@ -41,8 +41,12 @@ prompts=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
 implementation=$(<"$root/agentkit/skills/parallel-issues/references/implementation-worker.md")
 assert_contains "$prompts" '## Throwaway waiter prompt' 'fresh waiter template exists'
 assert_contains "$prompts" 'Never resume this waiter' 'waiters are never reused'
-assert_not_contains "$prompts" 'Continue the SAME running session/cell after a yield' \
-    'worker prompt prose defers runtime resume mechanics to the composed verify line'
+assert_contains "$prompts" 'resume the same running session' \
+    'the generic waiter resumes its existing helper after a runtime yield'
+assert_contains "$wait_text" 'Use the largest permitted yield' \
+    'shared wait discipline tells every bounded helper to use the largest yield'
+assert_contains "$wait_text" 'resume the same running session' \
+    'shared wait discipline preserves the same helper session across runtime yields'
 assert_not_contains "$implementation" 'read the NAMED LOG when the summary is insufficient' \
     'implementation template defers log-read mechanics to the composed verify line'
 combined_worker_lines=$(printf '%s\n%s\n' "$prompts" "$implementation" | wc -l | tr -d ' ')
