@@ -649,7 +649,11 @@ plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ 
 plan_sha=${spec_verification_plan##* plan-sha=}; [[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
 if [[ $plan_update != none ]]; then
     [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
-    chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
+    plan_replace_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || { rm -f -- "$plan_update"; exit 1; }
+    plan_replace_rc=0
+    { cat -- "$plan_update" >"$plan_replace_tmp" && chmod --reference="$dispatch_plan" "$plan_replace_tmp" && [[ $(plan_digest "$plan_replace_tmp") == "$plan_sha" ]] && mv -f -- "$plan_replace_tmp" "$dispatch_plan"; } || plan_replace_rc=$?
+    rm -f -- "$plan_update" "$plan_replace_tmp" || ((plan_replace_rc != 0)) || plan_replace_rc=1
+    ((plan_replace_rc == 0)) || exit "$plan_replace_rc"
 fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
 declare -A dispatch_verification_reports
