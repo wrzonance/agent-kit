@@ -190,7 +190,7 @@ guard_destructive_command_segments() {
 # Do not scan inside a segment: its quoted/escaped separators are argument data.
 # NUL framing keeps quoted newlines inside the same segment, too.
 guard_has_bare_helper_command() {
-    local segment helper_re="^[[:space:]]*((sudo|bash|sh|env)[[:space:]]+)*($HELPERS)\.sh([[:space:]]|$)"
+    local segment helper_re="^[[:space:]]*((sudo|env)[[:space:]]+)*((bash|sh)[[:space:]]+)?($HELPERS)\.sh([[:space:]]|$)"
     while IFS= read -r -d '' segment; do
         [[ $segment =~ $helper_re ]] && return 0
     done < <(guard_destructive_command_segments "$1" helper)

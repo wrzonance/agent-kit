@@ -2108,6 +2108,12 @@ assert_eq 'allow' "$(decision "$out")" 'a helper name at line start inside a quo
 # Exercise the production hook with fresh sessions, then prove that inert data
 # did not consume the session's one real helper-path denial.
 for inert_helper in \
+    'bash sh agent-run.sh --cmd test' \
+    'sh bash agent-run.sh --cmd test' \
+    'env bash sh agent-run.sh --cmd test' \
+    'bash env agent-run.sh --cmd test' \
+    'sh sudo agent-run.sh --cmd test' \
+    'sudo bash env agent-run.sh --cmd test' \
     "printf '%s' 'x; agent-run.sh --cmd test'" \
     'printf "%s" "x| agent-run.sh --cmd test"' \
     'printf "%s" "x& agent-run.sh --cmd test"' \
@@ -2132,6 +2138,10 @@ for inert_helper in \
     assert_eq 'deny' "$(decision "$out")" 'inert helper text preserves the real diagnostic'
 done
 for actual_helper in \
+    'bash agent-run.sh --cmd test' \
+    'sh agent-run.sh --cmd test' \
+    'env sudo sh agent-run.sh --cmd test' \
+    'env env agent-run.sh --cmd test' \
     $'agent-run.sh --cmd test \\' \
     $'agent-run.sh \\\n--cmd test \\' \
     'printf %s x\ #data; agent-run.sh --cmd test' \
