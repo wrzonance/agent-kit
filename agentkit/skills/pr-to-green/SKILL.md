@@ -12,16 +12,15 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-Before other output, execute the boundary's exact `$agentkit/.shared/scripts/workflow-activation.sh ack`
-receipt command. Its first stdout line is
-`agentkit: skill=pr-to-green version=<v> hash=<first12>`. It proves explicit
-session receipt, not native registry loading. Before guard-dependent work, use
-`workflow-activation.sh check --require pre-tool-use` with the boundary's exact
-`--repo-root`, `--session`, and `--skill` arguments. Pass that session to preflight
-with `--activation-session ID --workflow pr-to-green`. Missing boundary evidence
-means `agentkit: activation-unavailable`: report once and stop without substituting
-a workflow. Resume revalidates durable receipt; rereading installed files does not
-prove what an earlier context loaded.
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
+stdout begins `agentkit: skill=pr-to-green version=<v> hash=<first12>` (receipt, not registry proof).
+Require `workflow-activation.sh check --require pre-tool-use` with the boundary's
+`--repo-root`, `--session`, `--skill` before work; preflight uses
+`--activation-session ID --workflow pr-to-green`.
+Missing challenge: report `agentkit: activation-unavailable`; stop without substituting.
+Recovery: resubmit `$agentkit:pr-to-green`; natural triggers also deliver.
+Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
+a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 
 Coordinate parallel reviews and serial merges.
 
