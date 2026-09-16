@@ -8,7 +8,7 @@
 # dropped (guard_gh_command_segments, issue #661).
 # mode=helper: recover bodies, but emit NUL records, join line continuations,
 # and discard shell comments so inert text cannot create diagnostic boundaries.
-# mode=writes: drop bodies, preserving the >| redirect operator.
+# mode=writes: recover executable bodies, preserving >| and >& operators.
 # shellcheck disable=SC2059  # record_format is one of two fixed literals, never input.
 guard_destructive_command_segments() {
     local input=$1 mode=${2:-recover} line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
@@ -26,7 +26,7 @@ guard_destructive_command_segments() {
             if [[ $terminator_line == "$heredoc" ]]; then
                 heredoc=''
                 heredoc_tabstrip=0
-                if [[ $mode == drop || $mode == writes ]] || { ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; }; then
+                if [[ $mode == drop ]] || { ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; }; then
                     body=''
                 elif guard_heredoc_consumer_is_shell "$owner"; then
                     while IFS= read -r -d "$record_delimiter" recovered; do
@@ -56,7 +56,7 @@ guard_destructive_command_segments() {
             if ((heredoc_tabstrip)); then
                 bodyline=${bodyline#"${bodyline%%[!$'\t']*}"}
             fi
-            [[ $mode == drop || $mode == writes ]] || body+="$bodyline"$'\n'
+            [[ $mode == drop ]] || body+="$bodyline"$'\n'
             continue
         fi
 
@@ -100,8 +100,8 @@ guard_destructive_command_segments() {
                 continue
             fi
 
-            if [[ $mode == writes && $char == '>' && $next == '|' ]]; then
-                segment+='>|'
+            if [[ $mode == writes && $char == '>' && ( $next == '|' || $next == '&' ) ]]; then
+                segment+=">$next"
                 i=$((i + 2))
                 continue
             fi

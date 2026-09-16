@@ -80,7 +80,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #763 + predecessor #772: exact combined helper total; no spare allowance.
 # #760 + predecessor #769: 1,750,963 bytes / 4 = 437,740 tokens; exact combined total.
 # #764 + predecessor #770: 1,763,705 bytes / 4 = 440,926 tokens; exact combined total.
-readonly MAX_TREE_TOKENS=440926
+# #765: recover executable heredocs and retain combined-output file targets.
+# #764 + #772 security repair: 1,763,940 bytes / 4 = 440,985 tokens; exact total.
+readonly MAX_TREE_TOKENS=440985
 
 violations=0
 checked=0
