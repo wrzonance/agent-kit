@@ -434,27 +434,24 @@ the sanctioned response. Record the affected paths and reason in the plan,
 then validate the handback against that revised artifact. Do not swap a
 successor or widen a write set in prose after dispatch.
 
-If a lead cannot proceed because its prediction omits a required path, it emits
-one `needs-paths: <glob>[,<glob>...]` line and preserves the worktree. The root
-validates those repository-relative globs, appends them to that entry's
-`predictedWriteSet`, and records a matching `conflictMap.revisions` object with
-`issues`, `paths`, and a non-empty reason. That bound revision is the
-`prediction-expansion` disposition. The root then resumes the same lead with
-`followup_task` and the exact remaining step; it does not create a new worktree
-or worker prompt cycle.
+For a missing prediction, the lead preserves its worktree and emits one
+`needs-paths: <glob>[,<glob>...]` line. The root validates them,
+adds them to `predictedWriteSet`, and records a
+`conflictMap.revisions` entry with `issues`, `paths`, and a reason. Record the
+`prediction-expansion` disposition, then resume that lead with `followup_task`.
 
 The root-side round trip is data-only and atomic:
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-raw_report=$1 dispatch_plan=$2 issue_number=$3
+raw_report=$1 dispatch_plan=$2 issue_number=$3 agentkit=$4 agentkit_provenance=$5
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
 mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
 (( ${#needs_lines[@]} == 1 )) || exit 1
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
 for path in "${needs_paths[@]}"; do [[ -n $path && $path != /* && $path != *[[:cntrl:]]* ]] || exit 1; case "/$path/" in *'/../'*|*'//'*|*'/./'*) exit 1;; esac; done
 needs_json=$(printf '%s\n' "${needs_paths[@]}" | jq -R -s 'split("\n") | map(select(length > 0))')
-plan_dir=$(dirname -- "$dispatch_plan")
-plan_tmp=$(mktemp "$plan_dir/.dispatch-plan.XXXXXX") || exit 1
+plan_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || exit 1
 trap 'rm -f -- "$plan_tmp"' EXIT
 jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
   '.entries |= map(if .issue == $issue then .predictedWriteSet += $paths else . end) |
@@ -462,7 +459,7 @@ jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
      reason: "worker requested missing write-set paths (prediction expansion)"}]' \
   "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
 BASH_RECIPE
-)" _ "$raw_report" "$dispatch_plan" "$issue_number" || exit $?
+)" _ "$raw_report" "$dispatch_plan" "$issue_number" "$agentkit" "$agentkit_provenance" || exit $?
 ```
 
 Re-run the chain-base validator on the updated plan, then call `followup_task`

@@ -7,7 +7,7 @@
 # is probed; writes only under <worktree>/.agent/. Output: one key per line, the
 # first `skills= path=/abs` (literal "skills=" then "path="; consumers parse that
 # exact prefix), then `skills-content= sha256=` (#453) -- see --help.
-#   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+#   skills= path= skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= tools= yield-cap= peer-cli=
 set -euo pipefail
 
 if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
@@ -73,7 +73,7 @@ fi
 
 # Optional probe libraries disclose missing facts; required declarations above
 # remain fail-closed. Issues #332 F3, #453, #474.
-for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache; do
+for preflight_lib in protected-paths sandbox-comparator skills-content-hash secure-mkdir contract-cache harness-tools yield-cap; do
     preflight_lib_path="$SCRIPT_DIR/lib/$preflight_lib.sh"
     if [[ -r $preflight_lib_path ]]; then
         # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -126,10 +126,63 @@ Options:
                      This script never infers "escalated" itself.
   -h, --help         Print this help and exit 0.
 
-Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= peer-cli=
+Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo= branch= worktree= base= config= protected= instructions= git= gh= sandbox= tls= caches= runners= harness= tools= yield-cap= peer-cli=
 
 Exit: 0 for reported facts; 1 for failed activation or required declarations;
       2 for invalid usage.
+
+Recipe: resolve, rehydrate, and run once
+  agentkit=''
+  contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+  contract="$contract_root/.agent/env-contract.txt"
+  contract_harness=unknown
+  if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then contract_harness=claude
+  elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then contract_harness=codex
+  elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then contract_harness=opencode
+  elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then contract_harness=codex
+  fi
+  keyed_contract="$contract_root/.agent/env-contract.$contract_harness.txt"
+  [[ ! -e $keyed_contract && ! -L $keyed_contract ]] || contract=$keyed_contract
+  if [[ -n $contract_root && ( -e $contract || -L $contract ) ]]; then
+      [[ ! -L $contract_root/.agent && -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
+          { printf 'agentkit: untrusted environment contract: %s\n' "$contract" >&2; exit 1; }
+      tracked_rc=0
+      git -C "$contract_root" ls-files --error-unmatch -- "$contract" >/dev/null 2>&1 || tracked_rc=$?
+      [[ $tracked_rc == 1 ]] || { printf 'agentkit: cannot prove contract is untracked: %s\n' "$contract" >&2; exit 1; }
+      agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  fi
+  if [[ -z $agentkit ]]; then
+      printf 'agentkit: no skills path in %s (keyed candidate: %s); run onboard-repo first\n' "$contract" "$keyed_contract" >&2
+      exit 1
+  fi
+  [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+  agentkit_provenance=ok; : "$agentkit_provenance"
+
+Cache rehydration for each later guarded block (replace STEP_0_AGENTKIT):
+  agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
+  [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
+  contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
+
+Run preflight once:
+  set -euo pipefail
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+  repository_root=$contract_root
+  shared="$agentkit/.shared/scripts"
+  preflight="$shared/agent-preflight.sh"
+  if [[ ! -x $preflight ]]; then
+      printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
+      exit 1
+  fi
+  exclude_path="$(git rev-parse --git-path info/exclude)"
+  if ! grep -Fxq '.agent/*' "$exclude_path" 2>/dev/null; then
+      printf '%s\n' '.agent/*' >> "$exclude_path"
+  fi
+  environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
+  printf '%s\n' "$environment_contract"
+  [[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+  contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
+  [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+  "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
 EOF
 }
 
@@ -1137,11 +1190,23 @@ probe_runtime_pin() {
 }
 
 probe_harness() {
-    local line
+    local line harness
     line=$("$SCRIPT_DIR/harness-id.sh" 2>/dev/null || true)
     [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
     HARNESS_OTHER=${line##*other=}
     emit "harness= $line"
+    harness=${line#name=}
+    harness=${harness%% *}
+    if declare -F harness_tools_line > /dev/null; then
+        emit "$(harness_tools_line "$harness")"
+    else
+        emit "tools= spawn=unavailable wait=unavailable send=unavailable list='unavailable'"
+    fi
+    if declare -F yield_cap_line > /dev/null; then
+        emit "$(yield_cap_line "$harness")"
+    else
+        emit "yield-cap= ms=30000 source=default harness=$harness"
+    fi
 }
 
 # The peer CLI, for a cross-harness adversarial review. Named from the harness
@@ -1257,7 +1322,11 @@ main() {
             # preserving in-place legacy migrations as well as keyed repairs.
             ARG_WRITE=$(contract_cache_contract_file "$WORKTREE")
             if existing="$(cat -- "$ARG_WRITE")"; then
-                if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
+                existing_tools_count=$(grep -c '^tools=' <<< "$existing" || true)
+                existing_tools_line=$(grep -m1 '^tools=' <<< "$existing" || true)
+                if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing" &&
+                    [[ $existing_tools_count == 1 ]] && declare -F harness_tools_record_valid > /dev/null &&
+                    harness_tools_record_valid "$existing_tools_line" && grep -q '^yield-cap=' <<< "$existing"; then
                     # Presence proves the KEYS exist, not that their VALUES
                     # describe this tree (issue #453 review): recompute both
                     # live values (the cost a fresh preflight already pays) and
@@ -1281,7 +1350,7 @@ main() {
                         note "trusted contract's skills-content= no longer matches the running tree's content -- continuing with a fresh preflight"
                     fi
                 else
-                    note 'trusted contract predates protected= or skills-content= -- continuing with a fresh preflight'
+                    note 'trusted contract predates protected=, skills-content=, tools=, or yield-cap=, or has invalid tools= metadata -- continuing with a fresh preflight'
                 fi
             else
                 note 'trusted contract changed while it was being read -- continuing with a fresh preflight'

@@ -172,7 +172,7 @@ and exactly one of `--delete-branch`/`--keep-branch`. Provider sources remain
 `capability-default` for default triggers and `operator-instruction` for overrides.
 The head/base-pinned authorization schema and transition guards stay unchanged.
 
-For fast mode or proof-backed fix pushes, start with `--run-id ID --write-set-file FILE`.
+For fast mode or proof-backed fix pushes, derive `ID` with `$agentkit/.shared/scripts/session-ledger.sh run-id`, then pass `--run-id ID --write-set-file FILE`.
 FILE contains the declared write set expanded to explicit relative paths, one per line.
 The owner-only `.agent/pr-to-green-run-ID.json` records the predicate: repository,
 original selector, providers, initial PR ceiling, merge choices, and write set.

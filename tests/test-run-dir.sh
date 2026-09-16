@@ -351,6 +351,84 @@ non_git_err=$(cd -- "$non_git_dir" && /bin/bash "$script" --pr 5 2>&1) || non_gi
 assert_eq 1 "$non_git_rc" 'omitting --repo-root outside any Git worktree fails closed'
 assert_contains "$non_git_err" '--repo-root' 'the non-Git-worktree failure names the escape hatch'
 
+# --- owner-private scratch allocation under a trusted repository root ------
+scratch_repo="$tmp/scratch-repo"
+mkdir -p "$scratch_repo"
+scratch_one_out="$tmp/scratch-one.out"
+scratch_two_out="$tmp/scratch-two.out"
+/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo" >"$scratch_one_out" &
+scratch_one_pid=$!
+/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo" >"$scratch_two_out" &
+scratch_two_pid=$!
+wait "$scratch_one_pid"
+wait "$scratch_two_pid"
+scratch_one=$(<"$scratch_one_out")
+scratch_two=$(<"$scratch_two_out")
+assert_eq differ "$([[ $scratch_one != "$scratch_two" ]] && printf differ || printf same)" \
+    'two concurrent scratch allocations never share a path'
+assert_eq "$scratch_repo/.agent/cache/" "${scratch_one%/*}/" \
+    'scratch files stay under the trusted repository cache'
+assert_eq 600 "$(stat -c %a -- "$scratch_one")" 'scratch files are owner-private'
+assert_eq 700 "$(stat -c %a -- "${scratch_one%/*}")" 'the scratch cache is owner-private'
+printf first >"$scratch_one"; printf second >"$scratch_two"
+assert_eq first "$(<"$scratch_one")" 'one scratch allocation keeps its own content'
+assert_eq second "$(<"$scratch_two")" 'another scratch allocation keeps its own content'
+
+legacy_target="$tmp/legacy-target"
+printf untouched >"$legacy_target"
+ln -s "$legacy_target" "$scratch_repo/.agent/cache/prior-art-779.pending"
+scratch_three=$(/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo")
+assert_eq untouched "$(<"$legacy_target")" 'a planted predictable file symlink target is preserved'
+assert_eq differ "$([[ $scratch_three != "$scratch_repo/.agent/cache/prior-art-779.pending" ]] && printf differ || printf same)" \
+    'scratch allocation never reuses a planted predictable filename'
+
+scratch_symlink_repo="$tmp/scratch-symlink-repo"
+scratch_elsewhere="$tmp/scratch-elsewhere"
+mkdir -p "$scratch_symlink_repo/.agent" "$scratch_elsewhere"
+ln -s "$scratch_elsewhere" "$scratch_symlink_repo/.agent/cache"
+scratch_symlink_rc=0
+/bin/bash "$script" --scratch-label handback --repo-root "$scratch_symlink_repo" >/dev/null 2>&1 || scratch_symlink_rc=$?
+assert_eq 1 "$scratch_symlink_rc" 'a symlinked scratch parent is refused'
+assert_eq 0 "$(find "$scratch_elsewhere" -mindepth 1 -maxdepth 1 | wc -l)" \
+    'a symlinked scratch parent is never followed'
+assert_rc 2 'scratch labels reject path traversal' -- \
+    /bin/bash "$script" --scratch-label '../escape' --repo-root "$scratch_repo"
+
+near_dir="$tmp/destination filesystem"
+mkdir -p "$near_dir"
+near_target="$near_dir/dispatch plan.json"
+near_scratch=$(/bin/bash "$script" --scratch-label dispatch-plan --scratch-near "$near_target")
+assert_eq "$near_dir" "${near_scratch%/*}" \
+    'destination-adjacent scratch stays on the replacement target filesystem'
+assert_eq 600 "$(stat -c %a -- "$near_scratch")" \
+    'destination-adjacent scratch is owner-private'
+
+ordinary_agent_repo="$tmp/ordinary-agent-repo"
+mkdir -p "$ordinary_agent_repo/.agent"
+chmod 755 "$ordinary_agent_repo/.agent"
+ordinary_scratch=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$ordinary_agent_repo")
+assert_eq 600 "$(stat -c %a -- "$ordinary_scratch")" \
+    'an owned ordinary mode-0755 .agent parent remains compatible'
+
+writable_agent_repo="$tmp/writable-agent-repo"
+mkdir -p "$writable_agent_repo/.agent"
+chmod 775 "$writable_agent_repo/.agent"
+writable_agent_rc=0
+/bin/bash "$script" --scratch-label pr-body --repo-root "$writable_agent_repo" >/dev/null 2>&1 || writable_agent_rc=$?
+assert_eq 1 "$writable_agent_rc" 'a group-writable .agent parent is refused'
+assert_eq no "$([[ -e $writable_agent_repo/.agent/cache ]] && printf yes || printf no)" \
+    'an unsafe .agent parent is rejected before scratch cache creation'
+
+unavailable_agent_repo="$tmp/unavailable-agent-repo"
+mkdir -p "$unavailable_agent_repo"
+chmod 555 "$unavailable_agent_repo"
+unavailable_agent_rc=0
+unavailable_agent_err=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$unavailable_agent_repo" 2>&1) || unavailable_agent_rc=$?
+chmod 755 "$unavailable_agent_repo"
+assert_eq 1 "$unavailable_agent_rc" 'scratch allocation fails when .agent cannot be created'
+assert_contains "$unavailable_agent_err" 'could not create environment state directory' \
+    'scratch creation failure names the unavailable .agent parent'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
     'run-dir.sh stays at or under 199 lines'

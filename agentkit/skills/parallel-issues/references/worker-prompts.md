@@ -119,10 +119,8 @@ Helper argv: <one trusted bounded helper invocation, including numeric rounds/in
 Helper bound: <seconds>; effective tool caps: <advertised names and milliseconds>.
 Output: <absolute dedicated result file>; diagnostics: <absolute dedicated log file>.
 Run exactly that helper once in the supplied worktree, redirecting stdout/stderr to those files.
-Use the largest permitted yield and wait parameters; higher-priority tool/communication limits
-prevail. Continue the SAME running session/cell after a yield; never restart the command or
-hand-poll CI. No repository exploration, edits, review launches, messages to other actors,
-stall checks, or additional commands. Never treat a timeout as success.
+Follow the composed `verify=` line for yield, resume, and read behavior. No repository exploration,
+edits, review launches, messages to other actors, stall checks, or additional commands. Never treat a timeout as success.
 At helper completion/expiry/error, return exactly one result line:
 wait-result status=<complete|expired|error> exit=<code> elapsed_seconds=<measured>
 result=<path> log=<path> waiter_requests=<observed|unavailable>
@@ -396,9 +394,6 @@ automatic retarget.
 ```
 
 ```bash
-pr_body_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-pr-body.XXXXXXXXXX.md") || exit 1
-trap 'rm -f -- "$pr_body_file"' EXIT
-chmod 600 -- "$pr_body_file" || exit 1
 agent_identity=${agent_identity:?set the actual LLM/service/model identity}
 pr_why_file=${pr_why_file:?set the root-approved Why section file}
 pr_what_file=${pr_what_file:?set the root-approved What section file}
@@ -407,6 +402,8 @@ pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
 default_branch=${default_branch:?set the repository default branch}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
+trap 'rm -f -- "$pr_body_file"' EXIT
 "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
     --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
 # A baseline-red declared-verification outcome (review-remote-pr Step 2) writes
@@ -567,7 +564,9 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    `RED: WAIVED — <named existing oracle, e.g. focused suite X>` instead of simulating a failing
    check or using a tautological grep for the fix's own text. The waiver is explicit and never
    silent.
-3. Run every focused and full verification command through `agent-run.sh`; retain the fresh
+3. Follow this composed verification runbook:
+   __VERIFY_RUNBOOK__
+   Run every focused and full verification command through `agent-run.sh`; retain the fresh
    green marker-bearing log path and do not rerun a failed command outside the wrapper.
 4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
    operands, Conventional Commit subject, the expanded `--trailer "$worker_attribution"`
