@@ -35,8 +35,16 @@ assert_not_contains "$wait_text" 'requests_per_wait_minute' \
     'the model is no longer asked to calculate rollout metrics'
 assert_contains "$skill_text" 'Before the threshold elapses, do not call' 'stall checks are threshold-gated'
 prompts=$(<"$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+implementation=$(<"$root/agentkit/skills/parallel-issues/references/implementation-worker.md")
 assert_contains "$prompts" '## Throwaway waiter prompt' 'fresh waiter template exists'
 assert_contains "$prompts" 'Never resume this waiter' 'waiters are never reused'
+assert_not_contains "$prompts" 'Continue the SAME running session/cell after a yield' \
+    'worker prompt prose defers runtime resume mechanics to the composed verify line'
+assert_not_contains "$implementation" 'read the NAMED LOG when the summary is insufficient' \
+    'implementation template defers log-read mechanics to the composed verify line'
+combined_worker_lines=$(printf '%s\n%s\n' "$prompts" "$implementation" | wc -l | tr -d ' ')
+assert_eq yes "$([[ $combined_worker_lines -lt 868 ]] && printf yes || printf no)" \
+    'worker-prompts.md and implementation-worker.md have a net line-count decrease'
 waiter=${prompts#*## Throwaway waiter prompt}
 waiter=${waiter%%## PR-loop setup worker prompt*}
 assert_eq yes "$([[ ${#waiter} -lt 6000 ]] && printf yes || printf no)" \
@@ -72,6 +80,8 @@ assert_contains "$compose_source" "printf 'wait-bound= issue=%s seconds=%s class
     'the composer emits a wait-bound line beside each worker'\''s own identifier'
 assert_contains "$compose_source" "printf '%s\\n' \"\$yield_cap_line\"" \
     'the composer emits the contract yield-cap beside each worker wait bound'
+assert_contains "$compose_source" 'verify= cmd="agent-run.sh --cmd test --summary"' \
+    'the composer emits the verification runbook instead of relying on recalled prose'
 
 # The dispatch step in SKILL.md captures that line from the composer's stdout
 # and reprints it beside the same issue's prompt=/issue= digest line, so the

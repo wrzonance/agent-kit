@@ -191,6 +191,30 @@ assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
 assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
     'requests_per_wait_minute is derived from measured turns and elapsed waits'
 
+# --- worker verification churn is attributed per rollout session ---------
+worker_churn_fixture="$tmp/worker-churn.jsonl"
+printf '%s\n' \
+    '{"type":"session_meta","payload":{"originator":"worker:776","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"launch","name":"exec_command","arguments":"{\"cmd\":\"agent-run.sh --cmd test --summary\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":30000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-1","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-2","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":1000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-2","name":"shell","arguments":"{\"command\":[\"sed\",\"-n\",\"1,20p\",\"/repo/.agent/logs/test.log\"]}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-3","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-after-final","name":"exec_command","arguments":"{\"cmd\":\"tail -1 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"input","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":10}"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"worker-churn","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-worker-churn","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":1,"wall_clock_seconds":90,"exit_condition":"complete"}}' \
+    > "$worker_churn_fixture"
+run "$worker_churn_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the worker verification-churn fixture parses successfully'
+assert_eq '3' "$(jq -r '.worker_resume_calls["worker:776"]' <<< "$RUN_OUT")" \
+    'empty write_stdin calls are counted per worker session'
+assert_eq '1000' "$(jq -r '.worker_min_yield_ms["worker:776"]' <<< "$RUN_OUT")" \
+    'minimum worker yield ignores missing values and non-empty writes'
+assert_eq '2' "$(jq -r '.log_reads_between_resumes["worker:776"]' <<< "$RUN_OUT")" \
+    'only tail or sed log reads bracketed by resumes of the same command are counted'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'

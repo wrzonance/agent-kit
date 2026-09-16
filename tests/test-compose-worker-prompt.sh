@@ -118,7 +118,8 @@ assert_eq yes "$([[ ${#neutral_prompt} -le 19760 ]] && printf yes || printf no)"
 assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the paired formatter fix'
 assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
 assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
-assert_contains "$prompt" 'when the summary is insufficient' 'full log reads depend on summary sufficiency'
+assert_contains "$prompt" 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=27000 resume=write_stdin("",27000) read=once-at-marker' \
+    'composed worker runbook binds verification, the measured cap, one resume shape, and one terminal read'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \

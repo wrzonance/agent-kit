@@ -263,6 +263,13 @@ if [[ -z $yield_cap_line ]]; then
 fi
 [[ $yield_cap_line =~ ^yield-cap=\ ms=[1-9][0-9]*\ source=(measured|default)\ harness=[a-z][a-z0-9_-]*$ ]] ||
     die "invalid yield-cap record in environment contract: $yield_cap_line"
+yield_cap_ms=${yield_cap_line#yield-cap= ms=}
+yield_cap_ms=${yield_cap_ms%% *}
+
+emit_verify_runbook() {
+    printf 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
+        "$yield_cap_ms" "$yield_cap_ms"
+}
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
 source "$sandbox_comparator_lib"
@@ -574,6 +581,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         __LEAF_ROLE__) emit_leaf_contract; continue ;;
         __DECLARED_COMMANDS__) emit_commands; continue ;;
         __DECLARED_FOCUS__) emit_focus; continue ;;
+        *__VERIFY_RUNBOOK__*) emit_verify_runbook; continue ;;
         __BLOCKER_CONTRACT__) emit_blocker_contract; continue ;;
         __COMPOSE_ISOLATION__) emit_compose_isolation; continue ;;
         __IMAGE_INVALIDATING_WRITERS__) emit_image_invalidating_writers; continue ;;
@@ -618,6 +626,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         $line == *'__BASE_BRANCH__'* || $line == *'__WORKER_EFFORT__'* ||
         $line == *'__MATERIALITY_BASE__'* ||
         $line == *'__DECLARED_'* || $line == *'__BOUNDARY_'* ||
+        $line == *'__VERIFY_RUNBOOK__'* ||
         $line == *'__COMPOSE_ISOLATION__'* || $line == *'__IMAGE_INVALIDATING_WRITERS__'* ||
         $line == *'__SPEC_COMMAND_PRECEDENCE__'* ||
         $line == *'__ACCEPTANCE_DECLARATIONS__'* ||

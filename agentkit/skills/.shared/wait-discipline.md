@@ -16,10 +16,8 @@ or when useful root work continues concurrently. Give that waiter a finite obser
 use the **Throwaway waiter prompt** and spawn-contract isolation rules, never a setup/fix worker.
 
 Every wait names an explicit bound: adversarial duration, CI round cap, or native collection
-deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Resume
-the same running helper session after a runtime yield; never restart it. Run tests in the
-foreground or collect test-runner logs inside one bounded harness cell, never separate sleep/tail calls.
-Require the worker completion marker/contract or runner completion marker as terminal evidence.
+deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Require the
+worker completion marker/contract or runner completion marker as terminal evidence.
 
 **A bounded wait must be silent until its terminal condition.** Emit one completion or expiry
 line: every line of background output wakes the orchestrator for a turn. Send any progress heartbeat

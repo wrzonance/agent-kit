@@ -121,6 +121,22 @@ def is_poll_call(payload):
     return name == 'write_stdin' and not decoded_call_arguments(payload).get('chars')
 
 
+def call_command_text(payload):
+    raw = payload.get('arguments', payload.get('input', ''))
+    decoded = decoded_call_arguments(payload)
+    command = decoded.get('cmd', decoded.get('command'))
+    if isinstance(command, list):
+        return ' '.join(str(part) for part in command)
+    if isinstance(command, str):
+        return command
+    return raw if isinstance(raw, str) else ''
+
+
+def is_log_read(payload):
+    command = call_command_text(payload)
+    return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:tail|sed)(?=\s)', command))
+
+
 def token_count_input(payload):
     info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
     usage = info.get('last_token_usage') if isinstance(info.get('last_token_usage'), dict) else info
@@ -206,6 +222,9 @@ def parse_session_file(path):
     polling = {'turns': 0, 'input_tokens': 0, 'inputs_complete': True,
                'intervals': [], 'intervals_complete': True}
     pending_poll_calls = {}
+    churn = {'resume_calls': 0, 'min_yield_ms': None, 'log_reads_between_resumes': 0}
+    resume_state = {}
+    active_resume = None
 
     records = read_records(path)
     try:
@@ -225,6 +244,22 @@ def parse_session_file(path):
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
+            call_name = payload.get('name', '').rsplit('.', 1)[-1]
+            arguments = decoded_call_arguments(payload)
+            if call_name == 'write_stdin' and not arguments.get('chars'):
+                resume_key = arguments.get('session_id', arguments.get('cell_id', 'unknown'))
+                slot = resume_state.setdefault(resume_key, {'seen': False, 'pending_reads': 0})
+                if slot['seen']:
+                    churn['log_reads_between_resumes'] += slot['pending_reads']
+                slot.update(seen=True, pending_reads=0)
+                active_resume = resume_key
+                churn['resume_calls'] += 1
+                yield_ms = arguments.get('yield_time_ms')
+                if isinstance(yield_ms, int) and yield_ms >= 0:
+                    current = churn['min_yield_ms']
+                    churn['min_yield_ms'] = yield_ms if current is None else min(current, yield_ms)
+            elif active_resume is not None and is_log_read(payload):
+                resume_state[active_resume]['pending_reads'] += 1
             if is_poll_call(payload):
                 polling['turns'] += 1
                 if pending_input_tokens is None:
@@ -286,6 +321,7 @@ def parse_session_file(path):
         'trial_meta': trial_meta,
         'efficiency': efficiency,
         'polling': polling,
+        'verification_churn': churn,
     }
 
 
@@ -420,6 +456,7 @@ def main(argv):
         pricing.update(overrides)
     blended_usd = compute_blended_usd(parsed, pricing)
     poll_turns, poll_input_tokens, wait_seconds, requests_per_wait_minute = merge_polling_report(parsed)
+    workers = [actor for actor in parsed if actor['actor'] != 'orchestrator']
 
     acceptance = None
     if args.acceptance:
@@ -447,6 +484,11 @@ def main(argv):
         'poll_input_tokens': poll_input_tokens,
         'wait_seconds': wait_seconds,
         'requests_per_wait_minute': requests_per_wait_minute,
+        'worker_resume_calls': {a['actor']: a['verification_churn']['resume_calls'] for a in workers},
+        'worker_min_yield_ms': {a['actor']: a['verification_churn']['min_yield_ms'] for a in workers},
+        'log_reads_between_resumes': {
+            a['actor']: a['verification_churn']['log_reads_between_resumes'] for a in workers
+        },
         'reference_hits': reference_report,
         'wall_clock_seconds': trial_meta['wall_clock_seconds'],
         'worker_count': trial_meta['worker_count'],
