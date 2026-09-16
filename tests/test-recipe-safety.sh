@@ -171,7 +171,7 @@ assert_rc 0 'lint does not treat quoted arithmetic expansion as a command substi
 # glob literally, while zsh aborts before the command can run.
 mkdir -p "$tmp/empty-glob-dir"
 assert_rc 0 'bash leaves an unmatched recipe glob for the command' -- \
-    bash -f -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
+    bash -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
 if command -v zsh >/dev/null; then
     assert_rc 1 'zsh nomatch aborts an unmatched recipe glob' -- \
         zsh -f -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
