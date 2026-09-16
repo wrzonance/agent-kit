@@ -926,11 +926,11 @@ process_project() {
     return 0
 }
 
-discover_rc=0
-board_cache_discover "$repo_root" "$repository" || discover_rc=$?
-if ((discover_rc == 2 || discover_rc == 5)); then
-    cold_memberships='[]'
+# Select unresolved memberships; unreadable evidence is a no-op and empty is 2.
+select_unresolved_membership_project() {
+    local memberships issue_number membership_rc cold_memberships='[]'
     for issue_number in "${issue_numbers[@]}"; do
+        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         membership_rc=0
         memberships=$(issue_project_items "$issue_number") || membership_rc=$?
         if ((membership_rc != 0)); then
@@ -938,14 +938,16 @@ if ((discover_rc == 2 || discover_rc == 5)); then
             completed_issues[$issue_number]=1
             continue
         fi
-        cold_memberships=$(jq -c -n --argjson accumulated "$cold_memberships" \
-            --argjson current "$memberships" '$accumulated + $current') ||
-            die 'Could not combine issue project memberships.'
+        cold_memberships=$(jq -c -n --argjson accumulated "$cold_memberships" --argjson \
+            current "$memberships" '$accumulated + $current') || die 'Could not combine issue project memberships.'
     done
-    if [[ $(jq -r 'length' <<< "$cold_memberships") != 0 ]]; then
-        discover_rc=0
-        board_cache_select "$repo_root" "$repository" "$cold_memberships" || discover_rc=$?
-    fi
+    [[ $(jq -r 'length' <<< "$cold_memberships") != 0 ]] || return 2
+    board_cache_select "$repo_root" "$repository" "$cold_memberships"
+}
+discover_rc=0; board_cache_discover "$repo_root" "$repository" || discover_rc=$?
+if ((discover_rc == 2 || discover_rc == 5)); then
+    discover_rc=0
+    select_unresolved_membership_project || discover_rc=$?
 fi
 if ((discover_rc == 2)); then
     for issue_number in "${issue_numbers[@]}"; do
@@ -972,11 +974,24 @@ esac
 printf 'board: cache cold, discovered project #%s "%s" (%s)\n' \
     "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_TITLE" "$cache_note" >&2
 owner=$BOARD_CACHE_DISCOVERED_OWNER
-if ! process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" \
-    "$BOARD_CACHE_DISCOVERED_TITLE" "$BOARD_CACHE_DISCOVERED_FIELDS"; then
-    :
+process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" \
+    "$BOARD_CACHE_DISCOVERED_TITLE" "$BOARD_CACHE_DISCOVERED_FIELDS" || :
+if ((${#completed_issues[@]} < ${#issue_numbers[@]})); then
+    membership_project_rc=0; select_unresolved_membership_project || membership_project_rc=$?
+    if ((membership_project_rc == 0)); then
+        owner=$BOARD_CACHE_DISCOVERED_OWNER
+        process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" "$BOARD_CACHE_DISCOVERED_TITLE" \
+            "$BOARD_CACHE_DISCOVERED_FIELDS" || :
+    elif ((membership_project_rc == 5)); then
+        for issue_number in "${issue_numbers[@]}"; do
+            [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
+            report_noop "no-op: issue #$issue_number is on multiple project boards; use --all-boards to inspect all project boards"
+            completed_issues[$issue_number]=1
+        done
+    elif ((membership_project_rc != 2)); then
+        die 'Could not select a project from issue memberships.'
+    fi
 fi
-
 for issue_number in "${issue_numbers[@]}"; do
     [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
     report_noop "no-op: issue #$issue_number is not on any project board"

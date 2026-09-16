@@ -50,8 +50,11 @@ case "$*" in
           9) pid=PVT_unlinked; title='Unlinked Board' ;;
           *) pid=PVT_repo_board; title='Repository Board' ;;
         esac
+        issue_id=781
+        [[ -z ${MIXED_BATCH:-} || $* != *'number=782'* ]] || issue_id=782
         jq -n --argjson number "$membership" --arg id "$pid" --arg title "$title" \
-          '{data:{repository:{issue:{projectItems:{nodes:[{id:"PVTI_781",project:{id:$id,number:$number,title:$title,owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
+          --arg item_id "PVTI_$issue_id" \
+          '{data:{repository:{issue:{projectItems:{nodes:[{id:$item_id,project:{id:$id,number:$number,title:$title,owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
     fi
     ;;
   *'project field-list'*)
@@ -62,7 +65,13 @@ case "$*" in
     fi
     ;;
   *'project item-list'*)
-    printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_781","status":"Ready","content":{"type":"Issue","number":781,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/781"}}]}'
+    if [[ -n ${LINKED_PROJECT_MISS:-} && $* == *'project item-list 7 '* ]]; then
+        printf '%s\n' '{"totalCount":0,"items":[]}'
+    elif [[ -n ${MIXED_BATCH:-} && $* == *'project item-list 9 '* ]]; then
+        printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_782","status":"Ready","content":{"type":"Issue","number":782,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/782"}}]}'
+    else
+        printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_781","status":"Ready","content":{"type":"Issue","number":781,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/781"}}]}'
+    fi
     ;;
   *'project item-edit'*)
     exit 0
@@ -221,5 +230,70 @@ assert_contains "$paged_out" 'project #21 "Page Two Board"' \
     'the open project on the second page is selected'
 assert_contains "$(cat -- "$log")" 'api graphql --paginate' \
     'repository project discovery requests GraphQL pagination'
+
+# Project discovery depends only on gh and jq. Cache persistence tools may be
+# unavailable, but selecting the live project and moving its issue still work.
+missing_cache_tools_env="$tmp/missing-cache-tools.bash"
+cat > "$missing_cache_tools_env" <<'EOF'
+command() {
+    if [[ ${1:-} == -v && ${2:-} =~ ^(sha256sum|date|mktemp)$ ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+EOF
+cacheless_tools_repo="$tmp/cacheless-tools-repo"
+mkdir -p "$cacheless_tools_repo/.agent"
+git -C "$cacheless_tools_repo" init -q
+: > "$log"
+cacheless_tools_out=$(BASH_ENV="$missing_cache_tools_env" GH_STUB_LOG="$log" \
+    PATH="$bin:$PATH" "$mover" --repo-root "$cacheless_tools_repo" \
+    --repo example-org/example-repo --issue-number 781 --status 'In progress' 2>&1)
+cacheless_tools_rc=$?
+assert_eq 0 "$cacheless_tools_rc" 'missing cache-only tools do not block discovery'
+assert_contains "$cacheless_tools_out" 'moved #781 -> "In progress"' \
+    'missing cache-only tools preserve the live move'
+assert_contains "$cacheless_tools_out" '(cache unavailable)' \
+    'missing cache-only tools report optional persistence as unavailable'
+assert_contains "$(cat -- "$log")" 'project item-edit' \
+    'missing cache-only tools still reach the requested mutation'
+
+# A unique linked project is only an initial candidate. When the issue is not
+# on it, the issue's actual unlinked project membership must be selected.
+linked_miss_repo="$tmp/linked-miss-repo"
+mkdir -p "$linked_miss_repo/.agent"
+git -C "$linked_miss_repo" init -q
+: > "$log"
+linked_miss_out=$(LINKED_PROJECT_MISS=1 MEMBERSHIP_PROJECT=9 \
+    GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$linked_miss_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+linked_miss_rc=$?
+assert_eq 0 "$linked_miss_rc" 'a linked-project miss falls back to issue memberships'
+assert_contains "$linked_miss_out" \
+    'moved #781 -> "In progress" on project #9 "Unlinked Board"' \
+    'the issue is moved on its actual unlinked membership project'
+assert_contains "$(cat -- "$log")" 'projectItems' \
+    'a linked-project miss reads the issue-owned memberships'
+
+# A linked-board match for one issue must not hide another requested issue's
+# unlinked membership in the same batch.
+mixed_repo="$tmp/mixed-repo"
+mkdir -p "$mixed_repo/.agent"
+git -C "$mixed_repo" init -q
+: > "$log"
+mixed_out=$(MIXED_BATCH=1 MEMBERSHIP_PROJECT=9 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$mixed_repo" --repo example-org/example-repo \
+    --issue-number 781 --issue-number 782 --status 'In progress' 2>&1)
+mixed_rc=$?
+assert_eq 0 "$mixed_rc" 'mixed linked and unlinked memberships succeed'
+assert_contains "$mixed_out" 'moved #781 -> "In progress" on project #7 "Repository Board"' \
+    'the linked-board issue keeps its completed move'
+assert_contains "$mixed_out" 'moved #782 -> "In progress" on project #9 "Unlinked Board"' \
+    'the unresolved issue moves on its actual unlinked project'
+assert_not_contains "$mixed_out" 'no-op: issue #782 is not on any project board' \
+    'the mixed batch never drops the unresolved issue as unboarded'
+assert_eq 2 "$(grep -c 'project item-edit' "$log" || true)" \
+    'the mixed batch mutates each issue exactly once'
 
 finish

@@ -30,7 +30,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
+    # #781 follow-up: a linked-project miss now resolves issue memberships.
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="999:11276:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
@@ -88,7 +89,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #781: shared repository-linked board discovery and atomic cache writer.
 # #781 review: paginated discovery, membership selection and optional persistence.
-readonly MAX_TREE_TOKENS=443500
+# #781 follow-up adds the linked-project-miss membership fallback.
+readonly MAX_TREE_TOKENS=443645
 
 violations=0
 checked=0

@@ -38,6 +38,9 @@ board_cache_write() {
     options=$(jq -c '[.options[]? | {key: .name, value: .id}] | from_entries' \
         <<< "$status_field") || return 1
     [[ -n $field_id && $options != '{}' ]] || return 2
+    for tool in sha256sum date mktemp; do
+        command -v "$tool" >/dev/null 2>&1 || return 4
+    done
     fingerprint_input=$(jq -S -c -n --arg project "$project_id" --arg field "$field_id" \
         --argjson options "$options" \
         '{p: $project, f: $field, o: ($options | to_entries | sort_by(.key) | map(.value))}') ||
@@ -156,7 +159,7 @@ board_cache_discover() {
         printf 'board-cache: repository must have the form OWNER/REPO\n' >&2
         return 1
     }
-    for tool in gh jq sha256sum date mktemp; do
+    for tool in gh jq; do
         command -v "$tool" >/dev/null 2>&1 || {
             printf 'board-cache: %s is not installed\n' "$tool" >&2
             return 1
