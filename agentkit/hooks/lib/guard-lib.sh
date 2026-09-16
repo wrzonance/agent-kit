@@ -13,36 +13,37 @@
 # a contract-absent checkout.
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
-readonly RESOLVE_HINT='  agentkit=
-  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+readonly RESOLVE_HINT='  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
       "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
       -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
   [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-  contract_root=$(git rev-parse --show-toplevel 2>/dev/null) || contract_root=
+  croot=$(git rev-parse --show-toplevel 2>/dev/null) || croot=
   contract=
-  if [[ -n "$contract_root" ]]; then
-      contract="$contract_root/.agent/env-contract.txt"
-      if [[ -r "$agentkit/.shared/scripts/lib/contract-cache.sh" ]]; then
-          contract=$(bash -c "source \"\$1\"; contract_cache_contract_file \"\$2\"" \
-              bash "$agentkit/.shared/scripts/lib/contract-cache.sh" "$contract_root")
+  if [[ -n "$croot" ]]; then
+      contract="$croot/.agent/env-contract.txt"
+      h=unknown
+      if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then h=claude
+      elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then h=codex
+      elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then h=opencode
+      elif [[ -d $HOME/.codex ]]; then h=codex
       fi
+      keyed="$croot/.agent/env-contract.$h.txt"
+      [[ ! -e "$keyed" && ! -L "$keyed" ]] || contract="$keyed"
   fi
-  pinned=
-  pin_rc=0
-  if [[ -r "$contract" && -f "$contract" && ! -L "$contract" && -O "$contract" ]]; then
-      git -C "$contract_root" ls-files --error-unmatch -- "$contract" \
+  pin=
+  if [[ -r "$contract" && -f "$contract" ]]; then
+      pin=$(sed -n "s/^skills= path=//p" "$contract" | head -n 1)
+      pin_rc=0
+      git -C "$croot" ls-files --error-unmatch -- "$contract" \
           >/dev/null 2>&1 || pin_rc=$?
-      if [[ $pin_rc == 1 ]]; then
-          pinned=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+      if [[ $pin_rc == 1 && ! -L "$contract" && -O "$contract" && -d "$pin" ]]; then
+          agentkit="$pin"
       fi
   fi
-  if [[ -n "$pinned" && -d "$pinned" ]]; then
-      agentkit="$pinned"
-  fi
-  if [[ -n "$pinned" && "$pinned" != "$agentkit" ]]; then
+  if [[ -n "$pin" && "$pin" != "$agentkit" ]]; then
       printf "skills mismatch: contract=%s pin=%s; helper=%s tree=%s; remedy (Bash): %q --worktree %q --ensure\n" \
-          "$contract" "$pinned" "$agentkit/.shared/scripts/agent-preflight.sh" "$agentkit" \
-          "$agentkit/.shared/scripts/agent-preflight.sh" "$contract_root" >&2
+          "$contract" "$pin" "$agentkit/.shared/scripts/agent-preflight.sh" "$agentkit" \
+          "$agentkit/.shared/scripts/agent-preflight.sh" "$croot" >&2
   fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file

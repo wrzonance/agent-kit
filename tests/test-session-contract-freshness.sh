@@ -377,6 +377,44 @@ if [[ $remedy != "$err" ]]; then
     assert_eq 0 "$rc" 'the printed remedy executes with spaces in the installed tree'
     assert_contains "$(cat -- "$keyed")" "skills= path=$bootstrap" 'the remedy repairs the keyed file'
 fi
+
+# A cache library is neither required nor authoritative for selecting a pin.
+rm -- "$keyed"
+printf 'skills= path=%s\n' "$live_pin" > "$legacy"
+for broken_library in ':' 'contract_cache_contract_file() { return 1; }'; do
+    printf '%s\n' "$broken_library" > "$bootstrap/.shared/scripts/lib/contract-cache.sh"
+    assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+        'a missing or failing cache selector cannot discard a valid legacy pin'
+    assert_eq '' "$(cat -- "$tmp/hint.err")" 'unused cache library failures do not leak into resolver advice'
+done
+saved_home=$resolver_home
+resolver_home="$tmp/no-cache"
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+    'a keyed pin resolves without any discoverable bootstrap library'
+resolver_home=$saved_home
+cp -- "$skills_root/.shared/scripts/lib/contract-cache.sh" "$bootstrap/.shared/scripts/lib/contract-cache.sh"
+
+# Declarations may explain drift without authorizing execution from their tree.
+for untrusted_kind in tracked symlink; do
+    printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+    if [[ $untrusted_kind == tracked ]]; then
+        git -C "$resolver_repo" add -f -- "$keyed"
+    else
+        mv -- "$keyed" "$tmp/symlink-contract"
+        ln -s -- "$tmp/symlink-contract" "$keyed"
+    fi
+    assert_eq "$bootstrap" "$(run_hint 2> "$tmp/hint.err")" \
+        "$untrusted_kind declarations cannot select an executable tree"
+    assert_contains "$(cat -- "$tmp/hint.err")" "$live_pin" \
+        "$untrusted_kind declaration divergence is reported"
+    assert_contains "$(cat -- "$tmp/hint.err")" "$keyed" \
+        "$untrusted_kind divergence names the selected contract"
+    [[ $untrusted_kind != tracked ]] || git -C "$resolver_repo" rm -q --cached -- "$keyed"
+    rm -- "$keyed"
+done
+
 curriculum=$(guard_curriculum "$skills_root")
 assert_contains "$curriculum" 'onboard-state.sh --report' 'curriculum teaches the mandatory onboarding selector'
 assert_contains "$curriculum" 'repo-config.sh --resolve' 'curriculum teaches batch config resolution'
