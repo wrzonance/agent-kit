@@ -954,8 +954,10 @@ guard_observer_write_reason() {
     local target=$1 cwd=$2 command_line=${3:-} classification
     [[ -n ${workspace_root:-} ]] || return 1
     [[ $(guard_contract_mode "$workspace_root") == observer ]] || return 1
-    classification=$(guard_classify_target "$target" "$cwd" "$command_line")
-    [[ $classification == workspace ]] || return 1
+    classification=$(guard_classify_target_result "$target" "$cwd" "$command_line")
+    # Policy scope includes linked worktrees; observer ownership is narrower:
+    # only this exact checkout races the session being observed.
+    [[ ${classification%%$'\n'*} == workspace && ${classification#*$'\n'} == "$workspace_root" ]] || return 1
     printf 'Refused once -- this session is an OBSERVER: another harness holds an active run in %s (this contract records mode=observer), so a write here would race it. If that run has ended, remove %s/.agent/env-contract.*.txt and start a fresh session -- or run the same call again now; it is allowed once.' \
         "$workspace_root" "$workspace_root"
 }
@@ -1806,15 +1808,20 @@ guard_gh_command_segments() {
 # "words" (issue #335 Case 3). One word per line; quote characters are consumed.
 guard_tokenize_words() {
     local segment=$1 word='' quote='' escaped=0 char i length
+    # Opt-in operators retain their identity through quote removal.
+    local typed=${2:-} prefix='' present=0 quoted=0 operator next
+    [[ $typed != writes ]] || prefix='word:'
     length=${#segment}
     for ((i = 0; i < length; i++)); do
         char=${segment:i:1}
         if ((escaped)); then
             word+=$char
+            present=1
             escaped=0
             continue
         fi
         if [[ $char == \\ && $quote != "'" ]]; then
+            quoted=1
             escaped=1
             continue
         fi
@@ -1826,18 +1833,45 @@ guard_tokenize_words() {
             fi
             continue
         fi
+        if [[ $typed == writes && $char == '#' ]] && ((!present)); then
+            break
+        fi
+        if [[ $typed == writes && ( $char == '>' || $char == '<' ) ]]; then
+            # Only an adjacent, unquoted number is a file descriptor.
+            if ((present)) && { ((quoted)) || [[ ! $word =~ ^[0-9]+$ ]]; }; then
+                printf 'word:%s\n' "$word"
+            fi
+            word=''; present=0; quoted=0
+            operator=$char
+            next=${segment:i+1:1}
+            if [[ $next == "$char" || $next == '&' || ( $char == '>' && $next == '|' ) ||
+                ( $char == '<' && $next == '>' ) ]]; then
+                operator+=$next
+                ((i++))
+                next=${segment:i+1:1}
+                if [[ $operator == '<<' && ( $next == '<' || $next == '-' ) ]]; then
+                    operator+=$next
+                    ((i++))
+                fi
+            fi
+            printf 'op:%s\n' "$operator"
+            continue
+        fi
         case $char in
-            "'" | '"') quote=$char ;;
+            "'" | '"') quote=$char; present=1; quoted=1 ;;
             [[:space:]])
-                if [[ -n $word ]]; then
-                    printf '%s\n' "$word"
+                if [[ -n $word ]] || { [[ $typed == writes ]] && ((present)); }; then
+                    printf '%s%s\n' "$prefix" "$word"
                     word=''
                 fi
+                present=0; quoted=0
                 ;;
-            *) word+=$char ;;
+            *) word+=$char; present=1 ;;
         esac
     done
-    [[ -n $word ]] && printf '%s\n' "$word"
+    if [[ -n $word ]] || { [[ $typed == writes ]] && ((present)); }; then
+        printf '%s%s\n' "$prefix" "$word"
+    fi
 }
 
 # Classify one gh body option. Output is `inline|VALUE`; file-backed and
@@ -1994,107 +2028,85 @@ guard_protected_match() {
     shared_protected_pattern "$candidate" "$root" "$declared"
 }
 
-# Paths a SHELL command is about to write. The edit-tool guard never sees these:
-# a redirect or `sed -i` is a Bash call, not a file edit, which is the gap that
-# let a workflow be rewritten past it.
-#
-# Narrow on purpose -- only write-shaped operators, and only matched against the
-# protected list afterwards. A general "commands that touch files" rule would
-# fire on every grep and be switched off within a week.
+# Extract shell write destinations for policy checks and path evidence.
 guard_shell_write_targets() {
-    local cmd=$1 segments segment write_probe token
-    local -a results=()
+    local cmd=$1 segments segment token pending command i options inplace script directory install_dirs
+    local -a results=() words=() operands=()
 
-    # Heredoc BODIES are data, never a write target's spelling -- a JSON/text
-    # payload that happens to mention a protected path inside a heredoc body
-    # is not editing it. Segmenting first, via the same heredoc-aware lexer
-    # guard_out_of_scope_target relies on, drops those bodies entirely; each
-    # remaining segment is then judged on its own tokens only (issue #397).
+    # Drop heredoc bodies: their contents are not destinations (issue #397).
     segments=$(guard_gh_command_segments "$cmd")
     while IFS= read -r segment; do
         [[ -n ${segment//[[:space:]]/} ]] || continue
 
-        # Redirects to device sinks discard output but do not write a
-        # protected path. Remove them before deciding whether this segment is
-        # write-shaped.
-        write_probe=$(sed -E \
-            -e 's#([0-9]*>>?[[:space:]]*)"/dev/(null|stdout|stderr)"([[:space:];|&()<>]|$)#\1/dev/\2\3#g' \
-            -e "s#([0-9]*>>?[[:space:]]*)'/dev/(null|stdout|stderr)'([[:space:];|&()<>]|$)#\\1/dev/\\2\\3#g" \
-            -e 's#[0-9]*>>?[[:space:]]*/dev/(null|stdout|stderr)([[:space:];|&()<>]|$)#\2#g' \
-            <<< "$segment")
-
-        # Stage one: is this segment write-shaped at all (tee, sed -i, cp, mv,
-        # install, truncate, dd, a redirect)? Parsing operands per command rots;
-        # a path mentioned by grep or cat is not a target.
-        grep -qE '(^|[;&|[:space:]])(tee|sed[[:space:]]+-i|cp|mv|install|truncate|dd)([[:space:]]|$)|>>?[[:space:]]*[^[:space:]&|]' \
-            <<< "$write_probe" 2> /dev/null || continue
-
-        # Stage two: offer tokens broadly and let the protected list decide,
-        # except shell syntax and unambiguous data operands: Git <rev>:<path> /
-        # <rev>^{type} (issue #423) and a LEADING NAME=value assignment (issue
-        # #397). The skip ends at the command word -- applied everywhere it
-        # dropped dd's of= target (follow-up F2); a later key=value offers its
-        # VALUE.
-        local seen_command=0 command_is_git=no redirect_pending=0 redirect_target=0 value
-        local redirect_re='^[0-9]*>>?(.*)$'
+        # Remove all redirection operands from argv, emitting only output
+        # destinations. In particular, << operands are delimiters, not paths.
+        words=(); pending=''
         while IFS= read -r token; do
-            [[ -n $token ]] || continue
-
-            # Preserve enough shell redirect syntax to exempt only Git's read
-            # operands below, never the redirect destination itself. The
-            # lexer may emit `> file`, `>file`, or their fd/append forms.
-            redirect_target=0
-            if ((redirect_pending)); then
-                redirect_target=1
-                redirect_pending=0
-            elif [[ $token =~ $redirect_re ]]; then
-                token=${BASH_REMATCH[1]}
-                if [[ -z $token ]]; then
-                    redirect_pending=1
-                    continue
-                fi
-                redirect_target=1
-            fi
-            if ((redirect_target)); then
-                token=${token#\"}; token=${token%\"}
-                token=${token#\'}; token=${token%\'}
-            fi
-            [[ -n $token ]] || continue
-            if [[ $token =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
-                if ((seen_command)); then
-                    value=${token#*=}
-                    [[ -n $value ]] && results+=("$value")
-                fi
+            if [[ $token == op:* ]]; then
+                pending=${token#op:}
                 continue
             fi
-            if ((!seen_command)); then
-                [[ $token == git ]] && command_is_git=yes
-            fi
-            seen_command=1
-
-            # Shell permits a redirect to be attached to the preceding word.
-            # Split that destination out before classifying a Git object name;
-            # otherwise `HEAD:path>target` looks like one large revspec and the
-            # data-operand exemption drops the real target with it.
-            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token == *'>'* ]]; then
-                value=${token#*>}
-                value=${value#>}
-                value=${value#\"}; value=${value%\"}
-                value=${value#\'}; value=${value%\'}
-                [[ -n $value ]] && results+=("$value")
-                token=${token%%>*}
-                [[ -n $token ]] || continue
-            fi
-            [[ $token == -* ]] && continue
-            if ((redirect_target == 0)) && [[ $command_is_git == yes && $token != *'>'* ]] &&
-                { [[ $token =~ ^[^/:][^:]*:.+$ ]] ||
-                    [[ $token =~ \^\{(tree|commit|tag|object)\}$ ]]; }; then
+            token=${token#word:}
+            if [[ -n $pending ]]; then
+                case $pending in
+                    '>'|'>>'|'>|'|'<>')
+                        case $token in
+                            ''|/dev/null|/dev/stdout|/dev/stderr) ;;
+                            *) results+=("$token");;
+                        esac;;
+                esac
+                pending=''
                 continue
             fi
-            results+=("$token")
-        done < <(guard_tokenize_words "$segment" |
-            sed -E 's/^[<]+//; s/^["'"'"']+//; s/["'"'"']+$//' |
-            sed -E 's/[;|&()]+$//')
+            words+=("$token")
+        done < <(guard_tokenize_words "$segment" writes)
+
+        i=$(guard_skip_command_prefix words 0)
+        command=${words[i]-}; command=${command##*/}
+        options=1; inplace=0; script=0; directory=''; install_dirs=0; operands=()
+        for ((i++; i < ${#words[@]}; i++)); do
+            token=${words[i]}
+            if ((options)); then
+                [[ $token != -- ]] || { options=0; continue; }
+                case $command:$token in
+                    sed:-i|sed:-i?*|sed:--in-place|sed:--in-place=*) inplace=1; continue;;
+                    sed:-e|sed:--expression|sed:-f|sed:--file) script=1; ((i++)); continue;;
+                    sed:-e?*|sed:-f?*|sed:--expression=*|sed:--file=*) script=1; continue;;
+                    truncate:-s|truncate:--size|truncate:-r|truncate:--reference|\
+                    install:-m|install:--mode|install:-o|install:--owner|install:-g|install:--group|\
+                    install:-S|install:--suffix|cp:-S|cp:--suffix|mv:-S|mv:--suffix)
+                        ((i++)); continue;;
+                    cp:-t|mv:-t|install:-t|cp:--target-directory|mv:--target-directory|install:--target-directory)
+                        ((i++)); directory=${words[i]-}; continue;;
+                    cp:--target-directory=*|mv:--target-directory=*|install:--target-directory=*)
+                        directory=${token#*=}; continue;;
+                    cp:-t?*|mv:-t?*|install:-t?*) directory=${token#-t}; continue;;
+                    install:-d|install:--directory) install_dirs=1; continue;;
+                esac
+                [[ $token != -* || $token == - ]] || continue
+            fi
+            case $command in
+                sed|tee|truncate|cp|mv|install) operands+=("$token");;
+                dd) [[ $token != of=* ]] || operands+=("${token#of=}");;
+            esac
+        done
+        case $command in
+            sed)
+                ((inplace)) || continue
+                # Without any explicit -e/-f, the first positional is the
+                # script. Options may follow file operands (GNU sed).
+                ((script)) || operands=("${operands[@]:1}");;
+            cp|install)
+                if [[ -n $directory ]]; then
+                    operands=("$directory")
+                elif ((!install_dirs && ${#operands[@]})); then
+                    operands=("${operands[${#operands[@]}-1]}")
+                fi;;
+            mv) [[ -z $directory ]] || operands+=("$directory");;
+        esac
+        for token in "${operands[@]}"; do
+            [[ -n $token && $token != - ]] && results+=("$token")
+        done
     done <<< "$segments"
 
     ((${#results[@]})) && printf '%s\n' "${results[@]}"
