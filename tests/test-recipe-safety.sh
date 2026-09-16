@@ -160,8 +160,7 @@ triage="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md
 bulk_recipe=$(extract_recipe "$triage" 'report_batch_failure()')
 needs_recipe=$(extract_recipe "$triage" 'mapfile -t needs_lines')
 handback_recipe=$(extract_recipe "$parallel_skill" '--scratch-label handback')
-reports_recipe=$(extract_recipe "$parallel_skill" 'dispatch_report_files=(')
-for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe" "$reports_recipe"; do
+for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe"; do
     assert_contains "$recipe" 'bash -c' 'runtime regression extracted a complete Bash fence'
 done
 fixture_root="$tmp/recipe inputs"
@@ -245,16 +244,6 @@ for parent_shell in bash zsh; do
     assert_eq 1 "$?" "$parent_shell handback refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell handback refusal cannot continue"
 
-    mkdir -p "$fixture_root/plan.verification-reports"
-    printf '%s\n' 'spec-verification= issue=723' > "$fixture_root/plan.verification-reports/issue-723.report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1; agentkit=$2; agentkit_provenance=ok; repository_root=$3'$'\n'"$reports_recipe"$'\n'"$completed" \
-        _ "$fixture_root/plan" "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
-    assert_eq 0 "$?" "$parent_shell final handoff accepts ordinary input"
-    assert_contains "$output" 'spec-verification= issue=723' "$parent_shell final handoff prints its report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1; agentkit=$2; agentkit_provenance=ok; repository_root=$3'$'\n'"$reports_recipe"$'\n'"$completed" \
-        _ "$fixture_root/missing" "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
-    assert_eq 1 "$?" "$parent_shell final handoff failure stops the parent"
-    assert_not_contains "$output" parent-completed "$parent_shell final handoff failure cannot continue"
 done
 
 markdown_mktemp=$(rg -n 'mktemp' "$root/agentkit/skills" --glob '*.md' || true)

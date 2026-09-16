@@ -222,6 +222,22 @@ $expected_yield_cap_line" \
     "$fully_covered_report" \
     'fully covered verification reports its ratio and classification, and its wait bound'
 
+no_steps_report=$(compose_verification_report no-verification-steps \
+    $'## Verification\nNo executable verification steps are declared.\n')
+assert_not_contains "$no_steps_report" 'spec-verification=' \
+    'zero verification steps emit no empty spec-verification machine line'
+# Matching literal shell source in the runbook.
+# shellcheck disable=SC2016
+dispatch_consumer=$(grep -F -m1 'spec_verification=$(printf' \
+    "$root/agentkit/skills/parallel-issues/SKILL.md")
+zero_step_consumer_rc=0
+zero_step_consumed=$(bash -c "compose_output=\$1; $dispatch_consumer; printf '%s' \"\$spec_verification\"" \
+    _ "$no_steps_report") || zero_step_consumer_rc=$?
+assert_eq 0 "$zero_step_consumer_rc" \
+    'zero-step composer output passes the exact dispatch consumer contract'
+assert_eq '' "$zero_step_consumed" \
+    'dispatch consumer preserves the zero-step report as absent'
+
 partially_covered_report=$(compose_verification_report partially-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
 assert_eq \

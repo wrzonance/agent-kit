@@ -2,7 +2,6 @@
 
 Read this before any worker, CI, or review wait in `parallel-issues` or `review-remote-pr`.
 This is the single detailed wait contract; skills link here for rules and durable-state recipes.
-Avoid empty wait cycles that do not advance collection.
 
 ## The rule
 

@@ -499,10 +499,8 @@ assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
     'dispatch records uncovered verification atomically before spawn'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
-assert_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
-    'dispatch declares report storage as associative'
-assert_contains "$dispatch_handoff" 'dispatch_verification_reports["$issue_number"]=$spec_verification' \
-    'dispatch preserves the coverage report for the final handoff'
+assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
+    'dispatch accepts an empty zero-step report while still rejecting multiple report lines'
 assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
     'dispatch derives durable report storage from the root-owned run plan'
 assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
@@ -516,14 +514,6 @@ assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 
-report_declaration=$(grep -F -m1 'declare -A dispatch_verification_reports' <<< "$dispatch_handoff")
-report_assignment=$(grep -F -m1 'dispatch_verification_reports["$issue_number"]=$spec_verification' <<< "$dispatch_handoff")
-multi_issue_reports=$(bash -c "$report_declaration
-issue_number=57; spec_verification=first; $report_assignment
-issue_number=54; spec_verification=second; $report_assignment
-printf '%s|%s' \"\${dispatch_verification_reports[57]}\" \"\${dispatch_verification_reports[54]}\"")
-assert_eq 'first|second' "$multi_issue_reports" \
-    'associative dispatch reporting preserves two issue handoff records'
 persist_report_function=$(awk '
     /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
     capture { print }
@@ -546,6 +536,15 @@ assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.repor
     'first shell composition leaves its exact durable report'
 assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
     'second shell composition preserves its peer and writes its own report'
+zero_step_plan="$tmp/zero-step-plan.md"
+: > "$zero_step_plan"
+zero_step_rc=0
+bash -c "$persist_report_function
+dispatch_plan=\$1; issue_number=72; spec_verification=''; agentkit=\$2
+persist_dispatch_verification_report" _ "$zero_step_plan" "$root/agentkit/skills" || zero_step_rc=$?
+assert_eq 0 "$zero_step_rc" 'zero-step composer output passes the dispatch report consumer'
+assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
+    'zero-step dispatch creates no empty durable report'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
 # composed body in root context for no dispatch benefit -- twice, under an
 # approval layer that re-executes an approved command. The block emits a digest.
@@ -559,12 +558,10 @@ for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tai
 done
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
-assert_contains "$text" 'Include each stored `spec-verification=` report verbatim in the final handoff' \
-    'final handoff carries the dispatch-time coverage ratio and classification'
-assert_contains "$text" 'Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan`' \
-    'final handoff explicitly retrieves reports from durable run evidence'
-assert_contains "$text" 'for dispatch_report in "$dispatch_reports_dir"/issue-*.report' \
-    'final handoff enumerates every durable per-issue report'
+assert_contains "$text" 'run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root"' \
+    'final handoff pastes the computed durable run summary'
+assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
+    'final handoff no longer asks the live agent for post-hoc wait telemetry'
 
 # --- issue #494: auto-review completion coverage and recoverable redrive ----
 assert_contains "$normalized_text" 'Final draft sweep' \
@@ -590,8 +587,8 @@ assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
     'receipt recovery is tracked per PR in run-state for a one-shot limit'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
     'duplicate or invalid receipts are explicitly non-recoverable'
-assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path parked' \
-    'non-recoverable receipt evidence is recorded in run-state with a complete append command'
+assert_contains "$final_sweep_section" 'handed-back' \
+    'non-recoverable receipt evidence is recorded in the lifecycle ledger'
 # issue #689 (CR-689-3): the final sweep's redrive bookkeeping is durable and
 # one-shot -- gated by a run-state.sh get that must exit 11 (absent) before
 # the redrive runs, with the set write recorded only after it succeeds.
@@ -605,8 +602,8 @@ assert_contains "$normalized_text" 're-enters the draft loop' \
     'a final-sweep miss re-enters the draft loop'
 assert_contains "$normalized_text" 'handoff cannot print' \
     'a final-sweep miss prevents the handoff'
-assert_contains "$normalized_text" 'coverage= prs=' \
-    'handoff emits opened-PR receipt coverage totals'
+assert_contains "$normalized_text" 'run-state.sh" summary' \
+    'handoff emits helper-computed opened-PR receipt coverage totals'
 assert_contains "$normalized_text" 'recoverable' \
     'Collect classifies recoverable blocked leads'
 assert_contains "$normalized_text" 'baseline-red' \
@@ -663,16 +660,6 @@ real_get_absent_rc=0
 assert_eq '11' "$real_get_absent_rc" \
     "run-state.sh get on an absent key really exits 11, matching the SKILL.md's pinned exit code"
 
-handoff_retrieval=$(awk '
-    /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
-    armed && /^```bash$/ { capture=1; next }
-    capture && /^```$/ { exit }
-    capture { print }
-' <<< "$text")
-durable_handoff=$(bash -c "dispatch_plan=\$1
-$handoff_retrieval" _ "$durable_plan")
-assert_eq "$second_report"$'\n'"$first_report" "$durable_handoff" \
-    'a fresh final-handoff process retrieves both exact composition reports'
 boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
 assert_eq yes "$( [[ -x $boundary_selector ]] && printf yes || printf no )" \
     'boundary selector helper is executable'

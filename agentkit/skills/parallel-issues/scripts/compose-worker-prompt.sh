@@ -747,9 +747,7 @@ else
         spec_step_count=${#spec_steps[@]}
         spec_uncovered_count=${#spec_uncovered_steps[@]}
         spec_covered_count=$((spec_step_count - spec_uncovered_count))
-        if ((spec_step_count == 0)); then
-            spec_coverage_classification=no-verification-steps
-        elif ((spec_uncovered_count == 0)); then
+        if ((spec_uncovered_count == 0)); then
             spec_coverage_classification=fully-covered
         elif ((spec_uncovered_count > spec_covered_count)); then
             spec_coverage_classification=majority-uncovered
@@ -760,7 +758,7 @@ else
         if ((${#spec_uncovered_steps[@]})); then
             uncovered_steps=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
         fi
-        printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
+        ((spec_step_count == 0)) || printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
             "$issue" "$spec_step_count" "$spec_covered_count" "$spec_uncovered_count" \
             "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
         ((dispatch_plan_supplied == 0)) || printf 'spec-verification-plan= issue=%s status=%s expected-uncovered=%s update=%s plan-sha=%s\n' \

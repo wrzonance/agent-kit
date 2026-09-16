@@ -453,7 +453,7 @@ compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_numbe
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 compose_output=$("$compose_script" "${compose_args[@]}") || exit 1
 chmod 600 -- "$prompt_file" || exit 1
-spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ -n $spec_verification && $spec_verification != *$'\n'* ]] || exit 1
+spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ $spec_verification != *$'\n'* ]] || exit 1
 spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
 wait_bound=$(printf '%s\n' "$compose_output" | grep -E '^wait-bound= ' || true); [[ -n $wait_bound && $wait_bound != *$'\n'* ]] || exit 1
 plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
@@ -463,10 +463,9 @@ if [[ $plan_update != none ]]; then
     chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
 fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
-declare -A dispatch_verification_reports
-dispatch_verification_reports["$issue_number"]=$spec_verification
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
+    [[ -n $spec_verification ]] || return 0
     [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
     chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
     dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
@@ -476,7 +475,7 @@ persist_dispatch_verification_report() {
     [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
 }
 persist_dispatch_verification_report || exit 1
-printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${dispatch_verification_reports["$issue_number"]}" "$spec_verification_plan"
+printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${spec_verification:-none}" "$spec_verification_plan"
 printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 printf '%s\n' "$wait_bound"
 ```
@@ -721,7 +720,7 @@ Per-PR follow-up exit line:
 ### Final draft sweep (mandatory before handoff)
 
 With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. A successful adversarial/verified-skip result increments receipts; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then once the redrive succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`); duplicate/invalid evidence is unrecoverable: park the PR (`"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --path parked --value "$pr"`), report; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
+then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR in run-state `receipt_prs` and each verified skip in `skipped_prs`; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
@@ -729,22 +728,7 @@ If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll revi
 ## Do NOT Delete Worktrees
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff plus shared `requests_per_wait_minute` metrics. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
-```bash
-bash -c "$(cat <<'BASH_RECIPE'
-dispatch_plan=$1
-dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
-[[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
-dispatch_report_files=("$dispatch_reports_dir"/issue-*.report); ((${#dispatch_report_files[@]} > 0)) || exit 1
-for dispatch_report in "$dispatch_reports_dir"/issue-*.report; do
-    [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || exit 1; mapfile -t dispatch_report_lines < "$dispatch_report"
-    ((${#dispatch_report_lines[@]} == 1)) && [[ ${dispatch_report_lines[0]} == 'spec-verification= '* ]] || exit 1
-    printf '%s\n' "${dispatch_report_lines[0]}"
-done
-shopt -u nullglob
-BASH_RECIPE
-)" _ "${dispatch_plan:-}" || exit $?
-```
+**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Paste `"$agentkit/.shared/scripts/run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root"` output verbatim.
 Cleanup requires user request after merge.
 
 At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`.
