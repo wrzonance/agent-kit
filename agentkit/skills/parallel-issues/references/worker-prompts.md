@@ -83,6 +83,13 @@ is the repository's existing `active-workers.ndjson`; `--state` is its run's `ru
 Ownership supplies dispatched/running state; result receipts at `results.ATTEMPT` record
 accepted/rejected/blocked/unknown handbacks. No second lifecycle or review ledger is created.
 
+For damaged worker evidence, root can inspect `named-active-state.sh --repo-root ROOT
+--ledger LEDGER --action inventory`: malformed rows include line, keys, and predicate diagnostics.
+Supported maintenance is the same command with `--action prune --fresh-hours N`.
+It holds the ownership lock, reports removed unparseable/aged terminal lines, and refuses
+if any parsed row is active, unknown, or indeterminate. Reconcile runtime ownership first;
+workers must never manually replace the shared ledger.
+
 Exit 0 accepts implementation handoff; 1 rejects one actionable claim; 2 means evidence unknown;
 3 records blocked work and its remaining action. Only exit 0 permits continuation to root review.
 An unchanged accepted receipt returns `reused:true` after read-only evidence checks, without
