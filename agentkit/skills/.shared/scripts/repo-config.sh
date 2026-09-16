@@ -5,13 +5,10 @@
 # malformed is dropped with a warning; this script never blocks a run.
 #
 # Usage:
-#   repo-config.sh --export          # `export K='V'` lines, safe to eval
-#   repo-config.sh --get KEY         # one effective value; exit 1 if absent, exit 2 if declared but invalid
-#   repo-config.sh --get-argv KEY    # parsed argv, NUL-delimited; exit 1 if absent
-#   repo-config.sh --list            # K=V lines for accepted keys actually declared
-#   repo-config.sh --list-keys       # the accepted key set itself, one per line
-#   repo-config.sh --canonical-keys K1,K2   # strict, sorted canonical K=V lines
-#   repo-config.sh --resolve KEY ... # one-pass key/value/argv records
+#   --export: shell-quoted exports; --get KEY: value (absent=1, invalid=2)
+#   --get-argv KEY: NUL-delimited argv (absent=1); --list: declared K=V
+#   --list-keys / --list-adversarial-efforts: accepted names, one per line
+#   --canonical-keys K1,K2: strict sorted K=V; --resolve KEY ...: key/value/argv
 # Options: --repo-root DIR (skip git-toplevel detection), --base-ref REF (origin base
 #   ref for --get), --diagnose (report path roots/candidates without rejecting).
 # Exit: 0 success (including no config found), 2 bad usage.
@@ -35,7 +32,7 @@ warn() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --diagnose | --canonical-keys K1,K2 | --resolve KEY ... | --validate | --model-family ID)\n' "$PROGRAM" >&2
+    printf 'usage: %s [--repo-root DIR] [--config-file FILE] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --list-adversarial-efforts | --diagnose | --canonical-keys K1,K2 | --resolve KEY ... | --validate | --model-family ID)\n' "$PROGRAM" >&2
     exit 2
 }
 

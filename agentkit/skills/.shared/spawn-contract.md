@@ -240,45 +240,48 @@ returns a task/agent identifier.
 
 ### Durable sole-writer gate
 
-Use `parallel-issues/scripts/named-active-state.sh` against the repository-wide
-`.agent/runs/active-workers.ndjson`, shared across runs and linked worktrees. Keep the
-dispatch plan's issue, branch and conflict-checked write set; ownership does not replace
-conflict planning or serialize shared migrations for you. Root alone calls these actions:
+Root uses `parallel-issues/scripts/named-active-state.sh` with
+`.agent/runs/active-workers.ndjson`, shared across runs/worktrees. Keep the dispatch plan's
+issue, branch and conflict-checked write set; ownership does not serialize shared migrations.
 
 1. Before each native submission, `--action reserve --issue N --worktree DIR --branch BRANCH
    --run-id RUN --attempt UNIQUE`, with `--repo-root ROOT --ledger LEDGER`. Continue only on
-   exit 0. The helper atomically reserves the canonical worktree as `unknown`; another
-   controller, alias, resume or model switch cannot reserve it again.
+   exit 0. Atomic canonical-worktree reservation as `unknown` blocks duplicate owners,
+   including aliases, resumptions and model switches.
 2. Immediately after each returned ID, `--action record --attempt UNIQUE --worker-id ID`.
-   Persist each success before the next spawn. A later failure never clears prior IDs.
+   Persist before the next spawn; later failures never clear prior IDs.
 3. A timeout/crash after submission remains `unknown`. Reconcile with native runtime
-   inventory and attach its recovered ID using `record`; never blindly retry. If no native
-   reconciliation is available, park the reservation and explicitly report the limitation.
-4. Only a confirmed rejection before worker creation, confirmed stop/completion, or explicit
-   handback permits `--action release --attempt UNIQUE --disposition
+   inventory and attach the ID using `record`; never blindly retry. Without native
+   reconciliation, park and report the limitation.
+4. Only confirmed pre-creation rejection, stop/completion, or explicit handback permits
+   `--action release --attempt UNIQUE --disposition
    rejected|stopped|completed|handed-back --evidence RECEIPT`. The receipt identifies the
-   runtime observation or handback; absence from OS process counts is not evidence.
+   runtime observation/handback; absent OS processes are not evidence.
    A stop request, timeout, idle notification, or controller restart is not confirmed stop.
 5. Read `--action inventory` before retries, resumption, model switches or replacement;
-   it returns latest rows per canonical worktree, including unknown and terminal dispositions.
+   it returns latest rows per canonical worktree and malformed line/key/predicate diagnostics.
    Unknown and active rows hold ownership/capacity; terminal rows release it. Retry only
-   undispatched or confirmed-rejected entries with fresh attempt IDs. Reacquire before
-   resuming a worker whose ownership was released, including root's degraded self-worker.
+   undispatched/confirmed-rejected entries with fresh attempt IDs. Reacquire released
+   ownership before resuming, including root's degraded self-worker.
 
-All actions take the same root and ledger arguments; mutations also take the matching run
-identity where required by `reserve`. The helper serializes read/modify/replace with a stable
-sidecar `flock` and a bounded wait. This is a cooperative local-filesystem gate, not a native
-spawn transaction: it cannot enforce exactly-once harness submission or stop writers that
-bypass it. Never delete its lock file or replace the ledger manually. Record returned IDs
-and terminal dispositions in run-state/completion summaries only as projections of this ledger;
-an unknown or queued entry cannot become a complete manifest row.
+Actions share root/ledger arguments; `reserve` needs matching run identity.
+A stable sidecar `flock` with bounded wait serializes read/modify/replace. This
+gate cannot enforce exactly-once harness submission or stop bypassing writers. Never delete
+its lock or replace the ledger manually. Run-state/completion summaries only project ledger
+IDs/dispositions; unknown or queued entries cannot become complete manifest rows.
+
+Inventory precedes validation. Root repairs with the same helper/root/ledger
+and `--action prune --fresh-hours N`: under the mutation lock, it reports removed unparseable
+and aged terminal lines. Any parsed active, unknown, or indeterminate row, including history,
+refuses prune; reconcile runtime first. Legacy v1 extra keys are ignored; v2 stays strict.
+Terminal age exempts validation but preserves ownership-selection evidence.
 
 Locking reference: [upstream flock manual](https://www.man7.org/linux/man-pages/man1/flock.1.html).
 
 ## Throwaway waiters and runtime caps
 
-Only root dispatches a fresh read-only waiter for one bounded CI/review wait; never resume
-a setup or fix-batch worker as a poller. Use the compact waiter template in
+Apply [wait-discipline](wait-discipline.md)'s waiter criterion.
+Only root dispatches; never reuse setup/fix workers as pollers. Use the compact waiter template in
 `parallel-issues/references/worker-prompts.md` with no repository history or diff. Keep its
 filled prompt below approximately 2K tokens; count runtime-injected context in telemetry too.
 Use `fork_turns: "none"` when advertised; otherwise use the runtime's documented

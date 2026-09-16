@@ -73,43 +73,44 @@ way — deletion only ever touches the remote branch ref.
 
 ## Self-authored fix advances
 
-Use the same `--run-id ID --write-set-file FILE` from the initial authorization,
-with `--self-authored-proof PR:FILE` after a successful remediation push. This
-works with attended confirmation as well as `--fast-mode --yolo`. The latter
-requires both flags; neither grants merges or cross-provider consent.
-
-The receipt preserves selector, initial PR ceiling, providers, merge choices,
-initial paths and last authorized head/base. Keep it throughout the run;
-a refreshed display cannot replace its snapshot.
-Changed repository/providers/selector/merge policy/initial write set or added PRs require
-redisplay and confirmation under a new run ID; never generate that ID automatically.
-
-The coordinator writes the private proof from its own successful push results:
+Keep `--run-id ID --write-set-file FILE` and receipt. Use `--self-authored-proof
+PR:FILE` for own fixes or `--lineage-proof PR:FILE` for parent integration.
+Neither changes selectors, PR ceiling, providers, merge policy or write set.
+Changes require confirmation under a new run ID. Private proof:
 
 ```json
 {"runId":"run-1","repository":"owner/repo","pr":14,"base":"main",
  "from":"<previous authorized SHA>","to":"<new SHA>",
+ "merges":["<clean merge SHA>"],
  "findingLedger":"<owned saved review-ledger JSON>",
- "commits":[{"sha":"<full SHA>","pushed":true,"finding":"fix:F1"}]}
+ "commits":[{"sha":"<own SHA>","pushed":true,"finding":"fix:F1"}]}
 ```
 
-Include **every** intervening commit this run created and successfully pushed;
-never infer run authorship from a Git author name or a live branch tip. Save the
-review-ledger JSON after `review-ledger.sh cover --reason fix:ID` records each
-commit's finding. Its `repo`, `pr`, and `reviews[].coverage[]` SHA/reason must match.
-Run authorization in the worktree holding the helper's
-`.agent/evidence/paths-touched.ndjson`; the owned records must corroborate each
-commit's actual paths. Keep the proof, ledger snapshot and receipt as run evidence.
+Partition first-parent commits into `merges`, `commits`, or
+`resolutions:[{sha,pushed:true,finding:"fix:ID"}]`. Parents must be exact authorized
+heads; account imported ancestry separately. Clean trees must match replay.
+Resolutions require regular-file content conflicts with unchanged modes;
+only reported conflict paths may differ from replay. Those paths must fit the
+write set. BLOCKED advances need verified resolutions.
+Bounds: 16 merges, 256 commits, 10s/replay.
 
-The helper verifies live **and** local ancestry, PR/base, exact commit sets,
-and commit paths against its path ledger.
-Proven remediation extends receipt `writeSet` automatically, including reverted paths;
-the initial `predicate.writeSet` and input file stay unchanged. Never hand-edit the
-expanded set. Merge commits use mechanical proof. Missing evidence, outside pushes
-and force pushes fail closed. Successful proofs add
-`kind: self-authored` advances to the run receipt without another prompt; consumer
-authorization stays pinned to the newly read live head. CI, review-completion and
-pre-merge gates must all be refreshed for that head.
+Own work needs `fix:ID` ledger coverage and records in
+`.agent/evidence/paths-touched.ndjson`. Resolution records list the full actual
+first-parent diff; scope checks cover resolutions. Other own commits stay in scope.
+
+`defaultAdvance:{from,to,prs:[15]}` anchors default first-parent history within
+an exact authorized head. Commits must be verified queued merges or generated-only
+nonmerge declared by owned config through `repo-config.sh`. Undeclared paths,
+empty/nonregular changes and squash/rebase PR merges fail closed. For stacked bases,
+`oldBase:{pr,sha}` must name an authorized parent, its live PR branch must match
+the saved base, and contain the historical SHA. An earlier imported default is
+allowed only when its remaining verified tail is entirely generated-only.
+
+Changed WAITING rows are parked: no executable authority or authorized-head
+growth; original snapshots stay intact. Pending drift is diagnostic;
+an independent RUNNABLE root is required. Unparking still needs original-head
+proof. Retargets retain canonical approval/boundary checks. All new heads need
+fresh CI, review-completion and merge gates.
 
 ## Mechanical queue advance without redisplay
 

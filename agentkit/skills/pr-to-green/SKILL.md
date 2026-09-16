@@ -22,9 +22,7 @@ Recovery: resubmit `$agentkit:pr-to-green`; natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
 a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 
-Coordinate parallel reviews and serial merges.
-
-Paths and purposes: `"$agentkit/references.md"`. Open `"$agentkit/<path>"`; do not search.
+Read [reading discipline](../.shared/reading-discipline.md) in full first; paths and purposes: `"$agentkit/references.md"`.
 
 Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) fully; run all `bash` fences via its `bash -c` boundary.
 
@@ -100,12 +98,10 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get 
 
 ## Hard rules
 
-- Ready-transition, provider trigger, and Phase C settlement (Steps 2–4) may
-  run in parallel across independent `RUNNABLE` roots, bounded by
-  `$agentkit/parallel-issues/scripts/concurrency-cap.sh`'s cap (root counted) and the API budget below —
-  admission/revalidation: ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md).
-  Step 5's
-  merges are serial; `--auto-merge` implies strict serial merge ordering.
+- Ready-transition, provider trigger, Phase C (Steps 2–4) may run in parallel across independent
+  `RUNNABLE` roots under `$agentkit/parallel-issues/scripts/concurrency-cap.sh` (root counted)
+  and the API budget. Admission/revalidation: [auto-merge](references/auto-merge.md).
+  Step 5's merges, including `--auto-merge`, use strict serial merge ordering.
 - Resolve provider configuration before any PR mutation. Missing or invalid
   config is effective `none`: warn and continue through CI, mandatory
   adversarial review, and human-feedback gates without a provider wait.
@@ -146,12 +142,11 @@ Establish the environment through review-remote-pr Step 0, then run
 `review-provider-config.sh` before any mutation. Retain its exact capability
 records; do not infer installed bots from checks or issue prose.
 
-Run `pr-queue.sh --write-confirmed-queue --format table` with any handed-off
-schema-2 plan and each `--provider NAME:ACTION:SOURCE` (or `--no-providers`).
-One derivation supplies the display and owner-only
-`.agent/pr-to-green-confirmed-queue.json`; missing `providers` makes it stale.
-`--dispatch-plan` and `--merge-plan` alias the same file across ready-flip;
-this consumer requires schema-2. Without a plan, derive from the forge.
+Run `pr-queue.sh --write-confirmed-queue --format table` with the handed-off schema-2 plan
+and each `--provider NAME:ACTION:SOURCE` (or `--no-providers`). It supplies the display and
+owner-only `.agent/pr-to-green-confirmed-queue.json`; missing `providers` means stale.
+`--dispatch-plan` and `--merge-plan` alias that schema-2 file across ready-flip.
+Without a plan, derive from the forge.
 Automatic discovery selects drafts; an explicitly named ready PR may resume.
 States are `RUNNABLE`,
 `WAITING_FOR_MERGE`, `RETARGET_REQUIRED`, or `BLOCKED`; ambiguous topology fails closed.
@@ -160,13 +155,10 @@ States are `RUNNABLE`,
 for unknown, not a merge blocker; `0` is reserved for proven absence. PR/head/base/state
 checks still apply. Resolve closing linkage separately for board moves.
 
-Show the human table and the exact provider records, and for every declared
-trigger-capable provider state the per-run action it will be authorized for:
-`trigger` by default, or `observe`/`disabled` when the operator has instructed
-no ping for that provider on this queue. State every chain base to tip, then
-independent roots in queue order. When `--auto-merge` is on the invocation
-line, the displayed plan must say plainly that confirmed merges are included,
-naming the merge method and delete-branch setting. Without `--fast-mode --yolo`,
+Show the table, exact provider records, and each trigger-capable provider's action:
+default `trigger`, or operator-directed `observe`/`disabled`. List chains base to tip,
+then independent roots in queue order. With `--auto-merge`, explicitly include confirmed
+merges, method, and delete-branch setting in the plan. Without `--fast-mode --yolo`,
 wait for confirmation of this exact plan. With it, emit the plan as a receipt
 and pass both flags to `authorize-queue.sh`; never ask the same question again.
 
@@ -196,24 +188,28 @@ that flag, retain the interactive question and `--source interactive` grant.
 
 ### 2. Normalize runnable PRs
 
-Drive Steps 2–4 concurrently per root (never waiting/retargeting). For each,
-establish/reuse its isolated worktree through review-remote-pr. Complete
-Phase A against the current base: no
-conflicts, declared verification passing, CI settled green, mandatory
-adversarial receipt settled (including its same-harness blind fallback), and
-every observed human item decided. Consolidate accepted changes into
-the existing one-push fix batch. A blocked check is named evidence, never green.
+Drive Steps 2–4 concurrently per runnable root in review-remote-pr's isolated worktree.
+Phase A requires the current base, no conflicts, passing declared checks, green CI,
+a settled mandatory adversarial receipt (including same-harness blind fallback), and
+decisions on every observed human item. Consolidate changes into one fix/push batch.
+Blocked checks are named evidence, never green.
 
 Only `$agentkit/review-remote-pr/scripts/verification-baseline.sh` may classify
 failures on unchanged paths outside this diff as `baseline-red`. Publish them with
 `$agentkit/parallel-issues/scripts/compose-pr-body.sh --baseline-file`, marking skipped checks
 SKIPPED. Continue commit, push, review and receipt; ready-flip and merge remain blocked.
-Do not reformat unrelated paths. Other failures are `change-caused-red`: fix them.
+Do not reformat unrelated paths. Code regressions are `change-caused-red`: fix them.
+Stale contracts/corrupt kit ledgers are `kit-state-red`: preserve evidence,
+confirm the recovery helper exists and its interface, then repair and continue once.
+Never invent helpers, erase review history, or bypass trust/consent gates. Failed/unavailable
+repair becomes `BLOCKED` with evidence and next action; human/dependency blockers stay distinct.
+Repair is not green proof.
 
-After a Phase A or C fix push, retain the run's receipt and invoke
+After a fix push, retain the receipt and invoke
 `authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.
-Record only this run's successful pushes, findings and commit SHAs; the proof format
-and independent checks are in ["$agentkit/pr-to-green/references/auto-merge.md"](references/auto-merge.md#self-authored-fix-advances).
+Use `--lineage-proof PR:FILE` for authorized parent merges or verified default
+advances; retarget proof remains required. Record this run's successful pushes and
+findings using the [proof format](references/auto-merge.md#self-authored-fix-advances).
 Verified own fixes need no new question, even in attended runs. Missing proof or
 outside changes require a fresh displayed queue and confirmation. Rewriting the
 display never overrides the receipt's last authorized head. All new heads still
@@ -327,7 +323,7 @@ then continue serially.
 
 ## Exit
 
-Continue until each item is evidence-green (merged under `--auto-merge`) or has a
-named human/dependency blocker. Report per PR: head/base, CI, adversarial receipt,
-provider result, findings, human decisions, stack state, formal approval separately,
-and auto-merge gate/outcome. Preserve worktrees and authorization/evidence for resumption.
+Continue to evidence-green (merged under `--auto-merge`) or named human/dependency blockers.
+Report each PR's head/base, CI, adversarial receipt, provider result, findings, human
+decisions, stack state, separate formal approval, and auto-merge gate/outcome.
+Preserve worktrees and authorization/evidence for resumption.
