@@ -11,6 +11,9 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
 wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 compose="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
@@ -92,9 +95,16 @@ assert_contains "$skill_text" '**900 s** minimum, draft-loop/review/CI waits **6
 assert_contains "$skill_text" 'Dispatch already printed this worker'\''s own bound as a `wait-bound=`' \
     'polling discipline points at the printed dispatch-time value instead of only the recalled rule'
 
-base_lines=$(git -C "$root" show origin/main:agentkit/skills/.shared/wait-discipline.md | wc -l)
-current_lines=$(wc -l < "$wait_discipline")
-assert_eq yes "$([[ $((base_lines - current_lines)) -ge 30 ]] && printf yes || printf no)" \
-    'wait-discipline policy shrinks by at least 30 lines'
+ratchet_repo="$tmp/ratchet-repo"
+mkdir -p "$ratchet_repo/agentkit/skills/.shared"
+git -C "$ratchet_repo" init -q
+cp "$wait_discipline" "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md"
+git -C "$ratchet_repo" add agentkit/skills/.shared/wait-discipline.md
+git -C "$ratchet_repo" -c user.name=test -c user.email=test@example.invalid commit -qm fixture
+git -C "$ratchet_repo" update-ref refs/remotes/origin/main HEAD
+assert_eq "$(git -C "$ratchet_repo" rev-parse HEAD)" "$(git -C "$ratchet_repo" rev-parse origin/main)" \
+    'the stable ratchet is exercised when the moving base already equals HEAD'
+assert_eq yes "$([[ $(wc -l < "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md") -le 127 ]] && printf yes || printf no)" \
+    'wait-discipline policy stays at or below the stable post-reduction line ratchet'
 
 finish

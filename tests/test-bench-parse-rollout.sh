@@ -191,6 +191,28 @@ assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
 assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
     'requests_per_wait_minute is derived from measured turns and elapsed waits'
 
+poll_gap_fixture="$tmp/poll-telemetry-gap.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:01Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"other-1","name":"shell","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900}}}}' \
+    '{"timestamp":"2026-09-16T01:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-2","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-3","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000}}}}' \
+    '{"timestamp":"2026-09-16T01:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-3","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"gap-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-gap-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":6,"exit_condition":"complete"}}' \
+    > "$poll_gap_fixture"
+run "$poll_gap_fixture" --timestamp 2026-09-16T01:01:00Z
+assert_eq '0' "$RUN_RC" 'a rollout with missing poll telemetry still parses'
+assert_eq '3' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll turns remain countable when their token telemetry is incomplete'
+assert_eq 'null' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'a nonpoll overwrite or consecutive poll reports input telemetry unavailable'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'

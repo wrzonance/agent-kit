@@ -225,6 +225,8 @@ def parse_session_file(path):
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
+            if awaiting_usage == 'poll':
+                polling['inputs_complete'] = False
             if is_poll_call(payload):
                 polling['turns'] += 1
                 if pending_input_tokens is None:
