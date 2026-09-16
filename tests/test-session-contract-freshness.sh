@@ -415,6 +415,34 @@ for untrusted_kind in tracked symlink; do
     rm -- "$keyed"
 done
 
+# Cache selection is harness-first, never a sort across unrelated home paths.
+for order in az za; do
+    dual_repo=$(make_repo)
+    cx="$tmp/dual-$order/${order:0:1}-codex"
+    cl="$tmp/dual-$order/${order:1:1}-claude"
+    cx_old="$cx/plugins/cache/agent-kit/agentkit/1.0/skills"
+    cx_new="$cx/plugins/cache/agent-kit/agentkit/2.0/skills"
+    cl_new="$cl/plugins/cache/agent-kit/agentkit/99.0/skills"
+    mkdir -p "$cx_old" "$cx_new" "$cl_new"
+    for active in codex claude; do
+        active_env=(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT CODEX_HOME="$cx" CLAUDE_CONFIG_DIR="$cl")
+        want=$cx_new
+        [[ $active != claude ]] || { active_env+=(CLAUDECODE=1); want=$cl_new; }
+        # shellcheck disable=SC2016  # the child expands the resolved variable
+        dual_hint() { (cd -- "$dual_repo" && "${active_env[@]}" bash -c "$RESOLVE_HINT"'; printf "%s" "$agentkit"'); }
+        assert_eq "$want" "$(dual_hint)" "$active selects its own newest cache with $order root order"
+        printf 'skills= path=%s\n' "$live_pin" > "$dual_repo/.agent/env-contract.txt"
+        assert_eq "$live_pin" "$(dual_hint)" "$active trusted legacy pin outranks both caches"
+        printf 'skills= path=%s\n' "$cx_old" > "$dual_repo/.agent/env-contract.$active.txt"
+        assert_eq "$cx_old" "$(dual_hint)" "$active trusted keyed pin outranks legacy and both caches"
+        rm -- "$dual_repo/.agent/env-contract.txt" "$dual_repo/.agent/env-contract.$active.txt"
+        if [[ $active == codex ]]; then missing=$cx; peer=$cl_new; else missing=$cl; peer=$cx_new; fi
+        mv -- "$missing/plugins" "$missing/parked"
+        assert_eq "$peer" "$(dual_hint)" "$active falls back to the peer only when its cache is absent"
+        mv -- "$missing/parked" "$missing/plugins"
+    done
+done
+
 curriculum=$(guard_curriculum "$skills_root")
 assert_contains "$curriculum" 'onboard-state.sh --report' 'curriculum teaches the mandatory onboarding selector'
 assert_contains "$curriculum" 'repo-config.sh --resolve' 'curriculum teaches batch config resolution'
