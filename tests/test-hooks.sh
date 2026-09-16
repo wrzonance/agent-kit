@@ -2156,6 +2156,60 @@ for actual_helper in \
     assert_eq 'deny' "$(decision "$out")" "actual helper retains diagnostic: $actual_helper"
 done
 
+# --- issue #756: only the effective stdin heredoc is shell input ---------
+# Shells collect every heredoc body in opener order, but apply stdin
+# redirections from left to right. A later fd-0 redirect therefore makes an
+# earlier quoted body inert data. Each probe gets a fresh session id created
+# before the pipeline; otherwise zsh can repeat $RANDOM in pipeline forks and
+# hide a false allow behind the helper diagnostic's once-per-session claim.
+superseded_quoted=$'bash <<\'EOF\' </dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$superseded_quoted" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted shell heredoc superseded by a later stdin redirect is inert'
+out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a superseded quoted heredoc does not consume the real helper diagnostic'
+
+first_heredoc_superseded=$'bash <<\'FIRST\' <<\'SECOND\'\nagent-run.sh --cmd test\nFIRST\n:\nSECOND'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$first_heredoc_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'only the last of multiple quoted shell heredocs supplies stdin'
+
+effective_after_redirect=$'bash </dev/null <<\'EOF\'\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$effective_after_redirect" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a quoted shell heredoc after another stdin redirect remains effective'
+
+second_heredoc_effective=$'bash <<\'FIRST\' <<\'SECOND\'\n:\nFIRST\nagent-run.sh --cmd test\nSECOND'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$second_heredoc_effective" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the last of multiple quoted shell heredocs remains executable input'
+
+unquoted_expansion_superseded=$'bash <<EOF </dev/null\n$(agent-run.sh --cmd test)\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$unquoted_expansion_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'an unquoted heredoc expansion still executes when its stdin is superseded'
+
+# shellcheck disable=SC2016  # $(...) is literal fixture syntax for the hook.
+destructive_expansion_superseded=$(printf 'bash <<EOF </dev/null\n$(%s)\nEOF' 'rm -r''f ~')
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$destructive_expansion_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive unquoted expansion stays refused when its stdin is superseded'
+assert_contains "$out" 'recursive force-remove' \
+    'the superseded expansion is still classified by the destructive guard'
+
+nonstdin_redirect=$'bash <<\'EOF\' 3</dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nonstdin_redirect" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a redirect on another file descriptor does not supersede shell stdin'
+
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
 # meeting one had no way past it. They now run and are taught afterwards.

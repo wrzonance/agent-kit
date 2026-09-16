@@ -3,9 +3,9 @@
 
 # The one quote/heredoc lexer. mode=recover (default): a heredoc BODY is dropped
 # only when inert -- a quoted-delimiter body to a data sink stays dropped (issue
-# #351); an UNQUOTED body's substitutions and any body handed to a shell are
-# recovered and recursively re-segmented (issue #364). mode=drop: every body is
-# dropped (guard_gh_command_segments, issue #661).
+# #351); an UNQUOTED body's substitutions and any body that is effective stdin
+# for a shell are recovered and recursively re-segmented (issues #364 and #756).
+# mode=drop: every body is dropped (guard_gh_command_segments, issue #661).
 # mode=helper: recover bodies, but emit NUL records, join line continuations,
 # and discard shell comments so inert text cannot create diagnostic boundaries.
 # mode=writes: recover executable bodies, preserving >| and >& operators.
@@ -13,7 +13,10 @@
 guard_destructive_command_segments() {
     local input=$1 mode=${2:-recover} line segment='' quote='' escaped=0 heredoc='' heredoc_tabstrip=0
     local i length char next third rest k delimiter delimiter_quote terminator_line
-    local owner='' heredoc_no_expand=0 body='' bodyline sub recovered
+    local owner='' heredoc_no_expand=0 heredoc_effective=0 body='' bodyline sub recovered
+    local heredoc_index=0 active_stdin_heredoc=-1 queue_index redirects_stdin
+    local -a heredoc_delimiters=() heredoc_tabstrips=() heredoc_no_expands=()
+    local -a heredoc_owners=() heredoc_effectives=()
     local record_format='%s\n' record_delimiter=$'\n' continued=0 word_start=1
     [[ $mode != helper ]] || { record_format='%s\0'; record_delimiter=''; }
 
@@ -24,24 +27,42 @@ guard_destructive_command_segments() {
                 terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
             fi
             if [[ $terminator_line == "$heredoc" ]]; then
-                heredoc=''
-                heredoc_tabstrip=0
-                if [[ $mode == drop ]] || { ((heredoc_no_expand)) && ! guard_heredoc_consumer_is_shell "$owner"; }; then
+                if [[ $mode == drop ]]; then
                     body=''
-                elif guard_heredoc_consumer_is_shell "$owner"; then
+                elif ((heredoc_effective)) && guard_heredoc_consumer_is_shell "$owner"; then
                     while IFS= read -r -d "$record_delimiter" recovered; do
                         [[ -n $recovered ]] && printf "$record_format" "$recovered"
                     done < <(guard_destructive_command_segments "$body" "$mode")
-                    body=''
-                else
+                elif ((!heredoc_no_expand)); then
                     while IFS= read -r sub; do
                         while IFS= read -r -d "$record_delimiter" recovered; do
                             [[ -n $recovered ]] && printf "$record_format" "$recovered"
                         done < <(guard_destructive_command_segments "$sub" "$mode")
                     done < <(guard_heredoc_substitutions "$body")
-                    body=''
                 fi
+                body=''
+                heredoc_index=$((heredoc_index + 1))
+                if ((heredoc_index < ${#heredoc_delimiters[@]})); then
+                    heredoc=${heredoc_delimiters[heredoc_index]}
+                    heredoc_tabstrip=${heredoc_tabstrips[heredoc_index]}
+                    heredoc_no_expand=${heredoc_no_expands[heredoc_index]}
+                    owner=${heredoc_owners[heredoc_index]}
+                    heredoc_effective=${heredoc_effectives[heredoc_index]}
+                    body=''
+                    continue
+                fi
+                heredoc=''
+                heredoc_tabstrip=0
+                heredoc_no_expand=0
+                heredoc_effective=0
                 owner=''
+                heredoc_delimiters=()
+                heredoc_tabstrips=()
+                heredoc_no_expands=()
+                heredoc_owners=()
+                heredoc_effectives=()
+                heredoc_index=0
+                active_stdin_heredoc=-1
                 # Flush the owner line (through the heredoc opener) as its own
                 # segment now, or the next command merges into it and the
                 # one-segment-per-command contract breaks.
@@ -124,10 +145,25 @@ guard_destructive_command_segments() {
                     printf "$record_format" "$segment"
                     segment=''
                     word_start=1
+                    active_stdin_heredoc=-1
                     ((i++))
                     ;;
                 '<')
                     word_start=0
+                    # Redirections are applied from left to right. Only fd 0
+                    # supersedes a queued stdin heredoc; <(...) is argument
+                    # process substitution, not an input redirection.
+                    redirects_stdin=1
+                    if [[ $next == '(' ]]; then
+                        redirects_stdin=0
+                    elif [[ $segment =~ (^|[[:space:]])([0-9]+)$ ]] &&
+                        [[ ! ${BASH_REMATCH[2]} =~ ^0+$ ]]; then
+                        redirects_stdin=0
+                    fi
+                    if ((redirects_stdin && active_stdin_heredoc >= 0)); then
+                        heredoc_effectives[active_stdin_heredoc]=0
+                        active_stdin_heredoc=-1
+                    fi
                     if [[ $next == '<' && $third != '<' ]]; then
                         owner=$segment
                         segment+='<<'
@@ -157,8 +193,20 @@ guard_destructive_command_segments() {
                             [[ $delimiter_quote == \\ ]] && heredoc_no_expand=1
                             delimiter=${delimiter//\\/}
                         fi
-                        [[ -n $delimiter ]] && heredoc=$delimiter
-                        body=''
+                        if [[ -n $delimiter ]]; then
+                            queue_index=${#heredoc_delimiters[@]}
+                            heredoc_delimiters[queue_index]=$delimiter
+                            heredoc_tabstrips[queue_index]=$heredoc_tabstrip
+                            heredoc_no_expands[queue_index]=$heredoc_no_expand
+                            heredoc_owners[queue_index]=$owner
+                            heredoc_effectives[queue_index]=$redirects_stdin
+                            if ((redirects_stdin)); then
+                                active_stdin_heredoc=$queue_index
+                            fi
+                        fi
+                    elif [[ $next == '<' && $third == '<' ]]; then
+                        segment+='<<<'
+                        i=$((i + 3))
                     else
                         segment+=$char
                         ((i++))
@@ -177,10 +225,20 @@ guard_destructive_command_segments() {
             continued=0
             continue
         fi
+        if ((${#heredoc_delimiters[@]} > 0)) && [[ -z $heredoc ]]; then
+            heredoc_index=0
+            heredoc=${heredoc_delimiters[0]}
+            heredoc_tabstrip=${heredoc_tabstrips[0]}
+            heredoc_no_expand=${heredoc_no_expands[0]}
+            owner=${heredoc_owners[0]}
+            heredoc_effective=${heredoc_effectives[0]}
+            body=''
+        fi
         if [[ -z $heredoc && -z $quote ]]; then
             printf "$record_format" "$segment"
             segment=''
             word_start=1
+            active_stdin_heredoc=-1
         else
             segment+=$'\n'
         fi
