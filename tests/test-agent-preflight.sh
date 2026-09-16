@@ -31,7 +31,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
 current_harness_name=$("$harness_id_script" --name 2> /dev/null)
 clean_harness_env=(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CODEX_HOME \
-    -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE -u OPENCODE -u OPENCODE_PID)
+    -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE -u OPENCODE -u OPENCODE_PID \
+    -u AGENT_YIELD_CAP_MS)
 
 new_repo() {
     local d
@@ -62,6 +63,12 @@ codex_out=$("${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
     "$script" --worktree "$codex_repo" 2> /dev/null)
 assert_contains "$codex_out" 'yield-cap= ms=30000 source=default harness=codex' \
     'an explicit Codex signal advertises the conservative Codex default'
+
+ambient_cap_repo=$(new_repo)
+ambient_cap_out=$(AGENT_YIELD_CAP_MS=99000 "${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
+    "$script" --worktree "$ambient_cap_repo" 2> /dev/null)
+assert_contains "$ambient_cap_out" 'yield-cap= ms=30000 source=default harness=codex' \
+    'default-cap fixtures clear an ambient measured-cap override'
 
 claude_repo=$(new_repo)
 claude_out=$("${clean_harness_env[@]}" CLAUDECODE=1 "$script" --worktree "$claude_repo" 2> /dev/null)

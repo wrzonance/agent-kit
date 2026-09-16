@@ -202,7 +202,7 @@ def parse_session_file(path):
     reference_hits = {}
     trial_meta = None
     pending_input_tokens = None
-    awaiting_usage = None
+    response_calls = []
     polling = {'turns': 0, 'input_tokens': 0, 'inputs_complete': True,
                'intervals': [], 'intervals_complete': True}
     pending_poll_calls = {}
@@ -225,26 +225,26 @@ def parse_session_file(path):
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
-            if awaiting_usage == 'poll':
-                polling['inputs_complete'] = False
-            if is_poll_call(payload):
+            poll_call = is_poll_call(payload)
+            if pending_input_tokens is None:
+                response_calls.append(poll_call)
+            elif poll_call:
+                polling['input_tokens'] += pending_input_tokens
+            if poll_call:
                 polling['turns'] += 1
-                if pending_input_tokens is None:
-                    awaiting_usage = 'poll'
-                else:
-                    polling['input_tokens'] += pending_input_tokens
-                    awaiting_usage = None
                 started = record_timestamp(rec)
                 if started is None:
                     polling['intervals_complete'] = False
                 else:
-                    pending_poll_calls[payload.get('call_id')] = started
-            else:
-                awaiting_usage = 'other'
+                    call_id = payload.get('call_id')
+                    if not isinstance(call_id, str) or not call_id or call_id in pending_poll_calls:
+                        polling['intervals_complete'] = False
+                    else:
+                        pending_poll_calls[call_id] = started
             pending_input_tokens = None
         elif rtype == 'response_item' and payload.get('type') in {'function_call_output', 'custom_tool_call_output'}:
             call_id = payload.get('call_id')
-            if call_id in pending_poll_calls:
+            if isinstance(call_id, str) and call_id in pending_poll_calls:
                 ended = record_timestamp(rec)
                 if ended is None:
                     polling['intervals_complete'] = False
@@ -258,14 +258,12 @@ def parse_session_file(path):
             tokens['cache_write'] += int(info.get('cache_write_tokens', 0) or 0)
             tokens['output'] += int(info.get('output_tokens', 0) or 0)
             usage_input = token_count_input(payload)
-            if awaiting_usage == 'poll':
-                if usage_input is None:
+            if response_calls:
+                if any(response_calls) and (not all(response_calls) or usage_input is None):
                     polling['inputs_complete'] = False
-                else:
+                elif all(response_calls):
                     polling['input_tokens'] += usage_input
-                awaiting_usage = None
-            elif awaiting_usage == 'other':
-                awaiting_usage = None
+                response_calls.clear()
             else:
                 pending_input_tokens = usage_input
         elif rtype == 'bench_trial_meta':
@@ -276,7 +274,7 @@ def parse_session_file(path):
 
     if pending_poll_calls:
         polling['intervals_complete'] = False
-    if awaiting_usage == 'poll':
+    if any(response_calls):
         polling['inputs_complete'] = False
 
     return {
