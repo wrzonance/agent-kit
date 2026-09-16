@@ -15,7 +15,7 @@ template="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list=\'ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)\''
 
 # make_repo DIR CONFIG_LINE... -- a fixture worktree with every artifact pair.
 make_repo() {

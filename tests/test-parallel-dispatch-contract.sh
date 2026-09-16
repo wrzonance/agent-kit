@@ -495,8 +495,10 @@ assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_pla
     'dispatch validates the plan before passing it to the composer'
 assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
     'dispatch consumes the composer plan-record report'
-assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
-    'dispatch records uncovered verification atomically before spawn'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan replacement scratch is allocated beside its arbitrary destination'
+assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$plan_sha"' \
+    'dispatch verifies copied replacement bytes before publication'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
 assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
@@ -514,6 +516,50 @@ assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 
+plan_publish_recipe=$(awk '
+    /^if \[\[ \$plan_update != none \]\]; then/ { capture=1 }
+    capture { print }
+    capture && /^\[\[ \$\(plan_digest "\$dispatch_plan"\)/ { exit }
+' <<< "$dispatch_handoff")
+[[ -n $plan_publish_recipe ]] || _fail 'dispatch plan publication recipe is extractable' 'recipe body is empty'
+same_fs_bin="$tmp/same-fs-bin"
+mkdir -p "$same_fs_bin"
+cat >"$same_fs_bin/mv" <<'SCRIPT'
+#!/usr/bin/env bash
+args=("$@")
+count=${#args[@]}
+source_path=${args[count-2]}
+target_path=${args[count-1]}
+source_dir=$(cd -- "$(dirname -- "$source_path")" && pwd -P) || exit 1
+target_dir=$(cd -- "$(dirname -- "$target_path")" && pwd -P) || exit 1
+[[ $source_dir == "$target_dir" ]] || exit 18
+exec /bin/mv "$@"
+SCRIPT
+chmod +x "$same_fs_bin/mv"
+plan_destination_dir="$tmp/arbitrary absolute destination"
+prompt_dir="$tmp/prompt staging"
+mkdir -p "$plan_destination_dir" "$prompt_dir"
+dispatch_plan="$plan_destination_dir/dispatch-plan.json"
+plan_update="$prompt_dir/issue-57.dispatch-plan-update"
+printf 'old plan\n' >"$dispatch_plan"
+chmod 640 "$dispatch_plan"
+printf 'verified replacement\n' >"$plan_update"
+plan_sha=$(sha256sum -- "$plan_update" | cut -d ' ' -f 1)
+plan_publish_rc=0
+PATH="$same_fs_bin:$PATH" bash -c '
+agentkit=$1; prompt_dir=$2; plan_update=$3; dispatch_plan=$4; plan_sha=$5
+plan_digest() { sha256sum -- "$1" | cut -d " " -f 1; }
+'"$plan_publish_recipe" _ "$root/agentkit/skills" "$prompt_dir" "$plan_update" "$dispatch_plan" "$plan_sha" || plan_publish_rc=$?
+assert_eq 0 "$plan_publish_rc" \
+    'dispatch plan recipe uses a same-directory final rename for an arbitrary absolute destination'
+assert_eq 'verified replacement' "$(<"$dispatch_plan")" \
+    'dispatch plan recipe publishes the verified staged bytes'
+assert_eq 640 "$(stat -c %a -- "$dispatch_plan")" \
+    'dispatch plan recipe preserves the destination mode'
+assert_eq no "$([[ -e $plan_update ]] && printf yes || printf no)" \
+    'dispatch plan recipe removes the original staged update'
+assert_eq 0 "$(find "$plan_destination_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
+    'dispatch plan recipe leaves no destination-adjacent scratch file'
 persist_report_function=$(awk '
     /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
     capture { print }
