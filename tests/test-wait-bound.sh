@@ -83,8 +83,10 @@ assert_contains "$compose_source" "printf 'wait-bound= issue=%s seconds=%s class
     'the composer emits a wait-bound line beside each worker'\''s own identifier'
 assert_contains "$compose_source" "printf '%s\\n' \"\$yield_cap_line\"" \
     'the composer emits the contract yield-cap beside each worker wait bound'
-assert_contains "$compose_source" 'verify= cmd="agent-run.sh --cmd test --summary"' \
-    'the composer emits the verification runbook instead of relying on recalled prose'
+assert_contains "$compose_source" "verify_command='agent-run.sh --cmd test --summary'" \
+    'the composer defaults the verification runbook to the declared test command'
+assert_contains "$compose_source" 'verify= cmd="%s" yield_ms=%s' \
+    'the composer emits the scoped verification runbook instead of relying on recalled prose'
 
 # The dispatch step in SKILL.md captures that line from the composer's stdout
 # and reprints it beside the same issue's prompt=/issue= digest line, so the

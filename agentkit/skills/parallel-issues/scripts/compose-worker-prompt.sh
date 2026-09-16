@@ -267,8 +267,8 @@ yield_cap_ms=${yield_cap_line#yield-cap= ms=}
 yield_cap_ms=${yield_cap_ms%% *}
 
 emit_verify_runbook() {
-    printf 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
-        "$yield_cap_ms" "$yield_cap_ms"
+    printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
+        "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
 }
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -481,6 +481,19 @@ if ((focus_declared)) && ((test_declared)); then
         fi
     done
     ((focus_test_in_scope)) || focus_test_scoped_out=1
+fi
+
+verify_command='agent-run.sh --cmd test --summary'
+runbook_test_runnable=0
+if ((test_declared)); then
+    for scoped_key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        [[ $scoped_key != AGENT_CMD_TEST ]] || runbook_test_runnable=1
+    done
+elif query_test_resolution; then
+    runbook_test_runnable=1
+fi
+if ((runbook_test_runnable == 0)); then
+    verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
 fi
 
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'

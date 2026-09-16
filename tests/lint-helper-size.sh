@@ -87,7 +87,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #776: terminal verification summaries and the composed runbook; exact total.
-readonly MAX_TREE_TOKENS=441282
+readonly MAX_TREE_TOKENS=441391
 
 violations=0
 checked=0
