@@ -27,10 +27,10 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # Exact measured body sizes; ratchet history lives in `git blame`, not here.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    # #727: open obligations and terminal evidence in the canonical recipe.
-    [review-remote-pr]="474:8289:450"
-    # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="960:18351:900"
+    # #785: durable bare-review defaulting contract.
+    [review-remote-pr]="473:8386:450"
+    # #785: final sweep rehydrates PRs from run-state.
+    [parallel-issues]="960:18368:900"
 )
 
 readonly MAX_BODY_LINES=500

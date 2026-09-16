@@ -156,9 +156,21 @@ printf '%s\n' \
     'literal `sha` and $(printf should-not-run)' \
     '🤖 Co-authored by Codex gpt-5.6-luna.' >"$body"
 
+run_state_repo="$tmp/run-state-repo"
+mkdir -p "$run_state_repo"
+run_id='test-wave'
+
 run_body() {
+    local resource=${1-} action=${2-}
+    shift 2
+    local -a helper_args=("$resource" "$action")
+    if [[ $resource == pr && $action == create ]]; then
+        helper_args+=(--run-id "$run_id" --repo-root "$run_state_repo")
+    fi
+    helper_args+=("$@")
     GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
         GH_STORED_BODY="$tmp/stored.md" \
+        GH_BODY_RUN_STATE_SH="${GH_BODY_RUN_STATE_SH:-$root/agentkit/skills/.shared/scripts/run-state.sh}" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
         GH_MUTATION_FAILURE="${GH_MUTATION_FAILURE:-0}" \
@@ -169,7 +181,7 @@ run_body() {
         GH_BODY_CLOSING_RETRY_DELAY="${GH_BODY_CLOSING_RETRY_DELAY:-0}" \
         GH_PR_BASE="${GH_PR_BASE:-main}" \
         GH_PR_DEFAULT_BRANCH="${GH_PR_DEFAULT_BRANCH:-main}" \
-        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
+        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "${helper_args[@]}"
 }
 
 output=$(run_body pr create --repo owner/repo --body-file "$body" --draft --title 'A `title`')
@@ -182,6 +194,10 @@ else
 fi
 assert_contains "$(cat "$tmp/gh.log")" '--body-file' 'PR create uses gh body-file transport'
 assert_contains "$(cat "$tmp/gh.log")" '--draft' 'PR create forwards non-body options'
+assert_not_contains "$(cat "$tmp/gh.log")" '--run-id' 'PR create consumes --run-id locally'
+assert_not_contains "$(cat "$tmp/gh.log")" '--repo-root' 'PR create consumes --repo-root locally'
+assert_eq '[41]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'PR create records its assigned number as a JSON integer'
 
 # Body-policy options after the POSIX end-of-options marker must not reach gh:
 # forwarding them would let a caller replace the validated file-backed body
@@ -305,6 +321,8 @@ assert_contains "$output" 'https://ghe.example/ent-owner/ent-repo/pull/8' \
     'Enterprise create returns the created URL'
 assert_contains "$(cat "$tmp/api.log")" 'host=ghe.example' \
     'Enterprise create verifies against the host in the returned URL'
+assert_eq '[41,8]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'a later create appends once while repeated PR numbers stay deduplicated'
 
 # A numeric target carries no host, so ambient resolution must be preserved --
 # that is the same host gh itself used for the mutation.
@@ -659,6 +677,30 @@ assert_contains "$(jq -r '.closing_issue.reason' <<<"$json_failed_output")" 'clo
     '--json failed closing_issue carries the machine evidence in its reason'
 assert_contains "$(cat "$json_failed_err")" 'closingIssuesReferences' \
     '--json still logs the failure diagnosis to stderr'
+assert_eq '[41,8]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'closing-reference failure leaves the created PR durably recorded'
+
+# A run-state failure happens after GitHub created the PR. Surface the remote
+# identity and one exact repair command so callers never repeat pr create.
+cat >"$tmp/fail-run-state" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$tmp/fail-run-state"
+export GH_BODY_RUN_STATE_SH="$tmp/fail-run-state"
+set +e
+record_failure_err="$tmp/record-failure.err"
+record_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" 2>"$record_failure_err")
+record_failure_rc=$?
+set -e
+unset GH_BODY_RUN_STATE_SH
+assert_eq 1 "$record_failure_rc" 'run-state recording failure exits nonzero after creation'
+assert_contains "$record_failure_output$(cat "$record_failure_err")" 'https://github.com/owner/repo/pull/41' \
+    'run-state recording failure preserves the created PR URL'
+assert_contains "$(cat "$record_failure_err")" 'append-unique --run-id test-wave' \
+    'run-state recording failure prints the exact idempotent repair action'
+assert_contains "$(cat "$record_failure_err")" '--path opened_prs --json 41' \
+    'the repair action records the numeric created PR'
 
 # --- record success from --json output with no root-authored parsing -------
 apply_ledger="$root/agentkit/skills/.shared/scripts/apply-ledger.sh"

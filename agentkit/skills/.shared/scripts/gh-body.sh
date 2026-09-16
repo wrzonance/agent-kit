@@ -19,6 +19,7 @@ readonly CLOSING_REFERENCE_ATTEMPTS=3
 readonly CLOSING_REFERENCE_RETRY_DELAY=${GH_BODY_CLOSING_RETRY_DELAY:-5}
 
 GH_BIN=${GH_BODY_GH:-gh}
+RUN_STATE_SH=${GH_BODY_RUN_STATE_SH:-$STACKED_CI_DIR/run-state.sh}
 RESOURCE=''
 ACTION=''
 BODY_FILE=''
@@ -39,10 +40,15 @@ CI_SNAPSHOT='null'
 JSON_MODE=0
 TICK_TEXT=''
 TICK_NOTE=''
+RUN_STATE_ID=''
+RUN_STATE_REPO_ROOT=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options...]
+
+PR creation also requires --run-id ID --repo-root DIR. These local options
+durably record the assigned PR number and are never forwarded to gh.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
@@ -117,7 +123,8 @@ parse_args() {
                     case $1 in
                         --body|-b|--body=*|-b?*|--body-file|--body-file=*|\
                             --expect-closing-issue|--expect-closing-issue=*|\
-                            --tick|--tick=*|--note|--note=*)
+                            --tick|--tick=*|--note|--note=*|\
+                            --run-id|--run-id=*|--repo-root|--repo-root=*)
                             die 'body options must precede --; use --body-file FILE'
                             ;;
                         *)
@@ -184,6 +191,24 @@ parse_args() {
                 JSON_MODE=1
                 shift
                 ;;
+            --run-id)
+                require_value "$1" "${2-}"
+                RUN_STATE_ID=$2
+                shift 2
+                ;;
+            --run-id=*)
+                RUN_STATE_ID=${1#*=}
+                shift
+                ;;
+            --repo-root)
+                require_value "$1" "${2-}"
+                RUN_STATE_REPO_ROOT=$2
+                shift 2
+                ;;
+            --repo-root=*)
+                RUN_STATE_REPO_ROOT=${1#*=}
+                shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -215,6 +240,15 @@ validate_body() {
         die "--repo must look like OWNER/REPO, got: $REPO"
     [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE =~ $UINT_RE ]] ||
         die '--expect-closing-issue must be a positive integer'
+    if [[ -n $RUN_STATE_ID || -n $RUN_STATE_REPO_ROOT ]]; then
+        [[ $RESOURCE == pr && $ACTION == create ]] ||
+            die '--run-id/--repo-root apply to pr create only'
+    fi
+    if [[ $RESOURCE == pr && $ACTION == create ]]; then
+        [[ -n $RUN_STATE_ID && -n $RUN_STATE_REPO_ROOT ]] ||
+            die 'pr create requires --run-id ID and --repo-root DIR'
+        [[ -x $RUN_STATE_SH ]] || die "run-state helper is unavailable: $RUN_STATE_SH"
+    fi
     [[ $CLOSING_REFERENCE_RETRY_DELAY =~ ^[0-9]+$ ]] ||
         die 'GH_BODY_CLOSING_RETRY_DELAY must be a non-negative integer'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
@@ -338,10 +372,25 @@ endpoint_from_url() {
                 VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[5]}"
             fi
             MUTATION_URL=$line
+            TARGET_NUMBER=${BASH_REMATCH[5]}
             return 0
         fi
     done <"$WORK_DIR/mutation.out"
     die "gh $RESOURCE create did not return a usable GitHub URL; body was not verified"
+}
+
+record_created_pr() {
+    [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    local repair=''
+    if "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"; then
+        return 0
+    fi
+    printf 'created PR #%s: %s\n' "$TARGET_NUMBER" "$MUTATION_URL" >&2
+    printf -v repair '%q ' "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"
+    repair=${repair% }
+    die "PR was created but run-state recording failed; record it once with: $repair"
 }
 
 endpoint_from_target() {
@@ -563,6 +612,7 @@ main() {
 
     if [[ $ACTION == create ]]; then
         endpoint_from_url
+        record_created_pr
     else
         endpoint_from_target
     fi

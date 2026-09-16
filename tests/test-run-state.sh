@@ -32,6 +32,14 @@ assert_eq '' "$absent_out" 'and prints nothing'
 assert_rc 0 'append starts an array' -- "$script" append --file "$state" --path parked --value 253
 assert_rc 0 'append extends it' -- "$script" append --file "$state" --path parked --value 254
 assert_eq '["253","254"]' "$("$script" get --file "$state" --path parked)" 'append keeps insertion order'
+assert_rc 0 'append-unique starts a numeric array' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+assert_rc 0 'append-unique ignores an equal value' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+assert_rc 0 'append-unique preserves first-seen order' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 43
+assert_eq '[41,43]' "$("$script" get --file "$state" --path opened_prs)" \
+    'append-unique stores numeric values once in first-seen order'
 append_scalar_rc=0
 "$script" append --file "$state" --path redrive.52 --value x >/dev/null 2>&1 || append_scalar_rc=$?
 assert_eq '1' "$append_scalar_rc" 'append onto a non-array refuses'
@@ -102,6 +110,45 @@ assert_rc 0 '--run-id resolves the file through run-dir.sh' -- \
 assert_eq '1' "$(jq -r '.redrive["7"]' "$repo/.agent/evidence/run-wave4-run/run-state.json")" \
     'the run-scoped state lives at <run dir>/run-state.json'
 
+assert_rc 0 'an older run can record opened PRs' -- \
+    "$script" set --run-id older --repo-root "$repo" --path opened_prs --json '[7]'
+touch -t 203009160101 "$repo/.agent/evidence/run-older/run-state.json"
+assert_rc 0 'a newer run can record opened PRs' -- \
+    "$script" set --run-id newer --repo-root "$repo" --path opened_prs --json '[11,13]'
+touch -t 203009160102 "$repo/.agent/evidence/run-newer/run-state.json"
+latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" 'latest identifies the newest run'
+assert_eq '[11,13]' "$(jq -c '.value' <<<"$latest_json")" 'latest returns the selected path as JSON'
+
+no_runs_repo="$tmp/no-runs"
+mkdir -p "$no_runs_repo"
+latest_absent_rc=0
+latest_absent_out=$("$script" latest --repo-root "$no_runs_repo" --path opened_prs 2>/dev/null) || latest_absent_rc=$?
+assert_eq 11 "$latest_absent_rc" 'latest exits 11 when no run evidence exists'
+assert_eq '' "$latest_absent_out" 'latest prints nothing when no run evidence exists'
+assert_rc 0 'a latest run may omit opened_prs' -- \
+    "$script" set --run-id empty --repo-root "$no_runs_repo" --path other --json '[]'
+latest_absent_rc=0
+latest_absent_out=$("$script" latest --repo-root "$no_runs_repo" --path opened_prs 2>/dev/null) || latest_absent_rc=$?
+assert_eq 11 "$latest_absent_rc" 'latest exits 11 when the newest run omits the requested path'
+assert_eq '' "$latest_absent_out" 'latest missing-path output stays empty'
+
+unsafe_repo="$tmp/unsafe-latest"
+mkdir -p "$unsafe_repo/.agent/evidence"
+chmod 700 "$unsafe_repo/.agent/evidence"
+ln -s "$repo/.agent/evidence/run-newer" "$unsafe_repo/.agent/evidence/run-linked"
+assert_rc 1 'latest refuses a symlinked candidate run directory' -- \
+    "$script" latest --repo-root "$unsafe_repo" --path opened_prs
+
+malformed_repo="$tmp/malformed-latest"
+mkdir -p "$malformed_repo"
+assert_rc 0 'latest malformed fixture begins as trusted state' -- \
+    "$script" set --run-id bad --repo-root "$malformed_repo" --path opened_prs --json '[19]'
+printf 'not json\n' >"$malformed_repo/.agent/evidence/run-bad/run-state.json"
+chmod 600 "$malformed_repo/.agent/evidence/run-bad/run-state.json"
+assert_rc 1 'latest refuses malformed candidate evidence' -- \
+    "$script" latest --repo-root "$malformed_repo" --path opened_prs
+
 # Independent successful workers must not overwrite each other's bookkeeping.
 pids=()
 for n in {1..12}; do
@@ -110,6 +157,14 @@ for n in {1..12}; do
 done
 for pid in "${pids[@]}"; do wait "$pid"; done
 assert_eq 12 "$(jq '.workers | length' "$state")" 'concurrent updates retain every successful worker ID'
+pids=()
+for n in {101..112}; do
+    "$script" append-unique --file "$state" --path concurrent_prs --json "$n" &
+    pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+assert_eq 12 "$(jq '.concurrent_prs | unique | length' "$state")" \
+    'concurrent append-unique mutations retain every distinct PR number'
 assert_rc 11 'get keeps absent semantics when the parent directory is missing' -- \
     "$script" get --file "$tmp/missing/run-state.json" --path absent
 finish

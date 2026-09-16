@@ -87,12 +87,11 @@ H; H labels are human-only. Every automated reply passes the reply-body integrit
 (`$agentkit/review-remote-pr/scripts/gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
 
-Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the
-provider table, classifier, human gate, and settlement recipes. Reuse that loaded content in Step 5; do not re-read it.
+Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the provider table, classifier, human gate, and settlement recipes. Reuse that loaded content in Step 5; do not re-read it.
 
 ## Inputs
 
-- **PR number** (required) — passed as arg or ask once if missing
+- **PR number(s)** — use explicit args; otherwise run `"$agentkit/.shared/scripts/run-state.sh" latest --repo-root "$contract_root" --path opened_prs`, require `.value | type == "array"`, `all(.[]; type == "number" and . > 0 and floor == .)`, and `unique | length` equal to the original length, then for a nonempty value print `review: defaulting to PRs <list> from run <id>` and run the complete one-PR procedure separately for each value (the PR-keyed run directory keeps identities distinct). For exit `11` or a present empty array, ask once which PR to review. Evidence errors from `latest` are blocking.
 - **Repo** — the contract's `repo=` line (`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get repo.slug`; `none` means no GitHub origin — re-run the Step 0 preflight); override with `owner/repo` arg
 - **Worktree** — reuse the PR branch worktree if present, else the helper derives/prints `<worktree-root>/pr-<PR>` as `$PR_WORKTREE` (an output, not an input)
 
