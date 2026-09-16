@@ -14,17 +14,16 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-Before other output, execute the exact session receipt command supplied by the
-UserPromptSubmit boundary (`$agentkit/.shared/scripts/workflow-activation.sh ack`). Its first stdout line is
-`agentkit: skill=parallel-issues version=<v> hash=<first12>`. This acknowledges
-explicit delivery, not native registry loading. Require `pre-tool-use` through
-`workflow-activation.sh check --require pre-tool-use` with the boundary's exact
-`--repo-root`, `--session`, and `--skill` arguments before dispatch. Pass the same
-session to preflight with `--activation-session ID --workflow parallel-issues`.
-If that boundary/challenge is absent, report `agentkit: activation-unavailable`
-once and stop; do not invent an acknowledgement or substitute another workflow.
-Resume revalidates durable receipt and installed content; rereading files cannot
-retroactively prove earlier activation.
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
+stdout begins `agentkit: skill=parallel-issues version=<v> hash=<first12>` (receipt, not registry proof).
+Before dispatch, require `workflow-activation.sh check --require pre-tool-use` with
+the boundary's `--repo-root`, `--session`, `--skill`; pass that session to preflight
+with `--activation-session ID --workflow parallel-issues`.
+Missing challenge: report `agentkit: activation-unavailable`; stop without substituting.
+For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
+Fresh acknowledgement preserves saved work. Client restart/conversation resume retains
+the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Installed files alone never prove session receipt.
 
 Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 

@@ -120,12 +120,26 @@ Acceptance requires all three independent observations:
 
 [Codex hooks](https://learn.chatgpt.com/docs/hooks) and
 [Claude Code hooks](https://code.claude.com/docs/en/hooks) document UserPromptSubmit
-`additionalContext` and blocking output. The boundary handles a **leading explicit**
-`$agentkit:NAME` or `/agentkit:NAME`; prose mentioning a skill is not an invocation.
+`additionalContext` and blocking output. The boundary handles leading explicit
+`$agentkit:NAME`, `/agentkit:NAME`, bare workflow selectors, and `/review-pr`.
+Advertised direct natural-language triggers and “resume saved parallel-issues run”
+deliver through the same boundary. Quoted reports, negation, and incidental mentions
+do not activate; ambiguous multiple-workflow requests preserve the existing receipt.
 The supported path delivers the selected installed workflow explicitly even when
 the native skill registry lacks it. Missing workflow files fail `workflow-unavailable`;
-bare standalone aliases fail `standalone-registration`; changed installed content
-fails `activation-mismatch`; conflicting Skill calls fail `competing-workflow`.
+changed installed content fails `activation-mismatch` during checks; conflicting
+Skill calls fail `competing-workflow`. Re-invoking after an upgrade delivers current
+content with a fresh pending challenge, without changing saved run state. Restarting
+the client and resuming the same conversation retains the stale receipt; a new session
+needs independent delivery/acknowledgement. SessionStart diagnoses both active and
+pending stale content without replaying an obsolete acknowledgement command.
+
+During activation failure, diagnostic commands can inspect up to four regular files
+inside the current repository or installed skills tree: `cat /absolute/file` or
+`rg --no-config -n -- pattern /absolute/file`. Filename discovery accepts
+`rg --no-config --files /absolute/directory` inside those roots. Recursive content
+search, configuration/preprocessor flags, symlink escapes, shell expressions, mutations,
+and workflow dispatch remain gated. Mismatch diagnostics include these exact forms.
 
 A plugin cannot detect its own absence. With no engaged prompt hook, this interception
 is unavailable; installed files or plugin listings do not establish it. Start a fresh
@@ -197,3 +211,35 @@ The installed digest describes the tree serving the boundary/helper. No independ
 latest-install inventory is queried: an unchanged old cached hook cannot discover
 a newer installation in a separate directory by itself. That case also remains
 outside demonstrated acceptance; do not infer current installation from an old receipt.
+
+### Codex upgrade/resume acceptance (2026-09-16 UTC, #757)
+
+Root-operated Codex CLI 0.154.0 probes used session-only inline hook configuration,
+isolated copies of the plugin, and synthetic SKILL text. They left the installed
+plugin and user configuration unchanged. The supported configuration interface is
+documented in [Codex hooks](https://learn.chatgpt.com/docs/hooks).
+
+1. Initial explicit invocation produced a real UserPromptSubmit challenge and native
+   Bash acknowledgement; the receipt became active with PreToolUse observed.
+2. Changing the fixture version from 0.9.1 to 0.9.2-probe and resuming the same UUID
+   reproduced the baseline failure: SessionStart reported a mismatch and
+   UserPromptSubmit blocked before model execution.
+3. The candidate, served from a distinct `plugin-upgraded` directory, recovered that
+   same UUID through fresh delivery and native acknowledgement. The nonce rotated,
+   the receipt became active, and the saved-run sentinel remained unchanged.
+4. A fresh session using the reported natural-language resume request also delivered
+   a challenge and acknowledged it through native Bash with PreToolUse observed.
+
+To repeat, prepare an isolated synthetic fixture, attach its UserPromptSubmit,
+SessionStart and PreToolUse handlers using session-only `-c` hook configuration,
+capture `codex exec --json` events, and use `codex exec resume` with the captured UUID.
+Change only fixture content/version/path between the recorded stages. Use bounded
+processes and preserve hook payloads, actual tool commands, before/after receipts,
+candidate hashes, and saved-state checks in the evidence directory.
+
+Root retained `events.ndjson`, `hooks.ndjson`, and derived `acceptance.json` under
+`.agent/runs/parallel-issues-8d1a753bf31f8197d42301e25e536657/live-baseline`
+(including `upgrade-before-fix` and `upgrade-after-fix`) and `live-natural`.
+These observations establish the synthetic Codex hook boundary and recovery sequence.
+They do not establish marketplace installation, actual HonkHonk state migration,
+or real issue dispatch. Each live workflow still needs its own receipt and guard checks.

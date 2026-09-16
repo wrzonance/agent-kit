@@ -65,6 +65,11 @@ class Activation(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {})
 
+    def test_failed_helper_keeps_ordinary_run_request_available(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        self.payload["prompt"] = "run the unit tests"
+        self.assertEqual(self.prompt(), {})
+
     def test_failed_activation_helper_blocks_workflow_invocation(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
         self.payload["prompt"] = "  $agentkit:parallel-issues 722"
@@ -133,7 +138,7 @@ class Activation(unittest.TestCase):
 
     def test_missing_and_standalone_registration(self):
         self.payload["prompt"] = "$parallel-issues 722"
-        self.assertIn("standalone-registration", self.prompt()["reason"])
+        self.assertIn("invocation boundary", self.prompt()["hookSpecificOutput"]["additionalContext"])
         self.payload["prompt"] = "$agentkit:missing 722"
         self.assertIn("workflow-unavailable", self.prompt()["reason"])
         self.payload["prompt"] = "$agentkit:parallel-issues 722"
@@ -233,6 +238,160 @@ class Activation(unittest.TestCase):
                        tool_input={"command": "cat " + str(malicious)})
         output = json.loads(self.invoke("hook", payload=payload).stdout)
         self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def public_event(self, event, **fields):
+        script = {"SessionStart": "session-start.sh", "PreToolUse": "pre-tool-use.sh"}[event]
+        result = subprocess.run([str(self.plugin / "hooks" / script)],
+                                input=json.dumps(dict(self.payload, hook_event_name=event, **fields)),
+                                text=True, capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_upgrade_resume_redelivers_and_preserves_saved_state(self):
+        self.prompt()
+        self.acknowledge()
+        old = self.record()
+        saved = self.repo / ".agent/saved-run.json"
+        saved.write_text('{"prs":[271,272],"reviews":"preserve"}')
+        body = self.plugin / "skills/parallel-issues/SKILL.md"
+        body.write_text(body.read_text() + "\nUpdated workflow content.\n")
+        output = self.public_event("SessionStart", source="resume")
+        self.assertIn("resume", json.dumps(output))
+        self.assertIn("$agentkit:parallel-issues", json.dumps(output))
+        self.assertNotEqual(self.check().returncode, 0)
+        self.payload["prompt"] = "$agentkit:parallel-issues --yolo --fast-mode"
+        self.assertIn("Updated workflow content", json.dumps(self.prompt()))
+        self.assertEqual(self.record()["status"], "pending")
+        self.assertNotEqual(old["nonce"], self.record()["nonce"])
+        denied = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "run"})
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        stale = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
+                            "--skill", "parallel-issues", "--nonce", old["nonce"])
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertEqual(self.acknowledge().returncode, 0)
+        self.assertEqual(saved.read_text(), '{"prs":[271,272],"reviews":"preserve"}')
+
+    def test_advertised_invocations_deliver_fresh_challenges(self):
+        cases = {
+            "Resume HonkHonk’s saved parallel-issues run using Agent Kit 0.9.1 with --yolo": "parallel-issues",
+            "run these issues in parallel": "parallel-issues",
+            "parallel workstreams": "parallel-issues",
+            "work on multiple issues at once": "parallel-issues",
+            "ultracode these issues": "parallel-issues",
+            "skip brainstorming and just dispatch": "parallel-issues",
+            "groom the board and go": "parallel-issues",
+            "take these PRs to green": "pr-to-green",
+            "finish the draft PR queue": "pr-to-green",
+            "review remote PR 42": "review-remote-pr",
+            "babysit PR 42": "review-remote-pr",
+            "/review-pr 42": "review-remote-pr",
+            "onboard this repo": "onboard-repo",
+            "set up agentkit here": "onboard-repo",
+            "yes, onboard it": "onboard-repo",
+            "why are the guards inert": "onboard-repo",
+            "why are the guards inert?": "onboard-repo",
+            "declare the verify commands": "onboard-repo",
+        }
+        for prompt, workflow in cases.items():
+            with self.subTest(prompt=prompt):
+                self.payload.update(prompt=prompt, session_id="natural-" + workflow)
+                output = self.prompt()
+                self.assertIn("invocation boundary", json.dumps(output))
+                self.assertIn("--skill " + workflow, json.dumps(output))
+
+    def test_reports_quotes_and_negation_do_not_activate(self):
+        for prompt in ('"run these issues in parallel"', 'Do not resume parallel-issues',
+                       'Explain how to resume parallel-issues',
+                       'Reported: Resume parallel-issues', '```\n/parallel-issues\n```',
+                       'Resume the report about "parallel-issues"',
+                       'Resume the report about parallel-issues',
+                       'Resume parallel-issues? No, do not run it.'):
+            with self.subTest(prompt=prompt):
+                self.payload["prompt"] = prompt
+                self.assertEqual(self.prompt(), {})
+
+    def test_ambiguous_workflow_request_preserves_existing_receipt(self):
+        self.prompt()
+        before = self.record()
+        self.payload["prompt"] = "resume parallel-issues and pr-to-green"
+        self.assertIn("competing-workflow", json.dumps(self.prompt()))
+        self.assertEqual(self.record(), before)
+
+    def test_pending_upgrade_resume_does_not_offer_stale_ack(self):
+        self.prompt()
+        old = self.record()
+        (self.plugin / "skills/parallel-issues/SKILL.md").write_text("changed pending content")
+        output = self.public_event("SessionStart", source="resume")
+        self.assertIn("$agentkit:parallel-issues", json.dumps(output))
+        self.assertNotIn(old["nonce"], json.dumps(output))
+        self.assertEqual(self.record(), old)
+
+    def test_stale_diagnostic_reads_and_searches_are_bounded(self):
+        self.prompt()
+        self.acknowledge()
+        (self.plugin / "skills/parallel-issues/SKILL.md").write_text("changed")
+        source = self.repo / "activation-source.py"
+        source.write_text("activation diagnosis")
+        saved = self.repo / ".agent/saved.json"
+        saved.write_text("saved review evidence")
+        escaped = self.repo / "escape"
+        escaped.symlink_to(self.root)
+        for command in ("cat " + str(source), "cat " + str(saved),
+                        "rg --no-config --files " + str(self.repo),
+                        "rg --no-config -n -- activation " + str(source)):
+            with self.subTest(command=command):
+                output = self.public_event("PreToolUse", tool_name="Bash", tool_input={"command": command})
+                self.assertNotEqual(output.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+        for command in ("rg --pre touch activation " + str(source),
+                        "rg --no-config --files " + str(self.root),
+                        "rg --no-config --files " + str(escaped),
+                        "rg --no-config --files --follow " + str(self.repo),
+                        "rg -n -- activation " + str(source),
+                        "cat " + str(source) + " > " + str(saved),
+                        "cat " + str(escaped / "plugin/.claude-plugin/plugin.json"),
+                        "rg --no-config -n -- activation " + str(self.repo),
+                        "cat " + str(source) + " #\ntouch " + str(saved)):
+            with self.subTest(command=command):
+                output = self.public_event("PreToolUse", tool_name="Bash", tool_input={"command": command})
+                self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_natural_invocation_fails_closed_when_helper_missing(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        self.payload["prompt"] = "resume saved parallel-issues run"
+        self.assertEqual(self.prompt()["decision"], "block")
+
+    def test_relocation_and_version_upgrade_require_new_receipt(self):
+        self.prompt()
+        self.acknowledge()
+        old = self.record()
+        relocated = self.root / "plugin-upgraded"
+        shutil.copytree(self.plugin, relocated)
+        self.plugin = relocated
+        self.helper = relocated / "skills/.shared/scripts/workflow-activation.sh"
+        self.hook = relocated / "hooks/user-prompt-submit.sh"
+        self.assertNotEqual(self.check().returncode, 0)
+        self.assertIn("invocation boundary", json.dumps(self.prompt()))
+        self.assertNotEqual(old["nonce"], self.record()["nonce"])
+        self.assertEqual(self.acknowledge().returncode, 0)
+        manifest = relocated / ".claude-plugin/plugin.json"
+        manifest.write_text(json.dumps({"version": "0.9.2"}))
+        self.assertIn("invocation boundary", json.dumps(self.prompt()))
+        self.assertEqual(self.record()["status"], "pending")
+        self.assertEqual(self.acknowledge().returncode, 0)
+
+    def test_competing_invocation_rotates_pending_and_session_isolation(self):
+        self.prompt()
+        self.acknowledge()
+        original = self.record()
+        self.payload["session_id"] = "new-session"
+        self.assertIn("invocation boundary", json.dumps(self.prompt()))
+        self.assertEqual(self.check().returncode, 0)
+        self.payload.update(session_id="test-session", prompt="/pr-to-green")
+        self.assertIn("invocation boundary", json.dumps(self.prompt()))
+        self.assertNotEqual(self.check().returncode, 0)
+        result = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
+                             "--skill", "parallel-issues", "--nonce", original["nonce"])
+        self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,55 @@ class Unavailable(Exception):
     pass
 
 
+class ContentMismatch(Unavailable):
+    pass
+
+
+def select_workflow(prompt):
+    """Recognize direct requests, not workflow names embedded in reports."""
+    match = re.match(r"^\s*[$/]((?:agentkit:)?[a-z][a-z0-9-]*)(?=\s|$)", prompt)
+    if match:
+        token = match[1].removeprefix("agentkit:")
+        token = "review-remote-pr" if token == "review-pr" else token
+        return token if token in WORKFLOWS or match[1].startswith("agentkit:") else None
+    text = prompt.strip().lower()
+    if text == "why are the guards inert?":
+        text = text[:-1]
+    # Deliberately conservative: ambiguous prose can use the documented selector.
+    if re.search(r'["`\n\r?]|\b(?:not|never|don\x27t|do not)\b', text):
+        return None
+    text = re.sub(r"^please\s+", "", text)
+    phrases = {
+        "parallel-issues": ("run these issues in parallel", "parallel workstreams",
+                            "work on multiple issues at once", "ultracode these issues",
+                            "skip brainstorming and just dispatch", "groom the board and go"),
+        "pr-to-green": ("take these prs to green", "finish the draft pr queue"),
+        "review-remote-pr": ("review remote pr", "babysit pr"),
+        "onboard-repo": ("onboard this repo", "set up agentkit here", "yes, onboard it",
+                         "why are the guards inert", "declare the verify commands"),
+    }
+    for workflow, triggers in phrases.items():
+        if any(re.match(re.escape(phrase) + r"(?=\s|[.!]|$)", text) for phrase in triggers):
+            return workflow
+    match = re.match(r"^(?:resume|continue|run|use)\s+(?:[\w-]+[’']s\s+)?"
+                     r"(?:(?:the|my|our|saved|existing|agentkit)\s+){0,3}"
+                     r"(?:agentkit:)?(parallel-issues|pr-to-green|review-remote-pr|onboard-repo)"
+                     r"(?=\s|$)", text)
+    return match[1] if match else None
+
+
+def mismatch(record, reason):
+    workflow = record.get("workflow")
+    selector = "$agentkit:" + (workflow if workflow in WORKFLOWS else "parallel-issues")
+    raise ContentMismatch("agentkit: activation-mismatch: " + reason
+                          + "; submit " + selector + " in this conversation, then acknowledge the fresh challenge. "
+                          + "Restarting the client and resuming this conversation retains its receipt; "
+                          + "a new session needs its own invocation and acknowledgement. Saved work is preserved. "
+                          + "Diagnosis: cat /absolute/file; rg --no-config -n -- pattern /absolute/file "
+                          + "(up to four regular files); rg --no-config --files /absolute/directory. "
+                          + "Paths must stay in this repository or installed skills tree; no shell expressions.")
+
+
 def fail(reason):
     raise Unavailable("agentkit: " + reason)
 
@@ -89,20 +138,23 @@ def identity(args):
     return version
 
 
-def validate(args, record, skill=None, require=()):
+def validate_content(args, record):
     version = identity(args)
     if record.get("installedDigest") != args.digest or record.get("version") != version:
-        fail(f"activation-mismatch: installed {version} ({args.digest[:12]}) but this session received "
-             f"{record.get('version', 'unknown')} ({str(record.get('installedDigest', 'unknown'))[:12]})"
-             f" — restart the session to use {version}")
+        mismatch(record, f"installed {version} ({args.digest[:12]}) but this session received "
+                 f"{record.get('version', 'unknown')} ({str(record.get('installedDigest', 'unknown'))[:12]})")
     if record.get("skillsRoot") != args.skills:
-        fail("activation-mismatch: installed skill path changed; restart the session")
+        mismatch(record, "installed skill path changed")
     workflow = record.get("workflow")
     if workflow not in WORKFLOWS:
         fail("activation-unavailable: unknown workflow identity")
     body = (Path(args.skills) / workflow / "SKILL.md").read_bytes()
     if record.get("deliveredDigest") != hashlib.sha256(body).hexdigest():
-        fail("activation-mismatch: delivered workflow bytes differ from installed workflow; restart the session")
+        mismatch(record, "delivered workflow bytes differ from installed workflow")
+
+
+def validate(args, record, skill=None, require=()):
+    validate_content(args, record)
     if skill and record.get("workflow") != skill:
         fail("competing-workflow: requested " + skill + "; session workflow=" + str(record.get("workflow")))
     if record.get("status") != "active" or record.get("receiptSource") != "session-acknowledgement":
@@ -118,14 +170,15 @@ def ack_command(args, record):
                        "--skill", record["workflow"], "--nonce", record["nonce"]])
 
 
-def inspection(args, tool, tool_input):
+def inspection(args, root, tool, tool_input):
     """Permit a bounded file inspection, never a general shell expression."""
+    directory = False
     if tool == "Read":
         paths = [tool_input.get("file_path", "")]
     elif tool in ("Bash", "exec_command"):
         command = tool_input.get("command", tool_input.get("cmd", ""))
         # shlex splits words but does not model shell substitutions or operators.
-        if re.search(r"[;&|<>`$\n\r]", command):
+        if re.search(r"[;&|<>`$\n\r*?\[\]{}()~]", command):
             return False
         try:
             words = shlex.split(command)
@@ -141,6 +194,11 @@ def inspection(args, tool, tool_input):
         elif (len(words) == 4 and words[:2] == ["sed", "-n"]
               and re.fullmatch(r"[1-9][0-9]{0,3}(,[1-9][0-9]{0,3})?p", words[2])):
             paths = words[3:]
+        elif words[:4] == ["rg", "--no-config", "-n", "--"]:
+            # Only explicit regular files; no recursive roots, preprocessors, or arbitrary options.
+            paths = words[5:]
+        elif len(words) == 4 and words[:3] == ["rg", "--no-config", "--files"]:
+            paths, directory = words[3:], True
         else:
             return False
     else:
@@ -149,7 +207,8 @@ def inspection(args, tool, tool_input):
         return False
     for value in paths:
         path = Path(value)
-        if not path.is_absolute() or not path.is_file() or not path.resolve().is_relative_to(Path(args.skills)):
+        if (not path.is_absolute() or not (path.is_dir() if directory else path.is_file())
+                or not any(path.resolve().is_relative_to(base) for base in (Path(args.skills), root))):
             return False
     return True
 
@@ -160,18 +219,15 @@ def hook(args):
     root, session = payload.get("cwd", ""), payload.get("session_id", "")
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt", "")
-        match = re.match(r"^\s*[$/]((?:agentkit:)?[a-z][a-z0-9-]*)(?=\s|$)", prompt)
-        if not match:
+        workflow = select_workflow(prompt)
+        if not workflow:
             return {}
-        token = match[1]
-        if not token.startswith("agentkit:"):
-            if token in WORKFLOWS:
-                fail("standalone-registration: bare workflow identity is unverified; invoke $agentkit:" + token)
-            return {}
-        workflow = token.split(":", 1)[1]
+        named = {name for name in WORKFLOWS if re.search(r"\b" + re.escape(name) + r"\b", prompt)}
+        if len(named) > 1:
+            fail("competing-workflow: name one workflow per invocation; existing receipt preserved")
         skill = Path(args.skills) / workflow / "SKILL.md"
         if workflow not in WORKFLOWS or not skill.is_file() or skill.is_symlink():
-            fail("workflow-unavailable: " + token + "; install/register the current plugin and restart")
+            fail("workflow-unavailable: " + workflow + "; install/register the current plugin and invoke it again")
         body = skill.read_bytes()
         evidence = Evidence(root, session, create=True)
         try:
@@ -179,11 +235,15 @@ def hook(args):
         except FileNotFoundError:
             previous = None
         if previous and previous.get("status") == "active":
-            validate(args, previous)
-            if previous.get("workflow") == workflow:
-                return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                        "agentkit activation unchanged: acknowledged workflow=" + workflow
-                        + "; reuse durable session receipt; do not repeat discovery."}}
+            try:
+                validate(args, previous)
+            except ContentMismatch:
+                pass  # Redelivery below stays pending until a fresh acknowledgement.
+            else:
+                if previous.get("workflow") == workflow:
+                    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                            "agentkit activation unchanged: acknowledged workflow=" + workflow
+                            + "; reuse durable session receipt; do not repeat discovery."}}
         record = {"schemaVersion": 1, "session": session, "repoRoot": str(evidence.root),
                   "workflow": workflow, "skillsRoot": args.skills, "version": identity(args),
                   "installedDigest": args.digest, "deliveredDigest": hashlib.sha256(body).hexdigest(),
@@ -212,7 +272,7 @@ def hook(args):
         command = tool_input.get("command", tool_input.get("cmd", ""))
         if tool in ("Bash", "exec_command") and command.strip() == ack_command(args, record):
             return {}
-        if inspection(args, tool, tool_input):
+        if inspection(args, evidence.root, tool, tool_input):
             return {}
         validate(args, record)
         if tool == "Skill" and tool_input.get("skill") != "agentkit:" + record["workflow"]:
@@ -220,8 +280,12 @@ def hook(args):
         return {}
     if event == "SessionStart":
         # Revalidation preserves historical receipt; never creates one for a compacted context.
-        if record.get("status") == "active":
-            validate(args, record)
+        try:
+            validate_content(args, record)
+        except ContentMismatch as error:
+            reason = "SessionStart source=" + str(payload.get("source", "unknown")) + ": " + str(error)
+            return {"systemMessage": reason, "hookSpecificOutput": {
+                "hookEventName": event, "additionalContext": reason + "; do not dispatch."}}
         record["capabilities"]["pre-tool-use"] = "unknown"
         evidence.write(record)
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
@@ -235,7 +299,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills", required=True)
     parser.add_argument("--digest", required=True)
-    parser.add_argument("action", choices=("hook", "ack", "check", "identity"))
+    parser.add_argument("action", choices=("hook", "ack", "check", "identity", "classify"))
     parser.add_argument("--repo-root")
     parser.add_argument("--session")
     parser.add_argument("--skill", choices=sorted(WORKFLOWS))
@@ -244,6 +308,9 @@ def main():
     args = parser.parse_args()
     event = "UserPromptSubmit"
     try:
+        if args.action == "classify":
+            print(select_workflow(json.load(sys.stdin)["prompt"]) or "")
+            return 0
         if args.action == "hook":
             # Preserve event for the correct denial schema, without treating malformed input as allow.
             raw = sys.stdin.read()
