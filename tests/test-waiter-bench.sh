@@ -59,7 +59,7 @@ def ci_cost(events):
 
 before = ci_cost(['spawn', 'collect', 'collect', 'collect'])
 policy = (Path(sys.argv[1]).parents[2] /
-          'agentkit/skills/.shared/wait-discipline.md').read_text()
+          'agentkit/skills/.shared/wait-discipline.md').read_text(encoding='utf-8')
 assert 'Root calls already-blocking bounded helpers directly' in policy
 after = ci_cost(['blocking_helper'])
 assert before == dict(root_tool_calls=4, spawns=1, extra_model_sessions=1)
