@@ -70,6 +70,68 @@ src/untracked.txt" "$(tr '\0' '\n' <"$valid_output")" \
     'valid handback returns the parsed argv NUL-delimited'
 assert_eq '' "$(cat -- "$tmp/valid.err")" 'valid handback keeps diagnostics off stdout and stderr'
 
+# A worker can finish with a pushed, verified commit while an unpublishable
+# protected path remains dirty. That is partial delivery, not zero delivery:
+# Collect opens the draft PR and carries the remaining operator action into it.
+partial_repo="$tmp/partial-repo"
+mkdir -p "$partial_repo/.agent/logs" "$partial_repo/src" "$partial_repo/secrets"
+cat >"$partial_repo/.agent/config.env" <<'EOF'
+AGENT_WORKER_MODEL=gpt-5.6-luna
+AGENT_PROTECTED_PATHS=secrets/
+EOF
+git init -q -b feat/partial "$partial_repo"
+git -C "$partial_repo" config user.name test
+git -C "$partial_repo" config user.email test@example.invalid
+printf 'base\n' >"$partial_repo/src/change.txt"
+git -C "$partial_repo" add -- .agent/config.env src/change.txt
+git -C "$partial_repo" commit -qm base
+printf 'delivered\n' >"$partial_repo/src/change.txt"
+git -C "$partial_repo" add -- src/change.txt
+git -C "$partial_repo" commit -qm 'fix: deliver publishable work'
+partial_sha=$(git -C "$partial_repo" rev-parse HEAD)
+printf 'operator edit\n' >"$partial_repo/secrets/one.conf"
+printf 'second operator edit\n' >"$partial_repo/secrets/two.conf"
+printf '.agent/logs/\n' >>"$partial_repo/.git/info/exclude"
+partial_log="$partial_repo/.agent/logs/test.log"
+printf '%s\n' '=== agent-run tests/run-tests.sh' \
+    '=== agent-run exited rc=0 after 3s' >"$partial_log"
+partial_handback="$tmp/partial.handback"
+cat >"$partial_handback" <<EOF
+BLOCKED: class=other remaining-step=human-review-and-commit secrets/one.conf,secrets/two.conf evidence=$partial_log
+branch: feat/partial
+pushed SHA: $partial_sha
+green verification log path: $partial_log
+EOF
+
+partial_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback"
+)
+assert_eq 'disposition=partial-pushed pr=open blocker=secrets/one.conf,secrets/two.conf' \
+    "$partial_output" \
+    'BLOCKED with a pushed SHA and green log is classified as partial-pushed'
+
+git -C "$partial_repo" add -- secrets/one.conf
+staged_blocker_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback"
+)
+assert_contains "$staged_blocker_output" 'disposition=blocked pr=none' \
+    'a staged protected path is not classified as modified-but-unstaged delivery'
+git -C "$partial_repo" reset -q -- secrets/one.conf
+
+no_sha_handback="$tmp/no-sha.handback"
+cat >"$no_sha_handback" <<EOF
+BLOCKED: class=other remaining-step=commit publishable work evidence=$partial_log
+green verification log path: $partial_log
+EOF
+no_sha_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$no_sha_handback"
+)
+assert_contains "$no_sha_output" 'disposition=blocked pr=none' \
+    'BLOCKED without a pushed SHA does not open a PR'
+
 schema_two_plan="$tmp/schema-two-plan.json"
 jq '.schemaVersion = 2 |
     .generatedAt = "2026-08-24T12:00:00Z" |
@@ -395,7 +457,7 @@ assert_not_contains "$(cat -- "$tmp/blank-model.err")" 'Traceback' \
 
 # --help/-h must be classified as a usage request, not an invalid handback:
 # the wrapper intercepts them before exec'ing into the Python argv parser.
-usage_text='usage: validate-handback.sh --worktree PATH --handback-file FILE --issue N --dispatch-plan FILE'
+usage_text='usage: validate-handback.sh [--classify-completion] --worktree PATH --handback-file FILE [--issue N --dispatch-plan FILE]'
 long_help_rc=0
 "$script" --help >"$tmp/long-help.out" 2>"$tmp/long-help.err" || long_help_rc=$?
 assert_eq '0' "$long_help_rc" '--help exits 0'

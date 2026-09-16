@@ -690,15 +690,7 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
-  review and draft PR after a worker push"), opens the draft PR, moves the issue to
-  `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
-  A chained successor dispatches the moment the predecessor's SHA lands, not the PR or board
-  move. Diff size is never a reason to withhold this
-  PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>`, proceeding only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, do one `collaboration.followup_task`, then once it succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`). If the same lead is unavailable, give a fresh lead an exact resume command `followup_task(<lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
-  A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request driving
-  that recheck; otherwise report the preserved worktree with the blocker evidence.
+- **Completion or BLOCKED** → preserve a text `BLOCKED: class=... remaining-step=... evidence=...` handback and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file"`. A pushed SHA plus green log returns `disposition=partial-pushed pr=open blocker=<paths>`: review the diff, open the draft, pass `--blocker <paths>` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh` so `## Operator action required` lists every protected path, move to `In review`, and start Phase 3. Dispatch a chained successor when its predecessor's SHA lands. Diff size is never a reason to withhold this PR — see Diff-size facts. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `collaboration.followup_task`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
