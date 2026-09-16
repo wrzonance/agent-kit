@@ -117,16 +117,15 @@ binary_present() {
 
 collect_current() {
     local line key value binary rundir rundir_key record
-    local components='' suggestions=''
+    local discovery=''
     if [[ -x $detector ]]; then
-        components=$("$detector" --repo-root "$repo_root" --format components 2> /dev/null || true)
-        suggestions=$("$detector" --repo-root "$repo_root" --format suggestions 2> /dev/null || true)
+        discovery=$("$detector" --repo-root "$repo_root" --format components,suggestions 2> /dev/null || true)
     fi
 
     while IFS= read -r line; do
         record=$(component_record "$line" 2> /dev/null || true)
         [[ -n $record ]] && current_components[$record]=1
-    done <<< "$components"
+    done <<< "$discovery"
 
     while IFS= read -r line; do
         if [[ $line == '# AGENT_RUNDIR_'*=* ]]; then
@@ -141,7 +140,7 @@ collect_current() {
             binary=$(first_argv "$value")
             current_binary[$key]=$binary
         fi
-    done <<< "$suggestions"
+    done <<< "$discovery"
 
     for key in "${!current_binary[@]}"; do
         rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"

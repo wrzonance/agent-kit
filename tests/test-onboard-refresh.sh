@@ -277,4 +277,27 @@ assert_eq '1' "$(printf '%s\n' "$no_config_summary" | wc -l | tr -d ' ')" \
 assert_contains "$no_config_summary" 'worktrees=drift' \
     'no-config summary still reports linked-worktree drift'
 
+# Observe the detector boundary: one collection supplies both inventory sections.
+single_scripts="$tmp/single-scripts"
+mkdir -p "$single_scripts"
+cp "$refresh_sh" "$single_scripts/onboard-refresh.sh"
+cat > "$single_scripts/detect-toolchains.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/calls"
+case $* in
+    *'--format components,suggestions')
+        printf '%s\n' 'component= path=My App lang=node marker=package.json runner=npm' \
+            '' '# AGENT_CMD_MY_APP_TEST=bash' '# AGENT_RUNDIR_MY_APP_TEST="My App"'
+        ;;
+esac
+EOF
+chmod +x "$single_scripts/detect-toolchains.sh"
+inventory=$(bash "$single_scripts/onboard-refresh.sh" --repo-root "$repo" --inventory)
+assert_eq '1' "$(wc -l < "$single_scripts/calls" | tr -d ' ')" \
+    'inventory collects components and suggestions in one detector call'
+assert_contains "$inventory" '# proposal-component|My App|node|package.json' \
+    'combined discovery retains spaced component paths'
+assert_contains "$inventory" '# proposal-command|AGENT_CMD_MY_APP_TEST|bash|present|My App' \
+    'combined discovery retains command availability and quoted rundirs'
+
 finish
