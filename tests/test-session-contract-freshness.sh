@@ -332,4 +332,76 @@ assert_not_contains "$(cat -- "$tmp/chain-compose-err")" 'worktree-contract-less
 assert_contains "$chain_prompt" 'Repo: example-org/example-repo' \
     'the composed prompt is a real worker prompt, not an empty success'
 
+
+# Issue #759: execute the literal curriculum resolver in an installed layout.
+source "$hooks/lib/guard-lib.sh"
+source "$hooks/lib/guard-curriculum.sh"
+resolver_home="$tmp/resolver home"
+bootstrap="$resolver_home/plugins/cache/agent-kit/agentkit/9.0/skills"
+mkdir -p "${bootstrap%/skills}"
+cp -a "$skills_root" "$bootstrap"
+resolver_repo=$(make_repo)
+legacy="$resolver_repo/.agent/env-contract.txt"
+keyed="$resolver_repo/.agent/env-contract.codex.txt"
+printf 'skills= path=%s\n' "$tmp/retired/skills" > "$legacy"
+printf 'skills= path=%s\n' "$bootstrap" > "$keyed"
+run_hint() {
+    # shellcheck disable=SC2016  # the child shell expands agentkit after resolving it
+    (cd -- "$resolver_repo" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+        CODEX_HOME="$resolver_home" CLAUDE_CONFIG_DIR="$tmp/no-claude" \
+        bash -c "$RESOLVE_HINT"'; printf "%s" "$agentkit"')
+}
+resolved=$(run_hint 2> "$tmp/hint.err")
+assert_eq "$bootstrap" "$resolved" 'the keyed live pin wins over a retired legacy pin'
+live_pin="$tmp/other installed/skills"
+mkdir -p "$live_pin"
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$live_pin" > "$keyed"
+assert_eq "$live_pin" "$(run_hint 2> "$tmp/hint.err")" \
+    'a different live keyed pin wins over both legacy and discovery'
+# A live legacy tree cannot mask the selected retired keyed pin.
+printf 'skills= path=%s\n' "$bootstrap" > "$legacy"
+printf 'skills= path=%s\n' "$tmp/retired/skills" > "$keyed"
+resolved=$(run_hint 2> "$tmp/hint.err")
+assert_eq "$bootstrap" "$resolved" 'a retired keyed pin retains an executable bootstrap'
+err=$(cat -- "$tmp/hint.err")
+assert_contains "$err" "$keyed" 'mismatch names the selected contract path'
+assert_contains "$err" "$tmp/retired/skills" 'mismatch names the recorded skills value'
+assert_contains "$err" "$bootstrap" 'mismatch names the installed skills value'
+assert_contains "$err" 'remedy (Bash): ' 'mismatch supplies an independently executable remedy'
+remedy=${err#*remedy (Bash): }
+if [[ $remedy != "$err" ]]; then
+    rc=0
+    env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT CODEX_HOME="$resolver_home" \
+        PATH="$stub_path" bash -c "$remedy" > "$tmp/remedy.out" 2> "$tmp/remedy.err" || rc=$?
+    assert_eq 0 "$rc" 'the printed remedy executes with spaces in the installed tree'
+    assert_contains "$(cat -- "$keyed")" "skills= path=$bootstrap" 'the remedy repairs the keyed file'
+fi
+curriculum=$(guard_curriculum "$skills_root")
+assert_contains "$curriculum" 'onboard-state.sh --report' 'curriculum teaches the mandatory onboarding selector'
+assert_contains "$curriculum" 'repo-config.sh --resolve' 'curriculum teaches batch config resolution'
+assert_contains "$curriculum" '--list-adversarial-efforts' 'curriculum exposes supported adversarial efforts'
+# Parse each advertised script's options through its own help parser. Required
+# mode groups in usage must also have a selector in the advertised invocation;
+# --help alone would hide precisely the missing-mode defect this guards.
+while IFS= read -r line; do
+    # shellcheck disable=SC2016  # match the literal curriculum variable
+    [[ $line == '  $agentkit/'*.sh* ]] || continue
+    # shellcheck disable=SC2016  # strip the literal curriculum variable
+    invocation=${line#'  $agentkit/'}; invocation=${invocation%%  -- *}
+    read -r -a argv <<< "$invocation"
+    script="$skills_root/${argv[0]}"
+    help=$("$script" "${argv[@]:1}" --help 2>&1) || true
+    expected_help=$("$script" --help 2>&1) || true
+    assert_eq "$expected_help" "$help" "advertised options reach the help parser: ${argv[0]}"
+    while IFS= read -r group; do
+        [[ -n $group ]] || continue
+        selected=no
+        while IFS= read -r option; do
+            [[ " $invocation " == *" $option "* ]] && selected=yes
+        done < <(printf '%s\n' "$group" | grep -oE -- '--[a-z][a-z-]*')
+        assert_eq yes "$selected" "advertised invocation supplies required usage mode: ${argv[0]} $group"
+    done < <(printf '%s\n' "$help" | grep -oE '\(--[a-z][^)]*\)')
+done <<< "$curriculum"
+
 finish

@@ -14,33 +14,35 @@
 # shellcheck disable=SC2016  # every $ here is literal text the AGENT reads and
 # retypes. Expanding it would bake this machine's paths into the advice.
 readonly RESOLVE_HINT='  agentkit=
+  agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+      "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
+      -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
+  [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
   contract_root=$(git rev-parse --show-toplevel 2>/dev/null) || contract_root=
   contract=
   if [[ -n "$contract_root" ]]; then
       contract="$contract_root/.agent/env-contract.txt"
+      if [[ -r "$agentkit/.shared/scripts/lib/contract-cache.sh" ]]; then
+          contract=$(bash -c "source \"\$1\"; contract_cache_contract_file \"\$2\"" \
+              bash "$agentkit/.shared/scripts/lib/contract-cache.sh" "$contract_root")
+      fi
   fi
   pinned=
-  if [[ -n "$contract_root" && -r "$contract" && -f "$contract" &&
-        ! -L "$contract" && -O "$contract" ]] &&
-      ! git -C "$contract_root" ls-files --error-unmatch -- .agent/env-contract.txt \
-          >/dev/null 2>&1; then
-      pinned=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  pin_rc=0
+  if [[ -r "$contract" && -f "$contract" && ! -L "$contract" && -O "$contract" ]]; then
+      git -C "$contract_root" ls-files --error-unmatch -- "$contract" \
+          >/dev/null 2>&1 || pin_rc=$?
+      if [[ $pin_rc == 1 ]]; then
+          pinned=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+      fi
   fi
   if [[ -n "$pinned" && -d "$pinned" ]]; then
       agentkit="$pinned"
   fi
-  if [[ -z "$agentkit" ]]; then
-      agentkit=$(find "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
-          "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -maxdepth 4 \
-          -type d -path "*/agentkit/*/skills" 2>/dev/null | sort -V | tail -1)
-      [ -n "$agentkit" ] || agentkit="${CODEX_HOME:-$HOME/.codex}/skills"
-  fi
-  if [[ -n "$contract_root" && -n "$agentkit" &&
-        ( -z "$pinned" || -d "$pinned" ) &&
-        -x "$agentkit/.shared/scripts/contract-read.sh" ]]; then
-      contract_skills=$("$agentkit/.shared/scripts/contract-read.sh" \
-          --repo-root "$contract_root" --get skills.path 2>/dev/null)
-      [[ -z "$contract_skills" || "$contract_skills" == "$agentkit" ]] || agentkit=
+  if [[ -n "$pinned" && "$pinned" != "$agentkit" ]]; then
+      printf "skills mismatch: contract=%s pin=%s; helper=%s tree=%s; remedy (Bash): %q --worktree %q --ensure\n" \
+          "$contract" "$pinned" "$agentkit/.shared/scripts/agent-preflight.sh" "$agentkit" \
+          "$agentkit/.shared/scripts/agent-preflight.sh" "$contract_root" >&2
   fi'
 
 # shellcheck disable=SC2034  # read by pre-tool-use.sh, which sources this file

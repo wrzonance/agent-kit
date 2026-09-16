@@ -1253,13 +1253,8 @@ main() {
         contract_reader="$SCRIPT_DIR/contract-read.sh"
         if [[ -x $contract_reader ]] && declare -F contract_cache_contract_file > /dev/null &&
             "$contract_reader" --repo-root "$WORKTREE" --check > /dev/null 2>&1; then
-            # A provenance-trusted contract can still predate protected= (issue #296
-            # follow-up): --check only validates ownership/tracked-state, not which
-            # keys the file happens to carry, so a contract written before this key
-            # existed would otherwise be served forever without it. Fall through to
-            # the same fresh-preflight path a failed provenance re-read already uses,
-            # rather than adding a second return path.
-            # A stale trusted contract must be refreshed at the path readers select.
+            # Provenance does not prove freshness. Refresh the selected file,
+            # preserving in-place legacy migrations as well as keyed repairs.
             ARG_WRITE=$(contract_cache_contract_file "$WORKTREE")
             if existing="$(cat -- "$ARG_WRITE")"; then
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing"; then
