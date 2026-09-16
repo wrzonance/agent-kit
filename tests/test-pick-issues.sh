@@ -23,6 +23,12 @@ git -C "$repo" init -q 2> /dev/null
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
+mkdir -p "$repo/tools"
+printf 'tooling\n' >"$repo/tools/README.md"
+git -C "$repo" config user.email test@example.invalid
+git -C "$repo" config user.name test
+git -C "$repo" add -- .
+git -C "$repo" commit -qm base
 
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" << EOF
@@ -60,7 +66,7 @@ items='{"totalCount":4,"items":[
   {"status":"In progress","content":{"number":14,"type":"Issue","title":"already running",
    "repository":"example-org/example-repo"}}]}'
 deps='{"data":{"repository":{
-  "i10":{"number":10,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+  "i10":{"number":10,"state":"OPEN","body":"Create \u0060tools/bootstrap-worktree.sh\u0060.","blockedBy":{"totalCount":0,"nodes":[]}},
   "i11":{"number":11,"state":"OPEN","blockedBy":{"totalCount":1,"nodes":[{"number":99,"state":"OPEN"}]}},
   "i12":{"number":12,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
 
@@ -158,6 +164,9 @@ out=$(run --include-backlog --json)
 assert_eq '10' "$(jq -r '.[0].number' <<< "$out")" 'JSON leads with the Ready issue'
 assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")" \
     'JSON marks the blocked issue ineligible'
+assert_eq '["tools/bootstrap-worktree.sh"]' \
+    "$(jq -c '.[] | select(.number == 10) | .predictedWriteSet' <<< "$out")" \
+    'JSON carries issue-derived write-set literals into dispatch planning'
 
 # Fast mode caps the current wave and leaves later pickup-order candidates for
 # refill. The attended path still returns the complete eligible set; only the

@@ -31,7 +31,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
-    [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
+    # #782: literal-create classification and validation summary.
+    [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16463:800"
@@ -86,7 +87,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
-readonly MAX_TREE_TOKENS=441028
+# #782: issue-body path extraction and literal-create validation (+1,069).
+readonly MAX_TREE_TOKENS=442131
 
 violations=0
 checked=0

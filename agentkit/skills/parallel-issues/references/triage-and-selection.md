@@ -406,13 +406,9 @@ smuggle a worker into that reservation. The completion table's `worker=<model> <
 actually ran. Root design review and adversarial review keep their own effort settings
 regardless of any entry here.
 
-Write-set intersection checks always add shared root files by default, even
-when an issue body does not mention them: build configuration, lockfiles, and
-generated contracts (including the repository's equivalent names and globs).
-The resulting paths belong in each affected `predictedWriteSet`; they are not
-optional cleanup. Record the conflict pairs and their overlap globs in
-`conflictMap.pairs` before selection is finalized. `write-merge-plan.sh --validate-only` enforces the
-manifest → lockfile → CI-sibling part; `--fix` applies it.
+Seed each `predictedWriteSet` with `scripts/issue-paths.sh --issue N`, then
+record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
+--validate-only` supply required manifest companions.
 
 `AGENT_GENERATED_PATHS` (declared once in `.agent/config.env`) feeds both this write-set check and
 `gh-pr-state.sh`'s staleness exemption (a base advance confined to those paths reports `stale=no`).
