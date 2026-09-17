@@ -37,7 +37,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
-    [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
+    # #782: literal-create classification and validation summary.
+    [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16463:800"
@@ -100,7 +101,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
-readonly MAX_TREE_TOKENS=451554
+# #782 bot integration: provenance-aware root filename creation; exact combined total.
+readonly MAX_TREE_TOKENS=452714
 
 violations=0
 checked=0
