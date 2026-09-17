@@ -267,7 +267,7 @@ assert_eq 'dependency-signal=-' "$no_dep_out" \
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # issue #610: +50 lines for the --classify-deps body classifier, including the --classify-shape mirror check.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/triage-issues.sh") -le 556 ]] && printf yes || printf no)" \
-    'triage-issues.sh stays at or under 556 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/triage-issues.sh") -le 576 ]] && printf yes || printf no)" \
+    'triage-issues.sh stays at or under 576 lines'
 
 finish

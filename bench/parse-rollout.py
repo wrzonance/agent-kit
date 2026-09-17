@@ -57,6 +57,11 @@ PROGRAM = 'parse-rollout'
 # cites for the false-positive/false-negative cases this was checked
 # against before being adopted.
 REFERENCE_PATH_RE = re.compile(r'(?:^|[\s"\'])((?:[\w./-]*?)(?:references|\.shared)/[\w.-]+\.md)')
+PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|more)(?=\s)')
+CUSTOM_EXEC_CMD_RE = re.compile(
+    r'''tools\.exec_command\s*\(\s*\{[^{}]*?\bcmd\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')''',
+    re.DOTALL)
+INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
 TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
 
@@ -129,12 +134,140 @@ def call_command_text(payload):
         return ' '.join(str(part) for part in command)
     if isinstance(command, str):
         return command
+    custom_commands = custom_exec_commands(payload)
+    if len(custom_commands) == 1:
+        return custom_commands[0]
     return raw if isinstance(raw, str) else ''
 
 
 def is_log_read(payload):
     command = call_command_text(payload)
     return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:cat|tail|sed)(?=\s)', command))
+
+
+def custom_exec_commands(payload):
+    raw = payload.get('input', '')
+    if payload.get('type') != 'custom_tool_call' or not isinstance(raw, str):
+        return []
+    commands = []
+    for double_quoted, single_quoted in CUSTOM_EXEC_CMD_RE.findall(raw):
+        try:
+            if double_quoted:
+                commands.append(json.loads(f'"{double_quoted}"'))
+            else:
+                value = re.sub(r"\\(['\\])", r"\1", single_quoted)
+                if re.search(r"\\(?!['\\])", value):
+                    return []
+                commands.append(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return commands
+
+
+def grep_has_noncontent_mode(options):
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token in {'--files-with-matches', '--count'}:
+            return True
+        if token in {'-e', '-f', '--regexp', '--file'}:
+            index += 2
+            continue
+        if token.startswith('-') and not token.startswith('--'):
+            flags = token[1:]
+            for offset, flag in enumerate(flags):
+                if flag in {'e', 'f'}:
+                    if offset == len(flags) - 1:
+                        index += 1
+                    break
+                if flag in {'l', 'c'}:
+                    return True
+        index += 1
+    return False
+
+
+def command_reads_prose(command):
+    for raw_segment in re.split(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command):
+        segment = raw_segment.strip()
+        if '.md' not in segment or not PROSE_READ_RE.search(segment):
+            continue
+        words = segment.split()
+        options = words[1:]
+        if '--' in options:
+            options = options[:options.index('--')]
+        if words and words[0] == 'rg' and '--files' in options:
+            continue
+        if words and words[0] == 'grep' and grep_has_noncontent_mode(options):
+            continue
+        return True
+    return False
+
+
+def command_has_mixed_output(command):
+    return bool(re.search(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command))
+
+
+def mentions_unparsed_prose_read(raw):
+    return (isinstance(raw, str) and '.md' in raw and
+            bool(re.search(r'\b(?:cat|head|tail|sed|awk|grep|rg|less|more)\b', raw)))
+
+
+def prose_read_kind(payload):
+    call_type = payload.get('type')
+    call_name = payload.get('name', '').rsplit('.', 1)[-1].lower()
+    if call_type == 'custom_tool_call':
+        if call_name != 'exec':
+            return 'none'
+        raw = payload.get('input', '')
+        commands = custom_exec_commands(payload)
+        invocation_count = len(re.findall(r'tools\.exec_command\s*\(', raw)) if isinstance(raw, str) else 0
+        if invocation_count != len(commands):
+            return 'unavailable' if mentions_unparsed_prose_read(raw) else 'none'
+        if len(commands) > 1:
+            return 'unavailable' if any(command_reads_prose(command) for command in commands) else 'none'
+        if len(commands) != 1:
+            return 'unavailable' if mentions_unparsed_prose_read(payload.get('input')) else 'none'
+        if not command_reads_prose(commands[0]):
+            return 'none'
+        return 'unavailable' if command_has_mixed_output(commands[0]) else 'exact'
+    elif call_name not in {'exec_command', 'shell', 'bash'}:
+        return 'none'
+    command = call_command_text(payload)
+    if not command_reads_prose(command):
+        return 'none'
+    return 'unavailable' if command_has_mixed_output(command) else 'exact'
+
+
+def message_texts(payload):
+    content = payload.get('content')
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [part['text'] for part in content
+            if isinstance(part, dict) and isinstance(part.get('text'), str)]
+
+
+def injected_skill_chars(payload):
+    total = 0
+    for value in message_texts(payload):
+        marker = value.find(INJECTED_SKILL_MARKER)
+        if marker < 0:
+            continue
+        body = value.find('\n\n---\n', marker)
+        if body >= 0:
+            total += len(value[body + 2:])
+    return total
+
+
+def output_chars(payload):
+    output = payload.get('output', '')
+    if isinstance(output, str):
+        return len(output)
+    if isinstance(output, list):
+        return sum(len(part.get('text', '')) for part in output
+                   if isinstance(part, dict) and isinstance(part.get('text'), str))
+    return 0
 
 
 def is_verification_launch(payload):
@@ -262,6 +395,9 @@ def parse_session_file(path):
     verification_runtime_ids = set()
     resume_state = {}
     active_resume = None
+    prose_chars_injected = 0
+    prose_chars_read = 0
+    pending_prose_reads = set()
 
     records = read_records(path)
     try:
@@ -278,6 +414,8 @@ def parse_session_file(path):
         elif rtype == 'turn_context':
             model = payload.get('model', model)
             effort = payload.get('effort', effort)
+        elif rtype == 'response_item' and payload.get('type') == 'message':
+            prose_chars_injected += injected_skill_chars(payload)
         elif rtype == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
             for ref_path in extract_reference_hits(payload.get('arguments', '')):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
@@ -290,6 +428,13 @@ def parse_session_file(path):
             call_name = payload.get('name', '').rsplit('.', 1)[-1]
             arguments = decoded_call_arguments(payload)
             call_id = payload.get('call_id')
+            prose_kind = prose_read_kind(payload)
+            if prose_kind == 'unavailable':
+                prose_chars_read = None
+            elif prose_kind == 'exact' and isinstance(call_id, str) and call_id:
+                pending_prose_reads.add(call_id)
+            elif prose_kind == 'exact':
+                prose_chars_read = None
             if is_verification_launch(payload) and isinstance(call_id, str) and call_id:
                 pending_verification_calls.add(call_id)
             if call_name == 'write_stdin' and not arguments.get('chars'):
@@ -322,6 +467,10 @@ def parse_session_file(path):
             pending_input_tokens = None
         elif rtype == 'response_item' and payload.get('type') in {'function_call_output', 'custom_tool_call_output'}:
             call_id = payload.get('call_id')
+            if isinstance(call_id, str) and call_id in pending_prose_reads:
+                if prose_chars_read is not None:
+                    prose_chars_read += output_chars(payload)
+                pending_prose_reads.remove(call_id)
             if isinstance(call_id, str) and call_id in pending_verification_calls:
                 verification_runtime_ids.update(runtime_ids_from_output(payload))
                 pending_verification_calls.remove(call_id)
@@ -355,6 +504,8 @@ def parse_session_file(path):
 
     if pending_poll_calls:
         polling['intervals_complete'] = False
+    if pending_prose_reads:
+        prose_chars_read = None
     if any(response_calls):
         polling['inputs_complete'] = False
 
@@ -368,6 +519,8 @@ def parse_session_file(path):
         'efficiency': efficiency,
         'polling': polling,
         'verification_churn': churn,
+        'prose_chars_injected': prose_chars_injected,
+        'prose_chars_read': prose_chars_read,
     }
 
 
@@ -547,6 +700,8 @@ def main(argv):
         'dynamic_efficiency': {
             'schema_version': 1,
             'actors': [{'actor': a['actor'], 'model': a['model'], 'effort': a['effort'],
+                        'prose_chars_injected': a['prose_chars_injected'],
+                        'prose_chars_read': a['prose_chars_read'],
                         **a['efficiency']} for a in parsed],
         },
     }
