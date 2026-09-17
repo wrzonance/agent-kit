@@ -133,7 +133,20 @@ readonly MAX_HELPER_TOKENS=10000
 # #781 merge-down with #784/#792: measured combined helper tree.
 # #800 settlement cache repair: validated private body-cache handoff; 1,826,556 bytes / 4.
 # #781 merge-down with #785/#800: measured combined helper tree.
-readonly MAX_TREE_TOKENS=459256
+# #756: ordered stdin redirects and queued heredoc recovery; exact total.
+# PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
+# PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
+# #776 + PR #794 merge-down: combined helper tree exact total.
+# #774/#776 + PR #794 merge-down: combined helper tree exact total.
+# #779 + PR #794 merge-down: 1,786,587 helper bytes / 4 = 446,646 tokens; exact total.
+# #777 review + PR #794 merge-down: 1,802,953 helper bytes / 4 = 450,738 tokens; exact total.
+# #778 + PR #794 merge-down: 1,806,262 helper bytes / 4 = 451,565 tokens; exact total.
+# #783 + PR #794 merge-down: 1,818,298 helper bytes / 4 = 454,574 tokens; exact total.
+# #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
+# #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
+# #800 + PR #794 merge-down: 1,838,638 helper bytes / 4 = 459,659 tokens; exact total.
+# #781 merge-down with PR #794: measured combined helper tree.
+readonly MAX_TREE_TOKENS=462276
 
 violations=0
 checked=0
