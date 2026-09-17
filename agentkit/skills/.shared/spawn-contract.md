@@ -8,14 +8,19 @@ It owns model/effort selection, leaf policy, and the no-spawn fallback.
 Implementation work is assigned to a worker for role separation: each worker receives fresh fenced context
 with sole-writer isolation, while the root performs independent root validation before publication. Resolve
 the repository's `AGENT_WORKER_MODEL`,
-`AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations before inspecting the
-current `spawn_agent` capability; worker model and effort are configuration, not a
+`AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` declarations before inspecting the current `tools.spawn` capability; worker model and effort are configuration, not a
 model-tier or pricing judgment. The resolver reads `.agent/config.env` line-wise and never
 sources it:
 
 The root/orchestrator must not implement when a real worker can be dispatched except for the two
 allowed implementation exceptions: a genuinely spawn unavailable degraded path (`worker=self`)
 or a qualifying bounded inline correction.
+
+The environment contract uses `spawn=unknown` for a harness without a pinned tool mapping. In
+that state, inspect the live runtime's advertised tool schema for its spawn, wait, and follow-up
+capabilities, then use the actual names it exposes. Do not borrow another harness's mapping or
+make a trial call merely to probe availability.
+Enter the degraded path only when that inspection shows no spawn capability.
 
 ```bash
 worker_resolution=$(bash -c "$(cat <<'BASH_RECIPE'
@@ -197,7 +202,7 @@ required by the gate above. The completion table records every pivot verbatim, e
 `worker=claude-sonnet-5 high (pivoted from cross-harness declaration 'gpt-5.6-luna')`, so a
 substitution is always evidence, never inferred from prompt text alone.
 
-Inspect the current `spawn_agent` capability before dispatch:
+Inspect the current `tools.spawn` capability before dispatch:
 
 - Preferred model: the resolved `worker_model`, with automatic fallback to the resolved
   `worker_model_fallback`; the resolved `worker_effort` applies to either.
@@ -223,7 +228,7 @@ Inspect the current `spawn_agent` capability before dispatch:
   editing code** and report the capability block. The spawn request is the model-and-effort evidence:
   the completion table carries the actual `worker model` and `worker effort` (or `worker=self (spawn unavailable)`)
   plus `selected_worker_pivot_note` when non-empty, so a tier claim is never inferred from prompt text.
-- This gate applies only when `spawn_agent` exists. If the runtime advertises
+- This gate applies only when `tools.spawn` exists. If the runtime advertises
   **no** spawn capability (`multi_agent = false`), there is no worker to configure and no
   model to select — take the degraded path below instead of blocking the run.
 - `review-remote-pr`'s Step 1b read-only reviewer role never satisfies this gate; it is a
@@ -235,7 +240,7 @@ Set the worker's working directory to its assigned worktree whenever the harness
 cwd/workdir field; the absolute-path rule in the prompt remains mandatory even when that
 field is unavailable.
 
-Do not describe this call without making it. A task is dispatched only after `spawn_agent`
+Do not describe this call without making it. A task is dispatched only after `tools.spawn`
 returns a task/agent identifier.
 
 ### Durable sole-writer gate
@@ -297,7 +302,7 @@ maximum blocking duration. A waiter continues the same running cell/session afte
 it does not restart the helper. Root uses its own effective cap while collecting the result.
 At the cap, empty returns do not authorize stall checks before the shared threshold.
 
-## Degraded path — `spawn_agent` unavailable (`multi_agent = false`)
+## Degraded path — `tools.spawn` unavailable (`multi_agent = false`)
 
 Record the reason before falling back, but do not manufacture a call to prove a known
 absence: when the runtime **advertises** no spawn capability (`multi_agent = false`), that
@@ -318,8 +323,8 @@ per-batch degradation, not a permanent downgrade: whenever a spawn IS possible, 
 ## Correction cycles
 
 For a follow-up correction on work already dispatched, resume the same worker with
-`collaboration.followup_task` when it remains available, rather than spawning a fresh one;
-never create two concurrent writers in one worktree. When `followup_task` is unavailable,
+`tools.send` when it remains available, rather than spawning a fresh one;
+never create two concurrent writers in one worktree. When `tools.send` is unavailable,
 confirm the prior writer stopped or handed back and release its ownership before reserving
 for a fresh worker carrying the completed state and the exact remaining step.
 
@@ -330,7 +335,7 @@ chain-base publish, prove quiescence: no unacknowledged `SendMessage` remains fo
 `git status --porcelain` is clean except declared operator-pending paths, and a ledger line
 beginning `quiescence:` records the worktree and status evidence. An `idle_notification` whose
 timestamp predates the newest outbound message to that lead is stale and cannot satisfy this gate.
-Prefer `collaboration.followup_task` for a resumable lead.
+Prefer `tools.send` for a resumable lead.
 
 The root may apply a correction inline, at zero dispatches, only when **all** conditions hold:
 the diff is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed lines;
@@ -338,7 +343,7 @@ the quiescence gate holds; the root authored the exact diff during review; and
 the full declared verification is rerun afterward. Inline corrections commit with
 `worktree-commit.sh --exact`. The root records the decision and its reason, and the commit uses
 root harness attribution rather than the worker's. Anything past this bar resumes the same worker
-with `collaboration.followup_task` first; a fresh worker is the exception when follow-up is
+with `tools.send` first; a fresh worker is the exception when follow-up is
 unavailable. The inline/dispatch decision is never silent.
 
 ## Tier mapping
