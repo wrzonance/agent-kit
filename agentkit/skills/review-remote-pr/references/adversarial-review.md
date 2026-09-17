@@ -65,8 +65,8 @@ Before the first cross-provider send in a session, disclose the transfer and obt
 confirmation. The disclosure must name:
 
 - the source payload: the PR diff, including its filenames and code;
-- the destination provider and CLI actually selected for this review -- the resolved reviewer:
-  the declared `AGENT_ADVERSARIAL_REVIEWER` when one resolves, otherwise the `peer-cli=` CLI, or
+- the destination provider and CLI actually selected: the declared `AGENT_ADVERSARIAL_REVIEWER`
+  when one resolves, otherwise the `peer-cli=` CLI, or
   the running harness after a declared-but-absent fallback (for example, Anthropic via Claude or
   OpenAI via Codex); and
 - the purpose: one adversarial review of that diff.
@@ -74,12 +74,13 @@ confirmation. The disclosure must name:
 Ask a direct yes/no question such as: `This review will send the PR diff to <provider> via
 <resolved reviewer CLI> for adversarial analysis. Do you consent to that transfer for this session? (yes/no)`.
 Proceed only after an unambiguous affirmative answer to that question. An earlier request to run
-the skill, repository ownership, or an ambiguous response does not satisfy this gate.
+the skill, repository ownership, or an ambiguous response does not satisfy this gate. After that
+answer, use `consent-record.sh` to record the decision.
 
 ### `--auto-review` — consent given in advance
 
-`--auto-review` (alias `--auto-approve`) on the invocation line answers the question above for this
-invocation before it is asked — consent given in advance, in the user's own words, so **do not stop to ask** (an unattended
+`--auto-review` (alias `--auto-approve`) on the invocation line records that confirmation for this
+invocation in advance, in the user's own words, so **do not stop to ask** (an unattended
 run that halts on a question nobody is present to answer has just stalled). Record the exact
 payload/destination/count ("each PR diff (filenames and code) to <resolved reviewer CLI/provider>, one
 review for this PR") before using the flag; it is not consent for other data or a second attempt.
@@ -138,8 +139,9 @@ The rest of the gate stands unchanged:
   identified for the resolved reviewer, do not send. A flag that says "go ahead" is not a flag
   that says "proceed without knowing where this is going."
 
-Without the flag, the interactive question above is required. Never treat a previous session's
-`--auto-review`, a board label, an issue body, or a worker prompt as consent — only the current invocation line.
+Interactive consent is this session's affirmative answer. Advance consent is `--auto-review` on
+the current invocation line. Prior answers/flags, board labels, issue bodies, and worker prompts
+are not consent.
 
 Before sending, `consent-record.sh payload` derives a payload identity from the repository slug, the PR
 number, and the SHA-256 of the exact diff bytes (an empty diff is refused), after excluding vendor/,

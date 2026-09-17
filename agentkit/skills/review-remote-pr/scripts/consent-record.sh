@@ -36,6 +36,7 @@ PATHS_FILE=''
 EMIT_PATHS=''
 OPERATOR_INSTRUCTION=''
 MODEL=''
+PRIOR_SOURCE=''
 # Global, not local to payload_command: an EXIT trap fires after the function
 # that set it has returned, so a deferred "$var" expansion in the trap needs
 # the variable to still be in scope at that point.
@@ -192,7 +193,6 @@ normalize_provider() {
     *) printf '%s' "$1" ;;
     esac
 }
-
 # Validate SHA syntax separately from local resolution for precise errors.
 is_full_sha() {
     [[ $1 =~ ^[0-9a-f]{40}$ ]]
@@ -371,6 +371,41 @@ granted_paths_path() {
     printf '%s.consent-paths\n' "$STATE_PATH"
 }
 
+refused_grant_path() {
+    local key
+    key=$(printf '%s\n%s\n' "$PROVIDER" "$PAYLOAD" | sha256sum | awk '{print $1}') || return 1
+    [[ $key =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    printf '%s.refused-%s\n' "$STATE_PATH" "$key"
+}
+
+record_refused_grant() {
+    local dest tmp parent
+    dest=$(refused_grant_path) || return 1
+    parent=$(state_parent) || return 1
+    if [[ -e $dest ]]; then
+        [[ -f $dest && ! -L $dest && -O $dest && $(stat -c %a -- "$dest" 2>/dev/null) == 600 ]] || return 1
+        return 0
+    fi
+    tmp=$(mktemp "$parent/.refused-grant.XXXXXX") || return 1
+    if ! printf 'provider=%s;payload=%s;source=%s\n' "$PROVIDER" "$PAYLOAD" "$SOURCE" >"$tmp" ||
+        ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$dest"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+load_prior_source() {
+    local dest record prefix
+    dest=$(refused_grant_path) || return 1
+    [[ -f $dest && ! -L $dest && -O $dest && $(stat -c %a -- "$dest" 2>/dev/null) == 600 ]] || return 0
+    record=$(cat -- "$dest") || return 1
+    prefix="provider=$PROVIDER;payload=$PAYLOAD;source="
+    [[ $record == "$prefix"* ]] || return 1
+    PRIOR_SOURCE=${record#"$prefix"}
+    [[ $PRIOR_SOURCE == interactive || $PRIOR_SOURCE == auto-review-flag || $PRIOR_SOURCE == operator-instruction ]] || return 1
+    [[ $PRIOR_SOURCE != "$SOURCE" ]] || PRIOR_SOURCE=''
+}
+
 # Persist sorted paths privately and return their SHA-256 for the decision.
 record_granted_paths() {
     local src=$1 parent dest tmp hash
@@ -394,6 +429,7 @@ write_record() {
     parent=$(state_parent) || return 1
     state_path_is_safe "$parent" || return 1
     record="cross_provider_consent=$PROVIDER;scope=PR-diff;payload=$PAYLOAD;status=granted;source=$SOURCE"
+    [[ -z $PRIOR_SOURCE ]] || record="$record;prior-source=$PRIOR_SOURCE;relabeled=true"
     [[ -z $decision_hash ]] || record="$record;decision=$decision_hash"
     [[ -z $paths_hash ]] || record="$record;paths=$paths_hash"
     tmp=$(mktemp "$parent/.consent-record.XXXXXX") || return 1
@@ -404,7 +440,6 @@ write_record() {
     fi
     printf '%s\n' "$record"
 }
-
 disclose_command() {
     field_is_safe "$PAYLOAD" || die_usage 'payload contains a record delimiter'
     [[ -n $DESTINATION && $DESTINATION != *$'\n'* && $DESTINATION != *$'\r'* ]] ||
@@ -414,6 +449,152 @@ disclose_command() {
     printf 'payload=%s\ndestination=%s\npurpose=%s\n' "$PAYLOAD" "$DESTINATION" "$PURPOSE"
 }
 
+normalize_words() {
+    local value=${1,,}
+    value=${value//[^[:alnum:]]/ }
+    while [[ $value == *'  '* ]]; do value=${value//'  '/' '}; done
+    value=${value# } value=${value% }
+    printf '%s' "$value"
+}
+has_words() { [[ " $1 " == *" $2 "* ]]; }
+has_model_words() {
+    local words=$1 model=$2 remainder next
+    [[ -n $model && ! $model =~ ^[0-9]+$ ]] || return 1
+    remainder=" $words "
+    while [[ $remainder == *" $model "* ]]; do
+        remainder=${remainder#*" $model "}
+        next=${remainder%% *}
+        [[ ! $next =~ ^[0-9]+$ ]] && return 0
+    done; return 1
+}
+authorization_clause() {
+    local words=$1
+    case $words in
+        please\ use\ *) printf '%s' "${words#please use }" ;;
+        use\ *) printf '%s' "${words#use }" ;;
+        i\ authorize\ *) printf '%s' "${words#i authorize }" ;;
+        authorize\ *) printf '%s' "${words#authorize }" ;;
+        i\ approve\ *) printf '%s' "${words#i approve }" ;;
+        i\ consent\ to\ *) printf '%s' "${words#i consent to }" ;;
+        also\ each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#also each pr is authorized to have one }" ;;
+        each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#each pr is authorized to have one }" ;;
+        this\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#this pr is authorized to have one }" ;;
+        *) return 1 ;;
+    esac
+}
+has_authorized_relationship() {
+    local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
+    clause=$(authorization_clause "$words") || return 1
+    case $provider in
+        anthropic) lead='((claude|anthropic)( with)? )?' ;;
+        openai) lead='((codex|openai)( with)? )?' ;;
+        *) lead="($(normalize_words "$provider")( with)? )?" ;;
+    esac
+    scope='(of this (pr|pull request|diff)|for this pr|on this pr|on it|of (the|that) diff|of (pr|pull request) [0-9]+)'
+    tail="(for )?(adversarial review|cross review|review)( $scope)?( do not ask again)?"
+    for model in "$model_words" "$model_alias"; do
+        [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
+        pattern="^${lead}${model} ${tail}$"
+        [[ $clause =~ $pattern ]] && return 0
+    done; return 1
+}
+strip_quoted_segments() {
+    local input=$1 output='' quote='' char close='' previous='' following='' i curly_open=$'\u2018' curly_close=$'\u2019'
+    for ((i = 0; i < ${#input}; i++)); do
+        char=${input:i:1}
+        previous='' following=''
+        ((i == 0)) || previous=${input:i-1:1}
+        ((i + 1 >= ${#input})) || following=${input:i+1:1}
+        if [[ ($char == "'" || $char == "$curly_close") && $previous =~ [[:alnum:]] && $following =~ [[:alnum:]] ]]; then
+            [[ -n $quote ]] || output+=$char
+            continue
+        fi
+        if [[ -n $quote ]]; then
+            [[ $char == "$close" ]] && quote=''
+            continue
+        fi
+        case $char in
+            \"|\'|'`') quote=$char; close=$char ;;
+            '“') quote=$char; close='”' ;; "$curly_open") quote=$char; close=$curly_close ;;
+            *) output+=$char ;;
+        esac
+    done
+    [[ -z $quote ]] || return 1
+    printf '%s' "$output"
+}
+affirmation_refusal() {
+    local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
+    record_refused_grant || die 'cannot persist refused-grant provenance'
+    ((provider_found)) || printf '%s: operator instruction missing provider; accepted: %s\n' "$PROGNAME" "$provider_spellings" >&2
+    ((model_found)) || printf '%s: operator instruction missing model; accepted: %s\n' "$PROGNAME" "$model_spellings" >&2
+    ((purpose_found)) || printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
+    exit 2
+}
+
+validate_operator_affirmation() {
+    local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words purpose_words
+    local model_words model_alias model_spellings provider_spellings provider_found=0 model_found=0 purpose_found=0
+    local affirmative=0 safe=1 payload_pr explicit_pr token purpose_pattern='^(one )?(adversarial review|cross review|review)( of (that|this) (diff|pr|pull request))?$'
+    field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
+    outside=$(strip_quoted_segments "$instruction") || outside=''
+    words=$(normalize_words "$outside")
+    full_words=$(normalize_words "$instruction")
+    destination_words=$(normalize_words "$destination"); purpose_words=$(normalize_words "$PURPOSE")
+    model_words=$(normalize_words "$MODEL")
+    model_alias=$model_words
+    case $PROVIDER in
+        anthropic)
+            provider_spellings='Claude, Opus, anthropic'
+            model_alias=${model_alias#claude }
+            for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && provider_found=1; done
+            for token in openai codex gpt; do has_words "$words" "$token" && safe=0; done
+            has_words "$destination_words" anthropic || has_words "$destination_words" claude || provider_found=0
+            for token in openai codex gpt; do has_words "$destination_words" "$token" && provider_found=0; done
+            ;;
+        openai)
+            provider_spellings='Codex, GPT-5.6, openai'
+            model_alias=${model_alias#openai }
+            for token in openai codex gpt; do has_words "$words" "$token" && provider_found=1; done
+            for token in anthropic claude opus sonnet haiku; do has_words "$words" "$token" && safe=0; done
+            has_words "$destination_words" openai || has_words "$destination_words" codex || provider_found=0
+            for token in anthropic claude opus sonnet haiku; do has_words "$destination_words" "$token" && provider_found=0; done
+            ;;
+        *)
+            provider_spellings=$PROVIDER
+            has_words "$words" "$(normalize_words "$PROVIDER")" && provider_found=1
+            has_words "$destination_words" "$(normalize_words "$PROVIDER")" || provider_found=0
+            ;;
+    esac
+    case $model_alias in
+        opus*) model_spellings="$MODEL, Opus${model_alias#opus}" ;;
+        *) model_spellings="$MODEL, $model_alias" ;;
+    esac
+    if [[ $MODEL == *'['* || $MODEL == *']'* || $MODEL == *'*'* || $MODEL == *'?'* ]]; then
+        [[ $instruction == *"${MODEL,,}"* ]] && model_found=1
+    elif has_model_words "$words" "$model_words" || has_model_words "$words" "$model_alias"; then
+        model_found=1
+    fi
+    if has_words "$words" 'adversarial review' || has_words "$words" review || has_words "$words" 'cross review'; then
+        purpose_found=1
+    fi
+    [[ $purpose_words =~ $purpose_pattern ]] || purpose_found=0
+    has_authorized_relationship "$words" "$PROVIDER" "$model_words" "$model_alias" && affirmative=1
+    full_words=${full_words%' do not ask again'}
+    for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden revoke revoked instead if unless rather; do
+        has_words "$full_words" "$token" && safe=0
+    done
+    [[ $instruction != *'?'* ]] || safe=0
+    [[ ! $full_words =~ (^|[[:space:]])[[:alnum:]]+n[[:space:]]+t($|[[:space:]]) ]] || safe=0
+    payload_pr=${PAYLOAD#*:}; payload_pr=${payload_pr%%:*}
+    [[ ! $words =~ (^|[[:space:]])(another|other|different)[[:space:]]+(pr|pull[[:space:]]+request)($|[[:space:]]) ]] || safe=0
+    if [[ $words =~ (^|[[:space:]])(pr|pull[[:space:]]+request)[[:space:]]+([0-9]+)($|[[:space:]]) ]]; then
+        explicit_pr=${BASH_REMATCH[3]}
+        [[ $explicit_pr == "$payload_pr" ]] || safe=0
+    fi
+    ((affirmative && safe)) || purpose_found=0
+    ((provider_found && model_found && purpose_found)) ||
+        affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings"
+}
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||
         die_usage '--source must be interactive, auto-review-flag or operator-instruction'
@@ -423,35 +604,18 @@ grant_command() {
         [[ -z $PATHS_FILE ]] || die_usage 'interactive grants stay exact-payload and reject --paths-file'
     fi
     PROVIDER=$(normalize_provider "$PROVIDER")
+    [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
+    validate_record_fields
+    private_dir_ensure "$(dirname -- "$STATE_PATH")" 'consent state parent'
+    validate_state_for_write
     if [[ $SOURCE == operator-instruction ]]; then
-        local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} peer=$PROVIDER
-        field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
-        case $PROVIDER in anthropic) peer=claude ;; openai) peer=codex ;; esac
-        local verb actor suffix affirmative=0
-        # Whole literal forms: supplied fields are data, never regex or suffix syntax.
-        for verb in use 'i authorize'; do
-            for actor in "$PROVIDER" "$peer"; do
-                for suffix in '' '.' ' of this pr' ' of this pr.' \
-                    '; do not ask again' '; do not ask again.' \
-                    ' of this pr; do not ask again' ' of this pr; do not ask again.'; do
-                    if [[ $instruction == "$verb $actor with ${MODEL,,} for ${PURPOSE,,}$suffix" ]]; then
-                        affirmative=1; break 3
-                    fi
-                done
-            done
-        done
-        [[ -n $instruction && -n $MODEL && -n $PURPOSE && -n $destination &&
-           $affirmative == 1 && ( $destination == *"$PROVIDER"* || $destination == *"$peer"* ) ]] ||
-            die_usage 'operator instruction must affirmatively name provider, model and purpose'
+        validate_operator_affirmation
         disclose_command
         printf 'model=%s\n' "$MODEL"
     elif [[ -n $OPERATOR_INSTRUCTION || -n $MODEL ]]; then
         die_usage 'operator instruction and model require --source operator-instruction'
     fi
-    [[ -z $STATE_PATH ]] && STATE_PATH=$(consent_state_path)
-    validate_record_fields
-    private_dir_ensure "$(dirname -- "$STATE_PATH")" 'consent state parent'
-    validate_state_for_write
+    load_prior_source || die 'cannot read refused-grant provenance'
     local paths_hash='' decision_hash='' decision_tmp
     [[ -z $PATHS_FILE ]] || paths_hash=$(record_granted_paths "$PATHS_FILE") ||
         die "cannot persist granted path list: $PATHS_FILE"
@@ -470,6 +634,8 @@ grant_command() {
         decision_hash=$(sha256sum -- "$STATE_PATH.decision.json" | awk '{print $1}') || die 'cannot hash operator decision'
     fi
     write_record "$paths_hash" "$decision_hash" || die "cannot persist consent state: $STATE_PATH"
+    [[ -z $PRIOR_SOURCE ]] || printf '%s: warning: consent source changed from %s to %s\n' \
+        "$PROGNAME" "$PRIOR_SOURCE" "$SOURCE" >&2
 }
 
 check_command() {
@@ -509,6 +675,13 @@ check_command() {
         printf '%s: check failed: could not read consent record: %s\n' "$PROGNAME" "$STATE_PATH" >&2
         return 10
     }
+    for expected in interactive auto-review-flag operator-instruction; do
+        local prior
+        for prior in interactive auto-review-flag operator-instruction; do
+            [[ $prior == "$expected" ]] && continue
+            record=${record/;source=$expected;prior-source=$prior;relabeled=true/;source=$expected}
+        done
+    done
     if [[ $record == *';source=operator-instruction;'* ]]; then
         local decision=$STATE_PATH.decision.json digest decision_payload decision_paths
         [[ -f $decision && ! -L $decision && -O $decision &&
