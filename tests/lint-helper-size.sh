@@ -105,9 +105,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #779 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
+# Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #783: computed coverage, atomic producers, and filename-bound report identity.
 # #777 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #778 + #780 merge-down: canonical helper lint measured the exact combined total.
-readonly MAX_TREE_TOKENS=450696
+# #783 + #780 merge-down: canonical helper lint measured the exact combined total.
+readonly MAX_TREE_TOKENS=453705
 
 violations=0
 checked=0
