@@ -160,6 +160,7 @@ repo_config=$script_dir/../../.shared/scripts/repo-config.sh
 contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
 sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
 harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
+contract_cache_lib=$script_dir/../../.shared/scripts/lib/contract-cache.sh
 yield_cap_lib=$script_dir/../../.shared/scripts/lib/yield-cap.sh
 wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
@@ -167,6 +168,7 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 [[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
+[[ -r $contract_cache_lib ]] || die "missing contract-cache.sh: $contract_cache_lib"
 [[ -r $yield_cap_lib ]] || die "missing yield-cap.sh: $yield_cap_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
 fence_script=$script_dir/fence-untrusted-data.sh
@@ -179,7 +181,11 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 [[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] ||
     die "could not parse a numeric wait bound from wait-discipline.md's Worker implementation wait row: $worker_wait_bound_row"
 
-contract=$worktree/.agent/env-contract.txt
+# Resolve the same current-harness contract that contract-read.sh reads and
+# agent-preflight.sh --ensure repairs. The bare name is only its legacy fallback.
+# shellcheck disable=SC1090,SC1091
+source "$contract_cache_lib"
+contract=$(contract_cache_contract_file "$worktree")
 spec=
 prior_art=
 emit_acceptance_declarations() {
@@ -286,9 +292,6 @@ emit_verify_runbook() {
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
 source "$sandbox_comparator_lib"
-# shellcheck disable=SC1090,SC1091
-source "$script_dir/../../.shared/scripts/lib/contract-cache.sh"
-
 root_git_common=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null) || root_git_common=''
 # Initialized unconditionally (issue #332 F4): this branch does not always
 # run (root_git_common can be empty outside a git work tree), and an unset
