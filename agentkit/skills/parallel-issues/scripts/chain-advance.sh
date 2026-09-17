@@ -190,10 +190,9 @@ iso_to_epoch() {
 # when CI started during the edit, and it changes on every retry.
 timeline_boundary() {
     local timeline event_time epoch
-    # `--paginate` alone emits one array PER PAGE, truncating a multi-page
-    # timeline to its first (oldest) match (issue #607 F1); `--slurp --jq
-    # 'add'` flattens every page first, like cover_retarget_lineage's read.
-    timeline=$("$GH_BIN" api "repos/$REPO/issues/$PR/timeline" --paginate --slurp --jq 'add' 2>/dev/null) || return 1
+    # `--paginate --slurp` emits an array of page arrays. Flatten it with
+    # external jq because gh rejects combining --slurp with its --jq flag.
+    timeline=$("$GH_BIN" api "repos/$REPO/issues/$PR/timeline" --paginate --slurp 2>/dev/null | jq 'add') || return 1
     event_time=$(jq -r --arg base "$BASE" '
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .[]?
@@ -858,12 +857,10 @@ cover_retarget_lineage() {
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
     comments_file=$(mktemp "${TMPDIR:-/tmp}/chain-advance-cover.XXXXXXXXXX") || return 0
     chmod 600 -- "$comments_file" 2>/dev/null || true
-    # --paginate alone emits one bare JSON array PER PAGE, but review-ledger.sh
-    # requires exactly ONE array (fix batch #2 F4): --slurp wraps the pages and
-    # --jq 'add' flattens them, so a multi-page comment set is not truncated to
-    # page one.
-    if "$GH_BIN" api "repos/$repo/issues/$pr/comments" --paginate --slurp --jq 'add' \
-        -H 'Accept: application/vnd.github+json' >"$comments_file" 2>/dev/null; then
+    # --paginate --slurp emits an array of page arrays, but review-ledger.sh
+    # needs one array. External jq flattens it without incompatible gh flags.
+    if "$GH_BIN" api "repos/$repo/issues/$pr/comments" --paginate --slurp \
+        -H 'Accept: application/vnd.github+json' 2>/dev/null | jq 'add' >"$comments_file" 2>/dev/null; then
         # --kind adversarial (fix batch #2 F3): an unfiltered call extends
         # whichever review entry is LAST in the ledger, which may be a bot
         # entry (e.g. a CodeRabbit record appended after the adversarial
