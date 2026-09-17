@@ -89,4 +89,17 @@ for skill in parallel-issues review-remote-pr pr-to-green onboard-repo; do
         done
     done
 done
+
+relative_repo="$tmp/parallel-relative-contract"
+git init -q "$relative_repo"
+mkdir -p "$relative_repo/.agent" "$relative_repo/relative-skills/.shared/scripts"
+printf '%s\n' 'skills= path=relative-skills' >"$relative_repo/.agent/env-contract.codex.txt"
+relative_rc=0
+relative_out=$(cd "$relative_repo" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE -u OPENCODE_PID \
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" CODEX_PERMISSION_PROFILE=test \
+    bash "$tmp/parallel-issues.sh" 2>&1) || relative_rc=$?
+assert_eq 1 "$relative_rc" 'parallel helper-owned resolver refuses a relative skills path'
+assert_not_contains "$relative_out" 'WARMUP_SELECTED=' \
+    'a relative skills path never becomes the selected helper root'
 finish

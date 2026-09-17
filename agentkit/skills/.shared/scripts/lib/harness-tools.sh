@@ -34,6 +34,13 @@ harness_tools_record_valid() {
     [[ $line =~ $record_re ]]
 }
 
+harness_tools_record_matches() {
+    local line=${1:-} harness=${2:-unknown} expected
+    harness_tools_record_valid "$line" || return 1
+    expected=$(harness_tools_line "$harness") || return 1
+    [[ $line == "$expected" ]]
+}
+
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     harness_tools_line "${1:-unknown}"
 fi

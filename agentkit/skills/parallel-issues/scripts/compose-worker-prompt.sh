@@ -269,7 +269,8 @@ tools_count=$(grep -c '^tools=' "$contract" 2>/dev/null || true)
 tools_line=$(grep -m1 '^tools=' "$contract")
 # shellcheck disable=SC1090,SC1091
 source "$harness_tools_lib"
-harness_tools_record_valid "$tools_line" ||
+detected_tools_harness=$(contract_cache_harness_name 2> /dev/null || printf unknown)
+harness_tools_record_matches "$tools_line" "$detected_tools_harness" ||
     die "invalid tools= record in environment contract: $tools_line; recovery: $tools_recovery"
 yield_cap_line=$(grep -m1 '^yield-cap=' "$contract" 2>/dev/null || true)
 if [[ -z $yield_cap_line ]]; then

@@ -617,6 +617,32 @@ assert_contains "$out" 'tools= spawn=' \
 assert_not_contains "$out" 'tools= spawn=bad value' \
     '--ensure never serves malformed runtime-tool metadata from cache'
 
+codex_tools="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
+claude_tools="tools= spawn=Agent wait=TaskOutput send=SendMessage list='Agent,TaskOutput,SendMessage'"
+for swapped_harness in codex claude; do
+    swapped_repo=$(new_repo)
+    case $swapped_harness in
+        codex)
+            harness_env=(env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test)
+            wrong_tools=$claude_tools
+            expected_tools=$codex_tools
+            ;;
+        claude)
+            harness_env=(env CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=)
+            wrong_tools=$codex_tools
+            expected_tools=$claude_tools
+            ;;
+    esac
+    "${harness_env[@]}" "$script" --worktree "$swapped_repo" > /dev/null 2>&1
+    sed -i "s|^tools=.*|$wrong_tools|" "$swapped_repo/.agent/env-contract.txt"
+    swapped_out=$("${harness_env[@]}" "$script" --ensure --worktree "$swapped_repo" \
+        2> "$tmp/ensure-$swapped_harness-tools-stderr")
+    assert_contains "$swapped_out" "$expected_tools" \
+        "--ensure replaces a swapped mapping with the detected $swapped_harness harness mapping"
+    assert_not_contains "$swapped_out" "$wrong_tools" \
+        "--ensure never serves the other harness's syntactically valid mapping under $swapped_harness"
+done
+
 # --- --ensure must not serve a stamp that no longer matches the running tree
 # (P2 review follow-up on #453): presence-only checks above are not enough --
 # a contract can carry a well-formed skills-content= line whose VALUE is
@@ -1406,8 +1432,8 @@ assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo 
 # issue #610: caches= grew CARGO_HOME/GOMODCACHE in place; issue #690 review:
 # +10 lines for the writable-default-cargo-home check the contract token now
 # mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1398 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1398 lines (including runtime-tool metadata)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1401 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1401 lines (including absolute-path guard and harness-bound tools)'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
