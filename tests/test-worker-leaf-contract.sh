@@ -17,7 +17,7 @@ mkdir -p "$repo/.agent"
 git -C "$repo" init -q
 printf '%s\n' 'AGENT_REPO_SLUG=example/repo' 'AGENT_BASE_BRANCH=main' \
     'AGENT_CMD_TEST=tests/test.sh' > "$repo/.agent/config.env"
-printf 'skills= path=%s\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+printf "skills= path=%s\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
     "$skills" > "$repo/.agent/env-contract.txt"
 printf '%s\n' none > "$repo/.agent/prior-art.txt"
 

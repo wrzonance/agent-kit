@@ -57,6 +57,10 @@ PROGRAM = 'parse-rollout'
 # cites for the false-positive/false-negative cases this was checked
 # against before being adopted.
 REFERENCE_PATH_RE = re.compile(r'(?:^|[\s"\'])((?:[\w./-]*?)(?:references|\.shared)/[\w.-]+\.md)')
+PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|more)(?=\s)')
+CUSTOM_EXEC_CMD_RE = re.compile(
+    r'tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*"((?:\\.|[^"\\])*)"', re.DOTALL)
+INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
 TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
 CALL_TYPES = ('function_call', 'custom_tool_call')
@@ -96,6 +100,155 @@ def empty_token_bucket():
     return dict.fromkeys(TOKEN_CLASSES, 0)
 
 
+def record_timestamp(record):
+    raw = record.get('timestamp')
+    if not isinstance(raw, str):
+        payload = record.get('payload')
+        raw = payload.get('timestamp') if isinstance(payload, dict) else None
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace('Z', '+00:00')).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def decoded_call_arguments(payload):
+    raw = payload.get('arguments', payload.get('input', ''))
+    if isinstance(raw, dict):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def is_poll_call(payload):
+    name = payload.get('name', '').rsplit('.', 1)[-1]
+    if name in {'wait_agent', 'wait'}:
+        return True
+    return name == 'write_stdin' and not decoded_call_arguments(payload).get('chars')
+
+
+def call_command_text(payload):
+    raw = payload.get('arguments', payload.get('input', ''))
+    decoded = decoded_call_arguments(payload)
+    command = decoded.get('cmd', decoded.get('command'))
+    if isinstance(command, list):
+        return ' '.join(str(part) for part in command)
+    if isinstance(command, str):
+        return command
+    custom_commands = custom_exec_commands(payload)
+    if len(custom_commands) == 1:
+        return custom_commands[0]
+    return raw if isinstance(raw, str) else ''
+
+
+def is_log_read(payload):
+    command = call_command_text(payload)
+    return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:tail|sed)(?=\s)', command))
+
+
+def custom_exec_commands(payload):
+    raw = payload.get('input', '')
+    if payload.get('type') != 'custom_tool_call' or not isinstance(raw, str):
+        return []
+    commands = []
+    for match in CUSTOM_EXEC_CMD_RE.findall(raw):
+        try:
+            commands.append(json.loads(f'"{match}"'))
+        except json.JSONDecodeError:
+            return []
+    return commands
+
+
+def command_reads_prose(command):
+    return '.md' in command and bool(PROSE_READ_RE.search(command))
+
+
+def prose_read_kind(payload):
+    call_type = payload.get('type')
+    call_name = payload.get('name', '').rsplit('.', 1)[-1].lower()
+    if call_type == 'custom_tool_call':
+        if call_name != 'exec':
+            return 'none'
+        commands = custom_exec_commands(payload)
+        if len(commands) > 1:
+            return 'unavailable' if any(command_reads_prose(command) for command in commands) else 'none'
+        if len(commands) != 1:
+            return 'none'
+        return 'exact' if command_reads_prose(commands[0]) else 'none'
+    elif call_name not in {'exec_command', 'shell', 'bash'}:
+        return 'none'
+    return 'exact' if command_reads_prose(call_command_text(payload)) else 'none'
+
+
+def message_texts(payload):
+    content = payload.get('content')
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [part['text'] for part in content
+            if isinstance(part, dict) and isinstance(part.get('text'), str)]
+
+
+def injected_skill_chars(payload):
+    total = 0
+    for value in message_texts(payload):
+        marker = value.find(INJECTED_SKILL_MARKER)
+        if marker < 0:
+            continue
+        body = value.find('\n\n---\n', marker)
+        if body >= 0:
+            total += len(value[body + 2:])
+    return total
+
+
+def output_chars(payload):
+    output = payload.get('output', '')
+    if isinstance(output, str):
+        return len(output)
+    if isinstance(output, list):
+        return sum(len(part.get('text', '')) for part in output
+                   if isinstance(part, dict) and isinstance(part.get('text'), str))
+    return 0
+
+
+def token_count_input(payload):
+    info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
+    usage = info.get('last_token_usage') if isinstance(info.get('last_token_usage'), dict) else info
+    value = usage.get('input_tokens')
+    return int(value) if isinstance(value, (int, float)) and value >= 0 else None
+
+
+def merge_polling_report(actors):
+    turns = sum(actor['polling']['turns'] for actor in actors)
+    inputs_complete = all(actor['polling']['inputs_complete'] for actor in actors)
+    poll_input_tokens = sum(actor['polling']['input_tokens'] for actor in actors) if inputs_complete else None
+    intervals = [interval for actor in actors for interval in actor['polling']['intervals']]
+    intervals_complete = all(actor['polling']['intervals_complete'] for actor in actors)
+    wait_seconds = None
+    if intervals_complete:
+        elapsed = 0.0
+        current_end = None
+        for start, end in sorted(intervals):
+            if end < start:
+                intervals_complete = False
+                break
+            if current_end is None or start > current_end:
+                elapsed += end - start
+                current_end = end
+            elif end > current_end:
+                elapsed += end - current_end
+                current_end = end
+        if intervals_complete:
+            wait_seconds = round(elapsed, 3)
+    rate = round(turns / (wait_seconds / 60), 3) if wait_seconds else None
+    return turns, poll_input_tokens, wait_seconds, rate
+
+
 def function_call_text(arguments_raw):
     decoded = arguments_raw
     if isinstance(arguments_raw, str):
@@ -129,7 +282,7 @@ def extract_reference_hits(arguments_raw):
     return REFERENCE_PATH_RE.findall(text)
 
 
-def record_timestamp(record):
+def pre_spawn_timestamp(record):
     raw = record.get('timestamp')
     payload = record.get('payload') if isinstance(record.get('payload'), dict) else {}
     raw = raw or payload.get('timestamp')
@@ -150,20 +303,24 @@ def is_spawn_call(payload):
 def classify_pre_spawn_call(payload):
     name = str(payload.get('name', '')).lower()
     text = function_call_text(call_arguments(payload)).lower()
-    if re.search(r'(^|\s)gh\s|/issues/|/pulls/|project item-', text):
-        return 'issue_forge_data'
+    matches = []
+    if re.search(r'\bgh\s|/issues/|/pulls/|project item-', text):
+        matches.append('issue_forge_data')
     if ('all_tools' in text
             or any(marker in name for marker in ('tool_search', 'list_mcp', 'list_tools'))):
-        return 'tool_interface_discovery'
+        matches.append('tool_interface_discovery')
     if re.search(r'(references/|\.shared/)[^\s"\']+\.md\b|(^|[/\s])skill\.md\b', text):
-        return 'skill_reference_prose'
+        matches.append('skill_reference_prose')
     if re.search(r'(^|[ /])(agents|claude)\.md\b|\.(py|sh|js|ts|json|ya?ml)\b', text):
-        return 'repository_source_docs'
-    return 'unknown_other'
+        matches.append('repository_source_docs')
+    if len(matches) == 1:
+        return matches[0], False
+    return 'unknown_other', len(matches) > 1
 
 
 def stable_call_id(value):
-    return value if isinstance(value, (str, int)) and not isinstance(value, bool) else None
+    return value if ((isinstance(value, str) and value) or
+                     (isinstance(value, int) and not isinstance(value, bool))) else None
 
 
 def item_payload(record):
@@ -192,7 +349,13 @@ def collect_pre_spawn_chars(records):
         if payload.get('type') in CALL_TYPES:
             call_id = stable_call_id(payload.get('call_id'))
             if call_id is not None:
-                call_categories[call_id] = classify_pre_spawn_call(payload)
+                category, ambiguous = classify_pre_spawn_call(payload)
+                if call_id in call_categories or ambiguous:
+                    category = 'unknown_other'
+                    missing_attribution = True
+                call_categories[call_id] = category
+            else:
+                missing_attribution = True
         elif payload.get('type') in CALL_OUTPUT_TYPES:
             length = captured_text_length(payload.get('output'))
             call_id = stable_call_id(payload.get('call_id'))
@@ -208,8 +371,8 @@ def collect_pre_spawn_chars(records):
 
 
 def elapsed_seconds(start_record, end_record):
-    start = record_timestamp(start_record)
-    end = record_timestamp(end_record)
+    start = pre_spawn_timestamp(start_record)
+    end = pre_spawn_timestamp(end_record)
     if not start or not end:
         return None
     try:
@@ -270,6 +433,17 @@ def parse_session_file(path):
     tokens = empty_token_bucket()
     reference_hits = {}
     trial_meta = None
+    pending_input_tokens = None
+    response_calls = []
+    polling = {'turns': 0, 'input_tokens': 0, 'inputs_complete': True,
+               'intervals': [], 'intervals_complete': True}
+    pending_poll_calls = {}
+    churn = {'resume_calls': 0, 'min_yield_ms': None, 'log_reads_between_resumes': 0}
+    resume_state = {}
+    active_resume = None
+    prose_chars_injected = 0
+    prose_chars_read = 0
+    pending_prose_reads = set()
 
     records = read_records(path)
     pre_spawn = build_pre_spawn_report(records)
@@ -288,20 +462,89 @@ def parse_session_file(path):
         elif rtype == 'turn_context':
             model = payload.get('model', model)
             effort = payload.get('effort', effort)
+        elif rtype == 'response_item' and payload.get('type') == 'message':
+            prose_chars_injected += injected_skill_chars(payload)
         elif (rtype == 'response_item' or rtype in CALL_TYPES) and item.get('type') in CALL_TYPES:
             for ref_path in extract_reference_hits(call_arguments(item)):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
+            poll_call = is_poll_call(item)
+            if pending_input_tokens is None:
+                response_calls.append(poll_call)
+            elif poll_call:
+                polling['input_tokens'] += pending_input_tokens
+
+            call_name = item.get('name', '').rsplit('.', 1)[-1]
+            arguments = decoded_call_arguments(item)
+            call_id = item.get('call_id')
+            prose_kind = prose_read_kind(item)
+            if prose_kind == 'unavailable':
+                prose_chars_read = None
+            elif prose_kind == 'exact' and isinstance(call_id, str) and call_id:
+                pending_prose_reads.add(call_id)
+            if call_name == 'write_stdin' and not arguments.get('chars'):
+                resume_key = arguments.get('session_id', arguments.get('cell_id', 'unknown'))
+                slot = resume_state.setdefault(resume_key, {'seen': False, 'pending_reads': 0})
+                if slot['seen']:
+                    churn['log_reads_between_resumes'] += slot['pending_reads']
+                slot.update(seen=True, pending_reads=0)
+                active_resume = resume_key
+                churn['resume_calls'] += 1
+                yield_ms = arguments.get('yield_time_ms')
+                if isinstance(yield_ms, int) and yield_ms >= 0:
+                    current = churn['min_yield_ms']
+                    churn['min_yield_ms'] = yield_ms if current is None else min(current, yield_ms)
+            elif active_resume is not None and is_log_read(item):
+                resume_state[active_resume]['pending_reads'] += 1
+            if poll_call:
+                polling['turns'] += 1
+                started = record_timestamp(rec)
+                if started is None:
+                    polling['intervals_complete'] = False
+                else:
+                    call_id = item.get('call_id')
+                    if not isinstance(call_id, str) or not call_id or call_id in pending_poll_calls:
+                        polling['intervals_complete'] = False
+                    else:
+                        pending_poll_calls[call_id] = started
+            pending_input_tokens = None
+        elif (rtype == 'response_item' or rtype in CALL_OUTPUT_TYPES) and item.get('type') in CALL_OUTPUT_TYPES:
+            call_id = item.get('call_id')
+            if isinstance(call_id, str) and call_id in pending_prose_reads:
+                if prose_chars_read is not None:
+                    prose_chars_read += output_chars(item)
+                pending_prose_reads.remove(call_id)
+            if isinstance(call_id, str) and call_id in pending_poll_calls:
+                ended = record_timestamp(rec)
+                if ended is None:
+                    polling['intervals_complete'] = False
+                else:
+                    polling['intervals'].append((pending_poll_calls[call_id], ended))
+                del pending_poll_calls[call_id]
         elif rtype == 'event_msg' and payload.get('type') == 'token_count':
             info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
             tokens['input'] += int(info.get('input_tokens', 0) or 0)
             tokens['cache_read'] += int(info.get('cached_input_tokens', 0) or 0)
             tokens['cache_write'] += int(info.get('cache_write_tokens', 0) or 0)
             tokens['output'] += int(info.get('output_tokens', 0) or 0)
+            usage_input = token_count_input(payload)
+            if response_calls:
+                if any(response_calls) and (not all(response_calls) or usage_input is None):
+                    polling['inputs_complete'] = False
+                elif all(response_calls):
+                    polling['input_tokens'] += usage_input
+                response_calls.clear()
+            else:
+                pending_input_tokens = usage_input
         elif rtype == 'bench_trial_meta':
             trial_meta = payload
 
     if not actor:
         die(f'{path}: no session_meta record carries an "originator" -- cannot attribute this file to an actor')
+
+    if pending_poll_calls:
+        polling['intervals_complete'] = False
+    if any(response_calls):
+        polling['inputs_complete'] = False
 
     return {
         'actor': actor,
@@ -312,6 +555,10 @@ def parse_session_file(path):
         'pre_spawn': pre_spawn,
         'trial_meta': trial_meta,
         'efficiency': efficiency,
+        'polling': polling,
+        'verification_churn': churn,
+        'prose_chars_injected': prose_chars_injected,
+        'prose_chars_read': prose_chars_read,
     }
 
 
@@ -446,6 +693,8 @@ def main(argv):
         overrides = load_json_file(args.pricing, 'pricing file')
         pricing.update(overrides)
     blended_usd = compute_blended_usd(parsed, pricing)
+    poll_turns, poll_input_tokens, wait_seconds, requests_per_wait_minute = merge_polling_report(parsed)
+    workers = [actor for actor in parsed if actor['actor'] != 'orchestrator']
 
     acceptance = None
     if args.acceptance:
@@ -469,6 +718,15 @@ def main(argv):
         'void_reasons': void_reasons,
         'tokens': token_report,
         'blended_usd': blended_usd,
+        'poll_turns': poll_turns,
+        'poll_input_tokens': poll_input_tokens,
+        'wait_seconds': wait_seconds,
+        'requests_per_wait_minute': requests_per_wait_minute,
+        'worker_resume_calls': {a['actor']: a['verification_churn']['resume_calls'] for a in workers},
+        'worker_min_yield_ms': {a['actor']: a['verification_churn']['min_yield_ms'] for a in workers},
+        'log_reads_between_resumes': {
+            a['actor']: a['verification_churn']['log_reads_between_resumes'] for a in workers
+        },
         'reference_hits': reference_report,
         'pre_spawn_seconds': pre_spawn['seconds'],
         'pre_spawn_chars': pre_spawn['chars'],
@@ -484,6 +742,8 @@ def main(argv):
         'dynamic_efficiency': {
             'schema_version': 1,
             'actors': [{'actor': a['actor'], 'model': a['model'], 'effort': a['effort'],
+                        'prose_chars_injected': a['prose_chars_injected'],
+                        'prose_chars_read': a['prose_chars_read'],
                         **a['efficiency']} for a in parsed],
         },
     }

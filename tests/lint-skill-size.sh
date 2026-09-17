@@ -27,10 +27,11 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # Exact measured body sizes; ratchet history lives in `git blame`, not here.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    # #785: durable bare-review defaulting contract.
-    [review-remote-pr]="473:8386:450"
-    # #785: final sweep rehydrates PRs from run-state.
-    [parallel-issues]="960:18376:900"
+    # #785: durable bare-review defaulting after the helper-owned recipe split.
+    [review-remote-pr]="473:8411:450"
+    # #777: helper-owned recipes shrink the injected body toward the standard budget.
+    # #779: retain destination-adjacent plan publication in the extracted body.
+    [parallel-issues]="752:15756:500"
 )
 
 readonly MAX_BODY_LINES=500

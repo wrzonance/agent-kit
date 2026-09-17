@@ -26,6 +26,57 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 text=$(<"$skill")
 normalized_text=$(tr '\n' ' ' <<<"$text" | tr -s '[:space:]' ' ')
+assert_contains "$text" 'The injected body is authoritative' \
+    'the skill tells a root not to read its already-injected body again'
+assert_contains "$text" 'agent-preflight.sh" --help' \
+    'the body points at helper-owned Step 0 recipes'
+assert_contains "$text" 'session-ledger.sh" --help' \
+    'the body points at helper-owned ledger recipes'
+
+agent_preflight_help=$("$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help)
+session_ledger_help=$("$root/agentkit/skills/.shared/scripts/session-ledger.sh" --help)
+repo_config_help=$("$root/agentkit/skills/.shared/scripts/repo-config.sh" --help)
+triage_help=$("$root/agentkit/skills/.shared/scripts/triage-issues.sh" --help)
+concurrency_help=$("$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh" --help)
+move_help=$("$root/agentkit/skills/parallel-issues/scripts/move-github-project-item.sh" --help)
+boundary_help=$("$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh" --help)
+prepare_help=$("$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh" --help)
+assert_contains "$agent_preflight_help" 'Recipe: resolve, rehydrate, and run once' \
+    'agent-preflight help owns the removed Step 0 recipe'
+assert_contains "$agent_preflight_help" 'keyed_contract=' \
+    'the moved resolver preserves harness-keyed contract selection'
+assert_contains "$agent_preflight_help" '! -L $contract_root/.agent' \
+    'the moved resolver preserves symlink rejection'
+assert_contains "$agent_preflight_help" '-O $contract' \
+    'the moved resolver preserves owner validation'
+assert_contains "$agent_preflight_help" 'ls-files --error-unmatch' \
+    'the moved resolver preserves the untracked-contract proof'
+assert_contains "$agent_preflight_help" "printf '%s\\n' '.agent/*'" \
+    'the moved preflight preserves the local exclusion allowlist'
+assert_contains "$agent_preflight_help" 'contract skills path mismatch' \
+    'the moved preflight preserves contract provenance validation'
+assert_contains "$session_ledger_help" 'Recipe: establish and reuse one run ID' \
+    'session-ledger help owns the removed ledger recipe'
+assert_contains "$session_ledger_help" 'trust-trunk=${trust_trunk:-false}' \
+    'the moved ledger recipe preserves the invocation flag tuple'
+assert_contains "$repo_config_help" 'Recipe: establish repository facts' \
+    'repo-config help owns the removed repository-facts recipe'
+assert_contains "$triage_help" 'Recipe: triage once' \
+    'triage help owns the removed one-call recipe'
+assert_contains "$concurrency_help" 'Recipe: read the dispatch cap' \
+    'concurrency-cap help owns its removed invocation recipe'
+assert_contains "$move_help" 'Recipe: move a selected issue set' \
+    'project-item help owns its removed invocation recipe'
+assert_contains "$boundary_help" 'Recipe: select once before fetching' \
+    'boundary-mode help owns its removed selection recipe'
+assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \
+    'artifact helper help owns its removed preparation recipe'
+assert_contains "$prepare_help" '--scratch-label "prior-art-$issue_number-$RUN_ID"' \
+    'the moved artifact recipe preserves unique prior-art scratch allocation'
+assert_contains "$prepare_help" 'if [[ -n $prior_art_file ]]' \
+    'the moved artifact recipe passes --prior-art only when a digest exists'
+assert_contains "$prepare_help" 'rm -f -- "$prior_art_file"' \
+    'the moved artifact recipe preserves scratch cleanup'
 review_skill_text=$(<"$review_skill")
 normalized_review_text=$(tr '\n' ' ' <<<"$review_skill_text" | tr -s '[:space:]' ' ')
 assert_contains "$normalized_text" 'worker=<model> <effort>' \
@@ -225,7 +276,7 @@ assert_contains "$triage_and_selection_text" 'merge-down' \
     'late overlap has an explicit merge-down disposition'
 assert_contains "$triage_and_selection_text" 'inherited #137' \
     'late overlap points at the inherited #137 response'
-assert_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
+assert_contains "$agent_preflight_help" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path' \
     'parallel preflight passes its owned repository_root to contract-read.sh'
 assert_not_contains "$text" '"$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get skills.path' \
     'parallel preflight does not use the undefined contract_root'
@@ -252,8 +303,8 @@ assert_contains "$wait_discipline_text" 'worker completion marker' \
     'parallel wait rule names the worker completion bound'
 assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
-assert_contains "$wait_discipline_text" 'test-runner logs' \
-    'parallel wait rule covers test-runner logs'
+assert_not_contains "$wait_discipline_text" 'collect test-runner logs inside one bounded harness cell' \
+    'worker test-runner guidance lives only in the composed verify line'
 six_step_loop_flat=$(tr '\n' ' ' <<<"$six_step_loop_text" | tr -s '[:space:]' ' ')
 assert_contains "$six_step_loop_flat" '## How to write a file' \
     'the shared loop names the write-mechanism section'
@@ -357,10 +408,9 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
-dispatch_section=$(sed -n '/^### Dispatch /,/^When the runtime advertises/p' "$skill")
-assert_contains "$dispatch_section" '[ -d "${agentkit:-}/.shared/scripts" ]' \
+assert_contains "$concurrency_help" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
-assert_contains "$dispatch_section" 'agentkit_provenance' \
+assert_contains "$concurrency_help" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
@@ -426,7 +476,7 @@ assert_contains "$root_fence_section" 'boundary_mode' \
     'root carries the selected boundary mode'
 assert_contains "$prepare_script_text" 'if [[ $boundary_mode == public-fenced ]]; then' \
     'trusted modes persist exact bytes without invoking the fence helper'
-assert_contains "$root_fence_section" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
+assert_contains "$boundary_help" 'printf '\''boundary mode: %s\n'\'' "$boundary_mode"' \
     'root prints the selected boundary mode'
 dispatch_handoff=$(sed -n '/^Per-issue prompt:/,/^### Collect (per-completion/p' <<< "$text")
 assert_contains "$dispatch_handoff" 'Compose once, to a file; the spawn reads that file — never re-compose to re-read.' \
@@ -450,31 +500,71 @@ assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_pla
     'dispatch validates the plan before passing it to the composer'
 assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
     'dispatch consumes the composer plan-record report'
-assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
-    'dispatch records uncovered verification atomically before spawn'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan replacement scratch is allocated beside its arbitrary destination'
+assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$plan_sha"' \
+    'dispatch verifies copied replacement bytes before publication'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
-assert_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
-    'dispatch declares report storage as associative'
-assert_contains "$dispatch_handoff" 'dispatch_verification_reports["$issue_number"]=$spec_verification' \
-    'dispatch preserves the coverage report for the final handoff'
+assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
+    'dispatch accepts an empty zero-step report while still rejecting multiple report lines'
 assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
     'dispatch derives durable report storage from the root-owned run plan'
 assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
     'dispatch defines durable per-issue report persistence'
 assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
     'dispatch atomically replaces one issue report without overwriting peers'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_report"' \
+    'dispatch report scratch is allocated beside its replacement destination'
+assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 
-report_declaration=$(grep -F -m1 'declare -A dispatch_verification_reports' <<< "$dispatch_handoff")
-report_assignment=$(grep -F -m1 'dispatch_verification_reports["$issue_number"]=$spec_verification' <<< "$dispatch_handoff")
-multi_issue_reports=$(bash -c "$report_declaration
-issue_number=57; spec_verification=first; $report_assignment
-issue_number=54; spec_verification=second; $report_assignment
-printf '%s|%s' \"\${dispatch_verification_reports[57]}\" \"\${dispatch_verification_reports[54]}\"")
-assert_eq 'first|second' "$multi_issue_reports" \
-    'associative dispatch reporting preserves two issue handoff records'
+plan_publish_recipe=$(awk '
+    /^if \[\[ \$plan_update != none \]\]; then/ { capture=1 }
+    capture { print }
+    capture && /^\[\[ \$\(plan_digest "\$dispatch_plan"\)/ { exit }
+' <<< "$dispatch_handoff")
+[[ -n $plan_publish_recipe ]] || _fail 'dispatch plan publication recipe is extractable' 'recipe body is empty'
+same_fs_bin="$tmp/same-fs-bin"
+mkdir -p "$same_fs_bin"
+cat >"$same_fs_bin/mv" <<'SCRIPT'
+#!/usr/bin/env bash
+args=("$@")
+count=${#args[@]}
+source_path=${args[count-2]}
+target_path=${args[count-1]}
+source_dir=$(cd -- "$(dirname -- "$source_path")" && pwd -P) || exit 1
+target_dir=$(cd -- "$(dirname -- "$target_path")" && pwd -P) || exit 1
+[[ $source_dir == "$target_dir" ]] || exit 18
+exec /bin/mv "$@"
+SCRIPT
+chmod +x "$same_fs_bin/mv"
+plan_destination_dir="$tmp/arbitrary absolute destination"
+prompt_dir="$tmp/prompt staging"
+mkdir -p "$plan_destination_dir" "$prompt_dir"
+dispatch_plan="$plan_destination_dir/dispatch-plan.json"
+plan_update="$prompt_dir/issue-57.dispatch-plan-update"
+printf 'old plan\n' >"$dispatch_plan"
+chmod 640 "$dispatch_plan"
+printf 'verified replacement\n' >"$plan_update"
+plan_sha=$(sha256sum -- "$plan_update" | cut -d ' ' -f 1)
+plan_publish_rc=0
+PATH="$same_fs_bin:$PATH" bash -c '
+agentkit=$1; prompt_dir=$2; plan_update=$3; dispatch_plan=$4; plan_sha=$5
+plan_digest() { sha256sum -- "$1" | cut -d " " -f 1; }
+'"$plan_publish_recipe" _ "$root/agentkit/skills" "$prompt_dir" "$plan_update" "$dispatch_plan" "$plan_sha" || plan_publish_rc=$?
+assert_eq 0 "$plan_publish_rc" \
+    'dispatch plan recipe uses a same-directory final rename for an arbitrary absolute destination'
+assert_eq 'verified replacement' "$(<"$dispatch_plan")" \
+    'dispatch plan recipe publishes the verified staged bytes'
+assert_eq 640 "$(stat -c %a -- "$dispatch_plan")" \
+    'dispatch plan recipe preserves the destination mode'
+assert_eq no "$([[ -e $plan_update ]] && printf yes || printf no)" \
+    'dispatch plan recipe removes the original staged update'
+assert_eq 0 "$(find "$plan_destination_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
+    'dispatch plan recipe leaves no destination-adjacent scratch file'
 persist_report_function=$(awk '
     /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
     capture { print }
@@ -483,18 +573,29 @@ persist_report_function=$(awk '
 [[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
 durable_plan="$tmp/dispatch plan.md"
 : > "$durable_plan"
+durable_repo="$tmp/durable-repo"
+mkdir -p -- "$durable_repo"
 first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
 second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=57; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$first_report"
+dispatch_plan=\$1; issue_number=57; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$first_report" "$root/agentkit/skills" "$durable_repo"
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=54; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$second_report"
+dispatch_plan=\$1; issue_number=54; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$second_report" "$root/agentkit/skills" "$durable_repo"
 assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
     'first shell composition leaves its exact durable report'
 assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
     'second shell composition preserves its peer and writes its own report'
+zero_step_plan="$tmp/zero-step-plan.md"
+: > "$zero_step_plan"
+zero_step_rc=0
+bash -c "$persist_report_function
+dispatch_plan=\$1; issue_number=72; spec_verification=''; agentkit=\$2
+persist_dispatch_verification_report" _ "$zero_step_plan" "$root/agentkit/skills" || zero_step_rc=$?
+assert_eq 0 "$zero_step_rc" 'zero-step composer output passes the dispatch report consumer'
+assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
+    'zero-step dispatch creates no empty durable report'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
 # composed body in root context for no dispatch benefit -- twice, under an
 # approval layer that re-executes an approved command. The block emits a digest.
@@ -508,12 +609,10 @@ for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tai
 done
 assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
-assert_contains "$text" 'Include each stored `spec-verification=` report verbatim in the final handoff' \
-    'final handoff carries the dispatch-time coverage ratio and classification'
-assert_contains "$text" 'Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan`' \
-    'final handoff explicitly retrieves reports from durable run evidence'
-assert_contains "$text" 'for dispatch_report in "$dispatch_reports_dir"/issue-*.report' \
-    'final handoff enumerates every durable per-issue report'
+assert_contains "$text" 'run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root"' \
+    'final handoff pastes the computed durable run summary'
+assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
+    'final handoff no longer asks the live agent for post-hoc wait telemetry'
 
 # --- issue #494: auto-review completion coverage and recoverable redrive ----
 assert_contains "$normalized_text" 'Final draft sweep' \
@@ -543,10 +642,14 @@ assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
 assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
     'receipt recovery is tracked per PR in run-state for a one-shot limit'
+assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path receipt_prs --json "$pr"' \
+    'successful review receipts are stored as numeric PR identities'
+assert_contains "$final_sweep_section" '--path skipped_prs' \
+    'verified skips use their own durable PR collection'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
     'duplicate or invalid receipts are explicitly non-recoverable'
-assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path parked' \
-    'non-recoverable receipt evidence is recorded in run-state with a complete append command'
+assert_contains "$final_sweep_section" 'handed-back' \
+    'non-recoverable receipt evidence is recorded in the lifecycle ledger'
 # issue #689 (CR-689-3): the final sweep's redrive bookkeeping is durable and
 # one-shot -- gated by a run-state.sh get that must exit 11 (absent) before
 # the redrive runs, with the set write recorded only after it succeeds.
@@ -560,8 +663,8 @@ assert_contains "$normalized_text" 're-enters the draft loop' \
     'a final-sweep miss re-enters the draft loop'
 assert_contains "$normalized_text" 'handoff cannot print' \
     'a final-sweep miss prevents the handoff'
-assert_contains "$normalized_text" 'coverage= prs=' \
-    'handoff emits opened-PR receipt coverage totals'
+assert_contains "$normalized_text" 'run-state.sh" summary' \
+    'handoff emits helper-computed opened-PR receipt coverage totals'
 assert_contains "$normalized_text" 'recoverable' \
     'Collect classifies recoverable blocked leads'
 assert_contains "$normalized_text" 'baseline-red' \
@@ -580,6 +683,20 @@ assert_contains "$normalized_text" 'every active worker' \
     'write-set recovery rechecks every active worker'
 assert_contains "$normalized_text" 'same lead is unavailable' \
     'blocked recovery falls back to a fresh lead when needed'
+assert_contains "$normalized_text" 'partial-pushed' \
+    'Collect classifies pushed green BLOCKED handbacks as partial delivery'
+assert_contains "$normalized_text" 'pr=open' \
+    'partial-pushed completion opens a draft PR'
+assert_contains "$normalized_text" '--blocker' \
+    'partial-pushed publication carries protected paths into the PR body'
+assert_contains "$normalized_text" 'Operator action required' \
+    'partial-pushed publication names the PR body disclosure section'
+assert_contains "$normalized_text" 'Completion report' \
+    'ordinary clean completion retains its direct publication route'
+assert_contains "$normalized_text" 'verification=unbound' \
+    'partial publication carries the unresolved verification limitation'
+assert_contains "$normalized_text" 'both completion paths' \
+    'clean and partial delivery retain chain dispatch guidance'
 
 # issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
@@ -604,16 +721,6 @@ real_get_absent_rc=0
 assert_eq '11' "$real_get_absent_rc" \
     "run-state.sh get on an absent key really exits 11, matching the SKILL.md's pinned exit code"
 
-handoff_retrieval=$(awk '
-    /Shell state does not persist: recompute `dispatch_reports_dir`/ { armed=1 }
-    armed && /^```bash$/ { capture=1; next }
-    capture && /^```$/ { exit }
-    capture { print }
-' <<< "$text")
-durable_handoff=$(bash -c "dispatch_plan=\$1
-$handoff_retrieval" _ "$durable_plan")
-assert_eq "$second_report"$'\n'"$first_report" "$durable_handoff" \
-    'a fresh final-handoff process retrieves both exact composition reports'
 boundary_selector="$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh"
 assert_eq yes "$( [[ -x $boundary_selector ]] && printf yes || printf no )" \
     'boundary selector helper is executable'
@@ -629,7 +736,7 @@ assert_contains "$text" 'one canonical issue-body fetch during preparation' \
     'triage digest limits surviving issue body reads to preparation'
 assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
-assert_contains "$text" '--issue-numbers "$issue_numbers_csv"' \
+assert_contains "$move_help" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
 assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
@@ -971,8 +1078,8 @@ assert_contains "$publication_section" 'This was written agentically; verify its
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
-    'draft PR publication secures the body file with mode 600'
+assert_contains "$publication_section" '--scratch-label pr-body' \
+    'draft PR publication allocates an owner-private body file beneath trusted repository state'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an LLM/service/model identity'
 assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
@@ -1307,8 +1414,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
-    'a capped timed-out wait does not force a premature stall check'
+assert_contains "$normalized_wait_text" 'one call per cap' \
+    'native collection uses each full contract cap without short polling'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 
@@ -1348,32 +1455,27 @@ assert_contains "$text" 'covers --ledger' \
 assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
     'an uncovered mutation still stops'
 
-# --- issue #224: references read once (WS2d); issue #336 reconciles the size
-# probe with this skill's own size. The blanket prohibition and a 1000+ line
-# mandatory read were jointly untenable: sizing is still barred as a routine
-# habit, with ONE bounded exception for a large first read.
-assert_contains "$normalized_text" 'References are read once and batched' \
+# --- issue #224: references read once (WS2d), now shared -------------------
+reading_discipline_text=$(<"$root/agentkit/skills/.shared/reading-discipline.md")
+normalized_reading_discipline=$(tr '\n' ' ' <<<"$reading_discipline_text" | tr -s '[:space:]' ' ')
+assert_contains "$normalized_reading_discipline" 'fully once per uninterrupted context' \
     'parallel skill still reads each reference once, in batches'
-assert_contains "$normalized_text" 'Match conditions to the execution path' \
+assert_contains "$normalized_text" 'references whose conditions match' \
     'reference loading follows manifest conditions on the selected execution path'
-assert_contains "$normalized_text" 'read each named reference fully at its step' \
+assert_contains "$normalized_reading_discipline" 'Start the read directly' \
     'named references are fully loaded at their binding step'
-assert_contains "$normalized_text" 'batching reads' \
+assert_contains "$normalized_reading_discipline" 'batching independent reads' \
     'references reached together are batched'
-assert_contains "$normalized_text" 'reads and retaining them for the run' \
+assert_contains "$normalized_reading_discipline" 'Reuse loaded content' \
     'a loaded reference is not read twice'
-assert_contains "$text" 'wc -l' \
+assert_contains "$reading_discipline_text" 'wc -l' \
     'the no-sizing rule names the observed probe explicitly'
-assert_contains "$text" '`wc -l`, `stat`, `head`' \
+assert_contains "$reading_discipline_text" '`wc -l`, `stat`, `head`' \
     'routine reference sizing forbids all named probes'
-assert_contains "$normalized_text" 'each probe costs a turn' \
-    'the no-sizing default names its cost'
-assert_contains "$normalized_text" 'permits one bounded size probe' \
-    'a large first read may be sized once'
-assert_contains "$normalized_text" 'including this SKILL.md' \
-    'the size-probe exception admits this skill is over the threshold'
-assert_not_contains "$normalized_text" 'nothing in this skill consumes a line count' \
-    'the skill no longer claims nothing consumes a line count while permitting a probe'
+assert_contains "$normalized_reading_discipline" 'There is no size threshold to discover first' \
+    'the no-sizing default explains that no preliminary probe is needed'
+assert_contains "$normalized_reading_discipline" 'injected skill body is already authoritative context' \
+    'shared discipline forbids rereading an injected body'
 
 # --- issue #427: reference reads follow the selected execution path ----------
 assert_contains "$normalized_text" 'Single issue, no chain:' \

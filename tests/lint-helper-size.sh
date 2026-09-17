@@ -23,14 +23,20 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
-    # #731/#732: verification query, durable fingerprints, and typed failure records.
-    [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
+    # #777: complete Step 0 recipe moved from injected prose into --help.
+    # #778: emit and validate the harness runtime-tool record.
+    [skills/.shared/scripts/agent-preflight.sh]="1398:17095:800"
+    # #731/#732/#776: verification records, typed failures, and terminal summaries.
+    [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
-    [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
+    # #777: repository-facts recipe moved from injected prose into --help.
+    [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
+    # #778: validate runtime-tool metadata and print the exact repair command.
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="772:10026:800"
+    # #777: guarded batch-move recipe moved from injected prose into --help.
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1002:11283:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
@@ -87,8 +93,15 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
-# #785: durable PR recording, latest-run lookup, and rehydrated review/sweep contracts.
-readonly MAX_TREE_TOKENS=444179
+# #776: terminal verification summaries and the composed runbook; exact total.
+# #774 + #776: partial publication evidence and terminal verification summaries.
+# #777: preserve complete helper-owned recipes after the blocker-file merge-down.
+# #779: destination-adjacent atomic scratch and .agent parent validation.
+# #778: one harness-to-runtime-tool mapping and contract/composer integration.
+# #783: computed run-state handoff coverage and lifecycle blocker rendering.
+# #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
+# #785: durable PR recording, trusted backend discovery, and default review rehydration.
+readonly MAX_TREE_TOKENS=451969
 
 violations=0
 checked=0

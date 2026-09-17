@@ -1,61 +1,42 @@
 #!/usr/bin/env bash
-# run-dir.sh -- the durable PR/run -> RUN_DIR mapping: --pr N (or --run-id ID for a
-# PR-less run, issue #447) always resolves to the same private 0700 directory under
-# .agent/evidence/ (pr-N / run-ID), so a resumed session finds its prior evidence
-# instead of orphaning it (issue #405); ${TMPDIR:-/tmp} only as a genuine fallback,
-# never a silent default. See --help.
+# run-dir.sh -- durable PR/run -> private RUN_DIR mapping.
 set -euo pipefail
 umask 077
 
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
-# shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 
 PR=''
 RUN_ID=''
 REPO_ROOT=''
 SELECTOR=''
+PROCEDURE_SET=''
+SCOPE=''
+FLAGS=''
+REPO=''
+BASE=''
+SCRATCH_LABEL=''
+SCRATCH_NEAR=''
 LIST_RUN_ROOTS=0
 readonly RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME (--pr N | --run-id ID) [--repo-root DIR]
+Usage: $PROGNAME (--pr N | --run-id ID | --scratch-label LABEL [--scratch-near PATH] | --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH) [--repo-root DIR]
        $PROGNAME --list-run-roots [--repo-root DIR]
 
-Prints the private, mode-0700 run directory for pull request N, or for a
-PR-less run addressed by the stable ID (the invocation-level RUN_ID a skill
-already establishes) it was invoked with, creating it if needed. The same
-selector always resolves to the same directory, so a resumed session finds
-its prior evidence instead of orphaning it. Exactly one of --pr / --run-id is
-required; they are mutually exclusive.
-
---list-run-roots prints existing trusted primary/fallback roots that can hold
-run-ID directories without creating them; exit 11 means none exist.
-
-Primary location: DIR/.agent/evidence/pr-N or DIR/.agent/evidence/run-ID (DIR
-defaults to \`git rev-parse --show-toplevel\`; pass --repo-root to override,
-mainly for tests). Falls back to a private directory under \${TMPDIR:-/tmp},
-keyed by both the repository and the selector, only when .agent/ genuinely
-cannot be created or secured there.
-
-A pre-existing target that is a symlink, not a directory, not owned by this
-user, or not mode 0700 is refused rather than reused or silently widened.
+Prints a private run directory or creates unique mode-0600 scratch. Run state
+uses DIR/.agent/evidence; DIR defaults to the Git root with a private fallback.
+--list-run-roots prints existing trusted primary/fallback roots; exit 11 means none.
 EOF
 }
 
-die() {
-    printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    exit 1
-}
+die() { printf '%s: %s\n' "$PROGNAME" "$1" >&2; exit 1; }
 
-die_usage() {
-    printf '%s: %s\n' "$PROGNAME" "$1" >&2
-    usage >&2
-    exit 2
-}
+die_usage() { printf '%s: %s\n' "$PROGNAME" "$1" >&2; usage >&2; exit 2; }
 
 require_value() {
     [[ -n ${2:-} ]] || die_usage "option $1 requires a value"
@@ -70,6 +51,18 @@ parse_args() {
             --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;
             --run-id=*) RUN_ID=${1#*=}; shift ;;
             --list-run-roots) LIST_RUN_ROOTS=1; shift ;;
+            --scratch-label) require_value "$1" "${2:-}"; SCRATCH_LABEL=$2; shift 2 ;;
+            --scratch-label=*) SCRATCH_LABEL=${1#*=}; shift ;;
+            --scratch-near) require_value "$1" "${2:-}"; SCRATCH_NEAR=$2; shift 2 ;;
+            --scratch-near=*) SCRATCH_NEAR=${1#*=}; shift ;;
+            --procedure-set|--scope|--flags|--repo|--base)
+                require_value "$1" "${2:-}"
+                case $1 in
+                    --procedure-set) PROCEDURE_SET=$2 ;; --scope) SCOPE=$2 ;;
+                    --flags) FLAGS=$2 ;; --repo) REPO=$2 ;; --base) BASE=$2 ;;
+                esac
+                shift 2
+                ;;
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -78,31 +71,58 @@ parse_args() {
     done
 }
 
-# validate_selector -- exactly one of --pr / --run-id must be set; whichever
-# it is gets validated and turned into SELECTOR, the path component shared by
-# try_primary and fallback_target. Both selectors are validated (and refused)
-# before they ever become part of a path -- a malformed value must never
-# reach mkdir/stat as a traversal or option-injection vector.
+create_scratch() {
+    local agent_dir cache file mode base
+    if [[ -n $SCRATCH_NEAR ]]; then
+        [[ $SCRATCH_NEAR == /* ]] || die_usage '--scratch-near must be absolute'
+        base=${SCRATCH_NEAR##*/}; cache=${SCRATCH_NEAR%/*}; [[ -n $base && -d $cache ]] || die_usage '--scratch-near parent must exist'
+        cache=$(cd -- "$cache" && pwd -P) || die 'could not resolve --scratch-near parent'
+        file=$(mktemp "$cache/.$base.$SCRATCH_LABEL.XXXXXXXXXX") || die "could not create scratch file in: $cache"
+    else
+        agent_dir=$REPO_ROOT/.agent
+        if [[ ! -e $agent_dir ]]; then
+            mkdir -m 700 -- "$agent_dir" 2>/dev/null || [[ -d $agent_dir && ! -L $agent_dir ]] || die "could not create environment state directory: $agent_dir"
+        fi
+        [[ -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] || die "environment state directory must be an owned directory: $agent_dir"
+        mode=$(stat -c %a -- "$agent_dir") || die "could not inspect: $agent_dir"
+        (( (8#$mode & 0022) == 0 )) || die "environment state directory must not be group- or world-writable: $agent_dir"
+        cache=$agent_dir/cache; ensure_private_root "$cache" || die "could not create scratch cache: $cache"
+        file=$(mktemp "$cache/$SCRATCH_LABEL.XXXXXXXXXX") || die "could not create scratch file in: $cache"
+    fi
+    chmod 600 -- "$file" || die "could not secure scratch file: $file"
+    [[ -f $file && ! -L $file && -O $file ]] || die "scratch file is not an owned regular file: $file"
+    printf '%s\n' "$file"
+}
+
 validate_selector() {
+    local canonical_count=0 ledger="$SCRIPT_DIR/../../.shared/scripts/session-ledger.sh"
     if ((LIST_RUN_ROOTS)); then
-        [[ -z $PR && -z $RUN_ID ]] || die_usage '--list-run-roots is mutually exclusive with --pr/--run-id'
+        [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE ]] ||
+            die_usage '--list-run-roots is mutually exclusive with run selectors'
         return
+    fi
+    [[ -z $PROCEDURE_SET ]] || canonical_count=$((canonical_count + 1))
+    [[ -z $SCOPE ]] || canonical_count=$((canonical_count + 1))
+    [[ -z $REPO ]] || canonical_count=$((canonical_count + 1))
+    [[ -z $BASE ]] || canonical_count=$((canonical_count + 1))
+    [[ -z $FLAGS ]] || canonical_count=$((canonical_count + 1))
+    if ((canonical_count > 0)); then
+        [[ -z $PR && -z $RUN_ID ]] || die_usage 'canonical identity options cannot be combined with --pr or --run-id'
+        ((canonical_count >= 4)) && [[ -n $PROCEDURE_SET && -n $SCOPE && -n $REPO && -n $BASE ]] ||
+            die_usage 'canonical identity requires --procedure-set, --scope, --repo, and --base'
+        local -a args=(run-id --procedure-set "$PROCEDURE_SET" --scope "$SCOPE" --repo "$REPO" --base "$BASE")
+        [[ -z $FLAGS ]] || args+=(--flags "$FLAGS")
+        RUN_ID=$("$ledger" "${args[@]}") || exit $?
     fi
     if [[ -n $PR && -n $RUN_ID ]]; then
         die_usage '--pr and --run-id are mutually exclusive'
     fi
     if [[ -n $PR ]]; then
-        # Leading zeros rejected rather than normalized (a path component
-        # should read as the number it is).
         [[ $PR =~ ^[1-9][0-9]*$ ]] || die_usage "--pr must be a positive integer without leading zeros: $PR"
         SELECTOR="pr-$PR"
         return
     fi
     if [[ -n $RUN_ID ]]; then
-        # Same charset session-ledger.sh's --run-id already accepts, so the
-        # invocation-level RUN_ID a skill establishes once (parallel-issues,
-        # review-remote-pr) is always a valid path component here too -- no
-        # second identifier scheme to invent or keep in sync.
         [[ $RUN_ID =~ $RUN_ID_RE ]] || die_usage \
             "--run-id must use letters, numbers, ., _, :, or - (max 128 characters, starting with a letter or number): $RUN_ID"
         SELECTOR="run-$RUN_ID"
@@ -121,15 +141,6 @@ resolve_repo_root() {
         die 'could not resolve the repository root (pass --repo-root outside a Git worktree)'
 }
 
-# ensure_private_root DIR -- DIR must be (or safely become) an owned,
-# non-symlink, mode-0700 directory; unlike private_dir_ensure it establishes the
-# FIRST private boundary under a shared parent (.agent/ stays 0755). Missing
-# DIR: mkdir -m 0700 (no umask window); existing DIR is validated, never
-# widened. Returns 1 only for a plain creation failure (fallback-eligible); a
-# hostile pre-existing path dies. The -L check runs UNCONDITIONALLY before any
-# -e-gated branch: -e is false for a dangling symlink, and an -e-gated check let
-# mkdir's EEXIST read as "not writable" and fall back to /tmp (issue #405
-# review).
 ensure_private_root() {
     local dir=$1 mode
     [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"
@@ -140,28 +151,17 @@ ensure_private_root() {
         [[ $mode == 700 ]] || die "must have mode 0700: $dir"
         return 0
     fi
-    mkdir -m 700 -- "$dir" 2>/dev/null || return 1
-    # Re-verify against a creation race (something replaced the path between
-    # the -e check above and mkdir).
+    mkdir -m 700 -- "$dir" 2>/dev/null || [[ -d $dir && ! -L $dir ]] || return 1
     [[ ! -L $dir ]] || die "must be an existing directory, not a symlink: $dir"
     [[ -d $dir ]] || die "must be an existing directory, not a symlink: $dir"
     [[ -O $dir ]] || die "is not owned by this user: $dir"
+    mode=$(stat -c %a -- "$dir") || die "could not inspect: $dir"
+    [[ $mode == 700 ]] || die "must have mode 0700: $dir"
 }
 
-# try_primary -- sets TARGET and returns 0 on success; returns 1 only when
-# .agent/ or .agent/evidence genuinely cannot be created there (permission
-# denied), which is the one condition allowed to fall back. Any hostile
-# pre-existing state (symlink, wrong type, wrong owner, wrong mode) dies
-# outright via ensure_private_root/die -- it never falls through to the
-# fallback path. Deliberately called directly, never as `$(try_primary)`: a
-# command substitution runs in a subshell, and `die`'s `exit` inside one would
-# only end the subshell, silently falling through to the fallback path
-# instead of stopping the script.
 TARGET=''
 try_primary() {
     local agent_dir=$REPO_ROOT/.agent evidence_dir
-    # -L checked unconditionally, before the -e branch -- see ensure_private_root's
-    # comment for why an -e-gated -L check misses a dangling symlink.
     [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
     if [[ -e $agent_dir ]]; then
         [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
@@ -173,12 +173,6 @@ try_primary() {
     TARGET=$evidence_dir/$SELECTOR
 }
 
-# fallback_target -- sets TARGET to a deterministic (never randomly named)
-# path under ${TMPDIR:-/tmp}, namespaced by both the effective user and the
-# repository, so two checkouts (or two users on a shared host) never collide
-# on the same selector. A genuine environment failure here has no further
-# fallback and dies outright (also called directly, for the same subshell
-# reason as try_primary).
 FALLBACK_ROOT=''
 FALLBACK_REPO_ROOT=''
 fallback_paths() {
@@ -204,10 +198,7 @@ print_existing_private_root() {
     [[ -d $dir && -O $dir ]] || die "$label must be an owned directory: $dir"
     mode=$(stat -c %a -- "$dir") || die "could not inspect $label: $dir"
     [[ $mode == 700 ]] || die "$label must have mode 0700: $dir"
-    if ((emit)); then
-        printf '%s\n' "$dir"
-        LISTED_ROOTS=$((LISTED_ROOTS + 1))
-    fi
+    if ((emit)); then printf '%s\n' "$dir"; LISTED_ROOTS=$((LISTED_ROOTS + 1)); fi
 }
 
 list_run_roots() {
@@ -225,6 +216,14 @@ list_run_roots() {
 }
 
 parse_args "$@"
+if [[ -n $SCRATCH_LABEL ]]; then
+    [[ $SCRATCH_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die_usage 'scratch label must use letters, numbers, ., _, or -'
+    [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE && $LIST_RUN_ROOTS == 0 ]] || die_usage '--scratch-label is mutually exclusive with run selectors'
+    if [[ -n $SCRATCH_NEAR ]]; then [[ -z $REPO_ROOT ]] || die_usage '--scratch-near cannot be combined with --repo-root'; else resolve_repo_root; fi
+    create_scratch
+    exit 0
+fi
+[[ -z $SCRATCH_NEAR ]] || die_usage '--scratch-near requires --scratch-label'
 validate_selector
 resolve_repo_root
 
