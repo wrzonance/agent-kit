@@ -103,6 +103,8 @@ readonly MAX_HELPER_TOKENS=10000
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
+# #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
@@ -113,7 +115,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #778 + PR #794 merge-down: 1,806,262 helper bytes / 4 = 451,565 tokens; exact total.
 # #783 + PR #794 merge-down: 1,818,298 helper bytes / 4 = 454,574 tokens; exact total.
 # #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
-readonly MAX_TREE_TOKENS=455734
+# #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
+readonly MAX_TREE_TOKENS=457069
 
 violations=0
 checked=0

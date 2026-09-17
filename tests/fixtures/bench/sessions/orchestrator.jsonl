@@ -1,12 +1,23 @@
 {"type":"session_meta","payload":{"id":"trial-fixture-0001","timestamp":"2026-08-20T10:00:00.000Z","cwd":"/repo","originator":"orchestrator","cli_version":"0.148.0","model":"gpt-5.6-luna"}}
-{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low","cwd":"/repo"}}
-{"type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/parallel-issues/references/triage-and-selection.md\"]}"}}
-{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok"}}
-{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300}}}
-{"type":"response_item","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"sed -n '1,40p' agentkit/skills/parallel-issues/references/triage-and-selection.md\"]}"}}
-{"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"ok"}}
-{"type":"response_item","payload":{"type":"function_call","call_id":"c3","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/.shared/spawn-contract.md\"]}"}}
-{"type":"response_item","payload":{"type":"function_call_output","call_id":"c3","output":"ok"}}
-{"type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":150}}}
-{"type":"event_msg","payload":{"type":"task_complete","payload":{}}}
+{"timestamp":"2026-08-20T10:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low","cwd":"/repo"}}
+{"timestamp":"2026-08-20T10:00:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"functions.exec","input":"await tools.exec_command({cmd: \"cat agentkit/skills/parallel-issues/references/triage-and-selection.md\"})"}}
+{"timestamp":"2026-08-20T10:00:11.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":"skill prose"}}
+{"timestamp":"2026-08-20T10:00:12.000Z","type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300}}}
+{"timestamp":"2026-08-20T10:00:20.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"sed -n '1,40p' agentkit/skills/parallel-issues/references/triage-and-selection.md\"]}"}}
+{"timestamp":"2026-08-20T10:00:21.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"reference excerpt"}}
+{"timestamp":"2026-08-20T10:00:30.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c-repo","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat AGENTS.md\"]}"}}
+{"timestamp":"2026-08-20T10:00:31.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-repo","output":"repository docs"}}
+{"timestamp":"2026-08-20T10:01:00.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c-forge","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"gh api repos/example/repo/issues/784\"]}"}}
+{"timestamp":"2026-08-20T10:01:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-forge","output":"issue body"}}
+{"timestamp":"2026-08-20T10:01:30.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c-tools","name":"functions.exec","input":{"code":"text(ALL_TOOLS)"}}}
+{"timestamp":"2026-08-20T10:01:31.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c-tools","output":"tool schema"}}
+{"timestamp":"2026-08-20T10:01:40.000Z","type":"custom_tool_call","call_id":"c-helper","name":"functions.exec","input":{"code":"await tools.exec_command({cmd: \"agentkit/skills/.shared/scripts/pick-issues.sh --json\"})"}}
+{"timestamp":"2026-08-20T10:01:41.000Z","type":"custom_tool_call_output","call_id":"c-helper","output":"helper output"}
+{"timestamp":"2026-08-20T10:02:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"other text"}}
+{"timestamp":"2026-08-20T10:03:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c-spawn","name":"multi_agent_v1__spawn_agent","input":{"task_name":"worker-1"}}}
+{"timestamp":"2026-08-20T10:03:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c-spawn","output":"spawned"}}
+{"timestamp":"2026-08-20T10:03:10.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c3","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat agentkit/skills/.shared/spawn-contract.md\"]}"}}
+{"timestamp":"2026-08-20T10:03:11.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c3","output":"post-spawn noise"}}
+{"timestamp":"2026-08-20T10:03:12.000Z","type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":150}}}
+{"timestamp":"2026-08-20T10:03:13.000Z","type":"event_msg","payload":{"type":"task_complete","payload":{}}}
 {"type":"bench_trial_meta","payload":{"run_id":"trial-fixture-0001","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"tier1-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":["tally-01","tally-02","tally-03","tally-04","tally-05","tally-06","tally-07","tally-08","tally-09","tally-10"],"chain_plan":[["tally-06","tally-07","tally-08","tally-09"],["tally-06","tally-10"]],"serialization_events":[{"pair":["tally-02","tally-04"],"reason":"conflict_group:render"},{"pair":["tally-07","tally-08"],"reason":"conflict_group:store"},{"pair":["tally-07","tally-09"],"reason":"conflict_group:store"}],"retry_events":[],"worker_count":2,"wall_clock_seconds":842,"exit_condition":"complete"}}
