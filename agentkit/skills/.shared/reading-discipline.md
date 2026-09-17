@@ -1,5 +1,6 @@
 # Reading discipline
 
+An injected skill body is already authoritative context; never read its SKILL.md again.
 Read each matched reference fully once per uninterrupted context, batching independent reads.
 Never probe reference sizes (`wc -l`, `stat`, `head`) before reading. Start the read directly;
 if output is truncated, continue from the last delivered section until the file is complete.

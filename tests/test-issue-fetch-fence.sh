@@ -10,7 +10,6 @@ TEST_NAME='issue fetch and fence recipe'
 
 tmp_dir=$(mktemp -d)
 trap 'rm -rf -- "$tmp_dir"' EXIT
-skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 fixture="$here/fixtures/issue-fetch.json"
 fence="$root/agentkit/skills/parallel-issues/scripts/fence-untrusted-data.sh"
 # The jq programs below are extracted and executed from the script -- the
@@ -269,7 +268,7 @@ assert_eq no "$( [[ ! -e "$target.tmp" ]] && printf no || printf yes )" \
 # -- which now lives in references/worker-prompts.md (issue #107's split) for
 # the two embedding checks, and in SKILL.md itself for the deletion doc check,
 # so recipe_text concatenates both rather than picking one.
-recipe_text=$(cat "$skill" "$root/agentkit/skills/parallel-issues/references/worker-prompts.md")
+recipe_text=$(cat "$root/agentkit/skills/parallel-issues/references/worker-prompts.md"; "$script" --help)
 script_text=$(<"$script")
 assert_contains "$script_text" 'issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,body,labels,comments) || exit 1' \
     'the canonical recipe exits when GitHub issue fetch fails'
@@ -297,7 +296,7 @@ assert_contains "$compose_script_text" 'cat -- "$prior_art"' \
     'the composer embeds persisted prior-art bytes rather than re-fencing'
 assert_contains "$recipe_text" 'Re-running the script for an existing complete set is churn' \
     'the recipe documents deliberate deletion before re-fencing'
-assert_contains "$recipe_text" 'fence artifacts already exist; delete the affected file deliberately' \
+assert_contains "$script_text" 'fence artifacts already exist; delete the affected file deliberately' \
     'the recipe refuses implicit re-fencing of persisted artifacts'
 assert_contains "$script_text" 'mkdir -p -- "$agent_dir"' \
     'the canonical recipe creates its excluded artifact directory'
