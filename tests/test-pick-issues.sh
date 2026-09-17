@@ -23,6 +23,12 @@ git -C "$repo" init -q 2> /dev/null
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
+mkdir -p "$repo/tools"
+printf 'tooling\n' >"$repo/tools/README.md"
+git -C "$repo" config user.email test@example.invalid
+git -C "$repo" config user.name test
+git -C "$repo" add -- .
+git -C "$repo" commit -qm base
 
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" << EOF
@@ -60,7 +66,7 @@ items='{"totalCount":4,"items":[
   {"status":"In progress","content":{"number":14,"type":"Issue","title":"already running",
    "repository":"example-org/example-repo"}}]}'
 deps='{"data":{"repository":{
-  "i10":{"number":10,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+  "i10":{"number":10,"state":"OPEN","body":"Create \u0060tools/bootstrap-worktree.sh\u0060.","blockedBy":{"totalCount":0,"nodes":[]}},
   "i11":{"number":11,"state":"OPEN","blockedBy":{"totalCount":1,"nodes":[{"number":99,"state":"OPEN"}]}},
   "i12":{"number":12,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
 
@@ -120,6 +126,17 @@ set_board "$items" \
 out=$(run)
 assert_not_contains "$out" '#10' 'a closed issue still on the board is dropped'
 
+# --- only closed candidates produce a successful empty selection ------------
+set_board '{"totalCount":1,"items":[
+  {"status":"Ready","content":{"number":15,"type":"Issue","title":"stale closed card",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i15":{"number":15,"state":"CLOSED","body":"","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+rc=0
+out=$(run --json) || rc=$?
+assert_eq '0' "$rc" 'closed Ready cards leave a successful empty selection'
+assert_eq '[]' "$out" 'closed Ready cards return an empty JSON array'
+
 # --- a truncated dependency read is treated as blocked ----------------------
 # Reporting "no open blockers" from a page that did not contain them all is the
 # same class of error as reporting a miss from a truncated board read.
@@ -158,6 +175,9 @@ out=$(run --include-backlog --json)
 assert_eq '10' "$(jq -r '.[0].number' <<< "$out")" 'JSON leads with the Ready issue'
 assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")" \
     'JSON marks the blocked issue ineligible'
+assert_eq '["tools/bootstrap-worktree.sh"]' \
+    "$(jq -c '.[] | select(.number == 10) | .predictedWriteSet' <<< "$out")" \
+    'JSON carries issue-derived write-set literals into dispatch planning'
 
 # Fast mode caps the current wave and leaves later pickup-order candidates for
 # refill. The attended path still returns the complete eligible set; only the
