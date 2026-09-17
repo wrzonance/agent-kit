@@ -197,6 +197,23 @@ assert_contains "$focus_out_prompt" 'test (rundir backend)' \
 assert_not_contains "$focus_out_prompt" 'AGENT_COMPOSE_SERIALIZED=1' \
     'a scoped-out Compose test command brings no isolation prose, matching the withheld selector'
 
+only_scoped_test="$tmp/only-scoped-test"
+make_repo "$only_scoped_test" 'AGENT_CMD_TEST=tools/test' 'AGENT_RUNDIR_TEST=backend'
+mkdir -p "$only_scoped_test/backend" "$only_scoped_test/frontend"
+only_scoped_rc=0
+only_scoped_prompt=$(compose_lead "$only_scoped_test" 'frontend/**') || only_scoped_rc=$?
+assert_eq 0 "$only_scoped_rc" 'a lone scoped-out test still composes successfully'
+assert_contains "$only_scoped_prompt" 'verify= unavailable reason=no-scoped-command' \
+    'a lone scoped-out test emits an explicit unavailable verification runbook'
+
+no_commands="$tmp/no-commands"
+make_repo "$no_commands"
+no_commands_rc=0
+no_commands_prompt=$(compose_lead "$no_commands" 'src/**') || no_commands_rc=$?
+assert_eq 0 "$no_commands_rc" 'a repository with no test, runner, or focus still composes successfully'
+assert_contains "$no_commands_prompt" 'verify= unavailable reason=no-scoped-command' \
+    'a repository with no scoped verification command emits an explicit unavailable runbook'
+
 # The same repository with a write set that DOES reach the test command keeps
 # both halves: the focused selector and the Compose-isolation prose.
 focus_in_prompt=$(compose_lead "$focus_out" 'backend/**')
@@ -308,7 +325,7 @@ must_survive=(
     'worker_attribution=$('
     '**Filesystem scope:**'
     '**Ownership boundary:**'
-    'NAMED LOG'
+    'verify= cmd='
     'Before generating any patch, re-read the target file'
 )
 for rule in "${must_survive[@]}"; do

@@ -247,8 +247,8 @@ assert_contains "$wait_discipline_text" 'worker completion marker' \
     'parallel wait rule names the worker completion bound'
 assert_contains "$wait_discipline_text" 'runner completion marker' \
     'parallel wait rule names the runner completion bound'
-assert_contains "$wait_discipline_text" 'test-runner logs' \
-    'parallel wait rule covers test-runner logs'
+assert_not_contains "$wait_discipline_text" 'collect test-runner logs inside one bounded harness cell' \
+    'worker test-runner guidance lives only in the composed verify line'
 six_step_loop_flat=$(tr '\n' ' ' <<<"$six_step_loop_text" | tr -s '[:space:]' ' ')
 assert_contains "$six_step_loop_flat" '## How to write a file' \
     'the shared loop names the write-mechanism section'
@@ -445,8 +445,10 @@ assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_pla
     'dispatch validates the plan before passing it to the composer'
 assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
     'dispatch consumes the composer plan-record report'
-assert_contains "$dispatch_handoff" 'mv -f -- "$plan_update" "$dispatch_plan"' \
-    'dispatch records uncovered verification atomically before spawn'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan replacement scratch is allocated beside its arbitrary destination'
+assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$plan_sha"' \
+    'dispatch verifies copied replacement bytes before publication'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
 assert_not_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
@@ -459,9 +461,57 @@ assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
     'dispatch defines durable per-issue report persistence'
 assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
     'dispatch atomically replaces one issue report without overwriting peers'
+assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_report"' \
+    'dispatch report scratch is allocated beside its replacement destination'
+assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
 
+plan_publish_recipe=$(awk '
+    /^if \[\[ \$plan_update != none \]\]; then/ { capture=1 }
+    capture { print }
+    capture && /^\[\[ \$\(plan_digest "\$dispatch_plan"\)/ { exit }
+' <<< "$dispatch_handoff")
+[[ -n $plan_publish_recipe ]] || _fail 'dispatch plan publication recipe is extractable' 'recipe body is empty'
+same_fs_bin="$tmp/same-fs-bin"
+mkdir -p "$same_fs_bin"
+cat >"$same_fs_bin/mv" <<'SCRIPT'
+#!/usr/bin/env bash
+args=("$@")
+count=${#args[@]}
+source_path=${args[count-2]}
+target_path=${args[count-1]}
+source_dir=$(cd -- "$(dirname -- "$source_path")" && pwd -P) || exit 1
+target_dir=$(cd -- "$(dirname -- "$target_path")" && pwd -P) || exit 1
+[[ $source_dir == "$target_dir" ]] || exit 18
+exec /bin/mv "$@"
+SCRIPT
+chmod +x "$same_fs_bin/mv"
+plan_destination_dir="$tmp/arbitrary absolute destination"
+prompt_dir="$tmp/prompt staging"
+mkdir -p "$plan_destination_dir" "$prompt_dir"
+dispatch_plan="$plan_destination_dir/dispatch-plan.json"
+plan_update="$prompt_dir/issue-57.dispatch-plan-update"
+printf 'old plan\n' >"$dispatch_plan"
+chmod 640 "$dispatch_plan"
+printf 'verified replacement\n' >"$plan_update"
+plan_sha=$(sha256sum -- "$plan_update" | cut -d ' ' -f 1)
+plan_publish_rc=0
+PATH="$same_fs_bin:$PATH" bash -c '
+agentkit=$1; prompt_dir=$2; plan_update=$3; dispatch_plan=$4; plan_sha=$5
+plan_digest() { sha256sum -- "$1" | cut -d " " -f 1; }
+'"$plan_publish_recipe" _ "$root/agentkit/skills" "$prompt_dir" "$plan_update" "$dispatch_plan" "$plan_sha" || plan_publish_rc=$?
+assert_eq 0 "$plan_publish_rc" \
+    'dispatch plan recipe uses a same-directory final rename for an arbitrary absolute destination'
+assert_eq 'verified replacement' "$(<"$dispatch_plan")" \
+    'dispatch plan recipe publishes the verified staged bytes'
+assert_eq 640 "$(stat -c %a -- "$dispatch_plan")" \
+    'dispatch plan recipe preserves the destination mode'
+assert_eq no "$([[ -e $plan_update ]] && printf yes || printf no)" \
+    'dispatch plan recipe removes the original staged update'
+assert_eq 0 "$(find "$plan_destination_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
+    'dispatch plan recipe leaves no destination-adjacent scratch file'
 persist_report_function=$(awk '
     /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
     capture { print }
@@ -470,14 +520,16 @@ persist_report_function=$(awk '
 [[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
 durable_plan="$tmp/dispatch plan.md"
 : > "$durable_plan"
+durable_repo="$tmp/durable-repo"
+mkdir -p -- "$durable_repo"
 first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
 second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=57; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$first_report"
+dispatch_plan=\$1; issue_number=57; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$first_report" "$root/agentkit/skills" "$durable_repo"
 bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=54; spec_verification=\$2
-persist_dispatch_verification_report" _ "$durable_plan" "$second_report"
+dispatch_plan=\$1; issue_number=54; spec_verification=\$2; agentkit=\$3; repository_root=\$4
+persist_dispatch_verification_report" _ "$durable_plan" "$second_report" "$root/agentkit/skills" "$durable_repo"
 assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
     'first shell composition leaves its exact durable report'
 assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
@@ -561,6 +613,20 @@ assert_contains "$normalized_text" 'every active worker' \
     'write-set recovery rechecks every active worker'
 assert_contains "$normalized_text" 'same lead is unavailable' \
     'blocked recovery falls back to a fresh lead when needed'
+assert_contains "$normalized_text" 'partial-pushed' \
+    'Collect classifies pushed green BLOCKED handbacks as partial delivery'
+assert_contains "$normalized_text" 'pr=open' \
+    'partial-pushed completion opens a draft PR'
+assert_contains "$normalized_text" '--blocker' \
+    'partial-pushed publication carries protected paths into the PR body'
+assert_contains "$normalized_text" 'Operator action required' \
+    'partial-pushed publication names the PR body disclosure section'
+assert_contains "$normalized_text" 'Completion report' \
+    'ordinary clean completion retains its direct publication route'
+assert_contains "$normalized_text" 'verification=unbound' \
+    'partial publication carries the unresolved verification limitation'
+assert_contains "$normalized_text" 'both completion paths' \
+    'clean and partial delivery retain chain dispatch guidance'
 
 # issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
@@ -950,8 +1016,8 @@ assert_contains "$publication_section" 'This was written agentically; verify its
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" 'chmod 600 -- "$pr_body_file"' \
-    'draft PR publication secures the body file with mode 600'
+assert_contains "$publication_section" '--scratch-label pr-body' \
+    'draft PR publication allocates an owner-private body file beneath trusted repository state'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an LLM/service/model identity'
 assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
@@ -1286,8 +1352,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
-    'a capped timed-out wait does not force a premature stall check'
+assert_contains "$normalized_wait_text" 'one call per cap' \
+    'native collection uses each full contract cap without short polling'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 

@@ -29,8 +29,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     # #727: open obligations and terminal evidence in the canonical recipe.
     [review-remote-pr]="474:8289:450"
-    # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="960:18351:900"
+    # #774/#779: partial delivery plus destination-adjacent plan publication.
+    [parallel-issues]="961:18556:900"
 )
 
 readonly MAX_BODY_LINES=500

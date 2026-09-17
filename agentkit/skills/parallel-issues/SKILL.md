@@ -95,26 +95,18 @@ set the shared ledger identity before the first receipt:
 # `requested_issue_scope` comes from the invocation line. For automatic selection,
 # replace it with the canonical sorted `selected_issue_scope` before any receipt.
 issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
-invocation_flags="yolo=${yolo_invocation:-false};trust-trunk=${trust_trunk:-false};fast-mode=${fast_mode:-false};auto-review=${auto_review:-false};auto-serialize=${auto_serialize:-false}"
-normalize_run_input() {
-    local value=$1
-    value=${value//[^A-Za-z0-9._-]/-}
-    printf '%s' "$value"
-}
-run_inputs="scope=$(normalize_run_input "$issue_scope");flags=$(normalize_run_input "$invocation_flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"
+invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
 LEDGER="$repository_root/.agent/session-ledger.ndjson"
-RUN_ID="parallel-issues-$(printf '%s' "$run_inputs" | sha256sum | cut -c1-32)"
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues \
+    --scope "$issue_scope" --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
 : "$LEDGER" "$RUN_ID"
 ```
 
 The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
-invocation-level `RUN_ID` for every issue, never a worker-local value. Append every human grant, steer, or board adjudication
-immediately on receipt, passing the verbatim quote through a private temp file so a multi-line grant is
-stored with no reflow (CR normalized to LF):
-`quote_file=$(mktemp); chmod 600 "$quote_file"; printf '%s' "$QUOTE" >"$quote_file";
-"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-file "$quote_file"; rm -f "$quote_file"`.
+`RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin`.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
@@ -569,8 +561,9 @@ script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
 # ("(no prior art selected by triage digest)") applies.
 prior_art_file=''
 if [[ -n ${prior_art_contents:-} ]]; then
-    prior_art_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-prior-art.XXXXXXXXXX") || exit 1
-    chmod 600 -- "$prior_art_file" || exit 1
+    : "${RUN_ID:?set the canonical run identity}" "${issue_number:?set the issue number}"
+    prior_art_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" \
+        --scratch-label "prior-art-$issue_number-$RUN_ID" --repo-root "$repository_root") || exit 1
     printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
 fi
 
@@ -656,13 +649,18 @@ plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ 
 plan_sha=${spec_verification_plan##* plan-sha=}; [[ ${#plan_sha} -eq 64 && $plan_sha != *[!0-9a-f]* ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
 if [[ $plan_update != none ]]; then
     [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
-    chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
+    plan_replace_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || { rm -f -- "$plan_update"; exit 1; }
+    plan_replace_rc=0
+    { cat -- "$plan_update" >"$plan_replace_tmp" && chmod --reference="$dispatch_plan" "$plan_replace_tmp" && [[ $(plan_digest "$plan_replace_tmp") == "$plan_sha" ]] && mv -f -- "$plan_replace_tmp" "$dispatch_plan"; } || plan_replace_rc=$?
+    rm -f -- "$plan_update" "$plan_replace_tmp" || ((plan_replace_rc != 0)) || plan_replace_rc=1
+    ((plan_replace_rc == 0)) || exit "$plan_replace_rc"
 fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
     case $issue_number in ''|*[!0-9]*) return 1 ;; esac; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
-    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"; dispatch_report_tmp=$(mktemp "$dispatch_reports_dir/.issue-$issue_number.XXXXXX") || return 1
+    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
+    dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
     if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
         rm -f -- "$dispatch_report_tmp"; return 1
     fi
@@ -688,15 +686,8 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → the root reviews the pushed diff ("Root
-  review and draft PR after a worker push"), opens the draft PR, moves the issue to
-  `In review` with the Bash Project helper, then starts that PR's Phase 3 loop immediately.
-  A chained successor dispatches the moment the predecessor's SHA lands, not the PR or board
-  move. Diff size is never a reason to withhold this
-  PR — see Diff-size facts.
-- **BLOCKED** → return `BLOCKED: class=... remaining-step=... evidence=...`. Before redrive, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>`, proceeding only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, do one `collaboration.followup_task`, then once it succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`). If the same lead is unavailable, give a fresh lead an exact resume command `followup_task(<lead>, "Resume issue #<N> at: <remaining-step>")`; other blockers park. For `baseline-red`, one automatic re-drive follows the clear-check.
-  A sole `needs-paths: <glob>[,<glob>...]` response is the write-set expansion request driving
-  that recheck; otherwise report the preserved worktree with the blocker evidence.
+- **Completion report (branch + pushed SHA)** → review the pushed diff, open the draft PR, move the issue to `In review`, and start Phase 3. Diff size is never a reason to withhold this PR — see Diff-size facts.
+- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves HEAD exists on its freshly queried configured remote branch but does not attribute the retained log to that tree: review the diff, open the draft, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; the NUL-delimited file preserves each protected path exactly, and the body's `## Operator action required` section discloses both the paths and verification limitation. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `collaboration.followup_task`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
@@ -743,10 +734,10 @@ Invoke returned argv once, then push the branch. Only after publication does the
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-agentkit=$1 agentkit_provenance=$2 dispatch_plan=$3 worktree=$4 raw_handback=$5 issue_number=$6
+agentkit=$1 agentkit_provenance=$2 dispatch_plan=$3 worktree=$4 raw_handback=$5 issue_number=$6 repository_root=$7
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
-validated_argv_file=$(mktemp "${TMPDIR:-/tmp}/parallel-issues-handback.XXXXXXXXXX"); trap 'rm -f -- "$validated_argv_file"' EXIT
+validated_argv_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label handback --repo-root "$repository_root") || exit 1; trap 'rm -f -- "$validated_argv_file"' EXIT
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
 mapfile -d '' -t validated_argv <"$validated_argv_file"
 ((${#validated_argv[@]})) || exit 1
@@ -754,7 +745,7 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 BASH_RECIPE
-)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" || exit $?
+)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
 Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full before opening a draft PR: composer recipe and stacked retarget/linkage proof are dispatch-*output* content.

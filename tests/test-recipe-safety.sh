@@ -264,13 +264,16 @@ extract_recipe() {
 triage="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 bulk_recipe=$(extract_recipe "$triage" 'report_batch_failure()')
 needs_recipe=$(extract_recipe "$triage" 'mapfile -t needs_lines')
-handback_recipe=$(extract_recipe "$parallel_skill" 'validated_argv_file=$(mktemp')
+handback_recipe=$(extract_recipe "$parallel_skill" '--scratch-label handback')
 reports_recipe=$(extract_recipe "$parallel_skill" 'dispatch_report_files=(')
 for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe" "$reports_recipe"; do
     assert_contains "$recipe" 'bash -c' 'runtime regression extracted a complete Bash fence'
 done
 fixture_root="$tmp/recipe inputs"
-mkdir -p "$fixture_root/kit/.shared/scripts" "$fixture_root/worktree"
+mkdir -p "$fixture_root/kit/.shared/scripts" "$fixture_root/kit/review-remote-pr/scripts" "$fixture_root/worktree" "$fixture_root/root-repo/.agent"
+cp "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh" "$fixture_root/kit/review-remote-pr/scripts/run-dir.sh"
+mkdir -p "$fixture_root/kit/.shared/scripts/lib"
+cp "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" "$fixture_root/kit/.shared/scripts/lib/private-dir.sh"
 cat > "$fixture_root/ledger-helper" <<'SCRIPT'
 #!/usr/bin/env bash
 operation=$1; shift
@@ -294,6 +297,9 @@ printf 'commit=%s:%s\n' "$PWD" "$*"
 SCRIPT
 chmod +x "$fixture_root/ledger-helper" "$fixture_root/kit/.shared/scripts/validate-handback.sh" \
     "$fixture_root/worktree/commit-helper"
+mkdir -p "$fixture_root/worktree/.agent/cache"
+printf 'preserve worker target' >"$fixture_root/worker-target"
+ln -s "$fixture_root/worker-target" "$fixture_root/worktree/.agent/cache/parallel-issues-handback.argv"
 bulk_inputs='apply_ledger=$1; ledger=$2; plan=$3; agentkit=$4; repository_root=$5; RUN_ID=run; bulk_dir=$5'
 bulk_callback='perform_rest_mutation() {
     [ -f "$plan" ] && [ -f "$ledger" ] && [ "$RUN_ID" = run ] || return 1
@@ -320,35 +326,43 @@ for parent_shell in bash zsh; do
 
     printf '%s\n' '{"entries":[{"issue":723,"predictedWriteSet":[]}],"conflictMap":{"revisions":[]}}' > "$fixture_root/plan"
     printf '%s\n' 'needs-paths: src/new.py' > "$fixture_root/report"
-    output=$("$parent_shell" -f -c 'raw_report=$1; dispatch_plan=$2; issue_number=723'$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 2>&1)
+    needs_inputs='raw_report=$1; dispatch_plan=$2; issue_number=$3; agentkit=$4; agentkit_provenance=$5; repository_root=$6'
+    output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell needs-paths fence accepts ordinary inputs"
     assert_eq src/new.py "$(jq -r '.entries[0].predictedWriteSet[0]' "$fixture_root/plan")" \
         "$parent_shell needs-paths fence updates the plan"
     printf '%s\n' 'needs-paths: ../escape' > "$fixture_root/report"
-    output=$("$parent_shell" -f -c 'raw_report=$1; dispatch_plan=$2; issue_number=723'$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 2>&1)
+    output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell needs-paths refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell needs-paths refusal cannot continue"
 
-    handback_inputs='agentkit=$1; agentkit_provenance=ok; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723'
+    handback_inputs='agentkit=$1; agentkit_provenance=ok; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723; repository_root=$5'
     output=$("$parent_shell" -f -c "$handback_inputs"$'\n'"$handback_recipe"$'\n'"$completed" \
-        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/report" 2>&1)
+        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/report" "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell handback fence receives ordinary inputs"
     assert_contains "$output" "commit=$fixture_root/worktree:--include-staged 723" "$parent_shell handback preserves cwd and argv"
+    assert_eq 'preserve worker target' "$(<"$fixture_root/worker-target")" \
+        "$parent_shell handback never follows worker-controlled scratch symlinks"
     output=$("$parent_shell" -f -c "$handback_inputs"$'\n'"$handback_recipe"$'\n'"$completed" \
-        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/missing" 2>&1)
+        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/missing" "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell handback refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell handback refusal cannot continue"
 
     mkdir -p "$fixture_root/plan.verification-reports"
     printf '%s\n' 'spec-verification= issue=723' > "$fixture_root/plan.verification-reports/issue-723.report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1'$'\n'"$reports_recipe"$'\n'"$completed" _ "$fixture_root/plan" 2>&1)
+    output=$("$parent_shell" -f -c 'dispatch_plan=$1; agentkit=$2; agentkit_provenance=ok; repository_root=$3'$'\n'"$reports_recipe"$'\n'"$completed" \
+        _ "$fixture_root/plan" "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell final handoff accepts ordinary input"
     assert_contains "$output" 'spec-verification= issue=723' "$parent_shell final handoff prints its report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1'$'\n'"$reports_recipe"$'\n'"$completed" _ "$fixture_root/missing" 2>&1)
+    output=$("$parent_shell" -f -c 'dispatch_plan=$1; agentkit=$2; agentkit_provenance=ok; repository_root=$3'$'\n'"$reports_recipe"$'\n'"$completed" \
+        _ "$fixture_root/missing" "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell final handoff failure stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell final handoff failure cannot continue"
 done
+
+markdown_mktemp=$(rg -n 'mktemp' "$root/agentkit/skills" --glob '*.md' || true)
+assert_eq '' "$markdown_mktemp" 'skill prose contains no executable mktemp recipes'
 
 finish
