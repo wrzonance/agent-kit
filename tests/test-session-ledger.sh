@@ -274,6 +274,35 @@ assert_contains "$parallel_run_id_recipe" \
 assert_contains "$parallel_run_id_recipe" \
     'session-ledger.sh" run-id --procedure-set parallel-issues' \
     'parallel run IDs delegate canonicalization to the shared helper'
+
+# Execute the shipped help recipe with a routing helper so append/covers
+# failures prove that the subsequent read cannot hide a missing receipt.
+ledger_recipe=$(sed -n '/^  issue_scope=/,$p' <<< "$parallel_run_id_recipe")
+assert_contains "$ledger_recipe" '--quote-stdin' \
+    'the executable help recipe passes the human quote over stdin'
+assert_not_contains "$ledger_recipe" '--quote "$QUOTE"' \
+    'the executable help recipe does not expose the human quote as an argument'
+recipe_kit="$tmp/recipe-kit"
+mkdir -p "$recipe_kit/.shared/scripts" "$tmp/recipe-repo/.agent"
+cat > "$recipe_kit/.shared/scripts/session-ledger.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$RECIPE_CALLS"
+if [[ $1 == run-id ]]; then printf 'recipe-run\n'; exit 0; fi
+[[ $1 != "${FAIL_SUBCOMMAND:-}" ]]
+EOF
+chmod +x "$recipe_kit/.shared/scripts/session-ledger.sh"
+for failing_step in append covers; do
+    recipe_calls="$tmp/recipe-$failing_step.calls"
+    recipe_rc=0
+    env RECIPE_CALLS="$recipe_calls" FAIL_SUBCOMMAND="$failing_step" \
+        repository_root="$tmp/recipe-repo" agentkit="$recipe_kit" agentkit_provenance=ok \
+        repository=wrzonance/agent-kit base=main DECISION=authorize SCOPE=scope QUOTE=quote \
+        bash -c "$ledger_recipe" >/dev/null 2>&1 || recipe_rc=$?
+    assert_eq 'nonzero' "$([[ $recipe_rc -ne 0 ]] && printf nonzero || printf zero)" \
+        "the help recipe propagates a $failing_step failure"
+    assert_not_contains "$(cat "$recipe_calls")" 'read' \
+        "the help recipe stops before read when $failing_step fails"
+done
 assert_not_contains "$parallel_text" 'starting_head=' \
     'parallel run IDs do not depend on mutable starting HEAD state'
 assert_not_contains "$parallel_text" 'contract_head=' \
