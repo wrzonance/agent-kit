@@ -16,6 +16,12 @@ The root/orchestrator must not implement when a real worker can be dispatched ex
 allowed implementation exceptions: a genuinely spawn unavailable degraded path (`worker=self`)
 or a qualifying bounded inline correction.
 
+The environment contract uses `spawn=unknown` for a harness without a pinned tool mapping. In
+that state, inspect the live runtime's advertised tool schema for its spawn, wait, and follow-up
+capabilities, then use the actual names it exposes. Do not borrow another harness's mapping or
+make a trial call merely to probe availability.
+Enter the degraded path only when that inspection shows no spawn capability.
+
 ```bash
 worker_resolution=$(bash -c "$(cat <<'BASH_RECIPE'
 agentkit=$1 agentkit_provenance=$2 repository_root=$3 yolo_invocation=$4
