@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Boundary regression: implementation role is independent of model/nesting support.
 set -uo pipefail
+
+# This fixture's environment contract intentionally uses the Codex mapping.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
 TEST_NAME=worker-leaf-contract
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
