@@ -97,8 +97,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
-# #783: computed coverage plus atomic, idempotent summary producer and queue records.
-readonly MAX_TREE_TOKENS=450444
+# #783: computed coverage, atomic producers, and filename-bound report identity.
+readonly MAX_TREE_TOKENS=450565
 
 violations=0
 checked=0

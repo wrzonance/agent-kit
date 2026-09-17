@@ -43,6 +43,22 @@ assert_eq "$expected" \
     "$(cd -- "$tmp" && "$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
     'summary derives exact coverage and replays durable verification reports verbatim'
 
+printf '%s\n' "$report" >"$reports/issue-104.report"
+chmod 600 -- "$reports/issue-104.report"
+mismatch_rc=0
+mismatch_err=$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports" 2>&1 >/dev/null) || mismatch_rc=$?
+assert_eq 1 "$mismatch_rc" 'report replay refuses a filename/content issue mismatch'
+assert_contains "$mismatch_err" 'issue' 'mismatch refusal names the invalid issue identity'
+rm -- "$reports/issue-104.report"
+
+printf '%s\n' "$report" >"$reports/issue-not-numeric.report"
+chmod 600 -- "$reports/issue-not-numeric.report"
+nonnumeric_rc=0
+nonnumeric_err=$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports" 2>&1 >/dev/null) || nonnumeric_rc=$?
+assert_eq 1 "$nonnumeric_rc" 'report replay refuses a nonnumeric issue filename'
+assert_contains "$nonnumeric_err" 'filename' 'nonnumeric refusal names the invalid filename boundary'
+rm -- "$reports/issue-not-numeric.report"
+
 mkdir -- "$repo/subdir"
 subdir_rc=0
 subdir_err=$("$script" summary --run-id wave --repo-root "$repo/subdir" 2>&1 >/dev/null) || subdir_rc=$?
