@@ -569,6 +569,20 @@ assert_contains "$normalized_text" 'every active worker' \
     'write-set recovery rechecks every active worker'
 assert_contains "$normalized_text" 'same lead is unavailable' \
     'blocked recovery falls back to a fresh lead when needed'
+assert_contains "$normalized_text" 'partial-pushed' \
+    'Collect classifies pushed green BLOCKED handbacks as partial delivery'
+assert_contains "$normalized_text" 'pr=open' \
+    'partial-pushed completion opens a draft PR'
+assert_contains "$normalized_text" '--blocker' \
+    'partial-pushed publication carries protected paths into the PR body'
+assert_contains "$normalized_text" 'Operator action required' \
+    'partial-pushed publication names the PR body disclosure section'
+assert_contains "$normalized_text" 'Completion report' \
+    'ordinary clean completion retains its direct publication route'
+assert_contains "$normalized_text" 'verification=unbound' \
+    'partial publication carries the unresolved verification limitation'
+assert_contains "$normalized_text" 'both completion paths' \
+    'clean and partial delivery retain chain dispatch guidance'
 
 # issue #689 (CR-689-3): the BLOCKED bullet's redrive bookkeeping is durable
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
