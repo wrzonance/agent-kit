@@ -23,14 +23,17 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
-    [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
+    # #777: complete Step 0 recipe moved from injected prose into --help.
+    [skills/.shared/scripts/agent-preflight.sh]="1391:16971:800"
     # #731/#732/#776: verification records, typed failures, and terminal summaries.
     [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
-    [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
+    # #777: repository-facts recipe moved from injected prose into --help.
+    [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="993:11129:800"
+    # #777: guarded batch-move recipe moved from injected prose into --help.
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
@@ -88,14 +91,17 @@ readonly MAX_HELPER_TOKENS=10000
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #776: terminal verification summaries and the composed runbook; exact total.
 # #774 + #776: partial publication evidence and terminal verification summaries.
+# #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
+# #777 review: command-specific attached reader options and fail-fast ledger help.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
 # #776 + PR #794 merge-down: combined helper tree exact total.
 # #774/#776 + PR #794 merge-down: combined helper tree exact total.
 # #779 + PR #794 merge-down: 1,786,587 helper bytes / 4 = 446,646 tokens; exact total.
-readonly MAX_TREE_TOKENS=446646
+# #777 review + PR #794 merge-down: 1,802,953 helper bytes / 4 = 450,738 tokens; exact total.
+readonly MAX_TREE_TOKENS=450738
 
 violations=0
 checked=0

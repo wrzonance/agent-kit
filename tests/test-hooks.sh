@@ -2317,6 +2317,105 @@ post_input() {
 }
 ctx_of() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
 
+# The workflow body arrives in UserPromptSubmit additionalContext. Reading that
+# same active SKILL.md again is allowed, but PostToolUse reminds the model that
+# the bytes are already present. The receipt is session-scoped, so an inactive
+# skill read stays quiet.
+active_repo=$(make_repo)
+active_sid='active-skill-reread'
+mkdir -p "$active_repo/.agent/activation"
+active_receipt="$active_repo/.agent/activation/$(printf '%s' "$active_sid" | sha256sum | awk '{print $1}').json"
+jq -nc --arg session "$active_sid" --arg root "$active_repo" --arg skills "$skills_root" \
+    '{schemaVersion:1,session:$session,repoRoot:$root,workflow:"parallel-issues",
+      skillsRoot:$skills,status:"active",receiptSource:"session-acknowledgement"}' \
+    > "$active_receipt"
+active_skill_path="$skills_root/parallel-issues/SKILL.md"
+out=$(post_input "$active_repo" "sed -n '1,40p' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'reading the active SKILL.md emits the exact advisory'
+assert_not_contains "$out" 'permissionDecision' 'the active-skill reread advisory cannot refuse the completed call'
+out=$(post_input "$active_repo" "cat '$skills_root/pr-to-green/SKILL.md'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a different skill body does not claim it was injected'
+out=$(post_input "$active_repo" "printf '%s' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'mentioning the active skill path as data is not a reread'
+out=$(post_input "$active_repo" "grep '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'using the active skill path as a grep pattern is not a reread'
+out=$(post_input "$active_repo" "cat '${active_skill_path}.backup'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a suffixed path does not impersonate the active skill operand'
+out=$(post_input "$active_repo" "nl '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'nl of the exact active SKILL.md operand emits the reread advisory'
+out=$(post_input "$active_repo" "awk -v x=y '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'an awk program matching the active path is not mistaken for a file read'
+for reader in awk sed grep rg; do
+    out=$(post_input "$active_repo" "$reader -f '$active_skill_path' /dev/null" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
+done
+out=$(post_input "$active_repo" "awk --file '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'awk --file recognizes the active skill as a read operand'
+for command in \
+    "sed -es/foo/bar/ '$active_skill_path'" \
+    "sed --expression=s/foo/bar/ '$active_skill_path'" \
+    "grep -eneedle '$active_skill_path'" \
+    "grep --regexp=needle '$active_skill_path'" \
+    "rg -eneedle '$active_skill_path'" \
+    "rg --regexp=needle '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached expression leaves the active skill as a read operand: $command"
+done
+for command in \
+    "awk -f'$active_skill_path' /dev/null" \
+    "awk --file='$active_skill_path' /dev/null" \
+    "sed -f'$active_skill_path' /dev/null" \
+    "sed --file='$active_skill_path' /dev/null" \
+    "grep -f'$active_skill_path' /dev/null" \
+    "grep --file='$active_skill_path' /dev/null" \
+    "rg -f'$active_skill_path' /dev/null" \
+    "rg --file='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached file option recognizes the active skill: $command"
+done
+for command in \
+    "sed -e'$active_skill_path' /dev/null" \
+    "sed --expression='$active_skill_path' /dev/null" \
+    "grep -e'$active_skill_path' /dev/null" \
+    "grep --regexp='$active_skill_path' /dev/null" \
+    "rg -e'$active_skill_path' /dev/null" \
+    "rg --regexp='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "an attached expression path remains pattern text: $command"
+done
+for command in \
+    "awk -e'$active_skill_path' /dev/null" \
+    "sed --regexp='$active_skill_path' /dev/null" \
+    "cat -f'$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "unsupported attached reader flags do not classify a file: $command"
+done
+for wrapped_reader in "env cat '$active_skill_path'" "command cat '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$wrapped_reader" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "a command wrapper preserves the active-skill read: $wrapped_reader"
+done
+
 out=$(post_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_hook_output "$out" post-tool-use 'PostToolUse emits schema-valid JSON'
 ctx=$(ctx_of "$out")

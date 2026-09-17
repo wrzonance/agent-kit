@@ -130,6 +130,60 @@ Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo
 
 Exit: 0 for reported facts; 1 for failed activation or required declarations;
       2 for invalid usage.
+
+Recipe: resolve, rehydrate, and run once
+  agentkit=''
+  contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
+  contract="$contract_root/.agent/env-contract.txt"
+  contract_harness=unknown
+  if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then contract_harness=claude
+  elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then contract_harness=codex
+  elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then contract_harness=opencode
+  elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then contract_harness=codex
+  fi
+  keyed_contract="$contract_root/.agent/env-contract.$contract_harness.txt"
+  [[ ! -e $keyed_contract && ! -L $keyed_contract ]] || contract=$keyed_contract
+  if [[ -n $contract_root && ( -e $contract || -L $contract ) ]]; then
+      [[ ! -L $contract_root/.agent && -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
+          { printf 'agentkit: untrusted environment contract: %s\n' "$contract" >&2; exit 1; }
+      tracked_rc=0
+      git -C "$contract_root" ls-files --error-unmatch -- "$contract" >/dev/null 2>&1 || tracked_rc=$?
+      [[ $tracked_rc == 1 ]] || { printf 'agentkit: cannot prove contract is untracked: %s\n' "$contract" >&2; exit 1; }
+      agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
+  fi
+  if [[ -z $agentkit ]]; then
+      printf 'agentkit: no skills path in %s (keyed candidate: %s); run onboard-repo first\n' "$contract" "$keyed_contract" >&2
+      exit 1
+  fi
+  [[ $agentkit == /* ]] || { printf '%s\n' "agentkit: skills path must be absolute: $agentkit" >&2; exit 1; }
+  [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
+  agentkit_provenance=ok; : "$agentkit_provenance"
+
+Cache rehydration for each later guarded block (replace STEP_0_AGENTKIT):
+  agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
+  [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
+  contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
+
+Run preflight once:
+  set -euo pipefail
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+  repository_root=$contract_root
+  shared="$agentkit/.shared/scripts"
+  preflight="$shared/agent-preflight.sh"
+  if [[ ! -x $preflight ]]; then
+      printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
+      exit 1
+  fi
+  exclude_path="$(git rev-parse --git-path info/exclude)"
+  if ! grep -Fxq '.agent/*' "$exclude_path" 2>/dev/null; then
+      printf '%s\n' '.agent/*' >> "$exclude_path"
+  fi
+  environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
+  printf '%s\n' "$environment_contract"
+  [[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
+  contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
+  [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
+  "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
 EOF
 }
 
