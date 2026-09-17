@@ -114,7 +114,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #781 merge-down with #783: measured combined helper tree.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
 # #781 merge-down with #782: measured combined helper tree.
-readonly MAX_TREE_TOKENS=455331
+# #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
+# #781 merge-down with #784/#792: measured combined helper tree.
+readonly MAX_TREE_TOKENS=456665
 
 violations=0
 checked=0
