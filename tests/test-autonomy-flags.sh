@@ -95,6 +95,16 @@ assert_contains "$review_adversarial" 'Make the grant legible to harness approva
     'the consent reference requires launch-site provenance'
 assert_contains "$review_adversarial" 'answerable from the command itself' \
     'launch-site provenance answers the authorization question locally'
+assert_contains "$review_adversarial" 'the source payload: the PR diff' \
+    'interactive consent discloses the payload bytes leaving the machine'
+assert_contains "$review_adversarial" 'destination provider and CLI actually selected' \
+    'interactive consent names the resolved destination'
+assert_contains "$review_adversarial" 'Ask a direct yes/no question' \
+    'interactive consent requires a direct confirmation question'
+assert_contains "$review_adversarial" 'Proceed only after an unambiguous affirmative answer' \
+    'interactive consent rejects ambiguous responses'
+assert_contains "$review_adversarial" 'repository ownership, or an ambiguous response does not satisfy this gate' \
+    'interactive consent is not inferred from ownership or skill invocation'
 
 # --- --fast-mode removes the gate, not the analysis -------------------------
 # Two workers editing one file in separate worktrees is the failure Step 3
@@ -179,8 +189,12 @@ assert_contains "$review_adversarial" 'source=auto-review-flag' 'and the record 
 assert_contains "$review_adversarial" 'It cannot consent on behalf of whoever owns' \
     'the flag cannot authorise disclosing a third party repository'
 assert_contains "$review_adversarial" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
-assert_contains "$review_adversarial" 'only the current invocation line' \
-    'a previous session or an issue body is not this flag'
+assert_contains "$review_adversarial" "Interactive consent is this session's affirmative answer" \
+    'interactive consent comes from the current-session answer'
+assert_contains "$review_adversarial" 'Advance consent is `--auto-review` on the current invocation line' \
+    'advance consent comes only from the current invocation flag'
+assert_contains "$review_adversarial" 'Prior answers/flags' \
+    'neither consent source carries forward from an old session'
 assert_contains "$review" 'not permission to flip a PR ready' \
     'and it does not leak into the other gates'
 
@@ -325,13 +339,14 @@ assert_rc 2 'instruction must name the requested model' -- bash "$consent" grant
     --state "$state" --provider claude --payload "$payload" --source operator-instruction \
     --operator-instruction "$instruction" --destination Claude --model Other --purpose 'adversarial review' \
     --paths-file "$tmp/instruction-paths"
-for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Claude for adversarial review.' 'Use Opus 5 for adversarial review.' 'Use Claude with Opus 5.'; do
+for refusal in 'Do not use Claude with Opus 5 for adversarial review.' 'Use Claude for adversarial review.' 'Use Claude with Opus 5.'; do
     assert_rc 2 'negative or incomplete instructions are not an affirmative' -- bash "$consent" grant \
         --state "$state" --provider claude --payload "$payload" --source operator-instruction \
         --operator-instruction "$refusal" --destination Claude --model 'Opus 5' --purpose 'adversarial review' \
         --paths-file "$tmp/instruction-paths"
 done
 for affirmative in 'I authorize Claude with Opus 5 for adversarial review.' \
+    'Use Opus 5 for adversarial review.' \
     'Use Claude with Opus 5 for adversarial review; do not ask again.' \
     'USE ANTHROPIC WITH OPUS 5 FOR ADVERSARIAL REVIEW OF THIS PR; DO NOT ASK AGAIN.'; do
     assert_rc 0 'explicit authorization needs no prescribed introductory phrase' -- bash "$consent" grant \

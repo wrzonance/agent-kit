@@ -107,6 +107,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #783: atomic, idempotent summary producer and queue records.
 # #785 review: optional fallback trust filtering and standalone PR transport.
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
+# #780: affirmative consent parsing and refused-source provenance; exact total.
+# #780 PR #793 review: bind authorization, reviewer/model, and review purpose; exact total.
+# #780 PR #793 bot repair: bind persisted destination and purpose; exact total.
+# #776 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #774 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #779 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #783: filename-bound report identity.
 # #784 review: cached requirements and work-shape enforcement atop the final parent.
 # #785 bot repair: reject duplicate run IDs across trusted state roots.
@@ -132,7 +138,15 @@ readonly MAX_HELPER_TOKENS=10000
 # #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
 # #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
 # #800 + PR #794 merge-down: 1,838,638 helper bytes / 4 = 459,659 tokens; exact total.
-readonly MAX_TREE_TOKENS=459659
+# #777 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #778 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #783 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #782 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #784 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #785 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #756 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #780 PR #793 final review repair: curly-quote consent boundary; exact total.
+readonly MAX_TREE_TOKENS=461841
 
 violations=0
 checked=0
