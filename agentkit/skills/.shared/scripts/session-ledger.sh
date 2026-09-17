@@ -65,10 +65,10 @@ Recipe: establish and reuse one run ID
   [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
   RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues --scope "$issue_scope" \
     --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
-  "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" \
-    --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"
+  printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" \
+    --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1
   "$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" \
-    --decision "$DECISION" --scope "$SCOPE"
+    --decision "$DECISION" --scope "$SCOPE" || exit 1
   "$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"
 EOF
 }

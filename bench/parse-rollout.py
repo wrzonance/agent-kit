@@ -165,7 +165,21 @@ def custom_exec_commands(payload):
 
 
 def command_reads_prose(command):
-    return '.md' in command and bool(PROSE_READ_RE.search(command))
+    for raw_segment in re.split(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command):
+        segment = raw_segment.strip()
+        if '.md' not in segment or not PROSE_READ_RE.search(segment):
+            continue
+        words = segment.split()
+        options = words[1:]
+        if '--' in options:
+            options = options[:options.index('--')]
+        if words and words[0] == 'rg' and '--files' in options:
+            continue
+        if words and words[0] == 'grep' and any(
+                flag in options for flag in ('-l', '-c', '--files-with-matches', '--count')):
+            continue
+        return True
+    return False
 
 
 def command_has_mixed_output(command):

@@ -6,7 +6,7 @@ guard_active_skill_reread() {
     local state_root=$1 session=$2 command_line=$3
     local activation_dir activation_id activation_record activation_tracked
     local active_workflow active_status active_source active_root active_skills active_skill segment
-    local verb token candidate canonical positional pattern_supplied pending_role start
+    local verb token candidate canonical positional pattern_supplied pending_role start attached_role attached_value
     local -a words
     [[ -n $state_root && -n $session ]] || return 1
     command -v sha256sum >/dev/null 2>&1 || return 1
@@ -49,6 +49,30 @@ guard_active_skill_reread() {
                     assignment|value) ;;
                 esac
                 pending_role=
+                continue
+            fi
+            attached_role=
+            attached_value=
+            case $verb:$token in
+                sed:-e?*|grep:-e?*|rg:-e?*)
+                    attached_role='expression'; attached_value=${token#-e} ;;
+                sed:--expression=*|grep:--regexp=*|rg:--regexp=*)
+                    attached_role='expression'; attached_value=${token#*=} ;;
+                sed:-f?*|awk:-f?*|grep:-f?*|rg:-f?*)
+                    attached_role='file'; attached_value=${token#-f} ;;
+                sed:--file=*|grep:--file=*|rg:--file=*)
+                    attached_role='file'; attached_value=${token#*=} ;;
+            esac
+            if [[ -n $attached_role && -n $attached_value ]]; then
+                if [[ $attached_role == file ]]; then
+                    case $attached_value in
+                        /*) candidate=$attached_value ;;
+                        *) candidate="$state_root/$attached_value" ;;
+                    esac
+                    canonical=$(guard_scope_canonical "$candidate") || canonical=
+                    [[ $canonical == "$active_skill" ]] && return 0
+                fi
+                pattern_supplied=1
                 continue
             fi
             case $verb:$token in

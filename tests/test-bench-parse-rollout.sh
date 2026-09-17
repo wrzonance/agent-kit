@@ -395,6 +395,55 @@ assert_eq '0' "$RUN_RC" 'a single custom compound shell read still parses'
 assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'a single custom command with mixed output makes prose characters unavailable'
 
+noncontent_search_fixture="$tmp/prose-cost-noncontent-search.jsonl"
+content_search_output=$'matching prose\n'
+pattern_search_output=$'-c appears as content\n'
+jq -nc --arg content "$content_search_output" \
+    --arg pattern_content "$pattern_search_output" \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"rg-files",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"rg-files",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-list",name:"exec_command",arguments:"{\"cmd\":\"grep -l needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-list",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-count",name:"exec_command",arguments:"{\"cmd\":\"  grep -c needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-count",output:"1\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-content",name:"exec_command",arguments:"{\"cmd\":\"grep needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-content",output:$content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-pattern",name:"exec_command",arguments:"{\"cmd\":\"grep -- -c notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-pattern",output:$pattern_content}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-noncontent-search",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$noncontent_search_fixture"
+run "$noncontent_search_fixture" --timestamp 2026-09-16T03:08:00Z
+assert_eq '0' "$RUN_RC" 'Markdown discovery and content search modes parse'
+assert_eq "$((${#content_search_output} + ${#pattern_search_output}))" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'file discovery and list/count output are excluded while grep content is counted'
+
+mixed_discovery_fixture="$tmp/prose-cost-mixed-discovery.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"mixed-discovery",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'; cat real.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"mixed-discovery",output:"notes.md and prose"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-mixed-discovery",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$mixed_discovery_fixture"
+run "$mixed_discovery_fixture" --timestamp 2026-09-16T03:09:00Z
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'discovery combined with a real Markdown read has mixed unavailable output'
+
+unrelated_content_fixture="$tmp/prose-cost-unrelated-content.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"unrelated-content",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'; cat notes.txt\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"unrelated-content",output:"notes.md and unrelated text"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-unrelated-content",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$unrelated_content_fixture"
+run "$unrelated_content_fixture" --timestamp 2026-09-16T03:10:00Z
+assert_eq '0' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'a Markdown discovery segment does not make an unrelated text read count as prose'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'
