@@ -117,8 +117,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #784 review: cached requirements and work-shape enforcement atop the final parent.
 # #785 bot repair: reject duplicate run IDs across trusted state roots.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
-# #784 review plus final #792 parent: cached verdicts and reader fixes.
 # Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
+# #784 review plus final #792 parent: cached verdicts and reader fixes.
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
 # #784 final #792 parser repairs: cached verdicts and reader fixes.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
@@ -126,13 +126,26 @@ readonly MAX_HELPER_TOKENS=10000
 # #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
 # #784 settlement repair: validated private body-cache handoff; exact combined total.
 # #800 settlement cache repair: validated private body-cache handoff; 1,826,556 bytes / 4.
+# #756: ordered stdin redirects and queued heredoc recovery; exact total.
+# PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
+# PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
+# #776 + PR #794 merge-down: combined helper tree exact total.
+# #774/#776 + PR #794 merge-down: combined helper tree exact total.
+# #779 + PR #794 merge-down: 1,786,587 helper bytes / 4 = 446,646 tokens; exact total.
+# #777 review + PR #794 merge-down: 1,802,953 helper bytes / 4 = 450,738 tokens; exact total.
+# #778 + PR #794 merge-down: 1,806,262 helper bytes / 4 = 451,565 tokens; exact total.
+# #783 + PR #794 merge-down: 1,818,298 helper bytes / 4 = 454,574 tokens; exact total.
+# #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
+# #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
+# #800 + PR #794 merge-down: 1,838,638 helper bytes / 4 = 459,659 tokens; exact total.
 # #777 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #778 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #783 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #782 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #784 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #785 + #780 merge-down: canonical helper lint measured the exact combined total.
-readonly MAX_TREE_TOKENS=458790
+# #756 + #780 merge-down: canonical helper lint measured the exact combined total.
+readonly MAX_TREE_TOKENS=461811
 
 violations=0
 checked=0
