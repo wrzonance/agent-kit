@@ -103,7 +103,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #783: computed coverage, atomic producers, and filename-bound report identity.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
 # #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
-readonly MAX_TREE_TOKENS=452979
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
+readonly MAX_TREE_TOKENS=454048
 
 violations=0
 checked=0

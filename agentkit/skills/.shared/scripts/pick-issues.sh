@@ -78,7 +78,11 @@ for tool in gh jq; do
 done
 
 [[ -n $repo_root ]] || repo_root=$(git rev-parse --show-toplevel 2> /dev/null || printf '%s' "$PWD")
-board_file="$repo_root/.agent/board.json"
+repo_root=$(cd -- "$repo_root" 2>/dev/null && pwd -P) || die_blocked 'repository root is not a directory'
+agent_dir="$repo_root/.agent"
+[[ -d $agent_dir && ! -L $agent_dir && -O $agent_dir ]] ||
+    die_blocked "$agent_dir must be an owned plain directory"
+board_file="$agent_dir/board.json"
 [[ -r $board_file ]] ||
     die_blocked "no .agent/board.json in $repo_root; run bootstrap-repo.sh first"
 
@@ -191,20 +195,38 @@ triage=$script_dir/triage-issues.sh
 [[ -x $triage ]] || die 'triage-issues.sh is unavailable'
 body_file=$(mktemp "${TMPDIR:-/tmp}/pick-issues.body.XXXXXX") || die 'could not create body cache'
 chmod 600 "$body_file"; trap 'rm -f -- "$body_file"' EXIT
+cache_parent="$repo_root/.agent/cache"
+cache_root="$cache_parent/pick-issues-bodies"
+for dir in "$cache_parent" "$cache_root"; do
+    [[ ! -L $dir && (! -e $dir || -d $dir) ]] || die "$dir exists and is not a plain directory"
+    mkdir -p -- "$dir" || die "could not create $dir"
+    [[ -O $dir ]] || die "$dir is not owned by the current user"
+done
+chmod 700 -- "$cache_root" || die 'could not restrict the issue body cache root'
+[[ $(stat -c '%a' "$cache_root" 2>/dev/null) == 700 ]] || die 'issue body cache root is not mode 700'
+cache_dir=$(mktemp -d "$cache_root/run.XXXXXX") || die 'could not create an invocation body cache'
+chmod 700 -- "$cache_dir" || die 'could not restrict the invocation body cache'
+[[ $(stat -c '%a' "$cache_dir" 2>/dev/null) == 700 ]] || die 'invocation body cache is not mode 700'
 while IFS=$'\t' read -r issue body_b64; do
-    body=$(base64 -d <<<"$body_b64")
-    records=$(printf '%s' "$body" | "$issue_paths" --issue "$issue" \
-        --repo-root "$repo_root" --body-file -) || die "could not derive paths for issue #$issue"
+    printf '%s' "$body_b64" | base64 -d >"$body_file" || die "could not decode body for issue #$issue"
+    records=$("$issue_paths" --issue "$issue" \
+        --repo-root "$repo_root" --body-file "$body_file") || die "could not derive paths for issue #$issue"
     paths=$(awk '{sub(/^[^ ]+ /, ""); print}' <<<"$records" |
         jq -Rsc 'split("\n") | map(select(length > 0))')
-    printf '%s' "$body" >"$body_file"
+    cache_file="$cache_dir/issue-$issue.json"
+    cache_tmp=$(mktemp "$cache_dir/.issue-$issue.XXXXXX") || die "could not stage body cache for issue #$issue"
+    jq -cn --arg repository "$repository" --argjson issue "$issue" --rawfile body "$body_file" \
+        '{schemaVersion:1,repository:$repository,issue:$issue,body:$body}' >"$cache_tmp" ||
+        die "could not encode body cache for issue #$issue"
+    chmod 600 -- "$cache_tmp" || die "could not restrict body cache for issue #$issue"
+    mv -f -- "$cache_tmp" "$cache_file" || die "could not publish body cache for issue #$issue"
     shape_record=$("$triage" --classify-shape "$body_file") || die "could not classify work shape for issue #$issue"
     work_shape=${shape_record#work-shape=}; work_shape=${work_shape%% signal=*}
     hold_reason=${shape_record#* signal=}
-    selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" --arg body "$body" \
+    selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" --rawfile body "$body_file" --arg cache "$cache_file" \
         --arg shape "$work_shape" --arg reason "$hold_reason" '
       map(if .number == $issue then
-        . + {predictedWriteSet: $paths, workShape: $shape,
+        . + {predictedWriteSet: $paths, workShape: $shape, bodyCache: $cache,
              requirementsDigest: ([.title[0:240]] +
                ($body | split("\n") | map(gsub("[[:cntrl:]]"; " ") |
                  gsub("^\\s+|\\s+$"; "") | select(length > 0) | .[0:240])) | .[:12])}

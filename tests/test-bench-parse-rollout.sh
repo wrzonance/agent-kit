@@ -552,6 +552,32 @@ assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'ambi
 assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
     'ambiguous call ids name missing category attribution'
 
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {text:"known", body:"issue body", metadata:{text:"not captured"}}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unknown-structured-output.jsonl"
+run "$tmp/unknown-structured-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'mixed known and unknown structured output parses conservatively'
+assert_eq '18' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'only the allowlisted text member contributes to its category'
+assert_eq '77' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unknown body and metadata members do not inflate the character total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unknown structured output prevents complete evidence'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'unknown structured output names incomplete attribution evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {body:"issue body"}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unsupported-only-output.jsonl"
+run "$tmp/unsupported-only-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'unsupported-only structured output does not crash parsing'
+assert_eq '13' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'unsupported-only output contributes no invented characters beside separate known output'
+assert_eq '72' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unsupported-only output is excluded from the preserved known total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unsupported-only output cannot claim complete evidence because another output was known'
+
 jq -c 'if .payload.call_id? == "c-forge" and .payload.type == "function_call" then
     .payload |= (.type = "custom_tool_call" | .name = "functions.exec" |
       .input = {code: "await tools.exec_command({cmd: \"gh issue view 784; cat agentkit/skills/parallel-issues/SKILL.md\"})"} |
