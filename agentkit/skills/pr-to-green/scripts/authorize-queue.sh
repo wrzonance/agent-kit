@@ -74,7 +74,7 @@ iso_to_epoch() {
 
 live_boundary_epoch() {
     local pr=$1 base=$2 timeline event_time
-    timeline=$("$GH_BIN" api "repos/$repo/issues/$pr/timeline" --paginate --slurp --jq 'add' 2>/dev/null) || return 1
+    timeline=$("$GH_BIN" api "repos/$repo/issues/$pr/timeline" --paginate --slurp 2>/dev/null | jq 'add') || return 1
     event_time=$(jq -r --arg base "$base" '
         def first_nonempty: first(.[] | select(type == "string" and length > 0)) // "";
         [ .[]?
