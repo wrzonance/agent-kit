@@ -499,13 +499,13 @@ has_authorized_relationship() {
     done; return 1
 }
 strip_quoted_segments() {
-    local input=$1 output='' quote='' char close='' previous='' following='' i
+    local input=$1 output='' quote='' char close='' previous='' following='' i curly_open=$'\u2018' curly_close=$'\u2019'
     for ((i = 0; i < ${#input}; i++)); do
         char=${input:i:1}
         previous='' following=''
         ((i == 0)) || previous=${input:i-1:1}
         ((i + 1 >= ${#input})) || following=${input:i+1:1}
-        if [[ $char == "'" && $previous =~ [[:alnum:]] && $following =~ [[:alnum:]] ]]; then
+        if [[ ($char == "'" || $char == "$curly_close") && $previous =~ [[:alnum:]] && $following =~ [[:alnum:]] ]]; then
             [[ -n $quote ]] || output+=$char
             continue
         fi
@@ -515,7 +515,7 @@ strip_quoted_segments() {
         fi
         case $char in
             \"|\'|'`') quote=$char; close=$char ;;
-            '“') quote=$char; close='”' ;;
+            '“') quote=$char; close='”' ;; "$curly_open") quote=$char; close=$curly_close ;;
             *) output+=$char ;;
         esac
     done

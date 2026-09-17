@@ -145,7 +145,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #784 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #785 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #756 + #780 merge-down: canonical helper lint measured the exact combined total.
-readonly MAX_TREE_TOKENS=461811
+# #780 PR #793 final review repair: curly-quote consent boundary; exact total.
+readonly MAX_TREE_TOKENS=461841
 
 violations=0
 checked=0

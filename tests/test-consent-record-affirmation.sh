@@ -61,6 +61,41 @@ assert_rc 0 'configured and versioned destination text retains valid provider/CL
     grant_instruction "$tmp/state/configured-destination" "$reported" claude "$payload" \
         'Anthropic via Claude Code 2.1 configured reviewer' "$purpose"
 
+# Curly single quotes delimit quoted instructions just like straight quotes.
+# Use the exact configured model in the quoted text so this regression can
+# fail only at quote stripping, not at the model matcher.
+curly_open=$'\u2018' curly_close=$'\u2019'
+curly_quote_state="$tmp/state/curly-quoted-instruction"
+curly_quote_rc=0
+curly_quote_out=$(bash "$consent" grant --state "$curly_quote_state" --provider claude \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction "${curly_open}Use Claude Opus 5 for adversarial review.${curly_close}" \
+    --destination 'Anthropic via Claude' --model 'Claude Opus 5' --purpose "$purpose" \
+    --paths-file "$tmp/paths" 2>&1) || curly_quote_rc=$?
+assert_eq 2 "$curly_quote_rc" 'a curly-single-quoted instruction is not executable consent'
+assert_contains "$curly_quote_out" 'missing model' \
+    'the matching model is absent only after the curly-quoted segment is stripped'
+assert_eq no "$([[ -e $curly_quote_state || -e $curly_quote_state.decision.json || -e $curly_quote_state.consent-paths ]] && printf yes || printf no)" \
+    'a curly-single-quoted refusal creates no consent evidence'
+
+curly_negation_state="$tmp/state/curly-apostrophe-negation"
+curly_negation_rc=0
+bash "$consent" grant --state "$curly_negation_state" --provider claude --payload "$payload" \
+    --source operator-instruction --operator-instruction "Don${curly_close}t use Claude Opus 5 for adversarial review." \
+    --destination 'Anthropic via Claude' --model 'Claude Opus 5' --purpose "$purpose" \
+    --paths-file "$tmp/paths" >/dev/null 2>&1 || curly_negation_rc=$?
+assert_eq 2 "$curly_negation_rc" 'a curly apostrophe in a negation remains visible to the safety grammar'
+assert_eq no "$([[ -e $curly_negation_state || -e $curly_negation_state.decision.json || -e $curly_negation_state.consent-paths ]] && printf yes || printf no)" \
+    'a curly-apostrophe negation creates no consent evidence'
+
+curly_model="Claude${curly_close}s Opus 5"
+curly_apostrophe_state="$tmp/state/curly-apostrophe-model"
+assert_rc 0 'a curly apostrophe between alphanumeric model characters remains valid data' -- \
+    bash "$consent" grant --state "$curly_apostrophe_state" --provider claude --payload "$payload" \
+        --source operator-instruction --operator-instruction "Use $curly_model for adversarial review." \
+        --destination 'Anthropic via Claude' --model "$curly_model" --purpose "$purpose" \
+        --paths-file "$tmp/paths"
+
 # shellcheck disable=SC1112,SC2016
 for case in \
     'Do not authorize Claude Opus 5 xhigh for an adversarial review of each PR.' \

@@ -189,8 +189,12 @@ assert_contains "$review_adversarial" 'source=auto-review-flag' 'and the record 
 assert_contains "$review_adversarial" 'It cannot consent on behalf of whoever owns' \
     'the flag cannot authorise disclosing a third party repository'
 assert_contains "$review_adversarial" 'Still fails closed' 'an unrecordable or unknown destination still blocks'
-assert_contains "$review_adversarial" 'only the current invocation line' \
-    'a previous session or an issue body is not this flag'
+assert_contains "$review_adversarial" "Interactive consent is this session's affirmative answer" \
+    'interactive consent comes from the current-session answer'
+assert_contains "$review_adversarial" 'Advance consent is `--auto-review` on the current invocation line' \
+    'advance consent comes only from the current invocation flag'
+assert_contains "$review_adversarial" 'Prior answers/flags' \
+    'neither consent source carries forward from an old session'
 assert_contains "$review" 'not permission to flip a PR ready' \
     'and it does not leak into the other gates'
 
