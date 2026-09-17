@@ -406,8 +406,14 @@ smuggle a worker into that reservation. The completion table's `worker=<model> <
 actually ran. Root design review and adversarial review keep their own effort settings
 regardless of any entry here.
 
-Seed each `predictedWriteSet` with `scripts/issue-paths.sh --issue N`, then
-expand it from the issue's code impact to include affected shared build config, lockfiles, and generated contracts
+Seed each `predictedWriteSet` with the installed helper:
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+"$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root"
+```
+
+Then expand it from the issue's code impact to include affected shared build config, lockfiles, and generated contracts
 even when the issue does not name them.
 Record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
 --validate-only` supply required manifest companions; extraction is a seed for

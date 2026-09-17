@@ -93,14 +93,20 @@ candidate_is_safe() {
 }
 
 classify() {
-    local candidate=${1#./} parent
+    local evidence=$1 candidate=${2#./} parent
     candidate=${candidate%/}
     candidate_is_safe "$candidate" || return 0
     if [[ -n ${modes[$candidate]+yes} || -n ${directories[$candidate]+yes} ]]; then
         printf 'exists %s\n' "$candidate"
         return 0
     fi
-    [[ $candidate == */* ]] || return 0
+    if [[ $candidate != */* ]]; then
+        [[ $evidence == quoted ]] || return 0
+        [[ $candidate =~ ^[A-Za-z0-9_@+-]+(\.[A-Za-z0-9_@+-]*[A-Za-z][A-Za-z0-9_@+-]*)+$ ||
+            $candidate =~ ^\.[A-Za-z0-9_@+-]*[A-Za-z][A-Za-z0-9_@+-]*$ ]] || return 0
+        printf 'create %s\n' "$candidate"
+        return 0
+    fi
     parent=${candidate%/*}
     if [[ -n ${directories[$parent]+yes} ]]; then
         printf 'create %s\n' "$candidate"
@@ -108,10 +114,11 @@ classify() {
     return 0
 }
 
-while IFS= read -r candidate; do
-    classify "$candidate"
+while IFS=$'\t' read -r evidence candidate; do
+    classify "$evidence" "$candidate"
 done < <(jq -Rrs -r '
-  ([scan("`([^`\\r\\n]+)`") | .[0]]
-   + [scan("/?[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*[A-Za-z0-9_@+-])+")]
-   + [scan("[A-Za-z0-9_@+-]+(?:\\.[A-Za-z0-9_@+-]+)+")])[]
+  ([scan("`([^`\\r\\n]+)`") | ["quoted", .[0]]]
+   + [scan("/?[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*[A-Za-z0-9_@+-])+") | ["unquoted", .]]
+   + [scan("[A-Za-z0-9_@+-]+(?:\\.[A-Za-z0-9_@+-]+)+") | ["unquoted", .]])[]
+  | @tsv
 ' <<<"$body") | sort -u

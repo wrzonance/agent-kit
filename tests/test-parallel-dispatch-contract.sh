@@ -265,8 +265,12 @@ assert_contains "$normalized_text" 'require `schemaVersion=1 valid`' \
     'dispatch requires the schema-1 validation success marker'
 assert_contains "$triage_and_selection_text" 'same owner-only file' \
     'dispatch-plan and merge-plan names are documented as lifecycle aliases'
-assert_contains "$triage_and_selection_text" 'scripts/issue-paths.sh --issue N' \
-    'conflict analysis seeds predictions from issue-body paths'
+assert_contains "$triage_and_selection_text" \
+    '"$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root"' \
+    'conflict analysis invokes the installed issue-path helper from the repository root'
+assert_contains "$triage_and_selection_text" \
+    '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
+    'the issue-path recipe fails closed without provenance-bound installed helpers'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \
     'late overlap has an explicit chain-conversion disposition'
 assert_contains "$triage_and_selection_text" 'merge-down' \
