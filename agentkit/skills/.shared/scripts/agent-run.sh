@@ -103,8 +103,7 @@ EOF
 failure_class=usage
 failure_state=arguments
 failure_action=correct-arguments
-# Version 1 uses Bash %q fields: one physical line, no eval by consumers.
-# Class selection is control-flow evidence, never a search over arbitrary logs.
+summary_ready=0
 # shellcheck disable=SC2329  # Invoked by EXIT, including early argument errors.
 failure_result() {
     local status=$?
@@ -114,6 +113,9 @@ failure_result() {
             "${failure_evidence:-${log_file:-stderr}}" "$failure_state" "$failure_action" >&2
     fi
     if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
+    if ((summary_ready)); then
+        printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q\n' "$summary_status" "$status" "$elapsed" "$log_file"
+    fi
     return "$status"
 }
 trap failure_result EXIT
@@ -154,6 +156,7 @@ finish() {
     local rc=$1
     [[ -z ${verification_fd:-} ]] || exec {verification_fd}>&-
     if ((rc == 0)) && ((${#remaining_queue[@]})); then
+        if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
         build_chain_argv
         exec "$0" "${chain_argv[@]}"
     fi
@@ -1899,9 +1902,6 @@ if ((summary_cmd)); then
     summary_status=fail
     ((rc != 0)) || summary_status=pass
     [[ $baseline_excluded != yes ]] || summary_status=baseline-excluded
-    trap - EXIT
-    cleanup_suite_run
-    printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q\n' \
-        "$summary_status" "$rc" "$elapsed" "$log_file"
+    summary_ready=1
 fi
 finish "$rc"
