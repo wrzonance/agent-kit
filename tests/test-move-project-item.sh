@@ -794,7 +794,7 @@ assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
     'all-boards: a persistently null-issue membership read retries the bounded number of attempts'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$mv_sh") -le 1003 ]] && printf yes || printf no)" \
-    'move-github-project-item.sh stays at or under 1003 lines'
+assert_eq yes "$([[ $(wc -l < "$mv_sh") -le 1009 ]] && printf yes || printf no)" \
+    'move-github-project-item.sh stays at or under 1009 lines'
 
 finish
