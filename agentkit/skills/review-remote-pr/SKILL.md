@@ -57,13 +57,9 @@ After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bi
 
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
-normalize_run_input() {
-    local value=$1
-    value=${value//[^A-Za-z0-9._-]/-}
-    printf '%s' "$value"
-}
-review_run_inputs="pr=$PR;repo=$REPO;flags=$(normalize_run_input "$review_invocation_flags")"
-RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set review-remote-pr \
+    --scope "$PR" --flags "$review_invocation_flags" --repo "$REPO" --base review-pr-v1) || exit 1
 : "$RUN_ID"
 ```
 
@@ -261,7 +257,7 @@ Run only declared `agent-run.sh --cmd` commands, directly, no approval step: a f
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
-Resolve one private run directory for this PR, carried as `RUN_DIR` in every later block — never hand-roll a `mktemp` path:
+Resolve one private run directory for this PR, carried as `RUN_DIR` in every later block:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
@@ -348,7 +344,7 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX") && chmod 600 -- "$tmp"
+tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label baseline --repo-root "$REPO_ROOT") || exit 1
 rc=0
 "$agentkit/review-remote-pr/scripts/verification-baseline.sh" --base "origin/$BASE_BRANCH" \
     --log "$log" --check "$check" --paths "${failing_paths[@]}" >"$tmp" || rc=$?

@@ -88,12 +88,14 @@ readonly MAX_HELPER_TOKENS=10000
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #776: terminal verification summaries and the composed runbook; exact total.
 # #774 + #776: partial publication evidence and terminal verification summaries.
+# #779: destination-adjacent atomic scratch and .agent parent validation.
 # #780: affirmative consent parsing and refused-source provenance; exact total.
 # #780 PR #793 review: bind authorization, reviewer/model, and review purpose; exact total.
 # #780 PR #793 bot repair: bind persisted destination and purpose; exact total.
 # #776 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #774 + #780 merge-down: canonical helper lint measured the exact combined total.
-readonly MAX_TREE_TOKENS=445602
+# #779 + #780 merge-down: canonical helper lint measured the exact combined total.
+readonly MAX_TREE_TOKENS=445777
 
 violations=0
 checked=0
