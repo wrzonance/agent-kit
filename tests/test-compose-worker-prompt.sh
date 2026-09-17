@@ -70,7 +70,7 @@ make_repo() {
     printf '%s\n' 'TRUSTED-PRIOR-BYTES' > "$dir/.agent/prior-art.txt"
 }
 
-contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\nyield-cap= ms=27000 source=measured harness=codex'
 repo="$tmp/repo with spaces"
 make_repo "$repo" "$contract"
 
@@ -112,12 +112,14 @@ assert_not_contains "$neutral_prompt" "$tmp" 'the path-neutral prompt carries no
 assert_not_contains "$neutral_prompt" "$root" 'the path-neutral prompt carries no checkout path'
 # #612 adds paired formatting and conditional full-log guidance (298 bytes).
 # #729 adds the structured artifact and explicit unknown-evidence fallback.
-assert_eq yes "$([[ ${#neutral_prompt} -le 19700 ]] && printf yes || printf no)" \
-    "issue-lead prompt stays at or under 19700 path-neutral bytes (measured ${#neutral_prompt})"
+# The contract's yield-cap record adds a measured/default fact to every prompt.
+assert_eq yes "$([[ ${#neutral_prompt} -le 19760 ]] && printf yes || printf no)" \
+    "issue-lead prompt stays at or under 19760 path-neutral bytes (measured ${#neutral_prompt})"
 assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the paired formatter fix'
 assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
 assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
-assert_contains "$prompt" 'when the summary is insufficient' 'full log reads depend on summary sufficiency'
+assert_contains "$prompt" 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=27000 resume=write_stdin("",27000) read=once-at-marker' \
+    'composed worker runbook binds verification, the measured cap, one resume shape, and one terminal read'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
@@ -136,6 +138,7 @@ compose_verification_report() {
 }
 
 expected_wait_bound_line="wait-bound= issue=136 seconds=$expected_wait_bound_seconds class=worker"
+expected_yield_cap_line='yield-cap= ms=27000 source=measured harness=codex'
 
 # Acceptance declarations are extracted from the issue artifact at the same
 # boundary as verification steps, including fenced commands and the explicit
@@ -178,7 +181,8 @@ assert_eq \
     "acceptance=tools/verify
 acceptance=tools/full-test
 spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$fully_covered_report" \
     'fully covered verification reports its ratio and classification, and its wait bound'
 
@@ -189,7 +193,8 @@ assert_eq \
 acceptance=tools/full-test
 acceptance=tools/not-declared
 spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$partially_covered_report" \
     'partially covered verification reports its ratio and classification, and its wait bound'
 
@@ -200,7 +205,8 @@ assert_eq \
 acceptance=tools/not-declared
 acceptance=tools/also-not-declared
 spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$majority_uncovered_report" \
     'majority-uncovered verification is distinguishable at a glance, and its wait bound is still reported'
 
@@ -465,6 +471,8 @@ fix_batch_digest=$(bash "$compose" --template fix-batch --worktree "$repo" \
     --output "$tmp/fix-batch-wait.md")
 assert_contains "$fix_batch_digest" "$expected_wait_bound_line" \
     'fix-batch dispatch also emits a per-worker wait bound at composition time'
+assert_contains "$fix_batch_digest" "$expected_yield_cap_line" \
+    'fix-batch dispatch also emits the measured runtime yield cap without changing it'
 
 # Issue #495: setup and mutation are separate templates. Setup is the
 # read-only state/triage phase and must expose terminal handoff markers; a

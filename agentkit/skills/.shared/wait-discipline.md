@@ -7,6 +7,8 @@ Avoid empty wait cycles that do not advance collection.
 ## The rule
 
 **A wait must never spend model turns.** This is the cost goal, not a guarantee: a runtime may yield even while a helper blocks. Use a bounded helper — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test`. A `sleep N` + re-check issued as its own tool call is churn: the helper already owns the polling loop.
+Use the largest permitted yield. After a runtime yield, resume the same running session or cell;
+never restart the helper.
 
 Root calls already-blocking bounded helpers directly: CI `gh-pr-state.sh --wait-ci` and
 duration-bounded adversarial runs need no waiter. Redirect output to a log and report one
@@ -16,10 +18,8 @@ or when useful root work continues concurrently. Give that waiter a finite obser
 use the **Throwaway waiter prompt** and spawn-contract isolation rules, never a setup/fix worker.
 
 Every wait names an explicit bound: adversarial duration, CI round cap, or native collection
-deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Resume
-the same running helper session after a runtime yield; never restart it. Run tests in the
-foreground or collect test-runner logs inside one bounded harness cell, never separate sleep/tail calls.
-Require the worker completion marker/contract or runner completion marker as terminal evidence.
+deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Require the
+worker completion marker/contract or runner completion marker as terminal evidence.
 
 **A bounded wait must be silent until its terminal condition.** Emit one completion or expiry
 line: every line of background output wakes the orchestrator for a turn. Send any progress heartbeat
@@ -83,25 +83,7 @@ instead of recalling this rule — see `parallel-issues/SKILL.md`'s "Compose the
 prompt" step. Never duplicate this number as a literal in a script; change it here and the
 printed value follows.
 
-An early completion still returns early. Use the largest runtime-advertised yield/timeout
-allowed by higher-priority communication limits (the effective cap); class defaults never
-override these limits. Below that cap, increase an empty wait's duration up to the cap.
-At the effective cap, repeat that capped wait only while the task is outstanding and its
-collection deadline has not expired.
-An empty yield is neither completion nor a stall. No empty-wait narration, except updates
-required by higher-priority instructions; count those requests too.
-
-### Native sub-agent collection
-
-For `collaboration.wait_agent`, pass `timeout_ms`; advertised maximum **3600000 ms**, subject to
-the current schema. Set a finite collection deadline: now plus the class bound above. Use
-`timeout_ms = min(class_bound_ms, effective_cap_ms, remaining_deadline_ms)`; a 60-second
-communication limit caps calls at 60000 ms. Re-issuing an empty capped wait is correct until
-that deadline. If less than the schema minimum remains, expire collection without another call.
-Read actual completion results. At expiry report outstanding IDs and a resume decision; never
-silently reset the deadline. Expiry does not terminate the worker or authorize worktree writes:
-stopping execution requires cancellation and quiescence proof. Other runtimes use their
-advertised equivalent with these same limits.
+For native sub-agent collection, use the `yield-cap=` value from the environment contract: one call per cap, no narration between calls, and a finite class deadline whose expiry does not terminate a worker or authorize worktree writes.
 
 For implementation workers, record the last observed progress time at dispatch/completion
 and the next stall-check deadline: progress time plus `STALL_THRESHOLD_MINUTES` (default 12).
@@ -109,18 +91,6 @@ Before that deadline, no `stall-check.sh` call. At or after it, sample once and 
 next sample no sooner than another threshold interval; observed progress resets the deadline.
 The helper still requires its own consecutive quiet samples before declaring a stall.
 External CI pending/expiry is a CI result, not evidence that an implementation worker stalled.
-
-## Wait metrics at handoff
-
-Report `wait_seconds`, `root_requests`, `waiter_requests`, `max_waiter_context_tokens`,
-and `requests_per_wait_minute = (root_requests + waiter_requests) / (wait_seconds / 60)`.
-Count model requests attributable to waiting, including launch, empty yields, required
-updates, and terminal handling; do not equate tool calls with requests. Use the union of
-overlapping wait intervals for run elapsed time; sum requests across actors. No waits means
-zero counts and rate `n/a`. Missing transcript/token telemetry means `unavailable`, never zero.
-Record effective caps and evidence provenance. The virtual 20/30-minute benchmark is
-**synthetic**, not live acceptance: fewer than 10 root requests and waiter context below
-10K require measured live evidence. A strict communication cap can prevent that root budget.
 
 ## Never replay a recorded path as a command
 
