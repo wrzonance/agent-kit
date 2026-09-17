@@ -234,8 +234,8 @@ recipe_block=$(awk '
     found && infence && /^```$/ { exit }
     found && infence { print }
 ' "$review_skill_path")
-assert_contains "$recipe_block" 'tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX")' \
-    'the extracted recipe writes into a private mktemp under RUN_DIR'
+assert_contains "$recipe_block" '--scratch-label baseline' \
+    'the extracted recipe asks the safe allocator for baseline scratch'
 assert_not_contains "$recipe_block" '>"$RUN_DIR/baseline-evidence.md"' \
     'the extracted recipe never redirects the helper straight into baseline-evidence.md'
 
@@ -266,6 +266,7 @@ run_recipe() {
         cd -- "$recipe_repo" || exit 1
         agentkit="$root/agentkit/skills"
         agentkit_provenance=ok
+        REPO_ROOT=$recipe_repo
         RUN_DIR=$(mktemp -d "$tmp/recipe-run.XXXXXX") && chmod 700 -- "$RUN_DIR"
         BASE_BRANCH=main
         check=$check_name

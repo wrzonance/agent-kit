@@ -57,13 +57,9 @@ After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bi
 
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
-normalize_run_input() {
-    local value=$1
-    value=${value//[^A-Za-z0-9._-]/-}
-    printf '%s' "$value"
-}
-review_run_inputs="pr=$PR;repo=$REPO;flags=$(normalize_run_input "$review_invocation_flags")"
-RUN_ID="review-pr-$(printf '%s' "$review_run_inputs" | sha256sum | cut -c1-32)"
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set review-remote-pr \
+    --scope "$PR" --flags "$review_invocation_flags" --repo "$REPO" --base review-pr-v1) || exit 1
 : "$RUN_ID"
 ```
 
@@ -87,12 +83,11 @@ H; H labels are human-only. Every automated reply passes the reply-body integrit
 (`$agentkit/review-remote-pr/scripts/gh-comment.sh`: resolve/dismiss only on its printed stdout line + exit `0`). **Never resolve a
 human-touched thread.**
 
-Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the
-provider table, classifier, human gate, and settlement recipes. Reuse that loaded content in Step 5; do not re-read it.
+Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) in full before Step 1a — the provider table, classifier, human gate, and settlement recipes. Reuse that loaded content in Step 5; do not re-read it.
 
 ## Inputs
 
-- **PR number** (required) — passed as arg or ask once if missing
+- **PR number(s)** — use explicit args; otherwise run `"$agentkit/.shared/scripts/run-state.sh" latest --repo-root "$contract_root" --path opened_prs`, require `.value | type == "array"`, `all(.[]; type == "number" and . > 0 and floor == .)`, and `unique | length` equal to the original length, then for a nonempty value print `review: defaulting to PRs <list> from run <id>` and run the complete one-PR procedure separately for each value (the PR-keyed run directory keeps identities distinct). For exit `11` or a present empty array, ask once which PR to review. Evidence errors from `latest` are blocking.
 - **Repo** — the contract's `repo=` line (`$agentkit/.shared/scripts/contract-read.sh --repo-root DIR --get repo.slug`; `none` means no GitHub origin — re-run the Step 0 preflight); override with `owner/repo` arg
 - **Worktree** — reuse the PR branch worktree if present, else the helper derives/prints `<worktree-root>/pr-<PR>` as `$PR_WORKTREE` (an output, not an input)
 
@@ -261,7 +256,7 @@ Run only declared `agent-run.sh --cmd` commands, directly, no approval step: a f
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
-Resolve one private run directory for this PR, carried as `RUN_DIR` in every later block — never hand-roll a `mktemp` path:
+Resolve one private run directory for this PR, carried as `RUN_DIR` in every later block:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
@@ -348,7 +343,7 @@ context, `note:` lines, matched errors, and the log path. **Never push without l
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
-tmp=$(mktemp "$RUN_DIR/.baseline.XXXXXX") && chmod 600 -- "$tmp"
+tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label baseline --repo-root "$REPO_ROOT") || exit 1
 rc=0
 "$agentkit/review-remote-pr/scripts/verification-baseline.sh" --base "origin/$BASE_BRANCH" \
     --log "$log" --check "$check" --paths "${failing_paths[@]}" >"$tmp" || rc=$?

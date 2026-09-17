@@ -135,6 +135,51 @@ assert_eq "$expect_worker_prompts_w1" "$(get '.reference_hits["agentkit/skills/p
     'worker:1 reference hit count for worker-prompts.md matches the raw fixture (dispatched-template callback)'
 assert_eq "$expect_worker_prompts_w2" "$(get '.reference_hits["agentkit/skills/parallel-issues/references/worker-prompts.md"].workers["worker:2"]')" \
     'worker:2 reference hit count for worker-prompts.md matches the raw fixture'
+assert_eq '0' "$(get '(.reference_hits["agentkit/skills/parallel-issues/references/chains.md"] // {}) | length')" \
+    'the no-chain fixture records no chains.md reads'
+
+assert_eq 'true' "$(get '.pre_spawn_seconds == 180')" \
+    'pre_spawn_seconds spans the session start through the first spawn_agent call'
+assert_eq '28' "$(get .pre_spawn_chars.skill_reference_prose)" \
+    'pre-spawn skill and reference output characters are counted together'
+assert_eq '28' "$(get .pre_spawn_chars.repository_source_docs)" \
+    'repository docs and script-helper output share the source/docs category'
+assert_eq '10' "$(get .pre_spawn_chars.issue_forge_data)" \
+    'pre-spawn issue and forge data characters have their own category'
+assert_eq '11' "$(get .pre_spawn_chars.tool_interface_discovery)" \
+    'pre-spawn tool discovery characters have their own category'
+assert_eq '10' "$(get .pre_spawn_chars.unknown_other)" \
+    'uncategorized pre-spawn text is visible in the explicit unknown bucket'
+assert_eq '87' "$(get .pre_spawn_chars.total)" \
+    'pre-spawn total is the sum of category character counts'
+assert_eq 'complete' "$(get .pre_spawn_evidence.status)" \
+    'complete spawn, timestamp, and category evidence is named explicitly'
+assert_eq '0' "$(get '.pre_spawn_evidence.missing | length')" \
+    'complete pre-spawn evidence carries no missing reasons'
+assert_eq '59' "$(get '.dynamic_efficiency.actors[] | select(.actor == "orchestrator") | .prose_chars_read')" \
+    'the supported custom-exec fixture contributes its markdown output to orchestrator prose reads'
+
+injected_pre_spawn_fixture="$tmp/injected-pre-spawn.jsonl"
+injected_pre_spawn_prefix='agentkit invocation boundary: explicit workflow delivery, not native registry evidence.'
+injected_pre_spawn_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
+jq -c --arg text "$injected_pre_spawn_prefix
+
+$injected_pre_spawn_body" \
+    'if .type == "response_item" and .payload.type == "message" then .payload.content = $text else . end' \
+    "$sessions/orchestrator.jsonl" > "$injected_pre_spawn_fixture"
+run "$injected_pre_spawn_fixture" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" \
+    --acceptance "$acceptance_fixture" --timestamp 2026-08-20T00:00:00Z
+assert_eq "$((28 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.skill_reference_prose' <<< "$RUN_OUT")" \
+    'an injected skill body is attributed to skill prose inside a message'
+assert_eq "$((${#injected_pre_spawn_prefix} + 2))" \
+    "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" \
+    'only the injected message wrapper remains in the unknown bucket'
+assert_eq "$((87 - 10 + ${#injected_pre_spawn_prefix} + 2 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'injected message attribution preserves the original total plus the replacement text delta'
+assert_eq 'true' "$(jq -r '.pre_spawn_chars as $c | $c.total == ([$c.skill_reference_prose, $c.repository_source_docs, $c.issue_forge_data, $c.tool_interface_discovery, $c.unknown_other] | add)' <<< "$RUN_OUT")" \
+    'injected message categories still sum exactly to the reported total'
 
 assert_eq '842' "$(get .wall_clock_seconds)" 'wall_clock_seconds passes through from bench_trial_meta'
 assert_eq '2' "$(get .worker_count)" 'worker_count passes through from bench_trial_meta'
@@ -147,10 +192,432 @@ assert_eq '8' "$(get .acceptance.score)" 'the run-accept.sh acceptance JSON is e
 assert_eq '10' "$(get .acceptance.total)" 'the acceptance JSON total is embedded verbatim'
 assert_eq 'fail' "$(get '.acceptance.results["tally-05"]')" 'per-issue acceptance results are embedded verbatim'
 
+# --- polling cost is reconstructed from rollout events, not model prose ---
+poll_fixture="$tmp/root-wait-2026-09-16.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"timestamp":"2026-09-16T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    > "$poll_fixture"
+for n in $(seq 1 92); do
+    start_epoch=$((1789516800 + (n - 1) * 30))
+    end_epoch=$((start_epoch + 30))
+    start=$(date -u -d "@$start_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    end=$(date -u -d "@$end_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+    if ((n <= 43)); then
+        tool=collaboration.wait_agent
+        args='{"timeout_ms":60000}'
+    elif ((n <= 82)); then
+        tool='wait'
+        args='{"cell_id":"cell","yield_time_ms":30000}'
+    else
+        tool=write_stdin
+        args='{"session_id":7,"chars":"","yield_time_ms":30000}'
+    fi
+    printf '%s\n' \
+        "{\"timestamp\":\"$start\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"poll-$n\",\"name\":\"$tool\",\"arguments\":\"${args//\"/\\\"}\"}}" \
+        "{\"timestamp\":\"$start\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":121000}}}}" \
+        "{\"timestamp\":\"$end\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"poll-$n\",\"output\":\"timed out\"}}" \
+        >> "$poll_fixture"
+done
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"response_item","payload":{"type":"function_call","call_id":"input-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T00:46:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":121000}}}}' \
+    '{"timestamp":"2026-09-16T00:46:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"input-1","output":"written"}}' \
+    >> "$poll_fixture"
+printf '%s\n' '{"type":"bench_trial_meta","payload":{"run_id":"wait-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-polls","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":2760,"exit_condition":"complete"}}' >> "$poll_fixture"
+run "$poll_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the 2026-09-16 polling fixture parses successfully'
+assert_eq '92' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll_turns counts wait_agent, yielded waits, and empty write_stdin resumes'
+assert_eq '11132000' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'poll_input_tokens attributes each polling request input cost post hoc'
+assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'wait_seconds is the union of timestamped polling call intervals'
+assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
+    'requests_per_wait_minute is derived from measured turns and elapsed waits'
+
+# --- worker verification churn is attributed per rollout session ---------
+worker_churn_fixture="$tmp/worker-churn.jsonl"
+printf '%s\n' \
+    '{"type":"session_meta","payload":{"originator":"worker:776","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"verify-launch","name":"exec_command","arguments":"{\"cmd\":\"/kit/agent-run.sh --cmd test --summary\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"helper-launch","name":"exec_command","arguments":"{\"cmd\":\"other-helper --wait\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"cell-launch","name":"exec_command","arguments":"{\"cmd\":\"agent-run.sh --cmd lint --summary\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"missing-launch","name":"exec_command","arguments":"{\"cmd\":\"agent-run.sh --cmd test --summary\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call_output","call_id":"helper-launch","output":"{\"session_id\":8}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call_output","call_id":"verify-launch","output":"{\"session_id\":7,\"output\":\"still running\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call_output","call_id":"missing-launch","output":"{\"output\":\"completed without yielding\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call_output","call_id":"cell-launch","output":"{\"cell_id\":\"verify-cell\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"helper-resume","name":"write_stdin","arguments":"{\"session_id\":8,\"chars\":\"\",\"yield_time_ms\":10}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"helper-read","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/helper.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-1","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":30000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-1","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"unknown-resume","name":"write_stdin","arguments":"{\"session_id\":9,\"chars\":\"\",\"yield_time_ms\":1}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"unknown-read","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/unknown.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-2","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":1000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-2","name":"shell","arguments":"{\"command\":[\"sed\",\"-n\",\"1,20p\",\"/repo/.agent/logs/test.log\"]}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-3","name":"exec_command","arguments":"{\"cmd\":\"cat /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-3","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"cell-resume","name":"write_stdin","arguments":"{\"cell_id\":\"verify-cell\",\"chars\":\"\",\"yield_time_ms\":2000}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"missing-id-resume","name":"write_stdin","arguments":"{\"chars\":\"\",\"yield_time_ms\":1}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-after-final","name":"exec_command","arguments":"{\"cmd\":\"tail -1 /repo/.agent/logs/test.log\"}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"input","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"yes\\n\",\"yield_time_ms\":10}"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"worker-churn","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"2026-09-16-worker-churn","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":1,"wall_clock_seconds":90,"exit_condition":"complete"}}' \
+    > "$worker_churn_fixture"
+run "$worker_churn_fixture" --timestamp 2026-09-16T01:00:00Z
+assert_eq '0' "$RUN_RC" 'the worker verification-churn fixture parses successfully'
+assert_eq '4' "$(jq -r '.worker_resume_calls["worker:776"]' <<< "$RUN_OUT")" \
+    'only resumes correlated to verification launch session or cell IDs are counted'
+assert_eq '1000' "$(jq -r '.worker_min_yield_ms["worker:776"]' <<< "$RUN_OUT")" \
+    'minimum worker yield ignores missing values and non-empty writes'
+assert_eq '3' "$(jq -r '.log_reads_between_resumes["worker:776"]' <<< "$RUN_OUT")" \
+    'literal tail, sed, and cat reads count without helper or unknown-session inflation'
+
+poll_gap_fixture="$tmp/poll-telemetry-gap.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T01:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"other-1","name":"shell","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T01:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900}}}}' \
+    '{"timestamp":"2026-09-16T01:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-2","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"response_item","payload":{"type":"function_call","call_id":"gap-3","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000}}}}' \
+    '{"timestamp":"2026-09-16T01:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"gap-3","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"gap-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-gap-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":6,"exit_condition":"complete"}}' \
+    > "$poll_gap_fixture"
+run "$poll_gap_fixture" --timestamp 2026-09-16T01:01:00Z
+assert_eq '0' "$RUN_RC" 'a rollout with missing poll telemetry still parses'
+assert_eq '3' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'poll turns remain countable when their token telemetry is incomplete'
+assert_eq 'null' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'a nonpoll overwrite or consecutive poll reports input telemetry unavailable'
+
+poll_group_fixture="$tmp/poll-response-groups.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T02:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"group-1","name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"group-2","name":"wait","arguments":"{\"yield_time_ms\":30000}"}}' \
+    '{"timestamp":"2026-09-16T02:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200}}}}' \
+    '{"timestamp":"2026-09-16T02:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T02:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"group-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"group-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-group-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":3,"exit_condition":"complete"}}' \
+    > "$poll_group_fixture"
+run "$poll_group_fixture" --timestamp 2026-09-16T02:01:00Z
+assert_eq '0' "$RUN_RC" 'a response containing multiple poll calls parses'
+assert_eq '2' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'every poll call in a response remains countable'
+assert_eq '1200' "$(jq -r '.poll_input_tokens' <<< "$RUN_OUT")" \
+    'one response-level usage value is applied once to an all-poll group'
+
+malformed_id_fixture="$tmp/poll-malformed-ids.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T03:00:00Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":7,"name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"duplicate","name":"wait_agent","arguments":"{}"}}' \
+    '{"timestamp":"2026-09-16T03:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1500}}}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":7,"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":["not","hashable"],"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":{"also":"not hashable"},"output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T03:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"duplicate","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"malformed-id-fixture","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"poll-id-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":5,"exit_condition":"complete"}}' \
+    > "$malformed_id_fixture"
+run "$malformed_id_fixture" --timestamp 2026-09-16T03:01:00Z
+assert_eq '0' "$RUN_RC" 'malformed polling call IDs do not crash rollout parsing'
+assert_eq '5' "$(jq -r '.poll_turns' <<< "$RUN_OUT")" \
+    'malformed polling IDs do not hide poll turns'
+assert_eq 'null' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
+    'missing, empty, non-string, or duplicate call IDs make interval telemetry unavailable'
+
+# --- prose context cost is measured per rollout session -------------------
+prose_fixture="$tmp/prose-cost.jsonl"
+injected_prefix='agentkit invocation boundary: explicit workflow delivery, not native registry evidence.'
+injected_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
+read_output=$'# Reading discipline\nRead this once.\n'
+custom_read_output=$'# Parallel Issues\nInjected bodies are authoritative.\n'
+single_quoted_output=$'# Single quoted command\n'
+jq -nc --arg prefix "$injected_prefix" --arg body "$injected_body" --arg read "$read_output" \
+    --arg custom_read "$custom_read_output" --arg single_read "$single_quoted_output" \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:($prefix+"\nInstalled skills root: /skills\n\n"+$body)}]}},
+     {type:"response_item",payload:{type:"function_call",call_id:"read-prose",name:"exec_command",arguments:"{\"cmd\":\"sed -n 1,40p agentkit/skills/.shared/reading-discipline.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"read-prose",output:$read}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"custom-read-prose",name:"functions.exec",input:"text(await tools.exec_command({cmd:\"cat agentkit/skills/parallel-issues/SKILL.md\",workdir:\"/repo\"}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"custom-read-prose",output:$custom_read}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"single-quoted-prose",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat notes.md\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"single-quoted-prose",output:$single_read}},
+     {type:"response_item",payload:{type:"function_call",call_id:"message-mention",name:"send_message",arguments:"{\"message\":\"please cat agentkit/skills/parallel-issues/SKILL.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"message-mention",output:"message delivered"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-cost",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_fixture"
+run "$prose_fixture" --timestamp 2026-09-16T03:02:00Z
+assert_eq '0' "$RUN_RC" 'a rollout with injected and tool-read prose parses'
+assert_eq "${#injected_body}" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_injected' <<< "$RUN_OUT")" \
+    'injected prose counts the exact delivered SKILL.md body, excluding the hook wrapper'
+assert_eq "$((${#read_output} + ${#custom_read_output} + ${#single_quoted_output}))" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'read prose counts exact output characters from direct and custom nested markdown reads'
+
+ambiguous_prose_fixture="$tmp/prose-cost-ambiguous.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"mixed-output",name:"functions.exec",input:"const a=await tools.exec_command({cmd:\"cat one.md\"}); const b=await tools.exec_command({cmd:\"git status\"}); text(a.output); text(b.output);"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"mixed-output",output:"prose plus unrelated status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-ambiguous",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$ambiguous_prose_fixture"
+run "$ambiguous_prose_fixture" --timestamp 2026-09-16T03:03:00Z
+assert_eq '0' "$RUN_RC" 'a mixed custom execution rollout still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'mixed custom execution marks prose-read characters unavailable instead of asserting zero'
+
+prose_boundaries_fixture="$tmp/prose-cost-boundaries.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"single-quoted",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat one.md\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"single-quoted",output:"one markdown"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"compound-shell",name:"exec_command",arguments:"{\"cmd\":\"cat two.md; git status\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"compound-shell",output:"markdown and status"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"unsupported-js",name:"functions.exec",input:"text(await tools.exec_command({cmd:`cat three.md`}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"unsupported-js",output:"three markdown"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"missing-output",name:"exec_command",arguments:"{\"cmd\":\"cat four.md\"}"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-boundaries",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_boundaries_fixture"
+run "$prose_boundaries_fixture" --timestamp 2026-09-16T03:04:00Z
+assert_eq '0' "$RUN_RC" 'single-quoted and conservative prose boundaries parse without crashing'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'compound, unsupported, or unmatched markdown reads make prose characters unavailable'
+
+prose_mixed_boundaries_fixture="$tmp/prose-cost-mixed-boundaries.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"unparsed-first",name:"functions.exec",input:"const a=await tools.exec_command({cmd:`cat one.md`}); const b=await tools.exec_command({cmd:\u0027printf noise\u0027}); text(a.output); text(b.output);"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"unparsed-first",output:"markdown plus noise"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-mixed-boundaries",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_mixed_boundaries_fixture"
+run "$prose_mixed_boundaries_fixture" --timestamp 2026-09-16T03:05:00Z
+assert_eq '0' "$RUN_RC" 'an unsupported custom call before a supported call still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'an unparsed Markdown call before a supported custom call makes prose characters unavailable'
+
+background_prose_fixture="$tmp/prose-cost-background.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"background-mixed",name:"exec_command",arguments:"{\"cmd\":\"cat two.md & git status\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"background-mixed",output:"markdown and status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-background",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$background_prose_fixture"
+run "$background_prose_fixture" --timestamp 2026-09-16T03:06:00Z
+assert_eq '0' "$RUN_RC" 'a background shell read still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'background mixed output makes prose characters unavailable'
+
+custom_compound_prose_fixture="$tmp/prose-cost-custom-compound.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"custom-compound",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat two.md; git status\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"custom-compound",output:"markdown and status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-custom-compound",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$custom_compound_prose_fixture"
+run "$custom_compound_prose_fixture" --timestamp 2026-09-16T03:07:00Z
+assert_eq '0' "$RUN_RC" 'a single custom compound shell read still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'a single custom command with mixed output makes prose characters unavailable'
+
+noncontent_search_fixture="$tmp/prose-cost-noncontent-search.jsonl"
+content_search_output=$'matching prose\n'
+pattern_search_output=$'-c appears as content\n'
+expression_search_output=$'lc appears as expression content\n'
+attached_expression_output=$'-c appears as attached expression content\n'
+long_argument_output=$'-lc remains a long-option argument\n'
+jq -nc --arg content "$content_search_output" \
+    --arg pattern_content "$pattern_search_output" \
+    --arg expression_content "$expression_search_output" \
+    --arg attached_expression_content "$attached_expression_output" \
+    --arg long_argument_content "$long_argument_output" \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"rg-files",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"rg-files",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-list",name:"exec_command",arguments:"{\"cmd\":\"grep -l needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-list",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-count",name:"exec_command",arguments:"{\"cmd\":\"  grep -c needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-count",output:"1\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-content",name:"exec_command",arguments:"{\"cmd\":\"grep needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-content",output:$content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-pattern",name:"exec_command",arguments:"{\"cmd\":\"grep -- -c notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-pattern",output:$pattern_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-lc",name:"exec_command",arguments:"{\"cmd\":\"grep -lc needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-lc",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-cl",name:"exec_command",arguments:"{\"cmd\":\"grep -cl needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-cl",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-ncl",name:"exec_command",arguments:"{\"cmd\":\"grep -ncl needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-ncl",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-expression",name:"exec_command",arguments:"{\"cmd\":\"grep -e lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-expression",output:$expression_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-attached-expression",name:"exec_command",arguments:"{\"cmd\":\"grep -e-c notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-attached-expression",output:$attached_expression_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-long-expression",name:"exec_command",arguments:"{\"cmd\":\"grep --regexp -lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-long-expression",output:$long_argument_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-long-file",name:"exec_command",arguments:"{\"cmd\":\"grep --file -lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-long-file",output:$long_argument_content}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-noncontent-search",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$noncontent_search_fixture"
+run "$noncontent_search_fixture" --timestamp 2026-09-16T03:08:00Z
+assert_eq '0' "$RUN_RC" 'Markdown discovery and content search modes parse'
+assert_eq "$((${#content_search_output} + ${#pattern_search_output} + ${#expression_search_output} + ${#attached_expression_output} + 2 * ${#long_argument_output}))" \
+    "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'file discovery and list/count output are excluded while grep content is counted'
+
+mixed_discovery_fixture="$tmp/prose-cost-mixed-discovery.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"mixed-discovery",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'; cat real.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"mixed-discovery",output:"notes.md and prose"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-mixed-discovery",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$mixed_discovery_fixture"
+run "$mixed_discovery_fixture" --timestamp 2026-09-16T03:09:00Z
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'discovery combined with a real Markdown read has mixed unavailable output'
+
+unrelated_content_fixture="$tmp/prose-cost-unrelated-content.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"unrelated-content",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'; cat notes.txt\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"unrelated-content",output:"notes.md and unrelated text"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-unrelated-content",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$unrelated_content_fixture"
+run "$unrelated_content_fixture" --timestamp 2026-09-16T03:10:00Z
+assert_eq '0' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'a Markdown discovery segment does not make an unrelated text read count as prose'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'
 assert_eq 'null' "$(jq -r '.acceptance' <<< "$RUN_OUT" 2> /dev/null)" 'omitting --acceptance leaves acceptance explicitly null, not omitted'
+
+# A missing spawn boundary, timestamps, or countable category evidence is
+# unavailable evidence. The parser reports null plus the exact reason instead
+# of manufacturing a zero-duration or zero-character pre-spawn phase.
+sed 's/multi_agent_v1__spawn_agent/multi_agent_v1__submit_task/' "$sessions/orchestrator.jsonl" > "$tmp/no-spawn.jsonl"
+run "$tmp/no-spawn.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'missing spawn boundary leaves seconds null'
+assert_eq 'null' "$(jq -r '.pre_spawn_chars' <<< "$RUN_OUT")" 'missing spawn boundary leaves character counts null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("spawn_boundary") != null' <<< "$RUN_OUT")" \
+    'missing spawn boundary is reported explicitly'
+
+jq -c 'del(.timestamp) | if .type == "session_meta" then .payload |= del(.timestamp) else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/no-timestamps.jsonl"
+run "$tmp/no-timestamps.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'missing timestamps leave seconds null'
+assert_eq '87' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" 'character evidence survives missing timestamps'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'missing timestamp evidence is reported explicitly'
+
+jq -c 'select(.type == "session_meta" or .type == "turn_context" or .type == "bench_trial_meta" or
+    (.type == "response_item" and .payload.call_id == "c-spawn" and .payload.type == "custom_tool_call"))' \
+    "$sessions/orchestrator.jsonl" > "$tmp/no-category-evidence.jsonl"
+run "$tmp/no-category-evidence.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'true' "$(jq -r '.pre_spawn_seconds == 180' <<< "$RUN_OUT")" 'elapsed evidence survives missing category text'
+assert_eq 'null' "$(jq -r '.pre_spawn_chars' <<< "$RUN_OUT")" 'missing category evidence leaves character counts null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_evidence") != null' <<< "$RUN_OUT")" \
+    'missing category evidence is reported explicitly'
+
+jq -c 'if .payload.call_id? == "c-repo" then
+    .payload.call_id = (if (.payload.type | endswith("output")) then {bad: 1} else ["bad"] end)
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unhashable-call-ids.jsonl"
+run "$tmp/unhashable-call-ids.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'list and object call ids do not crash pre-spawn parsing'
+assert_eq '87' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" 'ambiguous call ids preserve the total character count'
+assert_eq '25' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'unattributed output moves to the explicit unknown bucket'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'ambiguous output attribution is explicitly partial'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'ambiguous call ids name missing category attribution'
+
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {text:"known", body:"issue body", metadata:{text:"not captured"}}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unknown-structured-output.jsonl"
+run "$tmp/unknown-structured-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'mixed known and unknown structured output parses conservatively'
+assert_eq '18' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'only the allowlisted text member contributes to its category'
+assert_eq '77' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unknown body and metadata members do not inflate the character total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unknown structured output prevents complete evidence'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'unknown structured output names incomplete attribution evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {body:"issue body"}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unsupported-only-output.jsonl"
+run "$tmp/unsupported-only-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'unsupported-only structured output does not crash parsing'
+assert_eq '13' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'unsupported-only output contributes no invented characters beside separate known output'
+assert_eq '72' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unsupported-only output is excluded from the preserved known total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unsupported-only output cannot claim complete evidence because another output was known'
+
+jq -c 'if .payload.call_id? == "c-forge" and .payload.type == "function_call" then
+    .payload |= (.type = "custom_tool_call" | .name = "functions.exec" |
+      .input = {code: "await tools.exec_command({cmd: \"gh issue view 784; cat agentkit/skills/parallel-issues/SKILL.md\"})"} |
+      del(.arguments))
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/mixed-wrapper.jsonl"
+run "$tmp/mixed-wrapper.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'a mixed-category functions wrapper parses without guessing'
+assert_eq '0' "$(jq -r '.pre_spawn_chars.issue_forge_data' <<< "$RUN_OUT")" 'mixed wrapper output is not assigned wholesale to forge data'
+assert_eq '20' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'mixed wrapper output moves to the unknown bucket'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'mixed wrapper attribution is explicitly partial'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'mixed wrapper names missing category attribution'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "c2" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/duplicate-call-id.jsonl"
+run "$tmp/duplicate-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '1' "$RUN_RC" 'duplicate call ids fail the rollout instead of overwriting attribution silently'
+assert_contains "$RUN_OUT" 'conflicting event identity' 'the duplicate-id refusal names the ambiguous identity evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/empty-call-id.jsonl"
+run "$tmp/empty-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'empty call ids do not become a shared attribution key'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'empty call ids make category evidence partial'
+assert_eq '25' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'empty-id output moves to the unknown bucket'
+
+jq -c 'if .payload.call_id? == "c-spawn" then .timestamp = "2026-08-20T10:03:00" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/mixed-timestamps.jsonl"
+run "$tmp/mixed-timestamps.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'mixed naive and aware timestamps do not crash pre-spawn parsing'
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'mixed timestamp awareness leaves elapsed time null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'mixed timestamp awareness is reported as unavailable timestamp evidence'
+
+jq -c 'if .payload.call_id? == "c-spawn" then .timestamp = "2026-08-20T09:59:00.000Z" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/negative-duration.jsonl"
+run "$tmp/negative-duration.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'a negative pre-spawn duration is unavailable, not emitted'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'negative timestamp ordering is reported explicitly'
 
 # --- void: workers disagree with each other --------------------------------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1-drift.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z

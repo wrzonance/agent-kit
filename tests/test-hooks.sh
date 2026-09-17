@@ -1752,6 +1752,10 @@ edit_input() {
 # policy guards must not treat its workflow or trunk branch as this workspace.
 fixture_repo=$(mktemp -d "$tmp/fixture.XXXXXX")
 classification_sid=${tmp##*/}
+classification_repo=$(make_repo)
+mkdir -p "$classification_repo/.github/workflows"
+printf 'AGENT_REPO_SLUG=example-org/classification-repo\n' \
+    > "$classification_repo/.agent/config.env"
 git -C "$fixture_repo" init -q
 mkdir -p "$fixture_repo/.agent" "$fixture_repo/.github/workflows"
 printf 'AGENT_BASE_BRANCH=main\n' > "$fixture_repo/.agent/config.env"
@@ -1762,14 +1766,14 @@ git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
 git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
     commit -qm base
 
-out=$(pre_input "$root" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
+out=$(pre_input "$classification_repo" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
     "fixture-workflow" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture workflow write is allowed'
 
 # A later shell segment must not change the repository of an earlier write.
 # Without segment-aware target resolution, the trailing cd makes the workspace
 # workflow look like a fixture target and silently skips its protection.
-out=$(pre_input "$root" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
+out=$(pre_input "$classification_repo" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
     "${classification_sid}-workspace-write-before-cd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a protected workspace write stays guarded before a later fixture cd'
@@ -1789,7 +1793,7 @@ foreign_repo=$(mktemp -d "$foreign_parent/hooks-foreign.XXXXXX")
 git -C "$foreign_repo" init -q
 mkdir -p "$foreign_repo/.agent" "$foreign_repo/.github/workflows"
 printf 'AGENT_REPO_SLUG=foreign/example\n' > "$foreign_repo/.agent/config.env"
-out=$(pre_input "$root" "printf x > $foreign_repo/.github/workflows/ci.yml" \
+out=$(pre_input "$classification_repo" "printf x > $foreign_repo/.github/workflows/ci.yml" \
     "${classification_sid}-foreign-protected-write" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a foreign repository protected write is still guarded'
@@ -1802,15 +1806,15 @@ out=$(pre_input "$fixture_repo" 'git commit --allow-empty -m fixture' \
     "fixture-trunk" | AGENT_FIXTURE_ROOT="$tmp" "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture main commit is allowed'
 
-out=$(edit_input "$root" '.github/workflows/ci.yml' "${classification_sid}-workspace" |
+out=$(edit_input "$classification_repo" '.github/workflows/ci.yml' "${classification_sid}-workspace" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'the workspace workflow remains guarded'
 assert_contains "$out" 'classification: workspace' \
     'workspace refusal states the computed classification'
-assert_contains "$out" "$root" 'workspace refusal names the repository target'
+assert_contains "$out" "$classification_repo" 'workspace refusal names the repository target'
 
 foreign_walk=$(mktemp -d "$foreign_parent/hooks-foreign-walk.XXXXXX")
-out=$(pre_input "$root" "cd $foreign_walk && find . -name AGENTS.md" \
+out=$(pre_input "$classification_repo" "cd $foreign_walk && find . -name AGENTS.md" \
     "${classification_sid}-foreign" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'a relative walk in foreign territory receives a scope advisory'
@@ -1818,7 +1822,7 @@ rm -rf -- "$foreign_walk"
 
 # `-C` is a grep context flag, not a directory. It must not create a fake
 # command root and a false scope advisory for an otherwise in-scope walk.
-out=$(pre_input "$root" 'grep -r -C 3 secret .' "grep-context" |
+out=$(pre_input "$classification_repo" 'grep -r -C 3 secret .' "grep-context" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(pre_context "$out")" \
     'grep context flags do not become effective directories'
@@ -2156,6 +2160,136 @@ for actual_helper in \
     assert_eq 'deny' "$(decision "$out")" "actual helper retains diagnostic: $actual_helper"
 done
 
+# --- issue #756: only the effective stdin heredoc is shell input ---------
+# Shells collect every heredoc body in opener order, but apply stdin
+# redirections from left to right. A later fd-0 redirect therefore makes an
+# earlier quoted body inert data. Each probe gets a fresh session id created
+# before the pipeline; otherwise zsh can repeat $RANDOM in pipeline forks and
+# hide a false allow behind the helper diagnostic's once-per-session claim.
+superseded_quoted=$'bash <<\'EOF\' </dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$superseded_quoted" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted shell heredoc superseded by a later stdin redirect is inert'
+out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a superseded quoted heredoc does not consume the real helper diagnostic'
+
+first_heredoc_superseded=$'bash <<\'FIRST\' <<\'SECOND\'\nagent-run.sh --cmd test\nFIRST\n:\nSECOND'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$first_heredoc_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'only the last of multiple quoted shell heredocs supplies stdin'
+
+effective_after_redirect=$'bash </dev/null <<\'EOF\'\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$effective_after_redirect" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a quoted shell heredoc after another stdin redirect remains effective'
+
+second_heredoc_effective=$'bash <<\'FIRST\' <<\'SECOND\'\n:\nFIRST\nagent-run.sh --cmd test\nSECOND'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$second_heredoc_effective" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the last of multiple quoted shell heredocs remains executable input'
+
+unquoted_expansion_superseded=$'bash <<EOF </dev/null\n$(agent-run.sh --cmd test)\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$unquoted_expansion_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'an unquoted heredoc expansion still executes when its stdin is superseded'
+
+# shellcheck disable=SC2016  # $(...) is literal fixture syntax for the hook.
+destructive_expansion_superseded=$(printf 'bash <<EOF </dev/null\n$(%s)\nEOF' 'rm -r''f ~')
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$destructive_expansion_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a destructive unquoted expansion stays refused when its stdin is superseded'
+assert_contains "$out" 'recursive force-remove' \
+    'the superseded expansion is still classified by the destructive guard'
+
+nonstdin_redirect=$'bash <<\'EOF\' 3</dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nonstdin_redirect" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a redirect on another file descriptor does not supersede shell stdin'
+
+# PR #794 review: descriptor aliases and nonstdin shell scripts retain the
+# heredoc guard. These fixtures only pass command text to PreToolUse; the
+# helper line is an inert diagnostic marker and is never executed.
+for retained_heredoc in \
+    $'bash /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF' \
+    $'source /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </dev/stdin\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </dev/fd/0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' </proc/self/fd/0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <&0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' 0<&0\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' 3<&0 </dev/null 0<&3\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' $(printf %s < /dev/null)\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' $((1 < 2))\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <"$input"\nagent-run.sh --cmd test\nEOF'; do
+    helper_session=$(fresh_sid)
+    out=$(pre_input "$repo" "$retained_heredoc" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "an aliased, nonstdin, or uncertain shell heredoc retains its guard: $retained_heredoc"
+done
+
+for proven_superseded in \
+    $'bash /dev/fd/3 3<<\'EOF\' 3</dev/null\nagent-run.sh --cmd test\nEOF' \
+    $'bash <<\'EOF\' <<<:\nagent-run.sh --cmd test\nEOF'; do
+    helper_session=$(fresh_sid)
+    out=$(pre_input "$repo" "$proven_superseded" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "a provably superseded shell heredoc remains inert: $proven_superseded"
+    out=$(pre_input "$repo" 'agent-run.sh --cmd test' "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        'a provably superseded heredoc does not consume the real helper diagnostic'
+done
+
+inert_non_shell_fd=$'cat /dev/fd/3 3<<\'EOF\'\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$inert_non_shell_fd" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a quoted fd3 heredoc remains data when its consumer is not a shell'
+
+# PR #794 CodeRabbit batch 1: moving a descriptor copies its heredoc
+# provenance to the target before closing the source. These strings are only
+# classified by PreToolUse and are never executed by the test process.
+fd_move_helper=$'bash /dev/fd/4 3<<\'EOF\' 4<&3- 3</dev/null\nagent-run.sh --cmd test\nEOF'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$fd_move_helper" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a moved nonstdin heredoc remains reachable by the shell consumer'
+
+inert_destructive='rm -r''f ~'
+fd_move_destructive=$(printf "bash /dev/fd/4 3<<'EOF' 4<&3- 3</dev/null\n%s\nEOF" "$inert_destructive")
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$fd_move_destructive" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a moved nonstdin heredoc retains destructive classification'
+assert_contains "$out" 'recursive force-remove' \
+    'the moved heredoc denial names the inert destructive class'
+
+# A heredoc opened by a shell inside command substitution belongs to that
+# inner command scope. It must finalize before body collection even while the
+# outer double-quoted substitution remains open.
+nested_heredoc_helper=$'printf %s "$(bash <<\'EOF\'\nagent-run.sh --cmd test\nEOF\n)"'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nested_heredoc_helper" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a shell heredoc inside quoted command substitution retains its helper guard'
+
+nested_heredoc_destructive=$'printf %s "$(bash <<\'EOF\'\n'
+nested_heredoc_destructive+="$inert_destructive"
+nested_heredoc_destructive+=$'\nEOF\n)"'
+helper_session=$(fresh_sid)
+out=$(pre_input "$repo" "$nested_heredoc_destructive" "$helper_session" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a nested shell heredoc retains destructive classification'
+assert_contains "$out" 'recursive force-remove' \
+    'the nested heredoc denial names the inert destructive class'
+
 # --- the rules that moved must NOT block any more -------------------------
 # This is the autonomy guarantee. Each of these was a permanent denial; a worker
 # meeting one had no way past it. They now run and are taught afterwards.
@@ -2186,6 +2320,105 @@ post_input() {
           tool_input:{command:$cmd},tool_response:{stdout:"",exit_code:0}}'
 }
 ctx_of() { jq -r '.hookSpecificOutput.additionalContext // ""' <<< "$1"; }
+
+# The workflow body arrives in UserPromptSubmit additionalContext. Reading that
+# same active SKILL.md again is allowed, but PostToolUse reminds the model that
+# the bytes are already present. The receipt is session-scoped, so an inactive
+# skill read stays quiet.
+active_repo=$(make_repo)
+active_sid='active-skill-reread'
+mkdir -p "$active_repo/.agent/activation"
+active_receipt="$active_repo/.agent/activation/$(printf '%s' "$active_sid" | sha256sum | awk '{print $1}').json"
+jq -nc --arg session "$active_sid" --arg root "$active_repo" --arg skills "$skills_root" \
+    '{schemaVersion:1,session:$session,repoRoot:$root,workflow:"parallel-issues",
+      skillsRoot:$skills,status:"active",receiptSource:"session-acknowledgement"}' \
+    > "$active_receipt"
+active_skill_path="$skills_root/parallel-issues/SKILL.md"
+out=$(post_input "$active_repo" "sed -n '1,40p' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'reading the active SKILL.md emits the exact advisory'
+assert_not_contains "$out" 'permissionDecision' 'the active-skill reread advisory cannot refuse the completed call'
+out=$(post_input "$active_repo" "cat '$skills_root/pr-to-green/SKILL.md'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a different skill body does not claim it was injected'
+out=$(post_input "$active_repo" "printf '%s' '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'mentioning the active skill path as data is not a reread'
+out=$(post_input "$active_repo" "grep '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'using the active skill path as a grep pattern is not a reread'
+out=$(post_input "$active_repo" "cat '${active_skill_path}.backup'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a suffixed path does not impersonate the active skill operand'
+out=$(post_input "$active_repo" "nl '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'nl of the exact active SKILL.md operand emits the reread advisory'
+out=$(post_input "$active_repo" "awk -v x=y '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'an awk program matching the active path is not mistaken for a file read'
+for reader in awk sed grep rg; do
+    out=$(post_input "$active_repo" "$reader -f '$active_skill_path' /dev/null" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
+done
+out=$(post_input "$active_repo" "awk --file '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'awk --file recognizes the active skill as a read operand'
+for command in \
+    "sed -es/foo/bar/ '$active_skill_path'" \
+    "sed --expression=s/foo/bar/ '$active_skill_path'" \
+    "grep -eneedle '$active_skill_path'" \
+    "grep --regexp=needle '$active_skill_path'" \
+    "rg -eneedle '$active_skill_path'" \
+    "rg --regexp=needle '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached expression leaves the active skill as a read operand: $command"
+done
+for command in \
+    "awk -f'$active_skill_path' /dev/null" \
+    "awk --file='$active_skill_path' /dev/null" \
+    "sed -f'$active_skill_path' /dev/null" \
+    "sed --file='$active_skill_path' /dev/null" \
+    "grep -f'$active_skill_path' /dev/null" \
+    "grep --file='$active_skill_path' /dev/null" \
+    "rg -f'$active_skill_path' /dev/null" \
+    "rg --file='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached file option recognizes the active skill: $command"
+done
+for command in \
+    "sed -e'$active_skill_path' /dev/null" \
+    "sed --expression='$active_skill_path' /dev/null" \
+    "grep -e'$active_skill_path' /dev/null" \
+    "grep --regexp='$active_skill_path' /dev/null" \
+    "rg -e'$active_skill_path' /dev/null" \
+    "rg --regexp='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "an attached expression path remains pattern text: $command"
+done
+for command in \
+    "awk -e'$active_skill_path' /dev/null" \
+    "sed --regexp='$active_skill_path' /dev/null" \
+    "cat -f'$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "unsupported attached reader flags do not classify a file: $command"
+done
+for wrapped_reader in "env cat '$active_skill_path'" "command cat '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$wrapped_reader" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "a command wrapper preserves the active-skill read: $wrapped_reader"
+done
 
 out=$(post_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_hook_output "$out" post-tool-use 'PostToolUse emits schema-valid JSON'

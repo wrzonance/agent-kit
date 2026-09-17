@@ -224,7 +224,7 @@ jq '.entries[0].protectedPathAcknowledgement = []' "$acked_plan" >"$empty_acked"
 assert_rc 1 'an empty protectedPathAcknowledgement is rejected by the schema gate' -- \
     "$writer" --dispatch-plan "$empty_acked" --validate-only
 
-# --- acceptance: clean plans produce byte-identical output to today. --------
+# --- acceptance: clean plans disclose that they contain no create entries. --
 clean_plan="$tmp/clean.json"
 cat >"$clean_plan" <<'EOF'
 {
@@ -234,8 +234,8 @@ cat >"$clean_plan" <<'EOF'
 }
 EOF
 clean_out=$("$writer" --dispatch-plan "$clean_plan" --validate-only)
-assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid" "$clean_out" \
-    'a clean plan with no protected-path collision produces the unchanged, byte-identical success line'
+assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid create=none" "$clean_out" \
+    'a clean plan with no protected-path collision reports no create entries'
 
 # --- acceptance: --fix never silently "fixes" a protected-path collision --
 # it is a human decision (drop/split/acknowledge), never auto-patched. -------

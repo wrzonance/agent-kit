@@ -264,18 +264,45 @@ for skill in parallel-issues review-remote-pr; do
 done
 
 parallel_text=$(<"$root/agentkit/skills/parallel-issues/SKILL.md")
-assert_contains "$parallel_text" \
+parallel_run_id_recipe=$($script --help)
+assert_contains "$parallel_run_id_recipe" \
     'issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"' \
     'parallel run IDs use the requested or selected issue scope'
-assert_contains "$parallel_text" \
-    'invocation_flags="yolo=${yolo_invocation:-false};trust-trunk=${trust_trunk:-false};fast-mode=${fast_mode:-false};auto-review=${auto_review:-false};auto-serialize=${auto_serialize:-false}"' \
+assert_contains "$parallel_run_id_recipe" \
+    'invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"' \
     'parallel run IDs include canonical authorization flags'
-assert_contains "$parallel_text" \
-    'RUN_ID="parallel-issues-$(printf '\''%s'\'' "$run_inputs" | sha256sum | cut -c1-32)"' \
-    'parallel run IDs hash the normalized invocation inputs'
-assert_contains "$parallel_text" \
-    'run_inputs="scope=$(normalize_run_input "$issue_scope");flags=$(normalize_run_input "$invocation_flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"' \
-    'parallel run IDs use only stable invocation inputs'
+assert_contains "$parallel_run_id_recipe" \
+    'session-ledger.sh" run-id --procedure-set parallel-issues' \
+    'parallel run IDs delegate canonicalization to the shared helper'
+
+# Execute the shipped help recipe with a routing helper so append/covers
+# failures prove that the subsequent read cannot hide a missing receipt.
+ledger_recipe=$(sed -n '/^  issue_scope=/,$p' <<< "$parallel_run_id_recipe")
+assert_contains "$ledger_recipe" '--quote-stdin' \
+    'the executable help recipe passes the human quote over stdin'
+assert_not_contains "$ledger_recipe" '--quote "$QUOTE"' \
+    'the executable help recipe does not expose the human quote as an argument'
+recipe_kit="$tmp/recipe-kit"
+mkdir -p "$recipe_kit/.shared/scripts" "$tmp/recipe-repo/.agent"
+cat > "$recipe_kit/.shared/scripts/session-ledger.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$RECIPE_CALLS"
+if [[ $1 == run-id ]]; then printf 'recipe-run\n'; exit 0; fi
+[[ $1 != "${FAIL_SUBCOMMAND:-}" ]]
+EOF
+chmod +x "$recipe_kit/.shared/scripts/session-ledger.sh"
+for failing_step in append covers; do
+    recipe_calls="$tmp/recipe-$failing_step.calls"
+    recipe_rc=0
+    env RECIPE_CALLS="$recipe_calls" FAIL_SUBCOMMAND="$failing_step" \
+        repository_root="$tmp/recipe-repo" agentkit="$recipe_kit" agentkit_provenance=ok \
+        repository=wrzonance/agent-kit base=main DECISION=authorize SCOPE=scope QUOTE=quote \
+        bash -c "$ledger_recipe" >/dev/null 2>&1 || recipe_rc=$?
+    assert_eq 'nonzero' "$([[ $recipe_rc -ne 0 ]] && printf nonzero || printf zero)" \
+        "the help recipe propagates a $failing_step failure"
+    assert_not_contains "$(cat "$recipe_calls")" 'read' \
+        "the help recipe stops before read when $failing_step fails"
+done
 assert_not_contains "$parallel_text" 'starting_head=' \
     'parallel run IDs do not depend on mutable starting HEAD state'
 assert_not_contains "$parallel_text" 'contract_head=' \
@@ -293,20 +320,14 @@ assert_contains "$parallel_text" \
     'auto-review=true' \
     'parallel documents the second distinct authorization flag input'
 
-normalize_run_input() {
-    local value=$1
-    value=${value//[^A-Za-z0-9._-]/-}
-    printf '%s' "$value"
-}
 run_id_digest() {
     local scope=$1 flags=$2 repository=$3 base=$4
-    local inputs
-    inputs="scope=$(normalize_run_input "$scope");flags=$(normalize_run_input "$flags");repository=$(normalize_run_input "$repository");base=$(normalize_run_input "$base")"
-    printf 'parallel-issues-%s' "$(printf '%s' "$inputs" | sha256sum | cut -c1-32)"
+    "$script" run-id --procedure-set parallel-issues --scope "$scope" --flags "$flags" \
+        --repo "$repository" --base "$base"
 }
-scope_run_a=$(run_id_digest '57,54' 'yolo=false;auto-review=false' wrzonance/agent-kit main)
-scope_run_b=$(run_id_digest '57,62' 'yolo=false;auto-review=false' wrzonance/agent-kit main)
-flag_run_b=$(run_id_digest '57,54' 'yolo=false;auto-review=true' wrzonance/agent-kit main)
+scope_run_a=$(run_id_digest '57,54' 'yolo=false,auto-review=false' wrzonance/agent-kit main)
+scope_run_b=$(run_id_digest '57,62' 'yolo=false,auto-review=false' wrzonance/agent-kit main)
+flag_run_b=$(run_id_digest '57,54' 'yolo=false,auto-review=true' wrzonance/agent-kit main)
 assert_eq 'different' "$([[ $scope_run_a != "$scope_run_b" ]] && printf different || printf same)" \
     'different issue scopes produce different parallel run IDs'
 assert_eq 'different' "$([[ $scope_run_a != "$flag_run_b" ]] && printf different || printf same)" \
@@ -317,12 +338,11 @@ assert_contains "$review_text" \
     'review_invocation_flags="auto-review=${auto_review:-false}"' \
     'review run IDs include the current invocation authorization flag'
 assert_contains "$review_text" \
-    'RUN_ID="review-pr-$(printf '\''%s'\'' "$review_run_inputs" | sha256sum | cut -c1-32)"' \
-    'review run IDs hash invocation inputs'
+    'session-ledger.sh" run-id --procedure-set review-remote-pr' \
+    'review run IDs delegate canonicalization to the shared helper'
 review_run_id() {
-    local flags=$1 inputs
-    inputs="pr=203;repo=wrzonance/agent-kit;flags=$(normalize_run_input "$flags")"
-    printf 'review-pr-%s' "$(printf '%s' "$inputs" | sha256sum | cut -c1-32)"
+    "$script" run-id --procedure-set review-remote-pr --scope 203 --flags "$1" \
+        --repo wrzonance/agent-kit --base main
 }
 assert_eq 'different' "$([[ $(review_run_id auto-review=false) != $(review_run_id auto-review=true) ]] && printf different || printf same)" \
     'different review authorization flags produce different run IDs'

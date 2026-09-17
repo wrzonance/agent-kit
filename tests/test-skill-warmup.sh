@@ -26,14 +26,22 @@ chmod +x "$tmp/skills/.shared/scripts/agent-preflight.sh" \
 
 for skill in parallel-issues review-remote-pr pr-to-green onboard-repo; do
     recipe="$tmp/$skill.sh"
-    awk '
-        /^```bash$/ { inside=1; block=""; next }
-        /^```$/ {
-            if (inside && block ~ /agentkit=\$\(sed -n/) { printf "%s", block; exit }
-            inside=0
-        }
-        inside { block=block $0 "\n" }
-    ' "$root/agentkit/skills/$skill/SKILL.md" > "$recipe"
+    if [[ $skill == parallel-issues ]]; then
+        "$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help | awk '
+            /^Recipe: resolve, rehydrate, and run once$/ { inside=1; next }
+            /^Cache rehydration for each later guarded block/ { exit }
+            inside { sub(/^  /, ""); print }
+        ' > "$recipe"
+    else
+        awk '
+            /^```bash$/ { inside=1; block=""; next }
+            /^```$/ {
+                if (inside && block ~ /agentkit=\$\(sed -n/) { printf "%s", block; exit }
+                inside=0
+            }
+            inside { block=block $0 "\n" }
+        ' "$root/agentkit/skills/$skill/SKILL.md" > "$recipe"
+    fi
     assert_eq yes "$([[ -s $recipe ]] && printf yes || printf no)" "$skill warm-up extracted"
     # shellcheck disable=SC2016  # the extracted recipe expands this variable.
     printf '\nprintf "WARMUP_SELECTED=%%s\\n" "$agentkit"\n' >> "$recipe"
@@ -81,4 +89,17 @@ for skill in parallel-issues review-remote-pr pr-to-green onboard-repo; do
         done
     done
 done
+
+relative_repo="$tmp/parallel-relative-contract"
+git init -q "$relative_repo"
+mkdir -p "$relative_repo/.agent" "$relative_repo/relative-skills/.shared/scripts"
+printf '%s\n' 'skills= path=relative-skills' >"$relative_repo/.agent/env-contract.codex.txt"
+relative_rc=0
+relative_out=$(cd "$relative_repo" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    -u CODEX_HOME -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE -u OPENCODE_PID \
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" CODEX_PERMISSION_PROFILE=test \
+    bash "$tmp/parallel-issues.sh" 2>&1) || relative_rc=$?
+assert_eq 1 "$relative_rc" 'parallel helper-owned resolver refuses a relative skills path'
+assert_not_contains "$relative_out" 'WARMUP_SELECTED=' \
+    'a relative skills path never becomes the selected helper root'
 finish

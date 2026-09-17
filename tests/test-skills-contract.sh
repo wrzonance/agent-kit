@@ -159,7 +159,11 @@ assert_eq '1' "$resolver_lines" \
 
 for skill in "$skills"/*/SKILL.md; do
     name=$(basename "$(dirname "$skill")")
-    assert_contains "$(<"$skill")" 'skills= path=' \
+    contract_documentation=$(<"$skill")
+    if [[ $name == parallel-issues ]]; then
+        contract_documentation+=$'\n'"$("$skills/.shared/scripts/agent-preflight.sh" --help)"
+    fi
+    assert_contains "$contract_documentation" 'skills= path=' \
         "$name documents the contract field"
     # $agentkit IS the skills tree root -- agent-preflight.sh publishes it as
     # `skills= path=/abs/skills-tree`. So `$agentkit/skills/...` re-appends the
@@ -233,8 +237,8 @@ assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' 
 # reading as silently unset (+618 bytes). Measured.
 # #726: exact size including the durable sole-writer lifecycle; no spare allowance.
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
-assert_eq yes "$([[ $spawn_contract_bytes -le 21741 ]] && printf yes || printf no)" \
-    "spawn contract stays at or under 21741 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
+assert_eq yes "$([[ $spawn_contract_bytes -le 22092 ]] && printf yes || printf no)" \
+    "spawn contract stays at or under 22092 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
 resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
@@ -246,6 +250,10 @@ else
 fi
 assert_contains "$spawn_contract_text" 'explicit user authorization' \
     'spawn contract keeps unsupported-model authorization explicit'
+stale_tool_aliases=$(grep -RInE 'collaboration\.|(^|[^[:alnum:]_])spawn_agent([^[:alnum:]_]|$)' \
+    "$skills" --include='*.md' || true)
+assert_eq '' "$stale_tool_aliases" \
+    'skill Markdown uses contract tokens instead of runtime-specific alias prose'
 for stale_schema in 'multi_agent_v1__spawn_agent' 'fork_context' 'There is no `task_name`' \
     'Nesting is blocked' 'collaboration.spawn_agent'; do
     assert_not_contains "$spawn_contract_text" "$stale_schema" \
@@ -299,7 +307,7 @@ assert_contains "$worker_gate_text" '## Bounded inline corrections' \
     'worker gate documents the bounded inline-correction exception'
 assert_contains "$worker_gate_text" 'two allowed implementation exceptions' \
     'worker gate names the complete implementation exception set'
-assert_contains "$worker_gate_text" 'resume the same worker with `collaboration.followup_task` first' \
+assert_contains "$worker_gate_text" 'resume the same worker with `tools.send` first' \
     'worker gate prefers resuming the same worker for non-inline corrections'
 assert_contains "$onboard_text" 'AGENTS.md' \
     'onboarding reviews the repository instruction files'
@@ -418,7 +426,7 @@ assert_contains "$(<"$review_skill")" 'jq is not installed; evidence unavailable
 # SKILL.md itself); its own jq guard is the evidence-unavailable failure mode now.
 assert_contains "$(<"$gh_pr_state_script")" 'jq not found on PATH; evidence unavailable' \
     'the absorbed classification recipe names jq parser failures as unavailable evidence'
-assert_contains "$(<"$parallel_skill")" 'jq is not installed; evidence unavailable' \
+assert_contains "$("$skills/.shared/scripts/triage-issues.sh" --help)" 'jq is not installed; evidence unavailable' \
     'parallel recipes name jq parser failures as unavailable evidence'
 assert_contains "$(<"$prepare_issue_script")" 'issue_payload_file="$agent_dir/fetched-issue.json"' \
     'parallel fetch persists raw issue bytes before parsing'

@@ -16,7 +16,7 @@
 # deliberately kept in one onboarding block; all other blocks must fail loudly
 # and tell the agent to run preflight rather than reintroduce a resolver copy.
 #
-# Single-source convention (review-remote-pr, parallel-issues): shell state
+# Single-source convention (review-remote-pr, and legacy parallel fixtures): shell state
 # does not persist between an agent's tool calls, so the full resolver (the
 # `skills= path=` read plus its untracked/non-symlink/owned provenance checks)
 # is defined exactly once, in each skill's earliest setup step, boxed under
@@ -62,7 +62,9 @@ readonly GUARD_EXPR_DIR='[ -d "${agentkit:-}/.shared/scripts" ]'
 # boundary enforced rather than decorative.
 readonly GUARD_EXPR_SENTINEL='[ "${agentkit_provenance:-}" = ok ]'
 # Skills whose earliest setup step keeps the single boxed resolver definition;
-# every other bash block in these two files must carry the guard instead.
+# every other bash block in these files must carry the guard instead. The live
+# parallel-issues body opts into helper ownership with its authoritative-body
+# marker; legacy fixtures still exercise the one-definition rules.
 readonly SINGLE_SOURCE_SKILLS='review-remote-pr parallel-issues'
 
 checked=0
@@ -159,7 +161,19 @@ for skill_file in "${md_files[@]}"; do
     if [[ " $SINGLE_SOURCE_SKILLS " == *" $name "* || $is_shared -eq 1 ]]; then
         def_count=$(grep -c "$FULL_RESOLVER_MARK" "$block" || true)
         if [[ $is_reference -eq 0 ]]; then
-            if [[ $def_count -ne 1 ]]; then
+            helper_owned=0
+            if [[ $name == parallel-issues ]] &&
+                grep -Fq 'The injected body is authoritative' "$skill_file"; then
+                helper_owned=1
+            fi
+            if ((helper_owned)); then
+                if [[ $def_count -ne 0 ]] ||
+                    ! grep -Fq '"$agentkit/.shared/scripts/agent-preflight.sh" --help' "$skill_file"; then
+                    def_count_violations=$((def_count_violations + 1))
+                    printf 'EXPECTED helper-owned resolver recipe pointer and zero copied definitions in %s\n' \
+                        "$skill_file" >&2
+                fi
+            elif [[ $def_count -ne 1 ]]; then
                 def_count_violations=$((def_count_violations + 1))
                 printf 'EXPECTED exactly one full resolver definition in %s, found %s\n' \
                     "$skill_file" "$def_count" >&2

@@ -10,7 +10,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-    printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE] [--resume]\n' "${0##*/}"
+    printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE] [--body-cache FILE] [--resume]\n' "${0##*/}"
     cat <<'EOF'
 
 Options:
@@ -32,6 +32,8 @@ Options:
                                           private-trusted.
   --prior-art FILE  File holding prior-art digest text. Defaults to the
                     literal "(no prior art selected by triage digest)".
+  --body-cache FILE Private picker cache for this repository and issue. When
+                    omitted, fetch the complete issue for direct CLI use.
   --resume          Archive existing generated artifacts and regenerate them
                     while preserving all other worktree contents.
   -h, --help        Print this help and exit 0.
@@ -51,6 +53,36 @@ Exit status:
   12  a complete fenced artifact set already exists; delete it deliberately
       before re-fencing
   1   bad arguments, missing evidence, or any other failure
+
+Re-running the script for an existing complete set is churn; delete the
+affected generated file deliberately before re-fencing, or use --resume.
+
+Recipe: publish canonical issue artifacts
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
+  prior_art_file=''
+  if [[ -n ${prior_art_contents:-} ]]; then
+      : "${RUN_ID:?set the canonical run identity}" "${issue_number:?set the issue number}"
+      prior_art_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" \
+          --scratch-label "prior-art-$issue_number-$RUN_ID" --repo-root "$repository_root") || exit 1
+      printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
+  fi
+  body_cache_args=()
+  [[ -z ${body_cache:-} ]] || body_cache_args=(--body-cache "$body_cache")
+  fetch_rc=0
+  if [[ -n $prior_art_file ]]; then
+      "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" \
+          --prior-art "$prior_art_file" "${body_cache_args[@]}" || fetch_rc=$?
+  else
+      "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" \
+          "${body_cache_args[@]}" || fetch_rc=$?
+  fi
+  case $fetch_rc in
+      0)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file" ;;
+      12) printf '%s\n' 'fence artifacts already exist; use the printed exact --resume command' >&2; exit 1 ;;
+      *)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"; exit 1 ;;
+  esac
 EOF
 }
 
@@ -63,6 +95,7 @@ worktree=
 issue_number=
 boundary_mode=
 prior_art_file=
+body_cache=
 resume=0
 
 while (($#)); do
@@ -86,6 +119,11 @@ while (($#)); do
         --prior-art)
             (($# >= 2)) || die "Missing value for $1."
             prior_art_file=$2
+            shift 2
+            ;;
+        --body-cache)
+            (($# >= 2)) || die "Missing value for $1."
+            body_cache=$2
             shift 2
             ;;
         --resume)
@@ -113,6 +151,8 @@ case $boundary_mode in
         ;;
 esac
 
+command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
+
 prior_art_contents=
 if [[ -n $prior_art_file ]]; then
     [[ -f $prior_art_file && ! -L $prior_art_file && -r $prior_art_file ]] ||
@@ -123,8 +163,26 @@ if [[ -n $prior_art_file ]]; then
     # edit to content the trusted boundary modes promise to copy verbatim. The
     # file is staged byte-for-byte further down instead.
 fi
-
-command -v jq >/dev/null 2>&1 || die 'jq is not installed; evidence unavailable'
+if [[ -n $body_cache ]]; then
+    [[ $body_cache = /* && -f $body_cache && ! -L $body_cache && -O $body_cache ]] ||
+        die "Body cache must be an absolute, owned regular file, not a symlink: $body_cache"
+    body_cache_real=$(realpath -e -- "$body_cache") || die "Could not resolve body cache: $body_cache"
+    [[ $body_cache == "$body_cache_real" ]] || die "Body cache path is not canonical: $body_cache"
+    body_cache_dir=${body_cache%/*}
+    [[ -d $body_cache_dir && ! -L $body_cache_dir && -O $body_cache_dir ]] ||
+        die "Body cache directory must be owned and must not be a symlink: $body_cache_dir"
+    body_cache_root=${body_cache_dir%/*}
+    [[ -d $body_cache_root && ! -L $body_cache_root && -O $body_cache_root ]] ||
+        die "Body cache root must be owned and must not be a symlink: $body_cache_root"
+    [[ $(stat -c '%a' "$body_cache_dir" 2>/dev/null) == 700 &&
+        $(stat -c '%a' "$body_cache_root" 2>/dev/null) == 700 ]] ||
+        die "Body cache directories must have mode 700: $body_cache_dir"
+    [[ $(stat -c '%a' "$body_cache" 2>/dev/null) == 600 ]] ||
+        die "Body cache must have mode 600: $body_cache"
+    jq -e 'type == "object" and .schemaVersion == 1 and (.repository | type) == "string"
+        and (.issue | type) == "number" and (.body | type) == "string"' "$body_cache" >/dev/null ||
+        die "Body cache has an invalid schema: $body_cache"
+fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) ||
     die "Could not resolve this script's directory."
@@ -187,6 +245,7 @@ print_resume_command() {
     printf ' %q' "$script_path" --resume --worktree "$worktree" --issue "$issue_number" \
         --boundary "$boundary_mode" >&2
     [[ -z $prior_art_file ]] || printf ' %q %q' --prior-art "$prior_art_file" >&2
+    [[ -z $body_cache ]] || printf ' %q %q' --body-cache "$body_cache" >&2
     printf '\n' >&2
 }
 
@@ -353,7 +412,16 @@ trap temp_signal_handler HUP INT TERM
 repo_slug=$(cd -- "$worktree" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
     die "Could not resolve the repository from gh in $worktree"
 
-issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,body,labels,comments) || exit 1
+if [[ -n $body_cache ]]; then
+    jq -e --arg repository "${repo_slug,,}" --argjson issue "$issue_number" '
+        (.repository | ascii_downcase) == $repository and .issue == $issue' "$body_cache" >/dev/null ||
+        die 'Body cache repository or issue identity does not match the requested issue.'
+    issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,labels,comments) || exit 1
+    issue_payload=$(jq -c --slurpfile cache "$body_cache" '. + {body:$cache[0].body}' <<<"$issue_payload") ||
+        die 'Could not combine cached body with issue metadata.'
+else
+    issue_payload=$(gh issue view "$issue_number" --repo "$repo_slug" --json title,body,labels,comments) || exit 1
+fi
 
 # Persist the raw fetched bytes before any evidence parser runs, atomically:
 # a temp file in the same directory, chmod'd private, then moved into place.

@@ -156,9 +156,21 @@ printf '%s\n' \
     'literal `sha` and $(printf should-not-run)' \
     '🤖 Co-authored by Codex gpt-5.6-luna.' >"$body"
 
+run_state_repo="$tmp/run-state-repo"
+mkdir -p "$run_state_repo"
+run_id='test-wave'
+
 run_body() {
+    local resource=${1-} action=${2-}
+    shift 2
+    local -a helper_args=("$resource" "$action")
+    if [[ $resource == pr && $action == create ]]; then
+        helper_args+=(--run-id "$run_id" --repo-root "$run_state_repo")
+    fi
+    helper_args+=("$@")
     GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
         GH_STORED_BODY="$tmp/stored.md" \
+        GH_BODY_RUN_STATE_SH="${GH_BODY_RUN_STATE_SH:-$root/agentkit/skills/.shared/scripts/run-state.sh}" \
         GH_MISMATCH="${GH_MISMATCH:-0}" \
         GH_VERIFY_FAILURE="${GH_VERIFY_FAILURE:-0}" \
         GH_MUTATION_FAILURE="${GH_MUTATION_FAILURE:-0}" \
@@ -169,8 +181,59 @@ run_body() {
         GH_BODY_CLOSING_RETRY_DELAY="${GH_BODY_CLOSING_RETRY_DELAY:-0}" \
         GH_PR_BASE="${GH_PR_BASE:-main}" \
         GH_PR_DEFAULT_BRANCH="${GH_PR_DEFAULT_BRANCH:-main}" \
-        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "$@"
+        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "${helper_args[@]}"
 }
+
+# Standalone callers retain the original verified transport without inventing
+# run context. This invokes the public helper directly, outside run_body's
+# parallel-publication context injection.
+: >"$tmp/gh.log"
+legacy_output=$(GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+    GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+    --repo owner/repo --body-file "$body" --draft --title 'Legacy verified transport')
+assert_contains "$legacy_output" 'https://github.com/owner/repo/pull/41' \
+    'standalone PR creation works without run-state context'
+assert_contains "$(cat "$tmp/gh.log")" 'pr create' \
+    'standalone PR creation reaches the verified gh transport'
+
+for partial_context in run-id repo-root; do
+    : >"$tmp/gh.log"
+    partial_rc=0
+    if [[ $partial_context == run-id ]]; then
+        partial_args=(--run-id partial-wave)
+    else
+        partial_args=(--repo-root "$run_state_repo")
+    fi
+    GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+        GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+        --repo owner/repo --body-file "$body" "${partial_args[@]}" \
+        >/dev/null 2>"$tmp/partial-$partial_context.err" || partial_rc=$?
+    assert_eq 1 "$partial_rc" "partial $partial_context context refuses PR creation"
+    assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+        "partial $partial_context context makes zero gh create calls"
+done
+
+: >"$tmp/gh.log"
+run_id='bad/run'
+invalid_context_rc=0
+run_body pr create --repo owner/repo --body-file "$body" >/dev/null 2>"$tmp/invalid-context.err" || invalid_context_rc=$?
+assert_eq 1 "$invalid_context_rc" 'invalid run identity refuses PR creation'
+assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+    'invalid run identity makes zero gh create calls'
+
+run_id='malformed-wave'
+assert_rc 0 'malformed opened_prs fixture begins as valid state' -- \
+    "$root/agentkit/skills/.shared/scripts/run-state.sh" set --run-id "$run_id" \
+    --repo-root "$run_state_repo" --path opened_prs --json '"not-an-array"'
+: >"$tmp/gh.log"
+malformed_context_rc=0
+run_body pr create --repo owner/repo --body-file "$body" >/dev/null 2>"$tmp/malformed-context.err" || malformed_context_rc=$?
+assert_eq 1 "$malformed_context_rc" 'malformed existing opened_prs refuses PR creation'
+assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+    'malformed opened_prs makes zero gh create calls'
+run_id='test-wave'
 
 output=$(run_body pr create --repo owner/repo --body-file "$body" --draft --title 'A `title`')
 assert_contains "$output" 'https://github.com/owner/repo/pull/41' \
@@ -182,6 +245,10 @@ else
 fi
 assert_contains "$(cat "$tmp/gh.log")" '--body-file' 'PR create uses gh body-file transport'
 assert_contains "$(cat "$tmp/gh.log")" '--draft' 'PR create forwards non-body options'
+assert_not_contains "$(cat "$tmp/gh.log")" '--run-id' 'PR create consumes --run-id locally'
+assert_not_contains "$(cat "$tmp/gh.log")" '--repo-root' 'PR create consumes --repo-root locally'
+assert_eq '[41]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'PR create records its assigned number as a JSON integer'
 
 # Body-policy options after the POSIX end-of-options marker must not reach gh:
 # forwarding them would let a caller replace the validated file-backed body
@@ -305,6 +372,8 @@ assert_contains "$output" 'https://ghe.example/ent-owner/ent-repo/pull/8' \
     'Enterprise create returns the created URL'
 assert_contains "$(cat "$tmp/api.log")" 'host=ghe.example' \
     'Enterprise create verifies against the host in the returned URL'
+assert_eq '[41,8]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'a later create appends once while repeated PR numbers stay deduplicated'
 
 # A numeric target carries no host, so ambient resolution must be preserved --
 # that is the same host gh itself used for the mutation.
@@ -659,6 +728,35 @@ assert_contains "$(jq -r '.closing_issue.reason' <<<"$json_failed_output")" 'clo
     '--json failed closing_issue carries the machine evidence in its reason'
 assert_contains "$(cat "$json_failed_err")" 'closingIssuesReferences' \
     '--json still logs the failure diagnosis to stderr'
+assert_eq '[41,8]' "$(jq -c '.opened_prs' "$run_state_repo/.agent/evidence/run-$run_id/run-state.json")" \
+    'closing-reference failure leaves the created PR durably recorded'
+
+# A run-state failure happens after GitHub created the PR. Surface the remote
+# identity and one exact repair command so callers never repeat pr create.
+cat >"$tmp/fail-run-state" <<'EOF'
+#!/usr/bin/env bash
+[[ ${1-} == get ]] && exit 11
+exit 1
+EOF
+chmod +x "$tmp/fail-run-state"
+export GH_BODY_RUN_STATE_SH="$tmp/fail-run-state"
+set +e
+record_failure_err="$tmp/record-failure.err"
+record_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" --json 2>"$record_failure_err")
+record_failure_rc=$?
+set -e
+unset GH_BODY_RUN_STATE_SH
+assert_eq 1 "$record_failure_rc" 'run-state recording failure exits nonzero after creation'
+assert_eq 1 "$(printf '%s\n' "$record_failure_output" | wc -l | tr -d '[:space:]')" \
+    'JSON run-state failure emits exactly one machine-readable identity'
+assert_eq 41 "$(jq -r '.number' <<<"$record_failure_output")" \
+    'JSON run-state failure preserves the created PR number'
+assert_eq 'https://github.com/owner/repo/pull/41' "$(jq -r '.html_url' <<<"$record_failure_output")" \
+    'JSON run-state failure preserves the created PR URL'
+assert_contains "$(cat "$record_failure_err")" 'append-unique --run-id test-wave' \
+    'run-state recording failure prints the exact idempotent repair action'
+assert_contains "$(cat "$record_failure_err")" '--path opened_prs --json 41' \
+    'the repair action records the numeric created PR'
 
 # --- record success from --json output with no root-authored parsing -------
 apply_ledger="$root/agentkit/skills/.shared/scripts/apply-ledger.sh"

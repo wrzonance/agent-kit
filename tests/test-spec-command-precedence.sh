@@ -5,6 +5,9 @@
 # shellcheck disable=SC2016  # literal $worktree / backticked text is assertion data
 set -uo pipefail
 
+# This suite's environment contracts intentionally use the Codex mapping.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
+
 TEST_NAME='spec-command-precedence'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
@@ -16,7 +19,7 @@ template="$root/agentkit/skills/parallel-issues/references/implementation-worker
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list=\'ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)\''
 
 # The monorepo declarations reused across fixtures: two repo-wide gates and
 # three per-component commands with declared rundirs.

@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Suite: run-state summary renders handoff coverage from durable state.
+set -uo pipefail
+
+TEST_NAME='run-state summary'
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname -- "$here")
+# shellcheck source=lib/assert.sh
+source "$here/lib/assert.sh"
+
+script="$root/agentkit/skills/.shared/scripts/run-state.sh"
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+
+repo="$tmp/repo"
+mkdir -p -- "$repo/.agent/evidence/run-wave" "$repo/.agent/runs"
+chmod 700 -- "$repo/.agent" "$repo/.agent/evidence" "$repo/.agent/evidence/run-wave" "$repo/.agent/runs"
+git init -q -b main "$repo"
+git -C "$repo" config user.email test@example.invalid
+git -C "$repo" config user.name test
+
+state="$repo/.agent/evidence/run-wave/run-state.json"
+printf '%s\n' \
+    '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+chmod 600 -- "$state"
+
+reports="$tmp/dispatch-plan.verification-reports"
+mkdir -m 700 -- "$reports"
+report='spec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
+printf '%s\n' "$report" >"$reports/issue-103.report"
+chmod 600 -- "$reports/issue-103.report"
+
+ledger="$repo/.agent/runs/active-workers.ndjson"
+printf '%s\n' \
+    '{"version":2,"issue":101,"worktree":"/tmp/issue-101","branch":"feat/101","runId":"wave","attempt":"101-a","workerId":"worker-101","state":"terminal","disposition":"handed-back","evidence":"src/one.sh","heartbeatEpoch":1}' \
+    '{"version":2,"issue":102,"worktree":"/tmp/issue-102","branch":"feat/102","runId":"wave","attempt":"102-a","workerId":"worker-102","state":"terminal","disposition":"handed-back","evidence":"src/two.sh,tests/two.sh","heartbeatEpoch":2}' \
+    '{"version":2,"issue":104,"worktree":"/tmp/issue-104","branch":"feat/104","runId":"other","attempt":"104-a","workerId":"worker-104","state":"terminal","disposition":"handed-back","evidence":"src/other.sh","heartbeatEpoch":3}' \
+    >"$ledger"
+chmod 600 -- "$ledger"
+
+expected=$'coverage= prs=0 receipts=0 skipped=0 parked=2 queued=1\nblocked=101:src/one.sh\nblocked=102:src/two.sh,tests/two.sh\nspec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
+assert_eq "$expected" \
+    "$(cd -- "$tmp" && "$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
+    'summary derives exact coverage and replays durable verification reports verbatim'
+
+printf '%s\n' "$report" >"$reports/issue-104.report"
+chmod 600 -- "$reports/issue-104.report"
+mismatch_rc=0
+mismatch_err=$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports" 2>&1 >/dev/null) || mismatch_rc=$?
+assert_eq 1 "$mismatch_rc" 'report replay refuses a filename/content issue mismatch'
+assert_contains "$mismatch_err" 'issue' 'mismatch refusal names the invalid issue identity'
+rm -- "$reports/issue-104.report"
+
+printf '%s\n' "$report" >"$reports/issue-not-numeric.report"
+chmod 600 -- "$reports/issue-not-numeric.report"
+nonnumeric_rc=0
+nonnumeric_err=$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports" 2>&1 >/dev/null) || nonnumeric_rc=$?
+assert_eq 1 "$nonnumeric_rc" 'report replay refuses a nonnumeric issue filename'
+assert_contains "$nonnumeric_err" 'filename' 'nonnumeric refusal names the invalid filename boundary'
+rm -- "$reports/issue-not-numeric.report"
+
+mkdir -- "$repo/subdir"
+subdir_rc=0
+subdir_err=$("$script" summary --run-id wave --repo-root "$repo/subdir" 2>&1 >/dev/null) || subdir_rc=$?
+assert_eq 2 "$subdir_rc" 'summary refuses a subdirectory as an ambiguous repository root'
+assert_contains "$subdir_err" 'checkout root' 'repository-boundary refusal names the exact required root'
+
+# A later lifecycle row for the same issue supersedes an older handback.
+printf '%s\n' \
+    '{"version":2,"issue":101,"worktree":"/tmp/issue-101","branch":"feat/101","runId":"wave","attempt":"101-b","workerId":"worker-101b","state":"terminal","disposition":"completed","evidence":"result-101.json","heartbeatEpoch":4}' \
+    >>"$ledger"
+assert_eq $'coverage= prs=0 receipts=0 skipped=0 parked=1 queued=1\nblocked=102:src/two.sh,tests/two.sh' \
+    "$("$script" summary --run-id wave --repo-root "$repo")" \
+    'latest lifecycle per issue clears an older handback without duplicate parked coverage'
+
+# Every summary collection is required so missing producer evidence cannot look like zero.
+printf '%s\n' '{"opened_prs":[201,202],"queued":[]}' >"$state"
+missing_state_rc=0
+missing_state_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || missing_state_rc=$?
+assert_eq 1 "$missing_state_rc" 'missing receipt collections refuse an unavailable summary'
+assert_contains "$missing_state_err" 'receipt_prs' 'missing collection refusal names the recovery fields'
+
+# Initialization is explicit and idempotent: it creates only absent summary
+# arrays and never resets an existing producer record.
+"$script" init-summary --run-id wave --repo-root "$repo"
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+    "$(jq -c . "$state")" \
+    'summary initialization creates each missing collection without resetting existing state'
+"$script" init-summary --run-id wave --repo-root "$repo"
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+    "$(jq -c . "$state")" \
+    'resumed summary initialization preserves prior producer records'
+
+"$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
+"$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
+"$script" dequeue-summary --run-id wave --repo-root "$repo" --json 301
+"$script" dequeue-summary --run-id wave --repo-root "$repo" --json 301
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 204
+"$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
+"$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
+assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204]}' \
+    "$(jq -c . "$state")" \
+    'producer recording and queue-to-dispatch removal are idempotent across resumed sweeps'
+
+printf '%s\n' '{"opened_prs":[201],"queued":[],"receipt_prs":[201,201]}' >"$state"
+bad_state_rc=0
+bad_state_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || bad_state_rc=$?
+assert_eq 1 "$bad_state_rc" 'duplicate receipt PRs refuse instead of inflating coverage'
+assert_contains "$bad_state_err" 'receipt_prs' 'malformed collection refusal names the recovery field'
+
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+printf '%s\n' '{not-json' >>"$ledger"
+bad_ledger_rc=0
+bad_ledger_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || bad_ledger_rc=$?
+assert_eq 1 "$bad_ledger_rc" 'malformed lifecycle evidence refuses an honest summary'
+assert_contains "$bad_ledger_err" 'active-workers' 'ledger refusal names the unavailable evidence'
+
+# A large porcelain stream must be consumed completely. The former
+# git|sed|head selector closed the producer early under pipefail.
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+sed -i '$d' "$ledger"
+fake_bin="$tmp/fake-bin"
+mkdir -- "$fake_bin"
+cat >"$fake_bin/git" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ ${1:-} == -C && ${3:-} == worktree && ${4:-} == list && ${5:-} == --porcelain ]]; then
+    printf 'worktree %s\nHEAD 0000000000000000000000000000000000000000\n\n' "$SUMMARY_PRIMARY_ROOT"
+    for ((i=0; i<20000; i++)); do
+        printf 'worktree /tmp/summary-secondary-%05d\nHEAD 0000000000000000000000000000000000000000\n\n' "$i"
+    done
+    exit 0
+fi
+exec "$SUMMARY_REAL_GIT" "$@"
+SCRIPT
+chmod +x "$fake_bin/git"
+large_rc=0
+large_output=$(PATH="$fake_bin:$PATH" SUMMARY_REAL_GIT="$(command -v git)" SUMMARY_PRIMARY_ROOT="$repo" \
+    "$script" summary --run-id wave --repo-root "$repo") || large_rc=$?
+assert_eq 0 "$large_rc" 'primary worktree selection consumes a large porcelain stream without SIGPIPE'
+assert_contains "$large_output" 'coverage= prs=0' 'large worktree selection still resolves the primary ledger'
+
+finish

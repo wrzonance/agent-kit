@@ -55,6 +55,22 @@ assert_eq "$repo1/.agent/evidence/pr-43" "$RUN_OUT" 'a different PR number resol
 assert_eq no "$( [[ -e "$RUN_OUT/marker" ]] && printf yes || printf no )" \
     'a different PR does not inherit another PR run directory contents'
 
+# A shared TMPDIR fallback is optional while the private primary backend works.
+# An untrusted pathname there must be ignored, never adopted or allowed to
+# deny primary resolution/listing.
+poison_tmp="$tmp/poisoned-optional-fallback"
+mkdir -p "$poison_tmp"
+poison_root="$poison_tmp/agent-kit-review-remote-pr.$(id -u)"
+ln -s "$tmp/untrusted-fallback-target" "$poison_root"
+poison_out=$(TMPDIR="$poison_tmp" /bin/bash "$script" --pr 44 --repo-root "$repo1")
+assert_eq "$repo1/.agent/evidence/pr-44" "$poison_out" \
+    'an untrusted optional fallback does not block a usable primary backend'
+poison_roots=$(TMPDIR="$poison_tmp" /bin/bash "$script" --list-run-roots --repo-root "$repo1")
+assert_contains "$poison_roots" "$repo1/.agent/evidence" \
+    'root discovery retains a usable primary beside an untrusted optional fallback'
+assert_not_contains "$poison_roots" "$poison_root" \
+    'root discovery never adopts an untrusted optional fallback'
+
 # --- PR number validation happens before the value becomes a path component -
 for bad_pr in 0 007 -5 abc '5/../etc' '5;rm -rf /' '5 6'; do
     run "$repo1" "$bad_pr"
@@ -192,6 +208,23 @@ RUN_OUT2=''
 RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>/dev/null)
 chmod 755 -- "$fallback_repo/.agent"
 assert_eq "$RUN_OUT" "$RUN_OUT2" 'the fallback path is stable across repeated calls for the same PR'
+
+RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>/dev/null)
+assert_eq "$RUN_OUT" "$RUN_OUT2" \
+    'an existing trusted fallback selector remains sticky after primary access recovers'
+
+mkdir -p "$fallback_repo/.agent/evidence/pr-7"
+chmod 700 "$fallback_repo/.agent/evidence" "$fallback_repo/.agent/evidence/pr-7"
+RUN_RC=0
+RUN_ERR=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>&1) || RUN_RC=$?
+assert_eq 1 "$RUN_RC" 'a selector present in both run-state backends fails closed'
+assert_contains "$RUN_ERR" 'both primary and fallback' 'the split-backend refusal names the conflict'
+
+roots_rc=0
+roots_out=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --list-run-roots --repo-root "$fallback_repo" 2>"$tmp/.stderr") || roots_rc=$?
+assert_eq 0 "$roots_rc" '--list-run-roots discovers an existing fallback backend'
+assert_contains "$roots_out" "$(dirname -- "$RUN_OUT")" \
+    '--list-run-roots returns the same repository fallback root used for writes'
 
 # A different repository under the same fallback TMPDIR must not collide on
 # the same PR number.
@@ -351,8 +384,101 @@ non_git_err=$(cd -- "$non_git_dir" && /bin/bash "$script" --pr 5 2>&1) || non_gi
 assert_eq 1 "$non_git_rc" 'omitting --repo-root outside any Git worktree fails closed'
 assert_contains "$non_git_err" '--repo-root' 'the non-Git-worktree failure names the escape hatch'
 
+# --- owner-private scratch allocation under a trusted repository root ------
+scratch_repo="$tmp/scratch-repo"
+mkdir -p "$scratch_repo"
+scratch_one_out="$tmp/scratch-one.out"
+scratch_two_out="$tmp/scratch-two.out"
+/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo" >"$scratch_one_out" &
+scratch_one_pid=$!
+/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo" >"$scratch_two_out" &
+scratch_two_pid=$!
+wait "$scratch_one_pid"
+wait "$scratch_two_pid"
+scratch_one=$(<"$scratch_one_out")
+scratch_two=$(<"$scratch_two_out")
+assert_eq differ "$([[ $scratch_one != "$scratch_two" ]] && printf differ || printf same)" \
+    'two concurrent scratch allocations never share a path'
+assert_eq "$scratch_repo/.agent/cache/" "${scratch_one%/*}/" \
+    'scratch files stay under the trusted repository cache'
+assert_eq 600 "$(stat -c %a -- "$scratch_one")" 'scratch files are owner-private'
+assert_eq 700 "$(stat -c %a -- "${scratch_one%/*}")" 'the scratch cache is owner-private'
+printf first >"$scratch_one"; printf second >"$scratch_two"
+assert_eq first "$(<"$scratch_one")" 'one scratch allocation keeps its own content'
+assert_eq second "$(<"$scratch_two")" 'another scratch allocation keeps its own content'
+
+legacy_target="$tmp/legacy-target"
+printf untouched >"$legacy_target"
+ln -s "$legacy_target" "$scratch_repo/.agent/cache/prior-art-779.pending"
+scratch_three=$(/bin/bash "$script" --scratch-label prior-art-779 --repo-root "$scratch_repo")
+assert_eq untouched "$(<"$legacy_target")" 'a planted predictable file symlink target is preserved'
+assert_eq differ "$([[ $scratch_three != "$scratch_repo/.agent/cache/prior-art-779.pending" ]] && printf differ || printf same)" \
+    'scratch allocation never reuses a planted predictable filename'
+
+scratch_symlink_repo="$tmp/scratch-symlink-repo"
+scratch_elsewhere="$tmp/scratch-elsewhere"
+mkdir -p "$scratch_symlink_repo/.agent" "$scratch_elsewhere"
+ln -s "$scratch_elsewhere" "$scratch_symlink_repo/.agent/cache"
+scratch_symlink_rc=0
+/bin/bash "$script" --scratch-label handback --repo-root "$scratch_symlink_repo" >/dev/null 2>&1 || scratch_symlink_rc=$?
+assert_eq 1 "$scratch_symlink_rc" 'a symlinked scratch parent is refused'
+assert_eq 0 "$(find "$scratch_elsewhere" -mindepth 1 -maxdepth 1 | wc -l)" \
+    'a symlinked scratch parent is never followed'
+assert_rc 2 'scratch labels reject path traversal' -- \
+    /bin/bash "$script" --scratch-label '../escape' --repo-root "$scratch_repo"
+
+near_dir="$tmp/destination filesystem"
+mkdir -p "$near_dir"
+near_target="$near_dir/dispatch plan.json"
+near_scratch=$(/bin/bash "$script" --scratch-label dispatch-plan --scratch-near "$near_target")
+assert_eq "$near_dir" "${near_scratch%/*}" \
+    'destination-adjacent scratch stays on the replacement target filesystem'
+assert_eq 600 "$(stat -c %a -- "$near_scratch")" \
+    'destination-adjacent scratch is owner-private'
+
+ordinary_agent_repo="$tmp/ordinary-agent-repo"
+mkdir -p "$ordinary_agent_repo/.agent"
+chmod 755 "$ordinary_agent_repo/.agent"
+ordinary_scratch=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$ordinary_agent_repo")
+assert_eq 600 "$(stat -c %a -- "$ordinary_scratch")" \
+    'an owned ordinary mode-0755 .agent parent remains compatible'
+
+writable_agent_repo="$tmp/writable-agent-repo"
+mkdir -p "$writable_agent_repo/.agent"
+chmod 775 "$writable_agent_repo/.agent"
+writable_agent_rc=0
+/bin/bash "$script" --scratch-label pr-body --repo-root "$writable_agent_repo" >/dev/null 2>&1 || writable_agent_rc=$?
+assert_eq 1 "$writable_agent_rc" 'a group-writable .agent parent is refused'
+assert_eq no "$([[ -e $writable_agent_repo/.agent/cache ]] && printf yes || printf no)" \
+    'an unsafe .agent parent is rejected before scratch cache creation'
+
+unavailable_agent_repo="$tmp/unavailable-agent-repo"
+mkdir -p "$unavailable_agent_repo"
+mkdir_failure_bin="$tmp/mkdir-failure-bin"
+/usr/bin/mkdir -p "$mkdir_failure_bin"
+cat > "$mkdir_failure_bin/mkdir" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ ${*: -1} == "${FAIL_MKDIR_TARGET:?}" ]]; then
+    : > "${FAIL_MKDIR_MARKER:?}"
+    exit 1
+fi
+exec /usr/bin/mkdir "$@"
+SCRIPT
+chmod +x "$mkdir_failure_bin/mkdir"
+unavailable_agent_rc=0
+unavailable_agent_err=$(PATH="$mkdir_failure_bin:$PATH" \
+    FAIL_MKDIR_TARGET="$unavailable_agent_repo/.agent" \
+    FAIL_MKDIR_MARKER="$tmp/mkdir-failure-invoked" \
+    /bin/bash "$script" --scratch-label pr-body --repo-root "$unavailable_agent_repo" 2>&1) || unavailable_agent_rc=$?
+assert_eq yes "$([[ -e $tmp/mkdir-failure-invoked ]] && printf yes || printf no)" \
+    'the unavailable .agent fixture exercises its controlled mkdir failure'
+assert_eq 1 "$unavailable_agent_rc" 'scratch allocation fails when .agent cannot be created'
+assert_contains "$unavailable_agent_err" 'could not create environment state directory' \
+    'scratch creation failure names the unavailable .agent parent'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 199 lines'
+# Issue #785 adds durable fallback selection and explicit split-backend refusal.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 284 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 284 lines'
 
 finish

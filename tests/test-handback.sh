@@ -70,6 +70,127 @@ src/untracked.txt" "$(tr '\0' '\n' <"$valid_output")" \
     'valid handback returns the parsed argv NUL-delimited'
 assert_eq '' "$(cat -- "$tmp/valid.err")" 'valid handback keeps diagnostics off stdout and stderr'
 
+# A worker can finish with a pushed, verified commit while an unpublishable
+# protected path remains dirty. That is partial delivery, not zero delivery:
+# Collect opens the draft PR and carries the remaining operator action into it.
+partial_repo="$tmp/partial-repo"
+partial_origin="$tmp/partial-origin.git"
+mkdir -p "$partial_repo/.agent/logs" "$partial_repo/src" "$partial_repo/secrets"
+cat >"$partial_repo/.agent/config.env" <<'EOF'
+AGENT_WORKER_MODEL=gpt-5.6-luna
+AGENT_PROTECTED_PATHS=secrets/
+EOF
+git init -q -b feat/partial "$partial_repo"
+git init -q --bare "$partial_origin"
+git -C "$partial_repo" remote add origin "$partial_origin"
+git -C "$partial_repo" config user.name test
+git -C "$partial_repo" config user.email test@example.invalid
+printf 'base\n' >"$partial_repo/src/change.txt"
+partial_log="$partial_repo/.agent/logs/test.log"
+printf '%s\n' '=== agent-run tests/run-tests.sh' \
+    '=== agent-run exited rc=0 after 3s' >"$partial_log"
+git -C "$partial_repo" add -- .agent/config.env .agent/logs/test.log src/change.txt
+git -C "$partial_repo" commit -qm base
+printf 'delivered\n' >"$partial_repo/src/change.txt"
+git -C "$partial_repo" add -- src/change.txt
+git -C "$partial_repo" commit -qm 'fix: deliver publishable work'
+git -C "$partial_repo" push -qu origin feat/partial
+partial_sha=$(git -C "$partial_repo" rev-parse HEAD)
+printf 'operator edit\n' >"$partial_repo/secrets/one.conf"
+printf 'second operator edit\n' >"$partial_repo/secrets/two.conf"
+printf 'comma operator edit\n' >"$partial_repo/secrets/with,comma.conf"
+printf 'backslash operator edit\n' >"$partial_repo/secrets/with\\slash.conf"
+partial_handback="$tmp/partial.handback"
+partial_blockers="$partial_repo/.agent/logs/partial-blockers.list"
+cat >"$partial_handback" <<EOF
+BLOCKED: class=other remaining-step=human-review-and-commit secrets/one.conf,secrets/two.conf evidence=$partial_log
+branch: feat/partial
+pushed SHA: $partial_sha
+green verification log path: $partial_log
+EOF
+
+partial_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback" --blocker-file "$partial_blockers"
+)
+assert_eq 'disposition=partial-pushed pr=open blocker-file=written verification=unbound' \
+    "$partial_output" \
+    'BLOCKED with a pushed SHA and green log is classified as partial-pushed'
+assert_eq 'secrets/one.conf
+secrets/two.conf
+secrets/with,comma.conf
+secrets/with\slash.conf' "$(tr '\0' '\n' <"$partial_blockers")" \
+    'classification writes exact NUL-delimited blocker paths, including commas and backslashes'
+assert_contains "$partial_output" 'verification=unbound' \
+    'an unrelated rc0-shaped log is disclosed rather than attributed to the pushed tree'
+
+printf 'ordinary dirty path\n' >"$partial_repo/src/unprotected.txt"
+unprotected_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$unprotected_output" 'disposition=blocked pr=none' \
+    'excluding the blocker output does not hide another unprotected dirty path'
+rm -- "$partial_repo/src/unprotected.txt"
+
+git --git-dir="$partial_origin" update-ref -d refs/heads/feat/partial
+deleted_remote_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$deleted_remote_output" 'disposition=blocked pr=none' \
+    'a stale local tracking ref cannot prove a deleted remote branch is pushed'
+git -C "$partial_repo" push -qu origin feat/partial
+
+git -C "$partial_repo" add -- secrets/one.conf
+staged_blocker_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$staged_blocker_output" 'disposition=blocked pr=none' \
+    'a staged protected path is not classified as modified-but-unstaged delivery'
+git -C "$partial_repo" reset -q -- secrets/one.conf
+
+printf 'local only\n' >"$partial_repo/src/change.txt"
+git -C "$partial_repo" add -- src/change.txt
+git -C "$partial_repo" commit -qm 'fix: retain local-only work'
+unpushed_sha=$(git -C "$partial_repo" rev-parse HEAD)
+unpushed_handback="$tmp/unpushed.handback"
+cat >"$unpushed_handback" <<EOF
+BLOCKED: class=other remaining-step=push commit evidence=$partial_log
+branch: feat/partial
+pushed SHA: $unpushed_sha
+green verification log path: $partial_log
+EOF
+unpushed_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$unpushed_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$unpushed_output" 'disposition=blocked pr=none' \
+    'a local HEAD absent from its upstream is not classified as pushed'
+
+git -C "$partial_repo" branch local-shadow
+git -C "$partial_repo" branch --set-upstream-to local-shadow feat/partial >/dev/null
+local_upstream_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$unpushed_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$local_upstream_output" 'disposition=blocked pr=none' \
+    'a matching local upstream is not evidence that the reported SHA was pushed'
+git -C "$partial_repo" branch --set-upstream-to origin/feat/partial feat/partial >/dev/null
+
+no_sha_handback="$tmp/no-sha.handback"
+cat >"$no_sha_handback" <<EOF
+BLOCKED: class=other remaining-step=commit publishable work evidence=$partial_log
+green verification log path: $partial_log
+EOF
+no_sha_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$no_sha_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$no_sha_output" 'disposition=blocked pr=none' \
+    'BLOCKED without a pushed SHA does not open a PR'
+
 schema_two_plan="$tmp/schema-two-plan.json"
 jq '.schemaVersion = 2 |
     .generatedAt = "2026-08-24T12:00:00Z" |
@@ -395,7 +516,7 @@ assert_not_contains "$(cat -- "$tmp/blank-model.err")" 'Traceback' \
 
 # --help/-h must be classified as a usage request, not an invalid handback:
 # the wrapper intercepts them before exec'ing into the Python argv parser.
-usage_text='usage: validate-handback.sh --worktree PATH --handback-file FILE --issue N --dispatch-plan FILE'
+usage_text='usage: validate-handback.sh [--classify-completion --blocker-file FILE] --worktree PATH --handback-file FILE [--issue N --dispatch-plan FILE]'
 long_help_rc=0
 "$script" --help >"$tmp/long-help.out" 2>"$tmp/long-help.err" || long_help_rc=$?
 assert_eq '0' "$long_help_rc" '--help exits 0'

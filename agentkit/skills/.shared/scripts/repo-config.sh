@@ -36,6 +36,29 @@ die_usage() {
     exit 2
 }
 
+usage() {
+    cat <<'EOF'
+Usage: repo-config.sh [--repo-root DIR] (--export | --get KEY | --get-argv KEY | --list | --list-keys | --list-adversarial-efforts | --diagnose | --canonical-keys K1,K2 | --resolve KEY ... | --validate | --model-family ID)
+
+Recipe: establish repository facts
+  set -euo pipefail
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  repository_root=$contract_root
+  resolver="$agentkit/.shared/scripts/repo-config.sh"
+  [[ -x $resolver ]] && eval "$("$resolver" --repo-root "$repository_root" --export)"
+  repository=${AGENT_REPO_SLUG:-}
+  [[ -n $repository ]] || repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get repo.slug) || exit 1
+  [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract' >&2; exit 1; }
+  base=${AGENT_BASE_BRANCH:-}
+  [[ -n $base ]] || base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) || exit 1
+  [[ $base != none ]] || { printf '%s\n' 'base=none in the environment contract' >&2; exit 1; }
+  IFS=/ read -r owner repository_name <<< "$repository"
+  printf 'repository_root=%s\nrepository=%s\nowner=%s\nrepository_name=%s\nbase=%s\n' \
+      "$repository_root" "$repository" "$owner" "$repository_name" "$base"
+EOF
+}
+
 readonly ACCEPTED_KEYS=(
     AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_OWNER AGENT_PROJECT_NUMBER
     AGENT_STATUS_VOCAB AGENT_ADR_DIR AGENT_BRANCH_PREFIXES AGENT_WORKTREE_ROOT
@@ -175,7 +198,7 @@ while (($#)); do
             repo_root=$1
             repo_root_explicit=1
             ;;
-        -h | --help) die_usage 'help requested' ;;
+        -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
     shift

@@ -51,6 +51,22 @@ assert_contains "$missing_output" 'missing-plain.md' \
 assert_contains "$missing_output" 'missing-reference.md' \
     'the lint names the missing reference path'
 
+printf '%s\n' \
+    '---' \
+    'name: demo' \
+    'description: Use when testing a wrong helper subpath.' \
+    '---' \
+    'Run `$agentkit/.shared/scripts/named-active-state.sh`.' \
+    > "$fixture/demo/SKILL.md"
+mkdir -p "$fixture/parallel-issues/scripts"
+touch "$fixture/parallel-issues/scripts/named-active-state.sh"
+wrong_subpath_output=''
+wrong_subpath_rc=0
+wrong_subpath_output=$("$lint" "$fixture" 2>&1) || wrong_subpath_rc=$?
+assert_eq 1 "$wrong_subpath_rc" 'a real helper at the wrong documented subpath fails the lint'
+assert_contains "$wrong_subpath_output" '.shared/scripts/named-active-state.sh' \
+    'the helper-reference lint names the wrong prose subpath'
+
 printf '%s\n' 'incorrect placement' > "$fixture/.shared/misplaced.sh"
 chmod +x -- "$fixture/.shared/misplaced.sh"
 placement_output=''

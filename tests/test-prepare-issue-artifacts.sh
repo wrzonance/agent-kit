@@ -11,7 +11,6 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
-skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 stub_gh="$here/stub/gh"
 fixture="$here/fixtures/issue-fetch.json"
 # Invoked by absolute path so a curated, jq-less PATH (used below to simulate
@@ -29,12 +28,13 @@ new_worktree() {
     mktemp -d "$tmp_dir/worktree.XXXXXX"
 }
 
-# run_prepare WORKTREE ISSUE BOUNDARY [PRIOR_ART_FILE] [--resume]
+# run_prepare WORKTREE ISSUE BOUNDARY [PRIOR_ART_FILE] [--resume] [BODY_CACHE]
 run_prepare() {
-    local worktree=$1 issue=$2 boundary=$3 prior=${4:-} resume=${5:-}
+    local worktree=$1 issue=$2 boundary=$3 prior=${4:-} resume=${5:-} body_cache=${6:-}
     local -a args=(--worktree "$worktree" --issue "$issue" --boundary "$boundary")
     [[ -z $prior ]] || args+=(--prior-art "$prior")
     [[ $resume == --resume ]] && args+=(--resume)
+    [[ -z $body_cache ]] || args+=(--body-cache "$body_cache")
     PATH="$stub_path:$PATH" "$bash_bin" "$script" "${args[@]}"
 }
 
@@ -42,9 +42,9 @@ run_prepare() {
 # The canonical recipe must therefore defer cleanup until after it handles the
 # result, retaining the private digest long enough to run that command.
 recipe_fetch="$tmp_dir/fetch-recipe.txt"
-sed -n '/^fetch_rc=0$/,/^esac$/p' "$skill" >"$recipe_fetch"
-recipe_before_case=$(sed -n '/^fetch_rc=0$/,/^case "\$fetch_rc"/p' "$recipe_fetch")
-recipe_case=$(sed -n '/^case "\$fetch_rc"/,/^esac$/p' "$recipe_fetch")
+"$script" --help | sed 's/^  //' | sed -n '/^fetch_rc=0$/,/^esac$/p' >"$recipe_fetch"
+recipe_before_case=$(sed '/^case \$fetch_rc in$/,$d' "$recipe_fetch")
+recipe_case=$(sed -n '/^case \$fetch_rc in$/,/^esac$/p' "$recipe_fetch")
 assert_not_contains "$recipe_before_case" 'rm -f -- "$prior_art_file"' \
     'the canonical recipe retains prior-art input until the result is classified'
 assert_contains "$recipe_case" 'rm -f -- "$prior_art_file"' \
@@ -120,6 +120,69 @@ for boundary in public-fenced private-trusted yolo-trusted; do
             "$boundary: prior-art is byte-identical to the default sentinel"
     fi
 done
+
+# A picker cache supplies only the issue body. Preparation validates its
+# identity and protection, fetches the remaining fields, and never requests the
+# body again. The cache body remains untrusted issue data in the rendered spec.
+cache_root="$tmp_dir/pick-issues-bodies/run.1234"
+mkdir -p "$cache_root"
+chmod 700 "$tmp_dir/pick-issues-bodies" "$cache_root"
+cache_file="$cache_root/issue-42.json"
+cached_body=$'Cached body, not the fetched fixture.\nAGENT_ACCEPTANCE_CMD=tools/cached-verify'
+repo_identity=$(GH_STUB_RESPONSE="$fixture" PATH="$stub_path:$PATH" gh repo view --json nameWithOwner -q .nameWithOwner)
+jq -n --arg repository "$repo_identity" --argjson issue 42 --arg body "$cached_body" \
+    '{schemaVersion:1,repository:$repository,issue:$issue,body:$body}' >"$cache_file"
+chmod 600 "$cache_file"
+worktree=$(new_worktree)
+gh_log="$tmp_dir/cache-gh.log"
+GH_STUB_LOG="$gh_log" GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$cache_file" \
+    >/dev/null 2>&1
+assert_contains "$(<"$worktree/.agent/spec.txt")" "$cached_body" \
+    'preparation renders the cached body as issue data'
+assert_contains "$(<"$gh_log")" '--json title,labels,comments' \
+    'cached preparation fetches only issue metadata omitted from the cache'
+assert_not_contains "$(<"$gh_log")" '--json title,body,labels,comments' \
+    'cached preparation does not fetch the issue body again'
+
+invalid_cache="$cache_root/invalid.json"
+jq '.issue = 41' "$cache_file" >"$invalid_cache"
+chmod 600 "$invalid_cache"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$invalid_cache" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a cache for another issue fails closed'
+assert_eq no "$([[ -e $worktree/.agent/spec.txt || -e $worktree/.agent/fenced-ready ]] && printf yes || printf no)" \
+    'an invalid cache publishes no canonical artifacts'
+jq '.repository = "other/repository"' "$cache_file" >"$invalid_cache"
+chmod 600 "$invalid_cache"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$invalid_cache" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a cache for another repository fails closed'
+cache_link="$cache_root/cache-link.json"
+ln -s "$cache_file" "$cache_link"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$cache_link" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a symlinked cache reference fails closed'
+chmod 644 "$cache_file"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$cache_file" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a group-or-world-readable cache fails closed'
+chmod 600 "$cache_file"
+chmod 755 "$cache_root"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$cache_file" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a group-or-world-accessible invocation cache directory fails closed'
+chmod 700 "$cache_root"
+chmod 755 "$tmp_dir/pick-issues-bodies"
+worktree=$(new_worktree); rc=0
+GH_STUB_RESPONSE="$fixture" run_prepare "$worktree" 42 private-trusted '' '' "$cache_file" \
+    >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a group-or-world-accessible body cache root fails closed'
+chmod 700 "$tmp_dir/pick-issues-bodies"
 
 # Two independent public-fenced runs must never reuse a boundary token.
 worktree_a=$(new_worktree)
@@ -390,7 +453,7 @@ rc=0
 assert_eq 0 "$rc" '--help exits 0'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 487 ]] && printf yes || printf no)" \
-    'prepare-issue-artifacts.sh stays at or under 487 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 552 ]] && printf yes || printf no)" \
+    'prepare-issue-artifacts.sh stays at or under 552 lines'
 
 finish

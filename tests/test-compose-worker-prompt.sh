@@ -2,6 +2,10 @@
 # Suite: compose-worker-prompt.sh fills both worker templates from repository facts.
 set -uo pipefail
 
+# Fixtures below declare Codex-shaped contracts; do not infer their harness
+# from the developer machine or CI runner. Dedicated mismatch cases override it.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
+
 TEST_NAME='compose-worker-prompt'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
@@ -62,6 +66,10 @@ make_repo() {
         'AGENT_CMD_TEST_FOCUS=tools/focused-test --only %s' \
         > "$dir/.agent/config.env"
     printf '%s\n' "$contract" > "$dir/.agent/env-contract.txt"
+    if ! grep -q '^tools=' "$dir/.agent/env-contract.txt"; then
+        printf "%s\n" "tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'" \
+            >> "$dir/.agent/env-contract.txt"
+    fi
     # Both the public-fenced names and the mode-neutral private/yolo names are
     # seeded so a single fixture repo can drive a composer call in any mode.
     printf '%s\n' "SPEC-BYTES \$(must-stay-literal)" > "$dir/.agent/fenced-spec.txt"
@@ -70,7 +78,7 @@ make_repo() {
     printf '%s\n' 'TRUSTED-PRIOR-BYTES' > "$dir/.agent/prior-art.txt"
 }
 
-contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"'
+contract=$'skills= path='"$root"$'/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\nyield-cap= ms=27000 source=measured harness=codex'
 repo="$tmp/repo with spaces"
 make_repo "$repo" "$contract"
 
@@ -112,16 +120,116 @@ assert_not_contains "$neutral_prompt" "$tmp" 'the path-neutral prompt carries no
 assert_not_contains "$neutral_prompt" "$root" 'the path-neutral prompt carries no checkout path'
 # #612 adds paired formatting and conditional full-log guidance (298 bytes).
 # #729 adds the structured artifact and explicit unknown-evidence fallback.
-assert_eq yes "$([[ ${#neutral_prompt} -le 19700 ]] && printf yes || printf no)" \
-    "issue-lead prompt stays at or under 19700 path-neutral bytes (measured ${#neutral_prompt})"
+# The contract's yield-cap record adds a measured/default fact to every prompt.
+assert_eq yes "$([[ ${#neutral_prompt} -le 19760 ]] && printf yes || printf no)" \
+    "issue-lead prompt stays at or under 19760 path-neutral bytes (measured ${#neutral_prompt})"
 assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the paired formatter fix'
 assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
 assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
-assert_contains "$prompt" 'when the summary is insufficient' 'full log reads depend on summary sufficiency'
+assert_contains "$prompt" 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=27000 resume=write_stdin("",27000) read=once-at-marker' \
+    'composed worker runbook binds verification, the measured cap, one resume shape, and one terminal read'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
     'issue-lead prompt requires the exact remaining step on a blocker'
+expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
+assert_contains "$prompt" "$expected_tools_line" \
+    'issue-lead prompt carries the validated runtime-tool mapping verbatim'
+
+keyed_only_repo="$tmp/keyed-only-tools"
+make_repo "$keyed_only_repo" "$contract"
+mv "$keyed_only_repo/.agent/env-contract.txt" \
+    "$keyed_only_repo/.agent/env-contract.codex.txt"
+keyed_only_prompt=$(CONTRACT_CACHE_HARNESS_NAME_MEMO=codex bash "$compose" \
+    --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$keyed_only_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$keyed_only_prompt" "$expected_tools_line" \
+    'composer validates a keyed-only current-harness contract'
+
+fresh_keyed_repo="$tmp/fresh-keyed-tools"
+make_repo "$fresh_keyed_repo" "$contract"
+cp "$fresh_keyed_repo/.agent/env-contract.txt" \
+    "$fresh_keyed_repo/.agent/env-contract.codex.txt"
+sed -i '/^tools=/d' "$fresh_keyed_repo/.agent/env-contract.txt"
+fresh_keyed_prompt=$(CONTRACT_CACHE_HARNESS_NAME_MEMO=codex bash "$compose" \
+    --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$fresh_keyed_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$fresh_keyed_prompt" "$expected_tools_line" \
+    'composer prefers the fresh current-harness contract over stale generic metadata'
+
+missing_tools_repo="$tmp/missing-tools"
+make_repo "$missing_tools_repo" "$contract"
+sed -i '/^tools=/d' "$missing_tools_repo/.agent/env-contract.txt"
+missing_tools_rc=0
+missing_tools_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$missing_tools_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || missing_tools_rc=$?
+assert_eq 1 "$missing_tools_rc" 'composer refuses a contract with no runtime-tool mapping'
+assert_contains "$missing_tools_err" 'missing tools= record' \
+    'the missing runtime-tool refusal names the absent contract record'
+assert_contains "$missing_tools_err" \
+    "recovery: $root/agentkit/skills/.shared/scripts/agent-preflight.sh --worktree $missing_tools_repo --ensure" \
+    'the missing runtime-tool refusal gives the exact cache-upgrade command'
+
+keyed_recovery_repo="$tmp/keyed-tools-recovery"
+make_repo "$keyed_recovery_repo" "$contract"
+cp "$keyed_recovery_repo/.agent/env-contract.txt" \
+    "$keyed_recovery_repo/.agent/env-contract.codex.txt"
+sed -i '/^tools=/d' "$keyed_recovery_repo/.agent/env-contract.codex.txt"
+sed -i '/^tools=/d' "$keyed_recovery_repo/.agent/env-contract.txt"
+keyed_recovery_rc=0
+CONTRACT_CACHE_HARNESS_NAME_MEMO=codex bash "$compose" \
+    --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$keyed_recovery_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high >/dev/null 2>&1 || keyed_recovery_rc=$?
+assert_eq 1 "$keyed_recovery_rc" \
+    'composer initially refuses a current-harness contract missing runtime tools'
+env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
+    "$root/agentkit/skills/.shared/scripts/agent-preflight.sh" \
+    --worktree "$keyed_recovery_repo" --ensure >/dev/null
+keyed_recovered_prompt=$(CONTRACT_CACHE_HARNESS_NAME_MEMO=codex bash "$compose" \
+    --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$keyed_recovery_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high)
+assert_contains "$keyed_recovered_prompt" "$expected_tools_line" \
+    'the advertised preflight recovery repairs the same keyed contract the composer validates'
+
+malformed_tools_repo="$tmp/malformed-tools"
+make_repo "$malformed_tools_repo" "$contract"
+sed -i "s|^tools=.*|tools= spawn=bad value wait=wait send=send list='list'|" \
+    "$malformed_tools_repo/.agent/env-contract.txt"
+malformed_tools_rc=0
+malformed_tools_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$malformed_tools_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || malformed_tools_rc=$?
+assert_eq 1 "$malformed_tools_rc" 'composer refuses malformed runtime-tool metadata'
+assert_contains "$malformed_tools_err" 'invalid tools= record' \
+    'the malformed runtime-tool refusal names the invalid record'
+assert_contains "$malformed_tools_err" \
+    "recovery: $root/agentkit/skills/.shared/scripts/agent-preflight.sh --worktree $malformed_tools_repo --ensure" \
+    'the malformed runtime-tool refusal gives the exact repair command'
+
+claude_tools_line="tools= spawn=Agent wait=TaskOutput send=SendMessage list='Agent,TaskOutput,SendMessage'"
+for detected_harness in codex claude; do
+    swapped_tools_repo="$tmp/swapped-$detected_harness-tools"
+    make_repo "$swapped_tools_repo" "$contract"
+    if [[ $detected_harness == codex ]]; then
+        sed -i "s|^tools=.*|$claude_tools_line|" "$swapped_tools_repo/.agent/env-contract.txt"
+    else
+        sed -i 's/^harness= name=codex /harness= name=claude /' "$swapped_tools_repo/.agent/env-contract.txt"
+    fi
+    swapped_tools_rc=0
+    swapped_tools_err=$(CONTRACT_CACHE_HARNESS_NAME_MEMO=$detected_harness bash "$compose" \
+        --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$swapped_tools_repo" --issue 136 --branch feat/issue-136 \
+        --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || swapped_tools_rc=$?
+    assert_eq 1 "$swapped_tools_rc" \
+        "composer refuses the other harness's mapping under detected $detected_harness"
+    assert_contains "$swapped_tools_err" 'invalid tools= record' \
+        "the swapped $detected_harness mapping refusal names the invalid tools record"
+done
 
 compose_verification_report() {
     local fixture=$1 spec_body=$2 dispatch_plan=${3:-} output_file
@@ -136,6 +244,7 @@ compose_verification_report() {
 }
 
 expected_wait_bound_line="wait-bound= issue=136 seconds=$expected_wait_bound_seconds class=worker"
+expected_yield_cap_line='yield-cap= ms=27000 source=measured harness=codex'
 
 # Acceptance declarations are extracted from the issue artifact at the same
 # boundary as verification steps, including fenced commands and the explicit
@@ -178,9 +287,26 @@ assert_eq \
     "acceptance=tools/verify
 acceptance=tools/full-test
 spec-verification= issue=136 steps=2 covered=2 uncovered=0 uncovered-steps=none coverage=2/2 classification=fully-covered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$fully_covered_report" \
     'fully covered verification reports its ratio and classification, and its wait bound'
+
+no_steps_report=$(compose_verification_report no-verification-steps \
+    $'## Verification\nNo executable verification steps are declared.\n')
+assert_not_contains "$no_steps_report" 'spec-verification=' \
+    'zero verification steps emit no empty spec-verification machine line'
+# Matching literal shell source in the runbook.
+# shellcheck disable=SC2016
+dispatch_consumer=$(grep -F -m1 'spec_verification=$(printf' \
+    "$root/agentkit/skills/parallel-issues/SKILL.md")
+zero_step_consumer_rc=0
+zero_step_consumed=$(bash -c "compose_output=\$1; $dispatch_consumer; printf '%s' \"\$spec_verification\"" \
+    _ "$no_steps_report") || zero_step_consumer_rc=$?
+assert_eq 0 "$zero_step_consumer_rc" \
+    'zero-step composer output passes the exact dispatch consumer contract'
+assert_eq '' "$zero_step_consumed" \
+    'dispatch consumer preserves the zero-step report as absent'
 
 partially_covered_report=$(compose_verification_report partially-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
@@ -189,7 +315,8 @@ assert_eq \
 acceptance=tools/full-test
 acceptance=tools/not-declared
 spec-verification= issue=136 steps=3 covered=2 uncovered=1 uncovered-steps=3 coverage=2/3 classification=partially-covered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$partially_covered_report" \
     'partially covered verification reports its ratio and classification, and its wait bound'
 
@@ -200,7 +327,8 @@ assert_eq \
 acceptance=tools/not-declared
 acceptance=tools/also-not-declared
 spec-verification= issue=136 steps=3 covered=1 uncovered=2 uncovered-steps=2,3 coverage=1/3 classification=majority-uncovered
-$expected_wait_bound_line" \
+$expected_wait_bound_line
+$expected_yield_cap_line" \
     "$majority_uncovered_report" \
     'majority-uncovered verification is distinguishable at a glance, and its wait bound is still reported'
 
@@ -465,6 +593,8 @@ fix_batch_digest=$(bash "$compose" --template fix-batch --worktree "$repo" \
     --output "$tmp/fix-batch-wait.md")
 assert_contains "$fix_batch_digest" "$expected_wait_bound_line" \
     'fix-batch dispatch also emits a per-worker wait bound at composition time'
+assert_contains "$fix_batch_digest" "$expected_yield_cap_line" \
+    'fix-batch dispatch also emits the measured runtime yield cap without changing it'
 
 # Issue #495: setup and mutation are separate templates. Setup is the
 # read-only state/triage phase and must expose terminal handoff markers; a
@@ -913,7 +1043,7 @@ make_widen_worktree() {
         'AGENT_BASE_BRANCH=develop' \
         'AGENT_CMD_TEST=tools/full-test' \
         > "$worktree/.agent/config.env"
-    printf 'skills= path=%s/agentkit/skills\n%s\n' "$root_path" "$sandbox_line" \
+    printf "skills= path=%s/agentkit/skills\n%s\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" "$root_path" "$sandbox_line" \
         > "$worktree/.agent/env-contract.txt"
     printf 'SPEC-BYTES\n' > "$worktree/.agent/fenced-spec.txt"
     printf 'PRIOR-BYTES\n' > "$worktree/.agent/fenced-prior-art.txt"
@@ -1093,7 +1223,7 @@ printf '%s\n' \
     'AGENT_BASE_BRANCH=develop' \
     'AGENT_CMD_TEST=tools/full-test' \
     > "$yolo_only_repo/.agent/config.env"
-printf 'skills= path=%s/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
     "$root" > "$yolo_only_repo/.agent/env-contract.txt"
 printf 'TRUSTED-SPEC-BYTES\n' > "$yolo_only_repo/.agent/spec.txt"
 printf 'TRUSTED-PRIOR-BYTES\n' > "$yolo_only_repo/.agent/prior-art.txt"
@@ -1206,15 +1336,23 @@ assert_contains "$ledger_partial_err" 'given together' \
 
 # A worker that still asks for approval after a yolo dispatch is a resumable
 # authorization handoff, not a successful completion or a new user question.
-worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
-assert_contains "$(<"$worker_prompts")" 'needs-authorization' \
+implementation_worker="$root/agentkit/skills/parallel-issues/references/implementation-worker.md"
+assert_contains "$(<"$implementation_worker")" 'needs-authorization' \
     'Collect names the authorization-question completion class'
-assert_contains "$(<"$worker_prompts")" 'reply yes' \
+assert_contains "$(<"$implementation_worker")" 'reply yes' \
     'Collect detects the reply-yes completion shape'
-assert_contains "$(<"$worker_prompts")" 'followup_task' \
+assert_contains "$(<"$implementation_worker")" 'followup_task' \
     'Collect resumes the same worker through followup_task'
-assert_contains "$(<"$worker_prompts")" 'exactly once' \
+assert_contains "$(<"$implementation_worker")" 'exactly once' \
     'Collect limits automatic authorization resumption to one attempt'
+assert_contains "$(<"$implementation_worker")" 'May I proceed with the protected write?' \
+    'Collect recognizes a direct approval question as an authorization handoff'
+assert_contains "$(<"$implementation_worker")" 'Reply yes to authorize the deployment.' \
+    'Collect recognizes an explicit reply-yes approval instruction'
+assert_contains "$(<"$implementation_worker")" 'Would you like a summary?' \
+    'Collect keeps an unrelated completion question out of the authorization class'
+assert_contains "$(<"$implementation_worker")" 'The log says "reply yes".' \
+    'Collect keeps a quoted reply-yes phrase out of the authorization class'
 
 # --- three-hop integration: select-boundary-mode.sh -> prepare-issue-artifacts.sh
 # -> compose-worker-prompt.sh, per mode, asserting the mode survives all three
@@ -1246,7 +1384,7 @@ if [[ -x "$selector" && -x "$preparer" && -x "$stub_gh" && -f "$fixture" ]]; the
             'AGENT_BASE_BRANCH=develop' \
             'AGENT_CMD_TEST=tools/full-test' \
             > "$pipeline_worktree/.agent/config.env"
-        printf 'skills= path=%s/agentkit/skills\nharness= name=codex trailer="Codex <noreply@openai.com>"\n' \
+        printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
             "$root" > "$pipeline_worktree/.agent/env-contract.txt"
 
         GH_STUB_RESPONSE="$fixture" PATH="$integration_stub_path:$PATH" \

@@ -20,18 +20,23 @@ SKILLS_PATH=''
 PROCEDURE_SET=''
 DECISION=''
 SCOPE=''
+FLAGS=''
+REPO=''
+BASE=''
 QUOTE=''
 QUOTE_FILE=''
+QUOTE_STDIN=0
 TIMESTAMP=''
 LOCK_FD=''
 
 usage() {
-    cat <<EOF
+    cat <<'EOF'
 Usage:
-  $PROGRAM append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
-    --decision TEXT --scope TEXT (--quote TEXT | --quote-file PATH) [--timestamp UTC]
-  $PROGRAM read --ledger FILE --run-id ID
-  $PROGRAM covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
+  session-ledger.sh append --ledger FILE --run-id ID --skills-path PATH --procedure-set NAME \
+    --decision TEXT --scope TEXT (--quote TEXT | --quote-file PATH | --quote-stdin) [--timestamp UTC]
+  session-ledger.sh read --ledger FILE --run-id ID
+  session-ledger.sh covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
+  session-ledger.sh run-id --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH
 
 append writes one validated, owner-private NDJSON decision record. read validates
 the complete ledger and emits only records for the requested run ID. covers exits 0
@@ -40,14 +45,31 @@ scope -- the once-per-run authorization check -- and exits 1 when nothing does,
 so a caller stops instead of silently proceeding. Both are mandatory: a
 decision token alone must never satisfy a narrower recorded grant.
 
---quote and --quote-file are mutually exclusive; exactly one is required for
-append. --quote-file reads the named file's bytes exactly as supplied -- no
+The run-id command canonicalizes scope and flag CSVs before hashing the full
+procedure/scope/flags/repository/base tuple. CSV order and duplicates do not
+change the result.
+
+--quote, --quote-file, and --quote-stdin are mutually exclusive; exactly one
+is required for append. File and stdin input are read exactly as supplied -- no
 interpolation, no reflow -- except that a carriage return is stripped (a
 CRLF or bare-CR grant is normalized to LF; see below), which is the
 fidelity-preserving path for a multi-line human grant. --quote itself also
 accepts embedded newlines, under the same carriage-return normalization. A
 quote file containing a NUL byte is refused rather than silently truncated.
 --decision and --scope must remain single-line tokens.
+
+Recipe: establish and reuse one run ID
+  issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
+  invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
+  LEDGER="$repository_root/.agent/session-ledger.ndjson"
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
+  RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues --scope "$issue_scope" \
+    --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
+  printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" \
+    --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1
+  "$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" \
+    --decision "$DECISION" --scope "$SCOPE" || exit 1
+  "$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"
 EOF
 }
 
@@ -133,6 +155,36 @@ parse_options() {
                 SCOPE=${1#*=}
                 shift
                 ;;
+            --flags)
+                require_value "$1" "${2:-}"
+                FLAGS=$2
+                shift 2
+                ;;
+            --flags=*)
+                require_value '--flags' "${1#*=}"
+                FLAGS=${1#*=}
+                shift
+                ;;
+            --repo)
+                require_value "$1" "${2:-}"
+                REPO=$2
+                shift 2
+                ;;
+            --repo=*)
+                require_value '--repo' "${1#*=}"
+                REPO=${1#*=}
+                shift
+                ;;
+            --base)
+                require_value "$1" "${2:-}"
+                BASE=$2
+                shift 2
+                ;;
+            --base=*)
+                require_value '--base' "${1#*=}"
+                BASE=${1#*=}
+                shift
+                ;;
             --quote)
                 require_value "$1" "${2:-}"
                 QUOTE=$2
@@ -151,6 +203,10 @@ parse_options() {
             --quote-file=*)
                 require_value '--quote-file' "${1#*=}"
                 QUOTE_FILE=${1#*=}
+                shift
+                ;;
+            --quote-stdin)
+                QUOTE_STDIN=1
                 shift
                 ;;
             --timestamp)
@@ -176,7 +232,7 @@ parse_options() {
 
 require_commands() {
     local command
-    for command in date dirname flock jq mktemp readlink stat; do
+    for command in date dirname flock jq readlink sha256sum stat; do
         command -v "$command" >/dev/null 2>&1 ||
             die_evidence "$command is not installed; session ledger unavailable"
     done
@@ -184,6 +240,15 @@ require_commands() {
 
 validate_text() {
     local name=$1 value=$2 allow_multiline=${3:-single} normalized_value normalized_secret_re
+    validate_identity_text "$name" "$value" "$allow_multiline"
+    normalized_value=${value,,}
+    normalized_secret_re=${SECRET_RE,,}
+    [[ ! $normalized_value =~ $normalized_secret_re ]] ||
+        die_usage "$name resembles a secret; do not record credential material"
+}
+
+validate_identity_text() {
+    local name=$1 value=$2 allow_multiline=${3:-single}
     [[ -n $value ]] || die_usage "$name must be non-empty"
     ((${#value} <= MAX_TEXT_LENGTH)) ||
         die_usage "$name is too long (maximum $MAX_TEXT_LENGTH characters)"
@@ -191,30 +256,8 @@ validate_text() {
         [[ $value != *$'\n'* && $value != *$'\r'* ]] ||
             die_usage "$name must be a single line"
     fi
-    # The existing-record validator is case-insensitive; normalize both sides
-    # here so an uppercase credential label cannot be written and permanently
-    # poison the ledger before the replay-side check sees it.
-    normalized_value=${value,,}
-    normalized_secret_re=${SECRET_RE,,}
-    [[ ! $normalized_value =~ $normalized_secret_re ]] ||
-        die_usage "$name resembles a secret; do not record credential material"
 }
 
-# --quote-file reads a file's bytes exactly as supplied -- the fidelity-
-# preserving path for a multi-line human grant (matches the file-backed
-# transport discipline in .shared/github-body-policy.md) -- except that
-# strip_carriage_returns (below) still normalizes a carriage return out of
-# the loaded text; that is the one intentional exception to "verbatim" and
-# it is documented, not silent. Command substitution alone strips trailing
-# newlines, so a sentinel byte is appended and stripped back off to preserve
-# the file's exact trailing bytes. A NUL byte cannot survive downstream: the
-# stored value is later passed to jq as a --arg, an argv value, and argv is a
-# NUL-terminated C string at the exec boundary, so anything past the first
-# NUL would be silently dropped there. A NUL-containing file is refused here
-# instead of being silently truncated/altered: a quote with a NUL byte is not
-# a human grant. The comparison reads the file through two independent
-# streams (process substitution, not a pipe) so shellcheck does not read this
-# as a same-file read/write conflict (SC2094) -- both sides only ever read.
 load_quote_file() {
     [[ -f $QUOTE_FILE && ! -L $QUOTE_FILE && -r $QUOTE_FILE && -O $QUOTE_FILE ]] ||
         die_usage "--quote-file must be an owned readable regular file: $QUOTE_FILE"
@@ -226,11 +269,12 @@ load_quote_file() {
     QUOTE=${content%x}
 }
 
-# A bare carriage return is a formatting artifact, not content, so it is
-# stripped before validation and storage rather than rejected outright --
-# this also normalizes a CRLF quote to LF without touching its wording. This
-# is the one respect in which stored text is not byte-identical to the
-# supplied --quote/--quote-file input: every other byte is preserved exactly.
+load_quote_stdin() {
+    if IFS= read -r -d '' QUOTE; then
+        die_usage '--quote-stdin contains a NUL byte and cannot be stored verbatim'
+    fi
+}
+
 strip_carriage_returns() {
     QUOTE=${QUOTE//$'\r'/}
 }
@@ -262,12 +306,16 @@ validate_append_inputs() {
     validate_text '--procedure-set' "$PROCEDURE_SET"
     validate_text '--decision' "$DECISION"
     validate_text '--scope' "$SCOPE"
-    if [[ -n $QUOTE && -n $QUOTE_FILE ]]; then
-        die_usage '--quote and --quote-file are mutually exclusive'
-    fi
-    [[ -n $QUOTE || -n $QUOTE_FILE ]] || die_usage '--quote or --quote-file is required'
+    local quote_sources=0
+    [[ -z $QUOTE ]] || quote_sources=$((quote_sources + 1))
+    [[ -z $QUOTE_FILE ]] || quote_sources=$((quote_sources + 1))
+    ((QUOTE_STDIN == 0)) || quote_sources=$((quote_sources + 1))
+    ((quote_sources <= 1)) || die_usage '--quote, --quote-file, and --quote-stdin are mutually exclusive'
+    ((quote_sources == 1)) || die_usage '--quote, --quote-file, or --quote-stdin is required'
     if [[ -n $QUOTE_FILE ]]; then
         load_quote_file
+    elif ((QUOTE_STDIN == 1)); then
+        load_quote_stdin
     fi
     strip_carriage_returns
     validate_text '--quote' "$QUOTE" multiline
@@ -277,6 +325,28 @@ validate_append_inputs() {
     fi
     [[ $TIMESTAMP =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
         die_usage '--timestamp must be UTC in YYYY-MM-DDTHH:MM:SSZ form'
+}
+
+print_run_id() {
+    local canonical digest prefix
+    validate_identity_text '--procedure-set' "$PROCEDURE_SET"
+    validate_identity_text '--scope' "$SCOPE"
+    [[ -z $FLAGS ]] || validate_identity_text '--flags' "$FLAGS"
+    validate_identity_text '--repo' "$REPO"
+    validate_identity_text '--base' "$BASE"
+    canonical=$(jq -cn --arg procedure_set "$PROCEDURE_SET" --arg scope "$SCOPE" \
+        --arg flags "$FLAGS" --arg repo "$REPO" --arg base "$BASE" '
+        def csv:
+          split(",") | map(gsub("^\\s+|\\s+$"; "")) |
+          if any(. == "") then error("empty CSV member") else unique end;
+        {version:1, procedure_set:$procedure_set, scope:($scope | csv),
+         flags:(if $flags == "" then [] else ($flags | csv) end), repo:$repo, base:$base}
+    ') || die_usage '--scope and --flags must contain comma-separated non-empty values'
+    digest=$(printf '%s' "$canonical" | sha256sum) || die_evidence 'could not hash canonical run identity'
+    digest=${digest%% *}
+    prefix=${PROCEDURE_SET//[^A-Za-z0-9._-]/-}
+    [[ $prefix =~ ^[A-Za-z0-9] ]] || prefix="run-$prefix"
+    printf '%s-%s\n' "${prefix:0:80}" "${digest:0:32}"
 }
 
 ledger_parent() {
@@ -304,11 +374,6 @@ prepare_parent() {
     parent=$(ledger_parent)
     if [[ ! -e $parent ]]; then
         secure_mkdir_p "$parent" || die_evidence "could not create ledger parent: $parent"
-        # Defensive: mkdir -m already bypasses umask, but this is the kit's
-        # own metadata directory and we just created it ourselves, so
-        # confirming (rather than trusting) its mode costs nothing and
-        # catches a platform where -m does not fully apply. A directory that
-        # pre-dates this call is never touched here -- see validate_parent.
         chmod 700 -- "$parent" || die_evidence "could not secure ledger parent: $parent"
     fi
     validate_parent "$parent"
@@ -348,8 +413,6 @@ ensure_ledger() {
         validate_ledger_file
         return 0
     fi
-    # noclobber makes first creation refuse a race or symlink instead of
-    # truncating a path selected by another process.
     if ! (set -o noclobber; : >"$LEDGER"); then
         die_evidence "could not create ledger without following a symlink: $LEDGER"
     fi
@@ -365,9 +428,6 @@ validate_existing_records() {
           and (test("[\\r\\n]") | not)
           and (test($secret_re; "i") | not)
         end;
-      # The quote field alone preserves a multi-line human grant verbatim; a
-      # bare carriage return is stripped before storage, so a stored quote
-      # must never contain one, but embedded newlines are expected.
       def safe_quote:
         if type != "string" then false
         else length > 0 and length <= 4096
@@ -395,12 +455,21 @@ validate_existing_records() {
 }
 
 append_record() {
-    local entry
+    local entry existing
     validate_append_inputs
     prepare_parent
     acquire_lock
     ensure_ledger
     validate_existing_records
+    existing=$(jq -sc --arg run_id "$RUN_ID" --arg decision "$DECISION" \
+        --arg scope "$SCOPE" --arg quote "$QUOTE" \
+        'first(.[] | select(.run_id == $run_id and .decision == $decision and .scope == $scope and .quote == $quote)) // empty' \
+        "$LEDGER") || die_evidence 'could not inspect ledger for a duplicate record'
+    if [[ -n $existing ]]; then
+        printf '%s\n' "$existing"
+        release_lock
+        return 0
+    fi
     entry=$(jq -cn --arg timestamp "$TIMESTAMP" --arg run_id "$RUN_ID" \
         --arg skills_path "$SKILLS_PATH" --arg procedure_set "$PROCEDURE_SET" \
         --arg decision "$DECISION" --arg scope "$SCOPE" --arg quote "$QUOTE" \
@@ -420,8 +489,6 @@ read_records() {
     [[ ! -L $parent ]] || die_evidence "ledger parent is a symlink: $parent"
     [[ -e $parent ]] || return 0
     validate_parent "$parent"
-    # Hold the same lock the append path uses so a read never observes a
-    # torn NDJSON line written mid-append.
     acquire_lock
     if [[ ! -e $LEDGER && ! -L $LEDGER ]]; then
         release_lock
@@ -437,15 +504,8 @@ covers_records() {
     local matches
     validate_inputs
     validate_text '--decision' "$DECISION"
-    # Scope is mandatory and compared exactly: an omitted scope acting as a
-    # wildcard would let a decision-only check reuse a narrowly recorded grant
-    # for a broader mutation. Every appended record carries a scope, so every
-    # check can name the one it needs.
     [[ -n $SCOPE ]] || die_usage '--scope is required for covers'
     validate_text '--scope' "$SCOPE"
-    # Reuse the read path's full validation and locking; its output is already
-    # limited to this run's records. An unreadable or invalid ledger fails
-    # closed as not-covered -- an authorization check never guesses.
     matches=$(read_records | jq -c --arg decision "$DECISION" --arg scope "$SCOPE" '
         select(.decision == $decision and .scope == $scope)') ||
         die_evidence "ledger is unreadable; treating the mutation as not covered: $LEDGER"
@@ -461,7 +521,7 @@ covers_records() {
 main() {
     require_commands
     case ${1:-} in
-        append|read|covers)
+        append|read|covers|run-id)
             COMMAND=$1
             parse_options "$@"
             ;;
@@ -470,7 +530,7 @@ main() {
             exit 0
             ;;
         '')
-            die_usage 'a subcommand is required: append, read, or covers'
+            die_usage 'a subcommand is required: append, read, covers, or run-id'
             ;;
         *)
             die_usage "unknown subcommand: ${1:-}"
@@ -481,6 +541,7 @@ main() {
         append) append_record ;;
         read) read_records ;;
         covers) covers_records ;;
+        run-id) print_run_id ;;
     esac
 }
 

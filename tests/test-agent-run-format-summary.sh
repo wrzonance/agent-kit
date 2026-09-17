@@ -100,6 +100,50 @@ printf 'AGENT_CMD_FORMAT=false\nAGENT_CMD_FORMAT_KIND=format\n' > "$repo/.agent/
 out=$("$run" --dir "$repo" --cmd format 2>&1)
 assert_contains "$out" '#724' 'formatter without pair routes to current config action'
 
+# --summary makes the final line sufficient to classify a completed run without
+# reading the growing log between runtime yields.
+printf 'AGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd test --summary 2>&1)
+terminal=$(tail -n1 <<< "$out")
+assert_contains "$terminal" 'agent-run-summary status=pass rc=0 duration_seconds=' \
+    'summary success terminal carries status, exit code, and duration'
+assert_contains "$terminal" ' log=' 'summary success terminal carries the retained log path'
+assert_not_contains "$out" 'tail it instead of waiting blind' \
+    'summary mode does not invite intermediate log reads'
+
+printf 'AGENT_CMD_LINT=true\nAGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --force --summary --cmd lint --cmd test 2>&1)
+assert_eq 0 "$?" 'summary command chain preserves a successful final status'
+assert_eq 1 "$(grep -c '^agent-run-summary ' <<< "$out")" \
+    'summary command chain emits one terminal marker after its final link'
+assert_contains "$(tail -n1 <<< "$out")" 'agent-run-summary status=pass rc=0' \
+    'summary command chain ends with its single final marker'
+
+printf 'AGENT_CMD_TEST=false\n' > "$repo/.agent/config.env"
+summary_tmp="$tmp/summary-tmp"
+mkdir -p "$summary_tmp"
+out=$(TMPDIR="$summary_tmp" "$run" --dir "$repo" --cmd test --summary 2>&1)
+assert_eq 1 "$?" 'summary failure preserves the command status'
+terminal=$(tail -n1 <<< "$out")
+assert_contains "$terminal" 'agent-run-summary status=fail rc=1 duration_seconds=' \
+    'summary failure terminal carries status, exit code, and duration'
+assert_contains "$terminal" ' log=' 'summary failure terminal carries the retained log path'
+assert_contains "$out" 'failure-v1 class=test-failure' \
+    'summary failure preserves the typed failure record before its terminal marker'
+assert_eq 0 "$(find "$summary_tmp" -type f -name 'agent-run.*' | wc -l | tr -d ' ')" \
+    'summary test failure cleans its active-suite marker through the exit handler'
+
+printf 'AGENT_CMD_FORMAT=false\nAGENT_CMD_FORMAT_KIND=format\nAGENT_CMD_FORMAT_FIX=true\n' > "$repo/.agent/config.env"
+out=$("$run" --dir "$repo" --cmd format --summary 2>&1)
+assert_eq 1 "$?" 'formatter summary failure preserves the command status'
+terminal=$(tail -n1 <<< "$out")
+assert_contains "$out" 'failure-v1 class=formatter-failure' \
+    'formatter summary failure retains its typed classifier'
+assert_contains "$out" 'next_action=agent-run.sh' \
+    'formatter summary failure retains the declared fix action'
+assert_contains "$terminal" 'agent-run-summary status=fail rc=1 duration_seconds=' \
+    'formatter summary remains the terminal line after typed failure evidence'
+
 # Optional fix absence must skip before fallback and preserve the next link.
 for check_declared in no yes; do
     for runner_declared in no yes; do

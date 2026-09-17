@@ -27,10 +27,13 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 # Exact measured body sizes; ratchet history lives in `git blame`, not here.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    # #727: open obligations and terminal evidence in the canonical recipe.
-    [review-remote-pr]="474:8289:450"
-    # #729: root collection validates structured results and preserves obligations.
-    [parallel-issues]="960:18351:900"
+    # #785: durable bare-review defaulting after the helper-owned recipe split.
+    [review-remote-pr]="473:8411:450"
+    # #777: helper-owned recipes shrink the injected body toward the standard budget.
+    # #779: retain destination-adjacent plan publication in the extracted body.
+    # #783 + #785: atomic summary producers with durable sweep rehydration.
+    # #784 final parent integration extends the durable dispatch recipe.
+    [parallel-issues]="752:15829:500"
 )
 
 readonly MAX_BODY_LINES=500

@@ -406,13 +406,19 @@ smuggle a worker into that reservation. The completion table's `worker=<model> <
 actually ran. Root design review and adversarial review keep their own effort settings
 regardless of any entry here.
 
-Write-set intersection checks always add shared root files by default, even
-when an issue body does not mention them: build configuration, lockfiles, and
-generated contracts (including the repository's equivalent names and globs).
-The resulting paths belong in each affected `predictedWriteSet`; they are not
-optional cleanup. Record the conflict pairs and their overlap globs in
-`conflictMap.pairs` before selection is finalized. `write-merge-plan.sh --validate-only` enforces the
-manifest → lockfile → CI-sibling part; `--fix` applies it.
+Use the body-free `predictedWriteSet` in `pick-issues.sh` output, seeded by:
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+printf '%s' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -
+```
+
+Do not rerun that helper during conflict analysis. Expand the emitted paths from the issue's code
+impact to include affected shared build config, lockfiles, and generated contracts, plus other
+code-implied paths even when the issue does not name them.
+Record overlaps in `conflictMap.pairs` and let `write-merge-plan.sh
+--validate-only` supply required manifest companions; extraction is a seed for
+code-aware conflict analysis, not a substitute for it.
 
 `AGENT_GENERATED_PATHS` (declared once in `.agent/config.env`) feeds both this write-set check and
 `gh-pr-state.sh`'s staleness exemption (a base advance confined to those paths reports `stale=no`).
@@ -435,27 +441,24 @@ the sanctioned response. Record the affected paths and reason in the plan,
 then validate the handback against that revised artifact. Do not swap a
 successor or widen a write set in prose after dispatch.
 
-If a lead cannot proceed because its prediction omits a required path, it emits
-one `needs-paths: <glob>[,<glob>...]` line and preserves the worktree. The root
-validates those repository-relative globs, appends them to that entry's
-`predictedWriteSet`, and records a matching `conflictMap.revisions` object with
-`issues`, `paths`, and a non-empty reason. That bound revision is the
-`prediction-expansion` disposition. The root then resumes the same lead with
-`followup_task` and the exact remaining step; it does not create a new worktree
-or worker prompt cycle.
+For a missing prediction, the lead preserves its worktree and emits one
+`needs-paths: <glob>[,<glob>...]` line. The root validates them,
+adds them to `predictedWriteSet`, and records a
+`conflictMap.revisions` entry with `issues`, `paths`, and a reason. Record the
+`prediction-expansion` disposition, then resume that lead with `followup_task`.
 
 The root-side round trip is data-only and atomic:
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-raw_report=$1 dispatch_plan=$2 issue_number=$3
+raw_report=$1 dispatch_plan=$2 issue_number=$3 agentkit=$4 agentkit_provenance=$5
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
 mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
 (( ${#needs_lines[@]} == 1 )) || exit 1
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
 for path in "${needs_paths[@]}"; do [[ -n $path && $path != /* && $path != *[[:cntrl:]]* ]] || exit 1; case "/$path/" in *'/../'*|*'//'*|*'/./'*) exit 1;; esac; done
 needs_json=$(printf '%s\n' "${needs_paths[@]}" | jq -R -s 'split("\n") | map(select(length > 0))')
-plan_dir=$(dirname -- "$dispatch_plan")
-plan_tmp=$(mktemp "$plan_dir/.dispatch-plan.XXXXXX") || exit 1
+plan_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || exit 1
 trap 'rm -f -- "$plan_tmp"' EXIT
 jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
   '.entries |= map(if .issue == $issue then .predictedWriteSet += $paths else . end) |
@@ -463,7 +466,7 @@ jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
      reason: "worker requested missing write-set paths (prediction expansion)"}]' \
   "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
 BASH_RECIPE
-)" _ "$raw_report" "$dispatch_plan" "$issue_number" || exit $?
+)" _ "$raw_report" "$dispatch_plan" "$issue_number" "$agentkit" "$agentkit_provenance" || exit $?
 ```
 
 Re-run the chain-base validator on the updated plan, then call `followup_task`

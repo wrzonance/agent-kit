@@ -23,6 +23,12 @@ git -C "$repo" init -q 2> /dev/null
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
+mkdir -p "$repo/tools"
+printf 'tooling\n' >"$repo/tools/README.md"
+git -C "$repo" config user.email test@example.invalid
+git -C "$repo" config user.name test
+git -C "$repo" add -- .
+git -C "$repo" commit -qm base
 
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" << EOF
@@ -60,7 +66,7 @@ items='{"totalCount":4,"items":[
   {"status":"In progress","content":{"number":14,"type":"Issue","title":"already running",
    "repository":"example-org/example-repo"}}]}'
 deps='{"data":{"repository":{
-  "i10":{"number":10,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
+  "i10":{"number":10,"state":"OPEN","body":"Create \u0060tools/bootstrap-worktree.sh\u0060.\n\n","blockedBy":{"totalCount":0,"nodes":[]}},
   "i11":{"number":11,"state":"OPEN","blockedBy":{"totalCount":1,"nodes":[{"number":99,"state":"OPEN"}]}},
   "i12":{"number":12,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
 
@@ -120,6 +126,17 @@ set_board "$items" \
 out=$(run)
 assert_not_contains "$out" '#10' 'a closed issue still on the board is dropped'
 
+# --- only closed candidates produce a successful empty selection ------------
+set_board '{"totalCount":1,"items":[
+  {"status":"Ready","content":{"number":15,"type":"Issue","title":"stale closed card",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i15":{"number":15,"state":"CLOSED","body":"","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+rc=0
+out=$(run --json) || rc=$?
+assert_eq '0' "$rc" 'closed Ready cards leave a successful empty selection'
+assert_eq '[]' "$out" 'closed Ready cards return an empty JSON array'
+
 # --- a truncated dependency read is treated as blocked ----------------------
 # Reporting "no open blockers" from a page that did not contain them all is the
 # same class of error as reporting a miss from a truncated board read.
@@ -158,6 +175,90 @@ out=$(run --include-backlog --json)
 assert_eq '10' "$(jq -r '.[0].number' <<< "$out")" 'JSON leads with the Ready issue'
 assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")" \
     'JSON marks the blocked issue ineligible'
+assert_eq '["tools/bootstrap-worktree.sh"]' \
+    "$(jq -c '.[] | select(.number == 10) | .predictedWriteSet' <<< "$out")" \
+    'JSON carries issue-derived write-set literals into dispatch planning'
+assert_eq 'implementation' \
+    "$(jq -r '.[] | select(.number == 10) | .workShape' <<< "$out")" \
+    'JSON carries the cached-body work-shape verdict'
+assert_contains "$(jq -r '.[] | select(.number == 10) | .requirementsDigest[]' <<< "$out")" \
+    "Create \`tools/bootstrap-worktree.sh\`." \
+    'JSON carries bounded cached requirements for code-implied expansion'
+assert_eq '["blockerRead","blockerTotal","blockers","bodyCache","dispatch","eligible","number","predictedWriteSet","queued","repository","requirementsDigest","state","status","title","workShape"]' \
+    "$(jq -c '.[] | select(.number == 10) | keys' <<< "$out")" \
+    'one picker record carries every selection and dispatch input without the issue body'
+body_cache=$(jq -r '.[] | select(.number == 10) | .bodyCache' <<< "$out")
+assert_contains "$body_cache" "$repo/.agent/cache/pick-issues-bodies/" \
+    'the body-free record references a repository-private per-invocation cache'
+assert_eq yes "$([[ -f $body_cache && ! -L $body_cache && -O $body_cache ]] && printf yes || printf no)" \
+    'the cached body reference names an owned regular file'
+assert_eq '600' "$(stat -c '%a' "$body_cache")" 'the issue body cache is owner-only'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' "$body_cache")" \
+    'the cache pins repository identity'
+assert_eq '10' "$(jq -r '.issue' "$body_cache")" 'the cache pins issue identity'
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+assert_eq 'Create `tools/bootstrap-worktree.sh`.' "$(jq -r '.body' "$body_cache")" \
+    'the cache preserves the fetched body for preparation without exposing it on stdout'
+expected_body="$tmp/expected-body.txt"
+cached_body="$tmp/cached-body.txt"
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+printf 'Create `tools/bootstrap-worktree.sh`.\n\n' >"$expected_body"
+jq -j '.body' "$body_cache" >"$cached_body"
+if cmp -s "$expected_body" "$cached_body"; then
+    _pass 'the body cache preserves trailing newlines byte-for-byte'
+else
+    _fail 'the body cache preserves trailing newlines byte-for-byte'
+fi
+
+# Work-shape and requirements evidence come from the same cached GraphQL body
+# used for path extraction. A no-code issue is held before dispatch, while a
+# prose-only implementation keeps requirements evidence even with no literal
+# path seed so conflict analysis cannot mistake [] for "no overlap".
+set_board '{"totalCount":2,"items":[
+  {"status":"Ready","content":{"number":16,"type":"Issue","title":"research only",
+   "repository":"example-org/example-repo"}},
+  {"status":"Ready","content":{"number":17,"type":"Issue","title":"parser accounting",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i16":{"number":16,"state":"OPEN","body":"Do not create a branch or pull request. Return analysis only.","blockedBy":{"totalCount":0,"nodes":[]}},
+    "i17":{"number":17,"state":"OPEN","body":"Change the rollout parser so mixed wrapper output remains partial.","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+out=$(run --json)
+assert_eq 'no-code' "$(jq -r '.[] | select(.number == 16) | .workShape' <<< "$out")" \
+    'a no-code verdict is present in the actual picker record'
+assert_eq 'false' "$(jq -r '.[] | select(.number == 16) | .eligible' <<< "$out")" \
+    'a no-code candidate is held before worktree dispatch'
+assert_eq 'false' "$(jq -r '.[] | select(.number == 16) | .dispatch' <<< "$out")" \
+    'the no-code hold cannot enter the dispatch wave'
+assert_contains "$(jq -r '.[] | select(.number == 16) | .holdReason' <<< "$out")" \
+    'Do not create a branch or pull request.' \
+    'the no-code hold records its cached-body source'
+assert_eq '[]' "$(jq -c '.[] | select(.number == 17) | .predictedWriteSet' <<< "$out")" \
+    'a prose-only implementation may have no literal path seed'
+assert_contains "$(jq -r '.[] | select(.number == 17) | .requirementsDigest[]' <<< "$out")" \
+    'mixed wrapper output remains partial' \
+    'prose-only requirements survive for code-implied conflict expansion'
+assert_eq 'false' "$(jq -r 'any(.[]; has("body"))' <<< "$out")" \
+    'compact verdict and requirements evidence do not expose an issue body field'
+
+# Path extraction is part of selection evidence. A missing or failing helper
+# must fail the picker instead of returning an empty predictedWriteSet that a
+# root could mistake for "no conflict".
+shadow="$tmp/shadow"
+mkdir -p "$shadow/.shared/scripts" "$shadow/parallel-issues/scripts"
+cp "$script" "$shadow/.shared/scripts/pick-issues.sh"
+cp "$root/agentkit/skills/.shared/scripts/repo-config.sh" "$shadow/.shared/scripts/repo-config.sh"
+cp "$root/agentkit/skills/.shared/scripts/triage-issues.sh" "$shadow/.shared/scripts/triage-issues.sh"
+rc=0
+out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a missing issue-paths helper fails selection'
+assert_contains "$out" 'issue-paths.sh is unavailable' 'the missing-helper failure names the degraded evidence'
+
+printf '#!/usr/bin/env bash\nexit 9\n' > "$shadow/parallel-issues/scripts/issue-paths.sh"
+chmod +x "$shadow/parallel-issues/scripts/issue-paths.sh"
+rc=0
+out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
+assert_eq '1' "$rc" 'a failed issue-paths helper fails selection'
+assert_contains "$out" 'could not derive paths for issue #16' 'the failed-helper error names the affected issue'
 
 # Fast mode caps the current wave and leaves later pickup-order candidates for
 # refill. The attended path still returns the complete eligible set; only the
@@ -247,9 +348,16 @@ bare="$tmp/norepo"
 mkdir -p "$bare"
 assert_rc 3 'a repository with no board is environment-blocked, not an error' -- \
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$bare"
+symlink_repo="$tmp/symlink-repo"
+outside_agent="$tmp/outside-agent"
+mkdir -p "$symlink_repo" "$outside_agent"
+printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' >"$outside_agent/board.json"
+ln -s "$outside_agent" "$symlink_repo/.agent"
+assert_rc 3 'a symlinked repository agent directory is rejected before cache publication' -- \
+    env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 253 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 253 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 275 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 275 lines'
 
 finish

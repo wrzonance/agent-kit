@@ -67,11 +67,14 @@ assert_contains "$(cat "$onboard_skill")" 'Once it resolves `$agentkit`, read' \
     'onboarding reads the shared policy only after its path is available'
 
 shell_policy_text=$(cat "$shell_policy" 2>/dev/null || true)
-for required in mapfile readarray BASH_REMATCH SH_WORD_SPLIT 'array index' \
+for required in BASH_REMATCH SH_WORD_SPLIT 'array index' nomatch \
+    "rg --glob '*.md'" 'ls … 2>/dev/null' \
     'python3 -c' 'pipe and heredoc' 'bash -c' 'nested quoting'; do
     assert_contains "$shell_policy_text" "$required" \
         "the shared shell policy covers $required"
 done
+assert_eq yes "$([[ $(wc -l < "$shell_policy") -le 50 ]] && printf yes || printf no)" \
+    'shell-portability policy does not grow beyond its 50-line baseline'
 assert_contains "$shell_policy_text" 'producer \| python3' \
     'the pipe-plus-heredoc example escapes its GFM table delimiter'
 assert_contains "$(cat "$provider_rules")" \
@@ -88,12 +91,91 @@ mkdir -p "$tmp/skills/example"
 for recipe in 'mapfile -t items' 'readarray -t items' 'read -a items' \
     'IFS=, read -ra items' 'read -r -a items' \
     'read -d "" -ra items' \
-    'true; mapfile -t items'; do
+    'true; mapfile -t items' 'true|shopt -s nullglob'; do
     printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
     output=$("$lint" "$tmp/skills" 2>&1)
-    assert_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+    assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
         "lint rejects unwrapped $recipe"
 done
+
+for recipe in 'shopt -s nullglob' 'declare -A items=()' \
+    '[[ ${items[0]} =~ ^item-([0-9]+)$ ]]'; do
+    printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
+    output=$("$lint" "$tmp/skills" 2>&1)
+    assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+        "lint rejects unwrapped $recipe"
+done
+
+for recipe in 'printf "%s\n" .markdownlint*' 'printf "%s\n" file?.md' \
+    'printf "%s\n" file[0-9].md' \
+    'for transcript in "$run_dir"/*.transcript; do printf "%s\n" "$transcript"; done'; do
+    printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
+    output=$("$lint" "$tmp/skills" 2>&1)
+    assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+        "lint rejects zsh-nomatch hazard $recipe"
+done
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if [[ $branch == feature/* ]]; then printf '%s\n' "$branch"; fi
+case $branch in
+    feature/*) printf '%s\n' "$branch" ;;
+esac
+```
+MARKDOWN
+assert_rc 0 'lint accepts conditional and case pattern syntax after control prefixes' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if ! [[ $ref =~ ^refs/heads/(.+)$ ]]; then exit 1; fi
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks regex syntax after repeated control prefixes'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+case $kind in
+    markdown) printf '%s\n' *.md ;;
+esac
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks executable commands inside case arms'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+globbed="$(printf '%s\n' *.md)"
+bash_state="$(shopt -p nullglob)"
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks globs in a quoted command substitution'
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks Bash-only commands in a quoted command substitution'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+product="$((6 * 7))"
+printf '%s\n' "$product"
+```
+MARKDOWN
+assert_rc 0 'lint does not treat quoted arithmetic expansion as a command substitution' -- \
+    "$lint" "$tmp/skills"
+
+# This is the failure boundary the lint prevents: Bash passes a non-matching
+# glob literally, while zsh aborts before the command can run.
+mkdir -p "$tmp/empty-glob-dir"
+assert_rc 0 'bash leaves an unmatched recipe glob for the command' -- \
+    bash -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
+if command -v zsh >/dev/null; then
+    assert_rc 1 'zsh nomatch aborts an unmatched recipe glob' -- \
+        zsh -f -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
+fi
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
 ```bash
@@ -105,6 +187,26 @@ FIXTURE_RECIPE
 ```
 MARKDOWN
 assert_rc 0 'lint accepts explicit Bash boundary with alternate delimiter' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -s -- "$run_dir" <<'FIXTURE_RECIPE'
+shopt -s nullglob
+declare -A counts=()
+files=("$1"/*.transcript)
+FIXTURE_RECIPE
+```
+MARKDOWN
+assert_rc 0 'lint accepts Bash-only syntax and globs inside a bash -s boundary' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -c 'shopt -s nullglob; files=(.markdownlint*)'
+```
+MARKDOWN
+assert_rc 0 'lint accepts a single-quoted bash -c boundary' -- \
     "$lint" "$tmp/skills"
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
@@ -129,7 +231,7 @@ mapfile -t outside
 ```
 MARKDOWN
 output=$("$lint" "$tmp/skills" 2>&1)
-assert_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
     'lint still checks commands after a parameterized Bash boundary'
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
@@ -138,14 +240,17 @@ cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
 printf '%s\n' 'readarray -t items'
 printf '%s\n' 'bad; mapfile -t items'
 printf '%s\n' "bad; read -ra items"
+printf '%s\n' '.markdownlint*; shopt -s nullglob'
 true # bad; readarray -t items
 ```
 MARKDOWN
 assert_rc 0 'lint leaves comment and quoted negative examples alone' -- \
     "$lint" "$tmp/skills"
 output=$("$lint" "$root/agentkit/skills" 2>&1)
-assert_not_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+assert_not_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
     'all shipped recipes put Bash-only builtins behind a Bash boundary'
+assert_not_contains "$output" 'outside explicit Bash boundary' \
+    'all shipped recipes avoid parent-shell Bash syntax and unquoted globs'
 
 # Run complete shipped fences in ordinary parent shells. Nothing here exports
 # recipe inputs or removes a wrapper to make a failing boundary pass.
@@ -159,13 +264,18 @@ extract_recipe() {
 triage="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md"
 bulk_recipe=$(extract_recipe "$triage" 'report_batch_failure()')
 needs_recipe=$(extract_recipe "$triage" 'mapfile -t needs_lines')
-handback_recipe=$(extract_recipe "$parallel_skill" 'validated_argv_file=$(mktemp')
-reports_recipe=$(extract_recipe "$parallel_skill" 'dispatch_report_files=(')
-for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe" "$reports_recipe"; do
+handback_recipe=$(extract_recipe "$parallel_skill" '--scratch-label handback')
+final_handoff_recipe=$(extract_recipe "$parallel_skill" 'final-handoff summary')
+for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe"; do
     assert_contains "$recipe" 'bash -c' 'runtime regression extracted a complete Bash fence'
 done
+assert_contains "$final_handoff_recipe" 'run-state.sh" summary' \
+    'runtime regression extracts the executable final-handoff summary fence'
 fixture_root="$tmp/recipe inputs"
-mkdir -p "$fixture_root/kit/.shared/scripts" "$fixture_root/worktree"
+mkdir -p "$fixture_root/kit/.shared/scripts" "$fixture_root/kit/review-remote-pr/scripts" "$fixture_root/worktree" "$fixture_root/root-repo/.agent"
+cp "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh" "$fixture_root/kit/review-remote-pr/scripts/run-dir.sh"
+mkdir -p "$fixture_root/kit/.shared/scripts/lib"
+cp "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" "$fixture_root/kit/.shared/scripts/lib/private-dir.sh"
 cat > "$fixture_root/ledger-helper" <<'SCRIPT'
 #!/usr/bin/env bash
 operation=$1; shift
@@ -183,12 +293,25 @@ cat > "$fixture_root/kit/.shared/scripts/validate-handback.sh" <<'SCRIPT'
 [[ -f $4 && -f $8 && $6 == 723 ]] || exit 2
 printf '%s\0' "$2/commit-helper" "$6" "$4" "$8"
 SCRIPT
+cat > "$fixture_root/kit/.shared/scripts/run-state.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+[[ $1 == summary && $2 == --run-id && $3 == run && $4 == --repo-root &&
+   $5 == "$EXPECTED_REPOSITORY_ROOT" && $6 == --reports-dir &&
+   $7 == "$EXPECTED_DISPATCH_PLAN.verification-reports" ]] || exit 2
+jq -e '.schemaVersion == 1 and (.entries | type == "array") and (.conflictMap | type == "object")' \
+    "$EXPECTED_DISPATCH_PLAN" >/dev/null || exit 2
+printf 'fixture-summary\n'
+SCRIPT
 cat > "$fixture_root/worktree/commit-helper" <<'SCRIPT'
 #!/usr/bin/env bash
 printf 'commit=%s:%s\n' "$PWD" "$*"
 SCRIPT
 chmod +x "$fixture_root/ledger-helper" "$fixture_root/kit/.shared/scripts/validate-handback.sh" \
+    "$fixture_root/kit/.shared/scripts/run-state.sh" \
     "$fixture_root/worktree/commit-helper"
+mkdir -p "$fixture_root/worktree/.agent/cache"
+printf 'preserve worker target' >"$fixture_root/worker-target"
+ln -s "$fixture_root/worker-target" "$fixture_root/worktree/.agent/cache/parallel-issues-handback.argv"
 bulk_inputs='apply_ledger=$1; ledger=$2; plan=$3; agentkit=$4; repository_root=$5; RUN_ID=run; bulk_dir=$5'
 bulk_callback='perform_rest_mutation() {
     [ -f "$plan" ] && [ -f "$ledger" ] && [ "$RUN_ID" = run ] || return 1
@@ -215,35 +338,46 @@ for parent_shell in bash zsh; do
 
     printf '%s\n' '{"entries":[{"issue":723,"predictedWriteSet":[]}],"conflictMap":{"revisions":[]}}' > "$fixture_root/plan"
     printf '%s\n' 'needs-paths: src/new.py' > "$fixture_root/report"
-    output=$("$parent_shell" -f -c 'raw_report=$1; dispatch_plan=$2; issue_number=723'$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 2>&1)
+    needs_inputs='raw_report=$1; dispatch_plan=$2; issue_number=$3; agentkit=$4; agentkit_provenance=$5; repository_root=$6'
+    output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell needs-paths fence accepts ordinary inputs"
     assert_eq src/new.py "$(jq -r '.entries[0].predictedWriteSet[0]' "$fixture_root/plan")" \
         "$parent_shell needs-paths fence updates the plan"
     printf '%s\n' 'needs-paths: ../escape' > "$fixture_root/report"
-    output=$("$parent_shell" -f -c 'raw_report=$1; dispatch_plan=$2; issue_number=723'$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 2>&1)
+    output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell needs-paths refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell needs-paths refusal cannot continue"
 
-    handback_inputs='agentkit=$1; agentkit_provenance=ok; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723'
+    handback_inputs='agentkit=$1; agentkit_provenance=ok; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723; repository_root=$5'
     output=$("$parent_shell" -f -c "$handback_inputs"$'\n'"$handback_recipe"$'\n'"$completed" \
-        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/report" 2>&1)
+        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/report" "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell handback fence receives ordinary inputs"
     assert_contains "$output" "commit=$fixture_root/worktree:--include-staged 723" "$parent_shell handback preserves cwd and argv"
+    assert_eq 'preserve worker target' "$(<"$fixture_root/worker-target")" \
+        "$parent_shell handback never follows worker-controlled scratch symlinks"
     output=$("$parent_shell" -f -c "$handback_inputs"$'\n'"$handback_recipe"$'\n'"$completed" \
-        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/missing" 2>&1)
+        _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/missing" "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell handback refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell handback refusal cannot continue"
 
-    mkdir -p "$fixture_root/plan.verification-reports"
-    printf '%s\n' 'spec-verification= issue=723' > "$fixture_root/plan.verification-reports/issue-723.report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1'$'\n'"$reports_recipe"$'\n'"$completed" _ "$fixture_root/plan" 2>&1)
-    assert_eq 0 "$?" "$parent_shell final handoff accepts ordinary input"
-    assert_contains "$output" 'spec-verification= issue=723' "$parent_shell final handoff prints its report"
-    output=$("$parent_shell" -f -c 'dispatch_plan=$1'$'\n'"$reports_recipe"$'\n'"$completed" _ "$fixture_root/missing" 2>&1)
-    assert_eq 1 "$?" "$parent_shell final handoff failure stops the parent"
-    assert_not_contains "$output" parent-completed "$parent_shell final handoff failure cannot continue"
+    printf '%s\n' '{"schemaVersion":1,"entries":[],"conflictMap":{"pairs":[],"revisions":[]}}' \
+        > "$fixture_root/dispatch-plan"
+    handoff_inputs='agentkit=$1; dispatch_plan=$2; RUN_ID=run; repository_root=$3; export EXPECTED_DISPATCH_PLAN=$2 EXPECTED_REPOSITORY_ROOT=$3'
+    output=$("$parent_shell" -f -c "$handoff_inputs"$'\n'"$final_handoff_recipe"$'\n'"$completed" \
+        _ "$fixture_root/kit" "$fixture_root/dispatch-plan" "$fixture_root/root-repo" 2>&1)
+    assert_eq 0 "$?" "$parent_shell final handoff accepts a valid dispatch plan"
+    assert_contains "$output" fixture-summary "$parent_shell final handoff executes the computed summary"
+    assert_contains "$output" parent-completed "$parent_shell final handoff returns after successful summary"
+    output=$("$parent_shell" -f -c "$handoff_inputs"$'\n'"$final_handoff_recipe"$'\n'"$completed" \
+        _ "$fixture_root/kit" "$fixture_root/missing-plan" "$fixture_root/root-repo" 2>&1)
+    assert_eq 1 "$?" "$parent_shell final handoff refuses a missing dispatch plan"
+    assert_not_contains "$output" parent-completed "$parent_shell missing-plan refusal cannot continue"
+
 done
+
+markdown_mktemp=$(rg -n 'mktemp' "$root/agentkit/skills" --glob '*.md' || true)
+assert_eq '' "$markdown_mktemp" 'skill prose contains no executable mktemp recipes'
 
 finish

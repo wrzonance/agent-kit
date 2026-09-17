@@ -26,6 +26,14 @@ cat > "$tmp/stub/gh" << EOF
 set -uo pipefail
 printf '%s\n' "\$*" >> "\${GH_STUB_LOG:-/dev/null}"
 case "\$*" in
+  *"projectsV2(first:20"*)
+      [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
+      if [[ -n \${EMPTY_PROJECT_LIST:-} ]]; then
+          printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[]}}}}'
+      else
+          printf '%s\n' '{"data":{"repository":{"projectsV2":{"nodes":[{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board","closed":false,"owner":{"login":"example-org"}}]}}}}'
+      fi
+      ;;
   *"api graphql"*)
       if [[ -n \${NULL_ISSUE:-} ]]; then
           printf '%s\n' '{"data":{"repository":{"issue":null}}}'
@@ -101,16 +109,6 @@ case "\$*" in
           esac
       else
           cat "$here/fixtures/gh-item-list.json"
-      fi
-      ;;
-  *"project list"*)
-      [[ -n \${FAIL_PROJECT_LIST:-} ]] && exit 1
-      if [[ -n \${EMPTY_PROJECT_LIST:-} ]]; then
-          :
-      elif [[ -n \${MULTI_BOARD:-} ]]; then
-          printf '%s\\n' '{"projects":[{"number":7,"id":"PVT_kwDOAexample1","title":"Example Board"},{"number":8,"id":"PVT_kwDOAexample2","title":"Second Board"}]}'
-      else
-          cat "$here/fixtures/gh-project-list.json"
       fi
       ;;
   *) printf '{}\n' ;;
@@ -312,15 +310,24 @@ assert_contains "$log" '--id PVTI_example57' \
     'a group/world-writable cache directory still falls back to the requested-repository card'
 chmod 700 "$repo/.agent/cache"
 
-# The same applies to .agent/ itself: it backs both board.json and the item
-# cache, so a writable .agent/ forces a full fallback to live discovery.
+# The same applies to .agent/ itself: the cold-cache writer refuses the unsafe
+# parent before staging metadata or mutating a project item.
 repo=$(seed_repo)
 chmod 777 "$repo/.agent"
 : > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+set +e
+unsafe_agent_out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+unsafe_agent_rc=$?
+set -e
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'project list' \
-    'a group/world-writable .agent/ directory falls back to full discovery'
+assert_eq 1 "$unsafe_agent_rc" \
+    'a group/world-writable .agent directory preserves unsafe-path rejection'
+assert_contains "$unsafe_agent_out" 'unsafe .agent cache path' \
+    'the unsafe parent is reported at the public mover boundary'
+assert_contains "$log" 'projectsV2(first:20' \
+    'an unsafe .agent still permits read-only linked-board discovery'
+assert_not_contains "$log" 'project item-edit' \
+    'an unsafe .agent blocks mutation before cache staging'
 chmod 700 "$repo/.agent"
 
 # A rejected cached mutation invalidates that issue's cache entry before the
@@ -393,8 +400,8 @@ out=$(run_mv "$repo" --issue-number 58 --status Ready 2>&1)
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'projectItems' \
     'a declared-board miss checks the issue-owned project memberships'
-assert_not_contains "$log" 'project list' \
-    'a declared-board miss never scans unrelated organization projects'
+assert_not_contains "$log" 'projectsV2(first:20' \
+    'a declared-board miss never rediscovers the linked project'
 assert_not_contains "$out" 'Warning: could not list items for project' \
     'a declared-board miss suppresses unrelated-project warnings'
 assert_contains "$out" 'no-op: issue #58 is not on any project board' \
@@ -473,7 +480,7 @@ rm -f "$repo/.agent/cache/board-items.json"
 out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
 assert_eq '2' "$(wc -l < "$tmp/gh.log")" 'a fresh clone reads the declared board once before editing'
 log=$(cat "$tmp/gh.log")
-assert_not_contains "$log" 'project list' 'does not enumerate every board the owner has'
+assert_not_contains "$log" 'projectsV2(first:20' 'does not rediscover the declared board'
 assert_contains "$log" 'item-list 7' 'goes straight to the declared board'
 assert_contains "$out" 'board.json, 2 calls' 'reports which path it took'
 assert_eq 'PVTI_example57' "$(jq -r '.items["57"]' < "$repo/.agent/cache/board-items.json")" \
@@ -507,7 +514,7 @@ out=$(FAIL_EDIT=1 GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     --issue-number 57 --status Done 2>&1 || true)
 log=$(cat "$tmp/gh.log")
 assert_contains "$log" 'api graphql' 'a rejected edit checks issue-owned memberships'
-assert_not_contains "$log" 'project list' 'a rejected edit never scans unrelated projects'
+assert_not_contains "$log" 'projectsV2(first:20' 'a rejected edit never rediscovers another project'
 assert_contains "$out" 'board changed' 'prints the regenerate-and-commit notice'
 edits=$(grep -c 'item-edit' "$tmp/gh.log" || true)
 assert_eq '1' "$edits" 'a rejected cached edit is never retried blindly'
@@ -517,7 +524,8 @@ repo=$(bare_repo)
 : > "$tmp/gh.log"
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'project list' 'with no board.json it discovers as before'
+assert_contains "$log" 'projectsV2(first:20' \
+    'with no board.json it discovers the repository-linked project'
 assert_eq 'example-org/example-repo' "$(jq -r '.repository' < "$repo/.agent/board.json")" \
     'full discovery writes board repository provenance'
 assert_eq '600' "$(stat -c '%a' "$repo/.agent/board.json")" \
@@ -530,7 +538,8 @@ mv "$repo/.agent/board.tmp" "$repo/.agent/board.json"
 : > "$tmp/gh.log"
 run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
 log=$(cat "$tmp/gh.log")
-assert_contains "$log" 'project list' 'an unknown schemaVersion falls back to discovery'
+assert_contains "$log" 'projectsV2(first:20' \
+    'an unknown schemaVersion falls back to linked-board discovery'
 
 # --- corrupt board.json is ignored, not fatal -----------------------------
 repo=$(seed_repo)
@@ -613,7 +622,7 @@ assert_not_contains "$(cat "$tmp/gh.log")" 'PVTI_otherrepo57' \
 
 # API failures are errors, not successful no-ops.
 repo=$(bare_repo)
-assert_rc 1 'project-list API failure exits 1' -- env FAIL_PROJECT_LIST=1 \
+assert_rc 1 'linked-project API failure exits 1' -- env FAIL_PROJECT_LIST=1 \
     GH_STUB_LOG="$tmp/gh.log" PATH="$tmp/stub:$PATH" \
     "$mv_sh" --repo-root "$repo" --repository example-org/example-repo \
     --issue-number 57 --status Ready
@@ -626,8 +635,8 @@ assert_eq '2' "$(grep -c 'item-edit' "$tmp/gh.log" || true)" \
     'all-boards updates the requested card on every board'
 assert_contains "$(cat "$tmp/gh.log")" 'api graphql --paginate' \
     'all-boards paginates the issue-owned project memberships'
-assert_not_contains "$(cat "$tmp/gh.log")" 'project list' \
-    'all-boards never scans the organization project list'
+assert_not_contains "$(cat "$tmp/gh.log")" 'projectsV2(first:20' \
+    'all-boards never performs single-board discovery'
 assert_not_contains "$(cat "$tmp/gh.log")" 'item-list' \
     'all-boards never lists every board card'
 assert_contains "$out" 'project #7 "Example Board"' \
@@ -644,7 +653,7 @@ assert_contains "$out" 'Warning: could not list items for project #7; skipping i
 assert_contains "$out" 'no-op: issue #57 is not on any project board' \
     'a skipped board leaves the issue with its terminal no-op'
 
-# Empty project-list responses still emit one terminal result per requested issue.
+# An empty linked-project response still emits one terminal result per requested issue.
 repo=$(bare_repo)
 out=$(EMPTY_PROJECT_LIST=1 run_mv "$repo" --issue-number 57 --issue-number 58 --status Ready 2>&1)
 assert_contains "$out" 'no-op: issue #57 is not on any project board' \
@@ -794,7 +803,7 @@ assert_eq '3' "$(grep -c 'api graphql' "$tmp/gh.log" || true)" \
     'all-boards: a persistently null-issue membership read retries the bounded number of attempts'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$mv_sh") -le 1000 ]] && printf yes || printf no)" \
-    'move-github-project-item.sh stays at or under 1000 lines'
+assert_eq yes "$([[ $(wc -l < "$mv_sh") -le 1009 ]] && printf yes || printf no)" \
+    'move-github-project-item.sh stays at or under 1009 lines'
 
 finish
