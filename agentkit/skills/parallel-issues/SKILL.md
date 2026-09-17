@@ -12,6 +12,8 @@ description: >-
 
 # Parallel Issues
 
+**The injected body is authoritative; never `sed`, `cat`, or otherwise re-read this SKILL.md.**
+
 ## Step 0 prerequisite: verified activation
 
 First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
@@ -31,12 +33,8 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-**References are read once and batched.** Open `"$agentkit/<path>"`; use
-`"$agentkit/references.md"` for paths, purposes, and read-when conditions; do not search.
-Match conditions to the execution path; read each named reference fully at its step, batching
-reads and retaining them for the run. Do not preload unmatched references or probe their size; each probe costs a turn
-(`wc -l`, `stat`, `head`). Exception: a **first** read of a file over ~800 lines
-(including this SKILL.md) permits one bounded size probe to plan split reads.
+Follow [shared reading discipline](../.shared/reading-discipline.md): use
+`"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
 
 **Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Read `references/triage-and-selection.md` only for the sections Step 2's digest flags (prior-art, conflict analysis, dispatch-plan write sets) and `references/worker-prompts.md` only for the template being composed; the issue-lead template already carries the loop from `.shared/six-step-loop.md`, so the root reads that file only when validating a worker's six-step report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
@@ -89,19 +87,7 @@ never via a workaround.
 ## Session decision ledger
 
 After Step 1 establishes the invocation facts, finalize the requested or selected issue scope and
-set the shared ledger identity before the first receipt:
-
-```bash
-# `requested_issue_scope` comes from the invocation line. For automatic selection,
-# replace it with the canonical sorted `selected_issue_scope` before any receipt.
-issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
-invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
-LEDGER="$repository_root/.agent/session-ledger.ndjson"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
-RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues \
-    --scope "$issue_scope" --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
-: "$LEDGER" "$RUN_ID"
-```
+set the shared ledger identity before the first receipt. Run `"$agentkit/.shared/scripts/session-ledger.sh" --help` and follow its parallel-issues recipe.
 
 The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
@@ -151,90 +137,7 @@ ready transition to the user.
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing.
-
-#### The resolver (run once per session)
-
-The warm-up writes data-only `.agent/cache/contract-session.env`; it is never sourced. A changed input makes it stale until refreshed.
-
-```bash
-# The preflight contract covers both CODEX_HOME and CLAUDE_CONFIG_DIR plugin layouts.
-# Resolve the skill tree from the environment contract at the repository
-# root; trust it only when it is an untracked regular file owned by this
-# user -- a tracked, symlinked, or foreign-owned contract could redirect
-# helper execution.
-agentkit=''
-contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
-contract="$contract_root/.agent/env-contract.txt"
-# Match runtime harness signal priority before the skills tree is available.
-contract_harness=unknown
-if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then contract_harness=claude
-elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then contract_harness=codex
-elif [[ -n ${OPENCODE:-}${OPENCODE_PID:-} ]]; then contract_harness=opencode
-elif [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then contract_harness=codex
-fi
-keyed_contract="$contract_root/.agent/env-contract.$contract_harness.txt"
-[[ ! -e $keyed_contract && ! -L $keyed_contract ]] || contract=$keyed_contract
-if [[ -n $contract_root && ( -e $contract || -L $contract ) ]]; then
-    [[ ! -L $contract_root/.agent && -r $contract && -f $contract && ! -L $contract && -O $contract ]] ||
-        { printf 'agentkit: untrusted environment contract: %s\n' "$contract" >&2; exit 1; }
-    tracked_rc=0
-    git -C "$contract_root" ls-files --error-unmatch -- "$contract" > /dev/null 2>&1 || tracked_rc=$?
-    [[ $tracked_rc == 1 ]] || { printf 'agentkit: cannot prove contract is untracked: %s\n' "$contract" >&2; exit 1; }
-    agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
-fi
-if [[ -z $agentkit ]]; then
-    printf 'agentkit: no skills path in %s (keyed candidate: %s); run onboard-repo first\n' "$contract" "$keyed_contract" >&2
-    exit 1
-fi
-[ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-agentkit_provenance=ok; : "$agentkit_provenance"
-```
-
-Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
-
-#### THE CACHE REHYDRATION (prepend to each later guarded block)
-
-Replace `STEP_0_AGENTKIT` with Step 0's exact absolute `skills=` path; never read it from cache. The trusted reader rehydrates and validates current data.
-
-```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
-[[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
-contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
-```
-
-The guard requires the resolver's provenance sentinel, so a stale or profile-inherited path still fails.
-
-#### Run the preflight — ONCE, and only here
-
-Run this block once, never per shell call: it rewrites `.agent/env-contract.txt` (a transient `gh`/network
-failure would silently overwrite a good contract) and prints the whole contract, refreshing an existing
-contract only. Absent one, run `onboard-repo` first, then this block, then continue.
-
-```bash
-set -euo pipefail
-# >>> prepend THE RESOLVER (initial warm-up only) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
-
-repository_root=$contract_root
-shared="$agentkit/.shared/scripts"
-preflight="$shared/agent-preflight.sh"
-if [[ ! -x $preflight ]]; then
-    printf 'agent-preflight.sh is missing or not executable: %s\n' "$preflight" >&2
-    exit 1
-fi
-exclude_path="$(git rev-parse --git-path info/exclude)"
-# `.agent/*`, never `.agent/`: excluding the directory defeats its `.gitignore` allowlist.
-if ! grep -Fxq '.agent/*' "$exclude_path" 2>/dev/null; then
-    printf '%s\n' '.agent/*' >> "$exclude_path"
-fi
-environment_contract="$("$preflight" --worktree "$repository_root" 2>/dev/null)"
-printf '%s\n' "$environment_contract"
-[[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
-contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
-[[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
-"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
-```
+Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing. Run `"$agentkit/.shared/scripts/agent-preflight.sh" --help` and follow its resolver, cache-rehydration, and run-once recipe. Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
 
 `agent-preflight.sh` reports environment failures as contract data and exits 0; exit 2 is bad arguments. Its bytes also write `<worktree>/.agent/env-contract.txt`; `.agent/*` in the local exclude preserves the `.gitignore` allowlist. Re-running is idempotent.
 
@@ -254,26 +157,7 @@ contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repos
 
 ### Step 1: Establish repo facts
 
-```bash
-set -euo pipefail
-
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-repository_root=$contract_root
-# Declared config facts win; absent ones come from the Step 0 contract, never from the network.
-resolver="$agentkit/.shared/scripts/repo-config.sh"
-[[ -x $resolver ]] && eval "$("$resolver" --export)"
-
-repository=${AGENT_REPO_SLUG:-}
-[[ -n $repository ]] || repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get repo.slug) || exit 1
-[[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
-base=${AGENT_BASE_BRANCH:-}
-[[ -n $base ]] || base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) || exit 1
-[[ $base != none ]] || { printf '%s\n' 'base=none in the environment contract; set origin/HEAD (git remote set-head origin -a) and re-run preflight' >&2; exit 1; }
-
-IFS=/ read -r owner repository_name <<< "$repository"
-printf 'repository_root=%s\nrepository=%s\nowner=%s\nrepository_name=%s\nbase=%s\n' \
-    "$repository_root" "$repository" "$owner" "$repository_name" "$base"
-```
+Run `"$agentkit/.shared/scripts/repo-config.sh" --help` and follow its repository-facts recipe. Declared config facts win; absent values come from the Step 0 contract, never from the network.
 
 ### Step 2: Triage the candidate set (MANDATORY — one call, never a loop)
 
@@ -281,23 +165,7 @@ One GraphQL request returns every candidate's title, labels, board membership,
 Status, and cross-referenced pull requests, and caches the project-item IDs that
 make later board moves single-call.
 
-```bash
-set -euo pipefail
-
-# Triage output is evidence. A missing parser is blocked, never an empty issue set.
-if ! command -v jq >/dev/null 2>&1; then
-    printf '%s\n' 'jq is not installed; evidence unavailable' >&2
-    exit 1
-fi
-
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-
-# Auto mode: the open backlog, most recently updated first.
-"$agentkit/.shared/scripts/triage-issues.sh" --limit 30
-
-# Explicit mode (/parallel-issues 57 54) — still ONE call, via aliased sub-queries.
-# "$agentkit/.shared/scripts/triage-issues.sh" --issues 57,54
-```
+Run `"$agentkit/.shared/scripts/triage-issues.sh" --help` and follow its one-call recipe. Triage output is evidence; a missing parser is blocked, never an empty issue set.
 
 Each line reads `#N  <status>  <verdict>  adr=<paths|->  pr=<ref|->`:
 
@@ -486,18 +354,7 @@ Role separation: the root/orchestrator must not implement when a real worker can
 
 Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap. As each lead is dispatched (or, on the degraded path, each issue is started), the root also moves that issue's board item — a no-op when the issue is not on a board:
 
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-set -euo pipefail
-# `multi_agent` is supplied by the dispatch capability probe; false degrades
-# to the documented worker=self serial path and bypasses the runtime config probe.
-"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --multi-agent "${multi_agent:-true}"
-
-issue_numbers_csv=123,456 # Replace with the selected issue numbers.
-repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
-"$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-numbers "$issue_numbers_csv" --status 'In progress' --repo "$repository"
-```
+Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`, then `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help`, and follow their dispatch-cap and selected-issue move recipes.
 
 **The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
 per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
@@ -535,53 +392,7 @@ path implements serially with the same ownership gate, labelled `worker=self (sp
 The root fetches issue-derived data once, validates it, and persists the canonical fenced bytes
 before constructing a worker prompt. Workers never repeat this fetch.
 
-```bash
-# shellcheck disable=SC2034
-repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=''
-repository_visibility=$(gh repo view "$repository" --json isPrivate -q '.isPrivate' 2>/dev/null) ||
-    repository_visibility='unknown'
-: "${yolo_invocation:?set from the invocation line}"
-boundary_args=(--visibility "$repository_visibility")
-if [[ $yolo_invocation == true ]]; then boundary_args+=(--yolo); else boundary_args+=(--no-yolo); fi
-boundary_output=$("$agentkit/parallel-issues/scripts/select-boundary-mode.sh" "${boundary_args[@]}") || exit 1
-boundary_mode=${boundary_output#boundary mode: }
-[[ $boundary_mode =~ ^(public-fenced|private-trusted|yolo-trusted)$ ]] || {
-    printf '%s\n' 'Boundary selector returned an invalid mode.' >&2
-    exit 1
-}
-printf 'boundary mode: %s\n' "$boundary_mode"
-```
-
-```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
-
-# --prior-art is optional: pass it only when Step 2's prior-art adjudication
-# produced a digest to carry forward; omitted, the script's own sentinel
-# ("(no prior art selected by triage digest)") applies.
-prior_art_file=''
-if [[ -n ${prior_art_contents:-} ]]; then
-    : "${RUN_ID:?set the canonical run identity}" "${issue_number:?set the issue number}"
-    prior_art_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" \
-        --scratch-label "prior-art-$issue_number-$RUN_ID" --repo-root "$repository_root") || exit 1
-    printf '%s' "$prior_art_contents" >"$prior_art_file" || exit 1
-fi
-
-fetch_rc=0
-if [[ -n $prior_art_file ]]; then
-    "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" \
-        --prior-art "$prior_art_file" || fetch_rc=$?
-else
-    "$script" --worktree "$worktree" --issue "$issue_number" --boundary "$boundary_mode" || fetch_rc=$?
-fi
-
-# Re-running the script for an existing complete set is churn; use --resume.
-case "$fetch_rc" in
-    0)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file" ;; # published fetched-issue.json, fenced-spec.txt, fenced-prior-art.txt, fenced-ready
-    12) printf '%s\n' 'fence artifacts already exist; delete the affected file deliberately before re-fencing; use the printed exact --resume command to archive and regenerate them' >&2; exit 1 ;;
-    *)  [[ -z $prior_art_file ]] || rm -f -- "$prior_art_file"; exit 1 ;; # bad args, missing evidence, or any staging/fence/publish failure
-esac
-```
+Run `"$agentkit/parallel-issues/scripts/select-boundary-mode.sh" --help`, then `"$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh" --help`, and follow their select-once and canonical-artifact recipes. Pass `--prior-art` only when Step 2 produced a digest; otherwise the helper supplies its sentinel. Exit `12` means the complete set already exists; use the printed `--resume` command instead of retrying.
 
 The root is the sole artifact producer: the script fetches, validates, and atomically publishes the
 fenced files, raw payload, and ready marker into excluded `.agent/` state, and the prompt embeds
@@ -775,16 +586,7 @@ As the root opens each draft PR from a lead's pushed completion report, it runs 
 mechanical implementation; they commit and push the assigned branch and stop. The root handles CI state/verification, forge conflicts, adversarial
 review, consent, replies, and publication — and never initiates a provider review: **never post
 `@coderabbitai review` or `full review` on any PR**.
-**As each PR opens, move its issue to `In review`** (see `github-projects.md`):
-```bash
-set -euo pipefail
-
-issue_number=123 # Replace with the issue whose draft PR opened.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) && [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract; re-run the Step 0 preflight from a checkout with a GitHub origin' >&2; exit 1; }
-"$agentkit/parallel-issues/scripts/move-github-project-item.sh" \
-    --issue-number "$issue_number" --status 'In review' --repo "$repository"
-```
+**As each PR opens, move its issue to `In review`** with the `move-github-project-item.sh --help` recipe (see `github-projects.md`).
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately

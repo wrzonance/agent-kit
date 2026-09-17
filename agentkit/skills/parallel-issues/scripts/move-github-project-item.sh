@@ -52,6 +52,16 @@ later) -- never a raw error message, token, or response body.
 Exit status: 0 on a move or a no-op (an unreadable board membership included -- a
 board move must never fail the real work), 1 on bad arguments or an unrelated API error,
 2 on an unexpected argument after --.
+
+Recipe: move a selected issue set
+  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
+      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  : "${issue_numbers_csv:?replace with the selected issue numbers}"
+  : "${target_status:?set In progress at dispatch or In review when the draft opens}"
+  repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) || exit 1
+  [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract' >&2; exit 1; }
+  "$agentkit/parallel-issues/scripts/move-github-project-item.sh" --issue-numbers "$issue_numbers_csv" \
+    --status "$target_status" --repo "$repository"
 EOF
 }
 
