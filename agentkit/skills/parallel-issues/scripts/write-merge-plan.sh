@@ -239,7 +239,7 @@ tree_glob_matches() {
 
 tree_literal_parent_exists() {
     local pattern=$1 parent
-    [[ $pattern != *[\*\?\[]* ]] || return 1
+    tree_pattern_is_literal "$pattern" || return 1
     if [[ $pattern != */* ]]; then
         return 0
     fi
@@ -248,6 +248,12 @@ tree_literal_parent_exists() {
         [[ $path == "$parent"/* ]] && return 0
     done
     return 1
+}
+
+tree_pattern_is_literal() {
+    local pattern=$1 bracket_glob='\[[^]]*\]'
+    [[ $pattern != *'*'* && $pattern != *'?'* ]] || return 1
+    [[ ! $pattern =~ $bracket_glob ]]
 }
 
 nearest_tree_sibling() {
@@ -747,15 +753,24 @@ if ((validate_only)); then
       ] | @tsv
     ' "$dispatch_plan")
 
+    declare -a create_entries=()
     if [[ -n $chain_base ]]; then
         while IFS=$'\t' read -r issue patterns exclusions; do
             IFS=',' read -ra prediction_patterns <<< "$patterns"
             for pattern in "${prediction_patterns[@]}"; do
-                tree_glob_matches "$pattern" || tree_literal_parent_exists "$pattern" || {
+                if tree_glob_matches "$pattern"; then
+                    :
+                elif tree_literal_parent_exists "$pattern"; then
+                    create_entries+=("$pattern")
+                else
                     sibling=$(nearest_tree_sibling "$pattern")
                     if [[ $sibling != none && $pattern == */** ]]; then sibling+="/**"; fi
-                    violation_lines+=("issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling")
-                }
+                    if tree_pattern_is_literal "$pattern"; then
+                        violation_lines+=("issue #$issue predictedWriteSet literal create path has no parent in chain-base tree: $pattern; nearest existing sibling: $sibling")
+                    else
+                        violation_lines+=("issue #$issue predictedWriteSet glob matches no paths in chain-base tree: $pattern; nearest existing sibling: $sibling")
+                    fi
+                fi
             done
             while IFS= read -r companion; do
                 [[ -n $companion ]] || continue
@@ -904,7 +919,11 @@ if ((validate_only)); then
         fi
         exit 1
     fi
-    printf 'dispatch-plan=%s schemaVersion=1 valid\n' "$dispatch_plan"
+    create_summary=none
+    ((${#create_entries[@]} == 0)) ||
+        create_summary=$(printf '%s\n' "${create_entries[@]}" | sort -u | paste -sd, -)
+    printf 'dispatch-plan=%s schemaVersion=1 valid create=%s\n' \
+        "$dispatch_plan" "$create_summary"
     exit 0
 fi
 
