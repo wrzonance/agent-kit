@@ -24,8 +24,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
     [skills/.shared/scripts/agent-preflight.sh]="1347:16128:800"
-    # #731/#732: verification query, durable fingerprints, and typed failure records.
-    [skills/.shared/scripts/agent-run.sh]="1882:20353:800"
+    # #731/#732/#776: verification records, typed failures, and terminal summaries.
+    [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     [skills/.shared/scripts/repo-config.sh]="1134:11719:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
@@ -86,10 +86,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 + updated #772: 1,751,198 bytes / 4 = 437,799 tokens; exact combined total.
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
+# #776: terminal verification summaries and the composed runbook; exact total.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
-readonly MAX_TREE_TOKENS=444049
+# #776 + PR #794 merge-down: combined helper tree exact total.
+readonly MAX_TREE_TOKENS=444304
 
 violations=0
 checked=0
