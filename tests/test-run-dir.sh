@@ -421,10 +421,24 @@ assert_eq no "$([[ -e $writable_agent_repo/.agent/cache ]] && printf yes || prin
 
 unavailable_agent_repo="$tmp/unavailable-agent-repo"
 mkdir -p "$unavailable_agent_repo"
-chmod 555 "$unavailable_agent_repo"
+mkdir_failure_bin="$tmp/mkdir-failure-bin"
+/usr/bin/mkdir -p "$mkdir_failure_bin"
+cat > "$mkdir_failure_bin/mkdir" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ ${*: -1} == "${FAIL_MKDIR_TARGET:?}" ]]; then
+    : > "${FAIL_MKDIR_MARKER:?}"
+    exit 1
+fi
+exec /usr/bin/mkdir "$@"
+SCRIPT
+chmod +x "$mkdir_failure_bin/mkdir"
 unavailable_agent_rc=0
-unavailable_agent_err=$(/bin/bash "$script" --scratch-label pr-body --repo-root "$unavailable_agent_repo" 2>&1) || unavailable_agent_rc=$?
-chmod 755 "$unavailable_agent_repo"
+unavailable_agent_err=$(PATH="$mkdir_failure_bin:$PATH" \
+    FAIL_MKDIR_TARGET="$unavailable_agent_repo/.agent" \
+    FAIL_MKDIR_MARKER="$tmp/mkdir-failure-invoked" \
+    /bin/bash "$script" --scratch-label pr-body --repo-root "$unavailable_agent_repo" 2>&1) || unavailable_agent_rc=$?
+assert_eq yes "$([[ -e $tmp/mkdir-failure-invoked ]] && printf yes || printf no)" \
+    'the unavailable .agent fixture exercises its controlled mkdir failure'
 assert_eq 1 "$unavailable_agent_rc" 'scratch allocation fails when .agent cannot be created'
 assert_contains "$unavailable_agent_err" 'could not create environment state directory' \
     'scratch creation failure names the unavailable .agent parent'

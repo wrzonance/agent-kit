@@ -86,7 +86,18 @@ repos/owner/repo/pulls/14)
     printf '{"number":14,"merged":%s}\n' "$merged"
     ;;
 repos/owner/repo/issues/*/timeline)
-    printf '[{"event":"base_ref_changed","created_at":"%s"}]\n' \
+    [[ " $* " != *' --slurp '* || " $* " != *' --jq '* ]] || {
+        printf 'cannot use --slurp or --jq with pagination\n' >&2
+        exit 2
+    }
+    [[ " $* " == *' --slurp '* ]] || exit 24
+    if [[ ${QUEUE_TIMELINE_FAIL_AFTER_PAGE:-0} == 1 ]]; then
+        printf '[[{"event":"base_ref_changed","created_at":"%s"}]]\n' \
+            "${QUEUE_TIMELINE_PAGE1_ISO:-2023-01-01T00:00:00Z}"
+        exit 42
+    fi
+    printf '[[{"event":"base_ref_changed","created_at":"%s"}],[{"event":"base_ref_changed","created_at":"%s"}]]\n' \
+        "${QUEUE_TIMELINE_PAGE1_ISO:-2023-01-01T00:00:00Z}" \
         "${QUEUE_TIMELINE_ISO:-2024-01-01T00:00:00Z}"
     ;;
 *)
@@ -819,6 +830,21 @@ assert_contains "$(cat "$tmp/stale-epoch.err")" 'chain-advance.sh --retarget' \
     'the refusal tells the operator to rerun chain-advance.sh --retarget'
 assert_eq "$before_stale_epoch" "$(sha256sum "$auth")" \
     'a stale-boundary refusal preserves the prior authorization byte-for-byte'
+
+write_confirmed
+before_partial_timeline=$(sha256sum "$auth")
+partial_timeline_rc=0
+QUEUE_BASE_15=main QUEUE_SHA_15=dddddddddddddddddddddddddddddddddddddddd QUEUE_STATE_15=RUNNABLE \
+    QUEUE_TIMELINE_FAIL_AFTER_PAGE=1 \
+    run_authorize_provider coderabbit:trigger:capability-default --allow-mechanical-advance \
+    --retarget-proof "15:$retarget_proof_ok" \
+    >"$tmp/partial-timeline.out" 2>"$tmp/partial-timeline.err" || partial_timeline_rc=$?
+assert_eq '1' "$partial_timeline_rc" \
+    'authorization fails when gh exits nonzero after a valid first timeline page'
+assert_contains "$(cat "$tmp/partial-timeline.err")" 'live retarget timeline could not be read' \
+    'the partial timeline response is reported as an unreadable live boundary'
+assert_eq "$before_partial_timeline" "$(sha256sum "$auth")" \
+    'a partial timeline failure preserves the prior authorization byte-for-byte'
 
 default_proof_dir2=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/chain-advance-evidence
 mkdir -p "$default_proof_dir2"
