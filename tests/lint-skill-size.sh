@@ -32,7 +32,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777: helper-owned recipes shrink the injected body toward the standard budget.
     # #779: retain destination-adjacent plan publication in the extracted body.
     # #783 + #785: atomic summary producers with durable sweep rehydration.
-    [parallel-issues]="752:15777:500"
+    # #784 final parent integration extends the durable dispatch recipe.
+    [parallel-issues]="752:15829:500"
 )
 
 readonly MAX_BODY_LINES=500

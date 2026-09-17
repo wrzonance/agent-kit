@@ -6,6 +6,8 @@ guard_active_skill_reread() {
     local state_root=$1 session=$2 command_line=$3
     local activation_dir activation_id activation_record activation_tracked
     local active_workflow active_status active_source active_root active_skills active_skill segment
+    local verb token candidate canonical positional pattern_supplied pending_role start
+    local -a words
     [[ -n $state_root && -n $session ]] || return 1
     command -v sha256sum >/dev/null 2>&1 || return 1
     activation_dir="$state_root/.agent/activation"
@@ -28,9 +30,46 @@ guard_active_skill_reread() {
     active_skill="$active_skills/$active_workflow/SKILL.md"
     [[ -f $active_skill && ! -L $active_skill ]] || return 1
     while IFS= read -r segment; do
-        [[ $segment == *"$active_skill"* ]] || continue
-        grep -qE '(^|[[:space:];&|])(cat|head|tail|sed|awk|grep|rg|less|more)([[:space:]]|$)' \
-            <<< "$segment" && return 0
+        mapfile -t words < <(guard_tokenize_words "$segment")
+        ((${#words[@]})) || continue
+        start=$(guard_skip_command_prefix words 0) || continue
+        ((start < ${#words[@]})) || continue
+        verb=${words[start]#\(}; verb=${verb##*/}
+        case $verb in cat|head|tail|sed|awk|grep|rg|less|more|nl) ;; *) continue;; esac
+        positional=0; pattern_supplied=0; pending_role=
+        for token in "${words[@]:start+1}"; do
+            if [[ -n $pending_role ]]; then
+                case $pending_role in
+                    file)
+                        case $token in /*) candidate=$token ;; *) candidate="$state_root/$token" ;; esac
+                        canonical=$(guard_scope_canonical "$candidate") || canonical=
+                        [[ $canonical == "$active_skill" ]] && return 0
+                        pattern_supplied=1 ;;
+                    expression) pattern_supplied=1 ;;
+                    assignment|value) ;;
+                esac
+                pending_role=
+                continue
+            fi
+            case $verb:$token in
+                sed:-e|sed:--expression|grep:-e|grep:--regexp|rg:-e|rg:--regexp)
+                    pending_role='expression'; continue ;;
+                sed:-f|sed:--file|awk:-f|grep:-f|grep:--file|rg:-f|rg:--file)
+                    pending_role='file'; continue ;;
+                awk:-v) pending_role='assignment'; continue ;;
+                head:-n|head:--lines|head:-c|head:--bytes|tail:-n|tail:--lines|tail:-c|tail:--bytes)
+                    pending_role='value'; continue ;;
+            esac
+            [[ $token != -* ]] || continue
+            if [[ $verb == sed || $verb == awk || $verb == grep || $verb == rg ]] &&
+                ((pattern_supplied == 0 && positional++ == 0)); then
+                pattern_supplied=1
+                continue
+            fi
+            case $token in /*) candidate=$token ;; *) candidate="$state_root/$token" ;; esac
+            canonical=$(guard_scope_canonical "$candidate") || continue
+            [[ $canonical == "$active_skill" ]] && return 0
+        done
     done < <(guard_destructive_command_segments "$command_line")
     return 1
 }

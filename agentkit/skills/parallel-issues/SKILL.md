@@ -221,8 +221,11 @@ referencing it) is documented in
 Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full. Selection consumes `pick-issues.sh` output only: board status, eligibility, blockers,
-dispatch/queue state, and `predictedWriteSet` arrive in one body-free record.
+in full. Selection consumes `pick-issues.sh` output only: a body-free record carries status,
+eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, and
+`workShape`. `workShape: "no-code"` means HOLD before worktree creation; retain `holdReason`, count
+`no-code-hold`, and use the anchored [work-shape verdict](references/triage-and-selection.md#work-shape-verdict)
+for ambiguity.
 `$agentkit/.shared/scripts/pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
 exactly once after the final conflict and slot-cap decisions and before dispatch. Full, thin, and
 empty sets report requested/eligible/dispatched plus one reason per exclusion.
@@ -233,10 +236,10 @@ or an empty Ready column; preserve partial evidence as degraded.
 
 ### Step 3: Conflict analysis (file-level)
 
-Use each picker record's `predictedWriteSet` as the conflict seed. Expand it for shared build
-configuration, lockfiles, generated contracts, and code-implied paths without reading repository
-documents; workers read implementation sources in their isolated worktrees. Apply the triage
-digest's work-shape verdict before Step 5, then flag records that share a path or module:
+Each `predictedWriteSet` is a seed, never sufficient conflict evidence by itself. Expand empty or partial
+seeds from `requirementsDigest` into code-implied paths, build configuration, lockfiles, and generated
+contracts without issue refetch or repository-document reads. Flag
+implementation records that share a path, requirement, or module:
 
 ```
 Safe to parallelize:

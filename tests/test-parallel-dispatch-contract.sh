@@ -55,6 +55,8 @@ assert_contains "$agent_preflight_help" "printf '%s\\n' '.agent/*'" \
     'the moved preflight preserves the local exclusion allowlist'
 assert_contains "$agent_preflight_help" 'contract skills path mismatch' \
     'the moved preflight preserves contract provenance validation'
+assert_contains "$agent_preflight_help" '[[ $agentkit == /* ]]' \
+    'the moved resolver requires an absolute skills path before helper use'
 assert_contains "$session_ledger_help" 'Recipe: establish and reuse one run ID' \
     'session-ledger help owns the removed ledger recipe'
 assert_contains "$session_ledger_help" 'trust-trunk=${trust_trunk:-false}' \
@@ -124,6 +126,33 @@ assert_eq '--issue-numbers 777 --status In review --repo owner/repo' "$(<"$move_
     'the copied board recipe forwards the selected issue and In review lifecycle target'
 assert_contains "$boundary_help" 'Recipe: select once before fetching' \
     'boundary-mode help owns its removed selection recipe'
+assert_contains "$boundary_help" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
+    'boundary selection refuses an unresolved or untrusted helper root'
+boundary_recipe="$tmp/boundary-recipe.sh"
+printf '%s\n' "$boundary_help" | awk '
+    /^Recipe: select once before fetching$/ { inside=1; next }
+    inside { sub(/^  /, ""); print }
+' >"$boundary_recipe"
+boundary_agentkit="$tmp/boundary-agentkit"
+boundary_bin="$tmp/boundary-bin"
+mkdir -p "$boundary_agentkit/.shared/scripts" "$boundary_agentkit/parallel-issues/scripts" "$boundary_bin"
+cat >"$boundary_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' owner/repo
+EOF
+cat >"$boundary_agentkit/parallel-issues/scripts/select-boundary-mode.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' invoked >>"$BOUNDARY_CALLS"
+printf '%s\n' 'boundary mode: public-fenced'
+EOF
+chmod +x "$boundary_bin/gh" "$boundary_agentkit/parallel-issues/scripts/select-boundary-mode.sh"
+boundary_calls="$tmp/boundary-calls"
+boundary_rc=0
+PATH="$boundary_bin:$PATH" agentkit="$boundary_agentkit" agentkit_provenance=untrusted \
+    yolo_invocation=false BOUNDARY_CALLS="$boundary_calls" bash "$boundary_recipe" >/dev/null 2>&1 || boundary_rc=$?
+assert_eq 1 "$boundary_rc" 'the copied boundary recipe refuses untrusted helper provenance'
+assert_eq no "$([[ -e $boundary_calls ]] && printf yes || printf no)" \
+    'the untrusted boundary recipe refuses before invoking its helper'
 assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \
     'artifact helper help owns its removed preparation recipe'
 assert_contains "$prepare_help" '--scratch-label "prior-art-$issue_number-$RUN_ID"' \
@@ -1599,6 +1628,14 @@ assert_contains "$normalized_text" 'shared build config, lockfiles, and generate
     'dispatch-plan compaction preserves shared conflict inputs'
 assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
     'selection uses the body-free picker record as its sole mechanical input'
+assert_contains "$normalized_text" 'workShape: "no-code"' \
+    'selection holds the picker-record no-code verdict before worktree creation'
+assert_contains "$normalized_text" '(references/triage-and-selection.md#work-shape-verdict)' \
+    'the compact no-code rule retains its adjudication anchor'
+assert_contains "$normalized_text" 'never sufficient conflict evidence by itself' \
+    'an empty or partial literal path seed cannot prove no conflict'
+assert_contains "$normalized_text" 'requirementsDigest' \
+    'conflict analysis expands paths from cached issue requirements'
 assert_not_contains "$normalized_text" 'Read each issue' \
     'root conflict analysis does not reread issue bodies or repository documents'
 assert_not_contains "$worker_prompts_only_text" '## Issue-lead prompt' \

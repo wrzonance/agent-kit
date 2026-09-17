@@ -24,8 +24,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
-    # #778: emit and validate the harness runtime-tool record.
-    [skills/.shared/scripts/agent-preflight.sh]="1398:17095:800"
+    # #777 absolute-path guard + #778 harness-bound runtime-tool record.
+    [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776: verification records, typed failures, and terminal summaries.
     [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -34,7 +34,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     # #778: validate runtime-tool metadata and print the exact repair command.
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="776:10043:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
     # #782: literal-create classification and validation summary.
@@ -106,7 +106,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
 # #783: atomic, idempotent summary producer and queue records.
 # #785 review: optional fallback trust filtering and standalone PR transport.
-readonly MAX_TREE_TOKENS=454123
+# #777 review repair + #778: refreshed readers and harness-bound cached tools.
+# #783: filename-bound report identity.
+# #784 review: cached requirements and work-shape enforcement atop the final parent.
+readonly MAX_TREE_TOKENS=455208
 
 violations=0
 checked=0

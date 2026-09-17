@@ -2,6 +2,10 @@
 # Suite: compose-worker-prompt.sh fills both worker templates from repository facts.
 set -uo pipefail
 
+# Fixtures below declare Codex-shaped contracts; do not infer their harness
+# from the developer machine or CI runner. Dedicated mismatch cases override it.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
+
 TEST_NAME='compose-worker-prompt'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
@@ -206,6 +210,26 @@ assert_contains "$malformed_tools_err" 'invalid tools= record' \
 assert_contains "$malformed_tools_err" \
     "recovery: $root/agentkit/skills/.shared/scripts/agent-preflight.sh --worktree $malformed_tools_repo --ensure" \
     'the malformed runtime-tool refusal gives the exact repair command'
+
+claude_tools_line="tools= spawn=Agent wait=TaskOutput send=SendMessage list='Agent,TaskOutput,SendMessage'"
+for detected_harness in codex claude; do
+    swapped_tools_repo="$tmp/swapped-$detected_harness-tools"
+    make_repo "$swapped_tools_repo" "$contract"
+    if [[ $detected_harness == codex ]]; then
+        sed -i "s|^tools=.*|$claude_tools_line|" "$swapped_tools_repo/.agent/env-contract.txt"
+    else
+        sed -i 's/^harness= name=codex /harness= name=claude /' "$swapped_tools_repo/.agent/env-contract.txt"
+    fi
+    swapped_tools_rc=0
+    swapped_tools_err=$(CONTRACT_CACHE_HARNESS_NAME_MEMO=$detected_harness bash "$compose" \
+        --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$swapped_tools_repo" --issue 136 --branch feat/issue-136 \
+        --worker-model gpt-5.6-luna --worker-effort high 2>&1 >/dev/null) || swapped_tools_rc=$?
+    assert_eq 1 "$swapped_tools_rc" \
+        "composer refuses the other harness's mapping under detected $detected_harness"
+    assert_contains "$swapped_tools_err" 'invalid tools= record' \
+        "the swapped $detected_harness mapping refusal names the invalid tools record"
+done
 
 compose_verification_report() {
     local fixture=$1 spec_body=$2 dispatch_plan=${3:-} output_file

@@ -187,14 +187,29 @@ selection=$(jq -c --argjson deps "$(jq -c '.data.repository' <<< "$deps")" '
 
 issue_paths=$script_dir/../../parallel-issues/scripts/issue-paths.sh
 [[ -x $issue_paths ]] || die 'issue-paths.sh is unavailable'
+triage=$script_dir/triage-issues.sh
+[[ -x $triage ]] || die 'triage-issues.sh is unavailable'
+body_file=$(mktemp "${TMPDIR:-/tmp}/pick-issues.body.XXXXXX") || die 'could not create body cache'
+chmod 600 "$body_file"; trap 'rm -f -- "$body_file"' EXIT
 while IFS=$'\t' read -r issue body_b64; do
     body=$(base64 -d <<<"$body_b64")
     records=$(printf '%s' "$body" | "$issue_paths" --issue "$issue" \
         --repo-root "$repo_root" --body-file -) || die "could not derive paths for issue #$issue"
     paths=$(awk '{sub(/^[^ ]+ /, ""); print}' <<<"$records" |
         jq -Rsc 'split("\n") | map(select(length > 0))')
-    selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" \
-        'map(if .number == $issue then .predictedWriteSet = $paths else . end)' <<<"$selection")
+    printf '%s' "$body" >"$body_file"
+    shape_record=$("$triage" --classify-shape "$body_file") || die "could not classify work shape for issue #$issue"
+    work_shape=${shape_record#work-shape=}; work_shape=${work_shape%% signal=*}
+    hold_reason=${shape_record#* signal=}
+    selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" --arg body "$body" \
+        --arg shape "$work_shape" --arg reason "$hold_reason" '
+      map(if .number == $issue then
+        . + {predictedWriteSet: $paths, workShape: $shape,
+             requirementsDigest: ([.title[0:240]] +
+               ($body | split("\n") | map(gsub("[[:cntrl:]]"; " ") |
+                 gsub("^\\s+|\\s+$"; "") | select(length > 0) | .[0:240])) | .[:12])}
+        | if $shape == "no-code" then .eligible = false | .holdReason = $reason else . end
+      else . end)' <<<"$selection")
 done < <(jq -r '.[] | [.number, (.body | @base64)] | @tsv' <<<"$selection")
 selection=$(jq -c 'map(del(.body))' <<<"$selection")
 
@@ -225,9 +240,10 @@ printf 'pick= project=%s owner=%s scanned=%s of=%s candidates=%s selectable=%s d
     "$project_number" "$board_owner" "$fetched" "${declared_total:-$fetched}" "$count" "$eligible" "$dispatched" "$queued"
 
 jq -r '.[]
-    | if .queued then "  QUEUE " elif .dispatch then "  " else "  SKIP " end
+    | if .workShape == "no-code" then "  HOLD " elif .queued then "  QUEUE " elif .dispatch then "  " else "  SKIP " end
       + "#\(.number)  \(.status)  \(.title)"
       + (if .dispatch or .queued then ""
+         elif .workShape == "no-code" then "  [no-code: \(.holdReason)]"
          elif (.blockers | length) > 0 then "  [blocked by \((.blockers | map("#" + tostring) | join(", ")))]"
          else "  [\(.blockerTotal) blockers, only \(.blockerRead) read; treat as blocked]"
          end)' <<< "$selection"
