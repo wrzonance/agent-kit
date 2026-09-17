@@ -1,0 +1,3 @@
+Approve the exact payload below:
+`printf '%s' "$literal"` and $(never-run)
+Keep backslashes \\ and "JSON quotes" byte-for-byte.
