@@ -606,6 +606,8 @@ assert_not_contains "$dispatch_handoff" ': "$worker_prompt"' \
     'dispatch handoff does not discard the composed prompt'
 assert_contains "$text" 'run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root"' \
     'final handoff pastes the computed durable run summary'
+assert_contains "$text" '--reports-dir "$dispatch_plan.verification-reports"' \
+    'final handoff replays durable spec-verification reports beside the summary'
 assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
     'final handoff no longer asks the live agent for post-hoc wait telemetry'
 
@@ -631,8 +633,8 @@ assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
 assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
     'receipt recovery is tracked per PR in run-state for a one-shot limit'
-assert_contains "$final_sweep_section" 'append --run-id "$RUN_ID" --path receipt_prs --json "$pr"' \
-    'successful review receipts are stored as numeric PR identities'
+assert_contains "$final_sweep_section" 'record-summary --run-id "$RUN_ID" --path receipt_prs --json "$pr"' \
+    'successful review receipts are stored idempotently as numeric PR identities'
 assert_contains "$final_sweep_section" '--path skipped_prs' \
     'verified skips use their own durable PR collection'
 assert_contains "$final_sweep_section" 'duplicate/invalid' \
@@ -654,6 +656,12 @@ assert_contains "$normalized_text" 'handoff cannot print' \
     'a final-sweep miss prevents the handoff'
 assert_contains "$normalized_text" 'run-state.sh" summary' \
     'handoff emits helper-computed opened-PR receipt coverage totals'
+assert_contains "$normalized_text" 'run-state.sh" init-summary --run-id "$RUN_ID"' \
+    'run setup initializes every required summary collection without resetting it'
+assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --path queued --json "$issue"' \
+    'queue producers persist issue identities idempotently'
+assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --path opened_prs --json "$pr"' \
+    'draft publication persists PR identities idempotently'
 assert_contains "$normalized_text" 'recoverable' \
     'Collect classifies recoverable blocked leads'
 assert_contains "$normalized_text" 'baseline-red' \

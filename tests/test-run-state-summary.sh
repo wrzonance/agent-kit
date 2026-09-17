@@ -24,6 +24,12 @@ printf '%s\n' \
     '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[]}' >"$state"
 chmod 600 -- "$state"
 
+reports="$tmp/dispatch-plan.verification-reports"
+mkdir -m 700 -- "$reports"
+report='spec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
+printf '%s\n' "$report" >"$reports/issue-103.report"
+chmod 600 -- "$reports/issue-103.report"
+
 ledger="$repo/.agent/runs/active-workers.ndjson"
 printf '%s\n' \
     '{"version":2,"issue":101,"worktree":"/tmp/issue-101","branch":"feat/101","runId":"wave","attempt":"101-a","workerId":"worker-101","state":"terminal","disposition":"handed-back","evidence":"src/one.sh","heartbeatEpoch":1}' \
@@ -32,10 +38,10 @@ printf '%s\n' \
     >"$ledger"
 chmod 600 -- "$ledger"
 
-expected=$'coverage= prs=0 receipts=0 skipped=0 parked=2 queued=1\nblocked=101:src/one.sh\nblocked=102:src/two.sh,tests/two.sh'
+expected=$'coverage= prs=0 receipts=0 skipped=0 parked=2 queued=1\nblocked=101:src/one.sh\nblocked=102:src/two.sh,tests/two.sh\nspec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
 assert_eq "$expected" \
-    "$(cd -- "$tmp" && "$script" summary --run-id wave --repo-root "$repo")" \
-    'summary derives exact coverage and blocker lines from durable state and this run ledger'
+    "$(cd -- "$tmp" && "$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
+    'summary derives exact coverage and replays durable verification reports verbatim'
 
 mkdir -- "$repo/subdir"
 subdir_rc=0
@@ -51,11 +57,36 @@ assert_eq $'coverage= prs=0 receipts=0 skipped=0 parked=1 queued=1\nblocked=102:
     "$("$script" summary --run-id wave --repo-root "$repo")" \
     'latest lifecycle per issue clears an older handback without duplicate parked coverage'
 
-# Missing receipt collections are an honest empty initial state.
+# Every summary collection is required so missing producer evidence cannot look like zero.
 printf '%s\n' '{"opened_prs":[201,202],"queued":[]}' >"$state"
-assert_eq 'coverage= prs=2 receipts=0 skipped=0 parked=1 queued=0' \
-    "$("$script" summary --run-id wave --repo-root "$repo" | head -n1)" \
-    'missing optional receipt and skip collections count as empty'
+missing_state_rc=0
+missing_state_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || missing_state_rc=$?
+assert_eq 1 "$missing_state_rc" 'missing receipt collections refuse an unavailable summary'
+assert_contains "$missing_state_err" 'receipt_prs' 'missing collection refusal names the recovery fields'
+
+# Initialization is explicit and idempotent: it creates only absent summary
+# arrays and never resets an existing producer record.
+"$script" init-summary --run-id wave --repo-root "$repo"
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+    "$(jq -c . "$state")" \
+    'summary initialization creates each missing collection without resetting existing state'
+"$script" init-summary --run-id wave --repo-root "$repo"
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+    "$(jq -c . "$state")" \
+    'resumed summary initialization preserves prior producer records'
+
+"$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
+"$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 204
+"$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
+"$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
+"$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
+assert_eq '{"opened_prs":[201,202,203,204],"queued":[301],"receipt_prs":[203],"skipped_prs":[204]}' \
+    "$(jq -c . "$state")" \
+    'producer recording is numeric and idempotent across resumed sweeps'
 
 printf '%s\n' '{"opened_prs":[201],"queued":[],"receipt_prs":[201,201]}' >"$state"
 bad_state_rc=0
@@ -63,11 +94,35 @@ bad_state_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/n
 assert_eq 1 "$bad_state_rc" 'duplicate receipt PRs refuse instead of inflating coverage'
 assert_contains "$bad_state_err" 'receipt_prs' 'malformed collection refusal names the recovery field'
 
-printf '%s\n' '{"opened_prs":[],"queued":[]}' >"$state"
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
 printf '%s\n' '{not-json' >>"$ledger"
 bad_ledger_rc=0
 bad_ledger_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || bad_ledger_rc=$?
 assert_eq 1 "$bad_ledger_rc" 'malformed lifecycle evidence refuses an honest summary'
 assert_contains "$bad_ledger_err" 'active-workers' 'ledger refusal names the unavailable evidence'
+
+# A large porcelain stream must be consumed completely. The former
+# git|sed|head selector closed the producer early under pipefail.
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+sed -i '$d' "$ledger"
+fake_bin="$tmp/fake-bin"
+mkdir -- "$fake_bin"
+cat >"$fake_bin/git" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ ${1:-} == -C && ${3:-} == worktree && ${4:-} == list && ${5:-} == --porcelain ]]; then
+    printf 'worktree %s\nHEAD 0000000000000000000000000000000000000000\n\n' "$SUMMARY_PRIMARY_ROOT"
+    for ((i=0; i<20000; i++)); do
+        printf 'worktree /tmp/summary-secondary-%05d\nHEAD 0000000000000000000000000000000000000000\n\n' "$i"
+    done
+    exit 0
+fi
+exec "$SUMMARY_REAL_GIT" "$@"
+SCRIPT
+chmod +x "$fake_bin/git"
+large_rc=0
+large_output=$(PATH="$fake_bin:$PATH" SUMMARY_REAL_GIT="$(command -v git)" SUMMARY_PRIMARY_ROOT="$repo" \
+    "$script" summary --run-id wave --repo-root "$repo") || large_rc=$?
+assert_eq 0 "$large_rc" 'primary worktree selection consumes a large porcelain stream without SIGPIPE'
+assert_contains "$large_output" 'coverage= prs=0' 'large worktree selection still resolves the primary ledger'
 
 finish
