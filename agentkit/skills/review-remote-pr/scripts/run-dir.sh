@@ -190,6 +190,33 @@ fallback_target() {
     TARGET=$FALLBACK_REPO_ROOT/$SELECTOR
 }
 
+existing_fallback_target() {
+    local fallback_selector primary_agent primary_evidence primary_selector
+    fallback_paths
+    print_existing_private_root "$FALLBACK_ROOT" 'fallback root' 0
+    [[ -e $FALLBACK_ROOT ]] || return 1
+    print_existing_private_root "$FALLBACK_REPO_ROOT" 'fallback repository root' 0
+    [[ -e $FALLBACK_REPO_ROOT ]] || return 1
+    fallback_selector=$FALLBACK_REPO_ROOT/$SELECTOR
+    print_existing_private_root "$fallback_selector" 'fallback run directory' 0
+    [[ -e $fallback_selector ]] || return 1
+
+    primary_agent=$REPO_ROOT/.agent
+    [[ ! -L $primary_agent ]] || die "environment state directory must not be a symlink: $primary_agent"
+    if [[ -e $primary_agent ]]; then
+        [[ -d $primary_agent ]] || die "environment state directory must be a directory: $primary_agent"
+        primary_evidence=$primary_agent/evidence
+        print_existing_private_root "$primary_evidence" 'evidence directory' 0
+        if [[ -e $primary_evidence ]]; then
+            primary_selector=$primary_evidence/$SELECTOR
+            print_existing_private_root "$primary_selector" 'primary run directory' 0
+            [[ ! -e $primary_selector ]] ||
+                die "run selector exists in both primary and fallback backends: $SELECTOR"
+        fi
+    fi
+    TARGET=$fallback_selector
+}
+
 LISTED_ROOTS=0
 print_existing_private_root() {
     local dir=$1 label=$2 emit=${3:-1} mode
@@ -229,6 +256,11 @@ resolve_repo_root
 
 if ((LIST_RUN_ROOTS)); then
     list_run_roots
+    exit 0
+fi
+
+if existing_fallback_target; then
+    private_dir_ensure "$TARGET" 'run directory'; printf '%s\n' "$TARGET"
     exit 0
 fi
 

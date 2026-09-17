@@ -179,11 +179,14 @@ assert_rc 0 'run-scoped state records through the deterministic private fallback
     env TMPDIR="$fallback_tmp" "$script" append-unique --run-id fallback-wave \
     --repo-root "$fallback_repo" --path opened_prs --json 71
 chmod 755 "$fallback_repo/.agent"
+assert_rc 0 'an existing fallback run stays on that backend after primary access recovers' -- \
+    env TMPDIR="$fallback_tmp" "$script" append-unique --run-id fallback-wave \
+    --repo-root "$fallback_repo" --path opened_prs --json 73
 fallback_latest=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs)
 assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
     'latest discovers the same fallback backend used by run-scoped mutations'
-assert_eq '[71]' "$(jq -c '.value' <<<"$fallback_latest")" \
-    'latest returns opened PRs recorded in the fallback backend'
+assert_eq '[71,73]' "$(jq -c '.value' <<<"$fallback_latest")" \
+    'latest preserves opened PRs across fallback selection and recovered primary access'
 
 # Independent successful workers must not overwrite each other's bookkeeping.
 pids=()

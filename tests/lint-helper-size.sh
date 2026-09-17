@@ -101,7 +101,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #783: computed run-state handoff coverage and lifecycle blocker rendering.
 # #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
 # #785: durable PR recording, trusted backend discovery, and default review rehydration.
-readonly MAX_TREE_TOKENS=451969
+# #785: preserve a trusted fallback selector after primary access recovers.
+readonly MAX_TREE_TOKENS=452330
 
 violations=0
 checked=0

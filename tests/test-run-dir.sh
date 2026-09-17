@@ -193,6 +193,17 @@ RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallba
 chmod 755 -- "$fallback_repo/.agent"
 assert_eq "$RUN_OUT" "$RUN_OUT2" 'the fallback path is stable across repeated calls for the same PR'
 
+RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>/dev/null)
+assert_eq "$RUN_OUT" "$RUN_OUT2" \
+    'an existing trusted fallback selector remains sticky after primary access recovers'
+
+mkdir -p "$fallback_repo/.agent/evidence/pr-7"
+chmod 700 "$fallback_repo/.agent/evidence" "$fallback_repo/.agent/evidence/pr-7"
+RUN_RC=0
+RUN_ERR=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>&1) || RUN_RC=$?
+assert_eq 1 "$RUN_RC" 'a selector present in both run-state backends fails closed'
+assert_contains "$RUN_ERR" 'both primary and fallback' 'the split-backend refusal names the conflict'
+
 roots_rc=0
 roots_out=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --list-run-roots --repo-root "$fallback_repo" 2>"$tmp/.stderr") || roots_rc=$?
 assert_eq 0 "$roots_rc" '--list-run-roots discovers an existing fallback backend'
@@ -436,7 +447,8 @@ assert_contains "$unavailable_agent_err" 'could not create environment state dir
     'scratch creation failure names the unavailable .agent parent'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 246 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 246 lines'
+# Issue #785 adds durable fallback selection and explicit split-backend refusal.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 277 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 277 lines'
 
 finish
