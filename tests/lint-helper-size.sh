@@ -101,6 +101,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
+# Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #783: computed coverage, atomic producers, and filename-bound report identity.
 # #781: shared repository-linked board discovery and atomic cache writer.
 # #781 review: paginated discovery, membership selection and optional persistence.
 # #781 merge-down with #776: measured combined helper tree.
@@ -108,7 +110,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #781 merge-down with #779: measured combined helper tree.
 # #781 merge-down with #777: measured combined helper tree.
 # #781 merge-down with #778: measured combined helper tree.
-readonly MAX_TREE_TOKENS=451162
+# #781 merge-down with #783: measured combined helper tree.
+readonly MAX_TREE_TOKENS=454171
 
 violations=0
 checked=0
