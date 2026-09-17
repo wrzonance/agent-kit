@@ -88,7 +88,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #785: durable PR recording, latest-run lookup, and rehydrated review/sweep contracts.
-readonly MAX_TREE_TOKENS=443839
+readonly MAX_TREE_TOKENS=444179
 
 violations=0
 checked=0

@@ -30,7 +30,7 @@ declare -A KNOWN_OVERSIZE=(
     # #785: durable bare-review defaulting contract.
     [review-remote-pr]="473:8386:450"
     # #785: final sweep rehydrates PRs from run-state.
-    [parallel-issues]="960:18368:900"
+    [parallel-issues]="960:18376:900"
 )
 
 readonly MAX_BODY_LINES=500

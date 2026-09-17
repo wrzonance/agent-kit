@@ -17,11 +17,13 @@ PR=''
 RUN_ID=''
 REPO_ROOT=''
 SELECTOR=''
+LIST_RUN_ROOTS=0
 readonly RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME (--pr N | --run-id ID) [--repo-root DIR]
+       $PROGNAME --list-run-roots [--repo-root DIR]
 
 Prints the private, mode-0700 run directory for pull request N, or for a
 PR-less run addressed by the stable ID (the invocation-level RUN_ID a skill
@@ -29,6 +31,9 @@ already establishes) it was invoked with, creating it if needed. The same
 selector always resolves to the same directory, so a resumed session finds
 its prior evidence instead of orphaning it. Exactly one of --pr / --run-id is
 required; they are mutually exclusive.
+
+--list-run-roots prints existing trusted primary/fallback roots that can hold
+run-ID directories without creating them; exit 11 means none exist.
 
 Primary location: DIR/.agent/evidence/pr-N or DIR/.agent/evidence/run-ID (DIR
 defaults to \`git rev-parse --show-toplevel\`; pass --repo-root to override,
@@ -64,6 +69,7 @@ parse_args() {
             --pr=*) PR=${1#*=}; shift ;;
             --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;
             --run-id=*) RUN_ID=${1#*=}; shift ;;
+            --list-run-roots) LIST_RUN_ROOTS=1; shift ;;
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --repo-root=*) REPO_ROOT=${1#*=}; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -78,6 +84,10 @@ parse_args() {
 # before they ever become part of a path -- a malformed value must never
 # reach mkdir/stat as a traversal or option-injection vector.
 validate_selector() {
+    if ((LIST_RUN_ROOTS)); then
+        [[ -z $PR && -z $RUN_ID ]] || die_usage '--list-run-roots is mutually exclusive with --pr/--run-id'
+        return
+    fi
     if [[ -n $PR && -n $RUN_ID ]]; then
         die_usage '--pr and --run-id are mutually exclusive'
     fi
@@ -169,19 +179,59 @@ try_primary() {
 # on the same selector. A genuine environment failure here has no further
 # fallback and dies outright (also called directly, for the same subshell
 # reason as try_primary).
-fallback_target() {
-    local repo_slug fallback_root
+FALLBACK_ROOT=''
+FALLBACK_REPO_ROOT=''
+fallback_paths() {
+    local repo_slug
     repo_slug=$(printf '%s' "$REPO_ROOT" | sha256sum | cut -c1-16) ||
         die 'could not derive the repository fallback identity'
-    fallback_root="${TMPDIR:-/tmp}/agent-kit-review-remote-pr.$(id -u)"
-    ensure_private_root "$fallback_root" ||
-        die "could not create the fallback run-directory root: $fallback_root; evidence unavailable"
-    TARGET=$fallback_root/$repo_slug/$SELECTOR
+    FALLBACK_ROOT="${TMPDIR:-/tmp}/agent-kit-review-remote-pr.$(id -u)"
+    FALLBACK_REPO_ROOT=$FALLBACK_ROOT/$repo_slug
+}
+
+fallback_target() {
+    fallback_paths
+    ensure_private_root "$FALLBACK_ROOT" ||
+        die "could not create the fallback run-directory root: $FALLBACK_ROOT; evidence unavailable"
+    TARGET=$FALLBACK_REPO_ROOT/$SELECTOR
+}
+
+LISTED_ROOTS=0
+print_existing_private_root() {
+    local dir=$1 label=$2 emit=${3:-1} mode
+    [[ ! -L $dir ]] || die "$label must not be a symlink: $dir"
+    [[ -e $dir ]] || return 0
+    [[ -d $dir && -O $dir ]] || die "$label must be an owned directory: $dir"
+    mode=$(stat -c %a -- "$dir") || die "could not inspect $label: $dir"
+    [[ $mode == 700 ]] || die "$label must have mode 0700: $dir"
+    if ((emit)); then
+        printf '%s\n' "$dir"
+        LISTED_ROOTS=$((LISTED_ROOTS + 1))
+    fi
+}
+
+list_run_roots() {
+    local agent_dir=$REPO_ROOT/.agent evidence_dir
+    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
+    if [[ -e $agent_dir ]]; then
+        [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
+        evidence_dir=$agent_dir/evidence
+        print_existing_private_root "$evidence_dir" 'evidence directory'
+    fi
+    fallback_paths
+    print_existing_private_root "$FALLBACK_ROOT" 'fallback root' 0
+    [[ ! -e $FALLBACK_ROOT ]] || print_existing_private_root "$FALLBACK_REPO_ROOT" 'fallback repository root'
+    ((LISTED_ROOTS)) || exit 11
 }
 
 parse_args "$@"
 validate_selector
 resolve_repo_root
+
+if ((LIST_RUN_ROOTS)); then
+    list_run_roots
+    exit 0
+fi
 
 if try_primary; then
     private_dir_ensure "$TARGET" 'run directory'

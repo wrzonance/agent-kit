@@ -525,7 +525,7 @@ assert_contains "$normalized_text" 'Code Quality dispositioned' \
 assert_contains "$normalized_text" 'exactly one of {adversarial receipt, verified skip receipt}' \
     'the final sweep requires exactly one receipt kind per opened PR'
 final_sweep_section=$(sed -n '/^### Final draft sweep/,/^### Opt-out/p' "$skill")
-assert_contains "$final_sweep_section" 'run-state.sh" get --run-id "$RUN_ID" --path opened_prs' \
+assert_contains "$final_sweep_section" 'run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs' \
     'the final sweep rehydrates opened PRs from invocation run-state'
 assert_contains "$final_sweep_section" 'type == "array"' \
     'the final sweep validates the durable opened PR array'

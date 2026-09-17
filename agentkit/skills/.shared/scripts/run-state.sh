@@ -81,41 +81,39 @@ parse_args() {
 }
 
 latest_state() {
-    local repo_root agent_dir evidence candidate state_file mode mtime run_id
+    local roots='' roots_rc=0 evidence candidate state_file mode mtime run_id
     local selected_mtime='' selected_run_id='' selected_state=''
-    [[ -d $REPO_ROOT ]] || die_usage "--repo-root is not a directory: $REPO_ROOT"
-    repo_root=$(cd -P -- "$REPO_ROOT" && pwd -P) || die 'could not resolve --repo-root'
-    agent_dir=$repo_root/.agent
-    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
-    [[ -e $agent_dir ]] || exit 11
-    [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
-    evidence=$agent_dir/evidence
-    [[ ! -L $evidence ]] || die "evidence directory must not be a symlink: $evidence"
-    [[ -e $evidence ]] || exit 11
-    [[ -d $evidence && -O $evidence ]] || die "evidence directory must be an owned directory: $evidence"
-    mode=$(stat -c %a -- "$evidence") || die "evidence directory mode was unreadable: $evidence"
-    [[ $mode == 700 ]] || die "evidence directory must be owner-private (mode 0700): $evidence"
+    [[ -x $RUN_DIR_SH ]] || die "run-dir.sh not found at $RUN_DIR_SH; evidence unavailable"
+    roots=$("$RUN_DIR_SH" --list-run-roots --repo-root "$REPO_ROOT") || roots_rc=$?
+    case $roots_rc in
+        0) ;;
+        11) exit 11 ;;
+        *) die 'could not resolve trusted run-state roots' ;;
+    esac
 
     shopt -s nullglob
-    for candidate in "$evidence"/run-*; do
-        [[ ! -L $candidate ]] || die "candidate run directory must not be a symlink: $candidate"
-        [[ -d $candidate && -O $candidate ]] || die "candidate run must be an owned directory: $candidate"
-        mode=$(stat -c %a -- "$candidate") || die "candidate run mode was unreadable: $candidate"
-        [[ $mode == 700 ]] || die "candidate run must be owner-private (mode 0700): $candidate"
-        state_file=$candidate/run-state.json
-        [[ ! -L $state_file ]] || die "state file must not be a symlink: $state_file"
-        [[ -e $state_file ]] || continue
-        FILE=$state_file
-        read_state
-        mtime=$(stat -c %y -- "$state_file") || die "state file mtime was unreadable: $state_file"
-        run_id=${candidate##*/run-}
-        if [[ -z $selected_mtime || $mtime > $selected_mtime ||
-            ($mtime == "$selected_mtime" && $run_id > $selected_run_id) ]]; then
-            selected_mtime=$mtime
-            selected_run_id=$run_id
-            selected_state=$STATE
-        fi
-    done
+    while IFS= read -r evidence; do
+        [[ -n $evidence ]] || continue
+        for candidate in "$evidence"/run-*; do
+            [[ ! -L $candidate ]] || die "candidate run directory must not be a symlink: $candidate"
+            [[ -d $candidate && -O $candidate ]] || die "candidate run must be an owned directory: $candidate"
+            mode=$(stat -c %a -- "$candidate") || die "candidate run mode was unreadable: $candidate"
+            [[ $mode == 700 ]] || die "candidate run must be owner-private (mode 0700): $candidate"
+            state_file=$candidate/run-state.json
+            [[ ! -L $state_file ]] || die "state file must not be a symlink: $state_file"
+            [[ -e $state_file ]] || continue
+            FILE=$state_file
+            read_state
+            mtime=$(stat -c %y -- "$state_file") || die "state file mtime was unreadable: $state_file"
+            run_id=${candidate##*/run-}
+            if [[ -z $selected_mtime || $mtime > $selected_mtime ||
+                ($mtime == "$selected_mtime" && $run_id > $selected_run_id) ]]; then
+                selected_mtime=$mtime
+                selected_run_id=$run_id
+                selected_state=$STATE
+            fi
+        done
+    done <<<"$roots"
     [[ -n $selected_run_id ]] || exit 11
 
     local path present value

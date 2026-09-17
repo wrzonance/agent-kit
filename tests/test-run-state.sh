@@ -171,6 +171,20 @@ chmod 600 "$malformed_repo/.agent/evidence/run-bad/run-state.json"
 assert_rc 1 'latest refuses malformed candidate evidence' -- \
     "$script" latest --repo-root "$malformed_repo" --path opened_prs
 
+fallback_repo="$tmp/fallback-repo"
+fallback_tmp="$tmp/fallback-tmp"
+mkdir -p "$fallback_repo/.agent" "$fallback_tmp"
+chmod 555 "$fallback_repo/.agent"
+assert_rc 0 'run-scoped state records through the deterministic private fallback' -- \
+    env TMPDIR="$fallback_tmp" "$script" append-unique --run-id fallback-wave \
+    --repo-root "$fallback_repo" --path opened_prs --json 71
+chmod 755 "$fallback_repo/.agent"
+fallback_latest=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs)
+assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
+    'latest discovers the same fallback backend used by run-scoped mutations'
+assert_eq '[71]' "$(jq -c '.value' <<<"$fallback_latest")" \
+    'latest returns opened PRs recorded in the fallback backend'
+
 # Independent successful workers must not overwrite each other's bookkeeping.
 pids=()
 for n in {1..12}; do

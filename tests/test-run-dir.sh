@@ -193,6 +193,12 @@ RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallba
 chmod 755 -- "$fallback_repo/.agent"
 assert_eq "$RUN_OUT" "$RUN_OUT2" 'the fallback path is stable across repeated calls for the same PR'
 
+roots_rc=0
+roots_out=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --list-run-roots --repo-root "$fallback_repo" 2>"$tmp/.stderr") || roots_rc=$?
+assert_eq 0 "$roots_rc" '--list-run-roots discovers an existing fallback backend'
+assert_contains "$roots_out" "$(dirname -- "$RUN_OUT")" \
+    '--list-run-roots returns the same repository fallback root used for writes'
+
 # A different repository under the same fallback TMPDIR must not collide on
 # the same PR number.
 other_fallback_repo="$tmp/other-fallback-repo"
@@ -352,7 +358,7 @@ assert_eq 1 "$non_git_rc" 'omitting --repo-root outside any Git worktree fails c
 assert_contains "$non_git_err" '--repo-root' 'the non-Git-worktree failure names the escape hatch'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 199 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 246 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 246 lines'
 
 finish
