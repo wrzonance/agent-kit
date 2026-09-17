@@ -88,10 +88,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #776: terminal verification summaries and the composed runbook; exact total.
+# #774 + #776: partial publication evidence and terminal verification summaries.
 # #781: shared repository-linked board discovery and atomic cache writer.
 # #781 review: paginated discovery, membership selection and optional persistence.
 # #781 merge-down with #776: measured combined helper tree.
-readonly MAX_TREE_TOKENS=443900
+# #781 merge-down with #774/#776: measured combined helper tree.
+readonly MAX_TREE_TOKENS=446068
 
 violations=0
 checked=0

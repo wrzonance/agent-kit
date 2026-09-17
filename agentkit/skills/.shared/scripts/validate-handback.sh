@@ -7,7 +7,7 @@
 # reuse the repository's protected-path policy through the sibling library.
 set -euo pipefail
 
-readonly USAGE='usage: validate-handback.sh --worktree PATH --handback-file FILE --issue N --dispatch-plan FILE'
+readonly USAGE='usage: validate-handback.sh [--classify-completion --blocker-file FILE] --worktree PATH --handback-file FILE [--issue N --dispatch-plan FILE]'
 
 # Help is recognized only as the sole argument. Matching -h/--help anywhere in
 # a longer argv would let a real validation invocation that merely contains a
@@ -73,9 +73,11 @@ def unavailable(message):
 
 
 def parse_cli(args):
+    classify_completion = False
     worktree = None
     handback_file = None
     dispatch_plan = None
+    blocker_file = None
     issue = None
     index = 0
     while index < len(args):
@@ -85,7 +87,13 @@ def parse_cli(args):
             if index < len(args):
                 invalid(f"unexpected argument after --: {args[index]}")
             break
-        if option in ("--worktree", "--handback-file", "--dispatch-plan", "--issue"):
+        if option == "--classify-completion":
+            if classify_completion:
+                invalid("--classify-completion given more than once")
+            classify_completion = True
+            index += 1
+            continue
+        if option in ("--worktree", "--handback-file", "--dispatch-plan", "--issue", "--blocker-file"):
             if index + 1 >= len(args) or not args[index + 1]:
                 invalid(f"{option} requires a value")
             target = {
@@ -93,6 +101,7 @@ def parse_cli(args):
                 "--handback-file": "handback_file",
                 "--dispatch-plan": "dispatch_plan",
                 "--issue": "issue",
+                "--blocker-file": "blocker_file",
             }[option]
             if locals()[target] is not None:
                 invalid(f"{option} given more than once")
@@ -103,6 +112,8 @@ def parse_cli(args):
                 handback_file = value
             elif target == "dispatch_plan":
                 dispatch_plan = value
+            elif target == "blocker_file":
+                blocker_file = value
             else:
                 if not re.fullmatch(r"[1-9][0-9]*", value):
                     invalid("--issue requires a positive integer")
@@ -110,12 +121,24 @@ def parse_cli(args):
             index += 2
             continue
         invalid(f"unknown option: {option}")
-    if worktree is None or handback_file is None or dispatch_plan is None or issue is None:
+    if worktree is None or handback_file is None:
+        invalid(
+            "usage: validate-handback.sh [--classify-completion] --worktree PATH "
+            "--handback-file FILE [--issue N --dispatch-plan FILE]"
+        )
+    if classify_completion:
+        if issue is not None or dispatch_plan is not None:
+            invalid("completion classification does not accept --issue or --dispatch-plan")
+        if blocker_file is None:
+            invalid("completion classification requires --blocker-file")
+    elif dispatch_plan is None or issue is None:
         invalid(
             "usage: validate-handback.sh --worktree PATH --handback-file FILE "
             "--issue N --dispatch-plan FILE"
         )
-    return worktree, handback_file, issue, dispatch_plan
+    elif blocker_file is not None:
+        invalid("--blocker-file requires --classify-completion")
+    return classify_completion, worktree, handback_file, issue, dispatch_plan, blocker_file
 
 
 def resolve_existing(path_value, label):
@@ -137,6 +160,38 @@ def resolve_inside(root, raw_path, label):
     if resolved == root or root not in resolved.parents:
         invalid(f"{label} is outside the worktree: {raw_path}")
     return resolved
+
+
+def blocker_output_path(root, raw_path):
+    raw = Path(raw_path)
+    candidate = raw if raw.is_absolute() else root / raw
+    if candidate.is_symlink() or candidate.parent.is_symlink():
+        invalid("blocker file and its parent must not be symlinks")
+    path = resolve_inside(root, raw_path, "blocker file")
+    agent_dir = (root / ".agent").resolve(strict=False)
+    if agent_dir not in path.parents:
+        invalid("blocker file must be below the worktree .agent directory")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        invalid("blocker file must be a regular file and not a symlink")
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        invalid("blocker file parent must be a directory and not a symlink")
+    return path
+
+
+def write_blockers(path, blockers):
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("xb") as stream:
+            os.chmod(temporary, 0o600)
+            for blocker in blockers:
+                stream.write(os.fsencode(blocker) + b"\0")
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        unavailable(f"cannot write blocker file: {error}")
 
 
 def run_evidence(command, *, text=False):
@@ -592,15 +647,119 @@ def validate(root, handback_path, issue, dispatch_plan_path):
     return [str(shipped_helper)] + argv[1:]
 
 
+def classify_completion(root, handback_path, blocker_path):
+    """Label a blocked completion; classification never becomes a PR refusal."""
+    blocker = "unknown"
+    try:
+        report = handback_path.read_text(encoding="utf-8")
+        if "\x00" in report or not re.search(r"(?m)^BLOCKED:", report):
+            return f"disposition=blocked pr=none blocker={blocker}"
+
+        declared = read_config(root, "AGENT_PROTECTED_PATHS", optional=True)
+        protected = []
+        unprotected = []
+        for path in sorted(changed_paths(root)):
+            if path == blocker_path:
+                continue
+            relative = path.relative_to(root).as_posix()
+            if protected_pattern(root, relative, declared):
+                protected.append(relative)
+            else:
+                unprotected.append(relative)
+        if protected:
+            blocker = ",".join(protected)
+        if not protected or unprotected or staged_paths(root):
+            return f"disposition=blocked pr=none blocker={blocker}"
+
+        pushed_match = re.search(
+            r"(?im)^\s*pushed(?:\s+commit)?(?:\s+sha)?\s*[:=]\s*([0-9a-f]{40})\s*$",
+            report,
+        )
+        if pushed_match is None:
+            return f"disposition=blocked pr=none blocker={blocker}"
+        pushed_sha = pushed_match.group(1)
+        branch_match = re.search(r"(?im)^\s*branch\s*:\s*(\S+)\s*$", report)
+        if branch_match is None:
+            return f"disposition=blocked pr=none blocker={blocker}"
+        head = run_evidence(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+        ).stdout.strip()
+        branch = run_evidence(
+            ["git", "-C", str(root), "branch", "--show-current"], text=True
+        ).stdout.strip()
+        remote = run_evidence(
+            ["git", "-C", str(root), "config", "--get", f"branch.{branch}.remote"],
+            text=True,
+        ).stdout.strip()
+        upstream = run_evidence(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "@{upstream}"],
+            text=True,
+        ).stdout.strip()
+        merge_ref = run_evidence(
+            ["git", "-C", str(root), "config", "--get", f"branch.{branch}.merge"],
+            text=True,
+        ).stdout.strip()
+        remote_lines = run_evidence(
+            ["git", "-C", str(root), "ls-remote", "--exit-code", remote, merge_ref],
+            text=True,
+        ).stdout.splitlines()
+        remote_fields = remote_lines[0].split() if len(remote_lines) == 1 else []
+        upstream_sha = remote_fields[0] if len(remote_fields) == 2 else ""
+        remote_ref = remote_fields[1] if len(remote_fields) == 2 else ""
+        if (
+            head != pushed_sha
+            or branch != branch_match.group(1)
+            or not remote
+            or remote == "."
+            or not upstream.startswith(f"{remote}/")
+            or not merge_ref.startswith("refs/heads/")
+            or remote_ref != merge_ref
+            or upstream_sha != pushed_sha
+        ):
+            return f"disposition=blocked pr=none blocker={blocker}"
+
+        log_match = re.search(
+            r"(?im)^\s*(?:green\s+)?verification\s+log(?:\s+path)?\s*[:=]\s*(.+?)\s*$",
+            report,
+        )
+        if log_match is None:
+            return f"disposition=blocked pr=none blocker={blocker}"
+        log_path = resolve_inside(root, log_match.group(1), "verification log")
+        if not log_path.is_file() or log_path.is_symlink():
+            return f"disposition=blocked pr=none blocker={blocker}"
+        log_lines = log_path.read_text(encoding="utf-8").splitlines()
+        exits = [line for line in log_lines if line.startswith("=== agent-run exited rc=")]
+        if not exits or not re.fullmatch(
+            r"=== agent-run exited rc=0 after [0-9]+s", exits[-1]
+        ):
+            return f"disposition=blocked pr=none blocker={blocker}"
+        write_blockers(blocker_path, protected)
+        return "disposition=partial-pushed pr=open blocker-file=written verification=unbound"
+    except (InvalidHandback, UnavailableEvidence, OSError, UnicodeError, ValueError):
+        return f"disposition=blocked pr=none blocker={blocker}"
+
+
 def main():
     try:
-        worktree_value, handback_value, issue, dispatch_plan_value = parse_cli(ARGS)
+        (
+            classify,
+            worktree_value,
+            handback_value,
+            issue,
+            dispatch_plan_value,
+            blocker_file_value,
+        ) = parse_cli(ARGS)
         root = resolve_existing(worktree_value, "worktree")
         if not root.is_dir():
             unavailable("worktree is not a directory")
         handback_path = resolve_existing(handback_value, "handback file")
         if not handback_path.is_file():
             unavailable("handback file is not a regular file")
+        if classify:
+            blocker_path = blocker_output_path(root, blocker_file_value)
+            write_blockers(blocker_path, [])
+            print(classify_completion(root, handback_path, blocker_path))
+            return 0
         raw_dispatch_plan = Path(dispatch_plan_value)
         if raw_dispatch_plan.is_symlink():
             unavailable("dispatch plan must not be a symlink")
