@@ -1432,8 +1432,8 @@ assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo 
 # issue #610: caches= grew CARGO_HOME/GOMODCACHE in place; issue #690 review:
 # +10 lines for the writable-default-cargo-home check the contract token now
 # mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1400 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1400 lines (including harness-bound runtime-tool metadata)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1401 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1401 lines (including absolute-path guard and harness-bound tools)'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \

@@ -2211,6 +2211,31 @@ assert_eq '' "$(ctx_of "$out")" 'reading a different skill body does not claim i
 out=$(post_input "$active_repo" "printf '%s' '$active_skill_path'" "$active_sid" |
     "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(ctx_of "$out")" 'mentioning the active skill path as data is not a reread'
+out=$(post_input "$active_repo" "grep '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'using the active skill path as a grep pattern is not a reread'
+out=$(post_input "$active_repo" "cat '${active_skill_path}.backup'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'reading a suffixed path does not impersonate the active skill operand'
+out=$(post_input "$active_repo" "nl '$active_skill_path'" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'nl of the exact active SKILL.md operand emits the reread advisory'
+out=$(post_input "$active_repo" "awk -v x=y '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq '' "$(ctx_of "$out")" 'an awk program matching the active path is not mistaken for a file read'
+for reader in awk sed grep rg; do
+    out=$(post_input "$active_repo" "$reader -f '$active_skill_path' /dev/null" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
+done
+for wrapped_reader in "env cat '$active_skill_path'" "command cat '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$wrapped_reader" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "a command wrapper preserves the active-skill read: $wrapped_reader"
+done
 
 out=$(post_input "$repo" 'gh project item-list 7 --owner x' | "$hooks/post-tool-use.sh" 2>/dev/null)
 assert_hook_output "$out" post-tool-use 'PostToolUse emits schema-valid JSON'

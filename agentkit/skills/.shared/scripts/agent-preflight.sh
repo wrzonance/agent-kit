@@ -155,6 +155,7 @@ Recipe: resolve, rehydrate, and run once
       printf 'agentkit: no skills path in %s (keyed candidate: %s); run onboard-repo first\n' "$contract" "$keyed_contract" >&2
       exit 1
   fi
+  [[ $agentkit == /* ]] || { printf '%s\n' "agentkit: skills path must be absolute: $agentkit" >&2; exit 1; }
   [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
   agentkit_provenance=ok; : "$agentkit_provenance"
 
