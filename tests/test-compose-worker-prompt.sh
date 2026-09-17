@@ -2,6 +2,10 @@
 # Suite: compose-worker-prompt.sh fills both worker templates from repository facts.
 set -uo pipefail
 
+# Fixtures below declare Codex-shaped contracts; do not infer their harness
+# from the developer machine or CI runner. Dedicated mismatch cases override it.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
+
 TEST_NAME='compose-worker-prompt'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
