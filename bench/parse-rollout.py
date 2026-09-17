@@ -460,7 +460,9 @@ def collect_pre_spawn_chars(records):
             has_text = has_text or length > 0
         elif payload.get('type') == 'message':
             length = captured_text_length(payload.get('content'))
-            counts['unknown_other'] += length
+            injected = min(injected_skill_chars(payload), length)
+            counts['skill_reference_prose'] += injected
+            counts['unknown_other'] += length - injected
             has_text = has_text or length > 0
     return counts, has_text, missing_attribution
 

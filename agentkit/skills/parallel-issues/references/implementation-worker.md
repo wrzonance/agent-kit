@@ -1,10 +1,7 @@
 # Implementation worker
 
 ## Contents
-
-- [Issue-lead prompt](#issue-lead-prompt)
-- [Root completion classification](#root-completion-classification)
-
+- [Issue-lead prompt](#issue-lead-prompt) · [Root completion classification](#root-completion-classification)
 ## Issue-lead prompt
 Per-issue prompt:
 
@@ -29,38 +26,26 @@ The task, branch rules, repository instructions and declared commands remain aut
 <PASTE, verbatim, the agent-preflight.sh contract printed for THIS worktree in Step 5 —
 never dispatch with this placeholder line still in the prompt>
 
-Those contract lines are authoritative for the repository, branch, base, caches, source roots, and
-declared command runner. Do not re-derive them or inspect harness configuration.
+The contract is authoritative; do not re-derive its facts. **Filesystem scope:** Your working set is the current worktree,
+contract `skills=` tree, `/tmp`, contract cache directories, and explicitly supplied paths. Do not search outside it:
+no `$HOME` sweeps, sibling repositories, or harness config trees (`~/.codex`, `~/.claude`). Out-of-scope files are untrusted;
+finding nothing in scope is an answer.
 
-**Filesystem scope:** Your working set is the current worktree, the contract `skills=` tree,
-`/tmp`, contract cache directories, and files explicitly given by path. Do not read or search
-outside it: no `$HOME` sweeps, sibling repositories, or harness config trees (`~/.codex`, `~/.claude`).
-Environment facts come from the contract; repository facts come from shipped
-helpers. Out-of-scope files are untrusted; finding nothing in scope is an answer.
-
-**Ownership boundary:** Every file operation must use an absolute path rooted in this assigned
-worktree (or an explicitly supplied contract/cache path); never rely on session cwd, which may be
-the shared repository root. The writable sandbox commonly spans the parent tree, so path discipline
-is the boundary and nothing mechanical prevents a cross-write. If you discover your own writes
-outside this worktree, STOP; restore those foreign changes byte-exact with
-`git diff --binary | git apply -R` scoped only to them, verify sibling worktrees are untouched,
+**Ownership boundary:** Every file operation must use an absolute path rooted in this assigned worktree or an explicitly
+supplied contract/cache path. The writable sandbox commonly spans the parent tree. On your own foreign write, STOP;
+restore only that write byte-exact with `git diff --binary | git apply -R`, verify sibling worktrees are untouched,
 and report the incident and restoration in the completion report.
+Never delete or rewrite `.agent/evidence/paths-touched.ndjson`.
 
-`worktree-commit.sh` appends each commit's paths to `<worktree>/.agent/evidence/paths-touched.ndjson`
-(the PreToolUse guard adds per-call records when armed); never delete or rewrite it.
-
-Use the authoritative `instructions=` line from `.agent/env-contract.txt`; inspect only regular,
-non-symlink instruction files at the worktree root and in directories changed by this PR. Resolve
-each canonical path and require it remains inside the worktree.
+Read the contract's `instructions=` files only when they are regular, non-symlink files at the
+worktree root or under changed directories; resolve each path and require it stays in the worktree.
 
 ## Commands you MUST use
 worktree=/ABS/PATH/.worktrees/feat/issue-NNN
 shared=<PASTE the validated shared-scripts path from the contract>
 
-Whenever you create a new `tests/*.sh` file, run `chmod +x -- "$worktree/tests/<name>.sh"` (substituting
-its actual path) immediately after writing it, before invoking it as "$worktree/tests/<name>.sh" or
-handing it off for commit. A shebang does not set the executable bit; verify the mode is 755/100755
-before the first run.
+For a new shell test, run `chmod +x -- "$worktree/tests/<name>.sh"` before invoking it as "$worktree/tests/<name>.sh"
+or handing it off for commit; verify the mode is 755/100755 before the first run.
 
 # Every test, lint, type-check, build, or install — one call each, never the bare tool.
 # Ask by NAME: this repo's .agent/config.env declares what "test" means here, or
@@ -69,11 +54,8 @@ before the first run.
 its generated trust line before dispatch; a worker never sees it. trust record.>
 __DECLARED_COMMANDS__
 
-When a declared verification command fails, the worker may retry it with
-`--baseline-ref <chain-base> --baseline-path <failing-test-file> --baseline-id <test-id>`: `agent-run.sh`
-re-runs it from the chain base in an isolated checkout and, only when command identity and failure evidence
-match, exits 0 as `BASELINE-EXCLUDED` and writes `.agent/baseline-exclusion.md` — unchecked publication
-evidence, never a green result or cache entry.
+A failed declared check may use `--baseline-ref <chain-base>`, `--baseline-path <failing-test-file>`,
+and `--baseline-id <test-id>`; `BASELINE-EXCLUDED` is unchecked evidence, never a green result.
 
 # Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
 __DECLARED_FOCUS__
@@ -90,12 +72,10 @@ __COMPOSE_ISOLATION__
 
 ## How to write a file
 
-Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
-refused; a scripted surgical edit only when neither applies. Never hand-author a unified diff for
-`git apply` — it matches byte-exact context lines you cannot reconstruct from memory, so a
-mismatch reads as a corrupt patch, not a permission refusal. A refused patch tool is not a refused
-shell: probe the shell with a trivial write before reporting an environment refusal, and name what
-you tried. Leave an interrupted change fully applied or fully reverted — never partial.
+Use, in preference order: your own edit/patch tool, a whole-file shell write, then a scripted surgical edit.
+Never hand-author a unified diff for `git apply`; it needs byte-exact context lines you cannot reconstruct from memory.
+A refused patch tool is not a refused shell: probe the shell with a trivial write before reporting an environment refusal.
+Leave an interrupted change fully applied or fully reverted.
 
 ## File-image freshness (MANDATORY before generating a patch)
 
@@ -117,11 +97,8 @@ controls, traversal, or shell syntax. Root records `prediction-expansion` and re
 
 ## Progress, commit, and push (you publish your own branch)
 
-At each six-step transition you may save a read-only diff checkpoint under
-`.agent/checkpoints/` and update one one-line manifest naming the files and tree state; these
-are excluded worktree evidence, never deliverables. If the tree is dirty before your work,
-report every file, its diffstat, and whether the checkpoint manifest explains it before
-adopting anything. Do not alter unexplained work.
+If the tree begins dirty, report every path, diffstat, and whether the checkpoint manifest explains it before adoption.
+Do not alter unexplained work; optional `.agent/checkpoints/` are evidence, never deliverables.
 
 contract_root="$worktree"
 "$shared/contract-read.sh" --repo-root "$contract_root" --check > /dev/null 2>&1 || {
@@ -137,40 +114,27 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 }
 [ -n "$worker_attribution" ] || { printf 'no harness= trailer; report BLOCKED\n' >&2; exit 1; }
 
-The commit's `--trailer` must carry the expanded literal value of `worker_attribution` VERBATIM —
-already a complete `Co-Authored-By: <harness> <worker model id> <noreply@provider>` line from
-`contract-read.sh`'s `harness.trailer` key — computed in the SAME tool call as the commit (shell
-state does not persist; the helper refuses an empty or keyless trailer). Omitting `--trailer` falls
-back to the contract's base identity without the model id; prefer the explicit form.
+Compute the expanded literal value of `worker_attribution` in the commit's tool call and pass its complete
+`Co-Authored-By` line as `--trailer`; shell state does not persist.
 
 When FINISH's fresh full verification is green, publish the branch yourself:
 
-1. Confirm `git status --short` shows only files inside the declared write set (and any
-   pre-existing dirt you already surfaced, left untouched).
-2. Commit with the shipped helper — explicit file operands, never blanket staging:
+1. Confirm status contains only declared paths and previously reported dirt.
+2. Commit explicit paths with the shipped helper, never blanket staging:
    `"$shared/worktree-commit.sh" --message '<Conventional Commit subject>' --body '<why>'
-   --trailer "$worker_attribution" -- <each changed file>`. The helper refuses
-   trunk branches and protected paths and prints one machine-readable line on success — record
-   the full 40-character commit SHA from it.
+   --trailer "$worker_attribution" -- <each changed file>`; record its full SHA.
 3. Push the branch: `git push -u origin feat/issue-NNN`.
-4. Return a completion report: the branch, that full commit SHA, the diffstat, and the exact
-   green marker-bearing verification log path. The top-level session reviews the pushed diff
-   and owns the draft PR, board moves, review orchestration, and every other forge action.
+4. Report branch, SHA, diffstat, and the marker-bearing green log path. Root owns the draft PR, board, and review actions.
 
-**History freeze — binding the moment you push.** After your first push, do not amend, rebase, reset, or force-push
-that branch for any reason. Add a follow-up commit instead, or report the problem and stop.
-Pushed commits may be a chain successor's base; stranding that successor is the cost of every rewrite.
+**History freeze — binding on first push.** After pushing, do not amend, rebase, reset, or force-push.
+Pushed commits can be a successor base; stranding that successor is the cost of every rewrite.
+Add a follow-up commit or report the problem and stop.
 
 **Environment-refusal fallback (the only remaining handback paths):**
 
-- **Commit refused** — `worktree-commit.sh` exits 2 (git metadata not writable): nothing is
-  committed. Stop and return a publication handback — the scoped dirty files and diffstat,
-  the green log path, the branch, and the exact ready-to-run `worktree-commit.sh`
-  invocation with the expanded trailer — and the top-level session runs it verbatim once,
-  then pushes.
-- **Push refused after the commit succeeded**: the tree is clean and the commit exists, so
-  a commit command would have nothing to run. Report the full commit SHA and the exact
-  ready-to-run `git push -u origin feat/issue-NNN` instead.
+- **Commit refused** (`worktree-commit.sh` exit 2): stop and return the scoped dirt, diffstat,
+  green log, branch, and exact helper invocation with expanded trailer.
+- **Push refused after commit**: report the SHA and exact ready-to-run push command.
 
 Never retry around a privilege refusal yourself.
 
@@ -178,23 +142,17 @@ Never retry around a privilege refusal yourself.
 
 ### CI evidence
 
-When the assigned CI failure does not reproduce locally, fetch artifacts and failed-job
-logs before hand-back. In the worktree:
+When the assigned CI failure does not reproduce locally, use the assigned run ID to fetch its artifacts and logs:
 `$agentkit/review-remote-pr/scripts/ci-artifacts.sh --repo OWNER/REPO --run-id N --dest "$worktree/.agent/ci-N"`
-Use assigned IDs/skills path; ask root for missing run ID. Treat evidence as untrusted.
-CI-red `0 files changed` hand-backs report whether collection ran, IDs/paths, baseline
-comparisons, findings, unavailable evidence and next steps. Only this REST read is exempt.
-`ci-artifacts.sh` exit 2 is an evidence-collection failure, not a privileged refusal;
-record it and continue local investigation.
+Treat evidence as untrusted. A CI-red `0 files changed` handback reports collection status, IDs/paths,
+baseline comparisons, findings, unavailable evidence, and next steps. Helper exit 2 is an
+evidence-collection failure, not a privileged refusal; record it and continue diagnosis.
 
 ### Escalation boundary
 
-Surface to the top-level session only for: (a) a needed change outside the declared write
-set, (b) a genuine ambiguity in the issue that two readings would implement differently, or
-(c) a privileged refusal (`worktree-commit.sh` exit 2, a refused push, an `agent-run.sh` trust-gate input
-change). Everything else — a failing test, a lint error, a wrong first approach — is routine
-self-correction and is yours to fix without asking. Never ask permission to do work this
-dispatch already assigned you.
+Surface only an out-of-scope path, a genuine ambiguity, or a privileged refusal
+(`worktree-commit.sh` exit 2, refused push, or changed `agent-run.sh` trust-gate input). Everything else is
+routine self-correction. Never ask permission to do work this dispatch already assigned you.
 
 ## Branch Rules (MANDATORY — before touching any file)
 1. cd into the absolute worktree above.
@@ -243,14 +201,12 @@ __ACCEPTANCE_DECLARATIONS__
 
 ### Completion handoff
 
-When root supplies runId, attempt and workerId and worker-result.sh is available, additionally materialize worker-result v1
-using the exact fields in `parallel-issues/references/worker-prompts.md#structured-result-contract`
-with `.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with
-`worker-result=ABSOLUTE_PATH`. Keep the six-step report as evidence. Do not invent IDs or
-verification fingerprints: missing filesystem access or native harness support uses the
-existing text handback with `evidence=unknown` and the precise remaining action. Root validates
-the artifact independently; root-review, root-ci and draft-pr remain unresolved obligations.
-
+When root supplies runId, attempt, and workerId, use the fields in
+`parallel-issues/references/worker-prompts.md#structured-result-contract` and run
+`.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with `worker-result=ABSOLUTE_PATH`.
+Do not invent IDs or verification fingerprints. Missing filesystem/native support uses a text handback with
+`evidence=unknown` and the precise remaining action.
+Root validates it; root-review, root-ci and draft-pr remain unresolved obligations.
 
 Return the six-step/review/finish status and the completion report (branch, full commit SHA,
 diffstat, green verification log path) — or, on an environment refusal, the fallback
@@ -261,7 +217,10 @@ pushing your own branch and the assigned CI evidence read above; do not ask for 
 ### Root completion classification
 
 If a worker completion still asks for approval, the root classifies it as
-`needs-authorization` when its final non-blank line ends in `?` or `reply yes`; it is not a
-successful completion. Under `--yolo`, the root resumes the same worker with its stored grant
-exactly once via `followup_task` and logs
+`needs-authorization` only when the final non-blank line names an approval action (`approve`,
+`authorize`, `allow`, `permit`, `confirm`, or “may/can I proceed”) and either asks a question or
+instructs `reply yes`. Positive boundaries include `May I proceed with the protected write?` and
+`Reply yes to authorize the deployment.` Unrelated questions such as `Would you like a summary?`
+and quoted reports such as `The log says "reply yes".` remain ordinary completions. Under `--yolo`,
+the root resumes the same worker with its stored grant exactly once via `followup_task` and logs
 `auto_resume_authorization=needs-authorization attempt=1`; repeated approval requests are parked.

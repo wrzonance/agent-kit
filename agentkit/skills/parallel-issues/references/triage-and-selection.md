@@ -406,12 +406,11 @@ smuggle a worker into that reservation. The completion table's `worker=<model> <
 actually ran. Root design review and adversarial review keep their own effort settings
 regardless of any entry here.
 
-Start with the body-free `predictedWriteSet` in `pick-issues.sh` output. The picker seeds it with the
-installed helper equivalent to:
+Use the body-free `predictedWriteSet` in `pick-issues.sh` output, seeded by:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-"$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root"
+printf '%s' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -
 ```
 
 Do not rerun that helper during conflict analysis. Expand the emitted paths from the issue's code
