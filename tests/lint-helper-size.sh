@@ -24,7 +24,7 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
-    [skills/.shared/scripts/agent-preflight.sh]="1390:16944:800"
+    [skills/.shared/scripts/agent-preflight.sh]="1391:16971:800"
     # #731/#732/#776: verification records, typed failures, and terminal summaries.
     [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -93,7 +93,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
-readonly MAX_TREE_TOKENS=446919
+readonly MAX_TREE_TOKENS=447217
 
 violations=0
 checked=0

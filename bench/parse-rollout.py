@@ -59,7 +59,8 @@ PROGRAM = 'parse-rollout'
 REFERENCE_PATH_RE = re.compile(r'(?:^|[\s"\'])((?:[\w./-]*?)(?:references|\.shared)/[\w.-]+\.md)')
 PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|more)(?=\s)')
 CUSTOM_EXEC_CMD_RE = re.compile(
-    r'tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*"((?:\\.|[^"\\])*)"', re.DOTALL)
+    r'''tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')''',
+    re.DOTALL)
 INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
 TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
@@ -149,16 +150,31 @@ def custom_exec_commands(payload):
     if payload.get('type') != 'custom_tool_call' or not isinstance(raw, str):
         return []
     commands = []
-    for match in CUSTOM_EXEC_CMD_RE.findall(raw):
+    for double_quoted, single_quoted in CUSTOM_EXEC_CMD_RE.findall(raw):
         try:
-            commands.append(json.loads(f'"{match}"'))
-        except json.JSONDecodeError:
+            if double_quoted:
+                commands.append(json.loads(f'"{double_quoted}"'))
+            else:
+                value = re.sub(r"\\(['\\])", r"\1", single_quoted)
+                if re.search(r"\\(?!['\\])", value):
+                    return []
+                commands.append(value)
+        except (json.JSONDecodeError, TypeError):
             return []
     return commands
 
 
 def command_reads_prose(command):
     return '.md' in command and bool(PROSE_READ_RE.search(command))
+
+
+def command_has_mixed_output(command):
+    return bool(re.search(r'(?:&&|\|\||[;\n]|(?<!\|)\|(?!\|))', command))
+
+
+def mentions_unparsed_prose_read(raw):
+    return (isinstance(raw, str) and '.md' in raw and
+            bool(re.search(r'\b(?:cat|head|tail|sed|awk|grep|rg|less|more)\b', raw)))
 
 
 def prose_read_kind(payload):
@@ -171,11 +187,16 @@ def prose_read_kind(payload):
         if len(commands) > 1:
             return 'unavailable' if any(command_reads_prose(command) for command in commands) else 'none'
         if len(commands) != 1:
+            return 'unavailable' if mentions_unparsed_prose_read(payload.get('input')) else 'none'
+        if not command_reads_prose(commands[0]):
             return 'none'
-        return 'exact' if command_reads_prose(commands[0]) else 'none'
+        return 'unavailable' if command_has_mixed_output(commands[0]) else 'exact'
     elif call_name not in {'exec_command', 'shell', 'bash'}:
         return 'none'
-    return 'exact' if command_reads_prose(call_command_text(payload)) else 'none'
+    command = call_command_text(payload)
+    if not command_reads_prose(command):
+        return 'none'
+    return 'unavailable' if command_has_mixed_output(command) else 'exact'
 
 
 def message_texts(payload):
@@ -373,6 +394,8 @@ def parse_session_file(path):
                 prose_chars_read = None
             elif prose_kind == 'exact' and isinstance(call_id, str) and call_id:
                 pending_prose_reads.add(call_id)
+            elif prose_kind == 'exact':
+                prose_chars_read = None
             if is_verification_launch(payload) and isinstance(call_id, str) and call_id:
                 pending_verification_calls.add(call_id)
             if call_name == 'write_stdin' and not arguments.get('chars'):
@@ -442,6 +465,8 @@ def parse_session_file(path):
 
     if pending_poll_calls:
         polling['intervals_complete'] = False
+    if pending_prose_reads:
+        prose_chars_read = None
     if any(response_calls):
         polling['inputs_complete'] = False
 
