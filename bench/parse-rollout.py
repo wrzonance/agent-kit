@@ -210,6 +210,41 @@ def output_chars(payload):
     return 0
 
 
+def is_verification_launch(payload):
+    command = call_command_text(payload)
+    helper = r'(?:^|\s)["\']?(?:[^\s"\']*/)?agent-run\.sh["\']?(?=\s|$)'
+    return (bool(re.search(helper, command)) and
+            bool(re.search(r'(?:^|\s)--cmd(?:=|\s)', command)) and
+            bool(re.search(r'(?:^|\s)--summary(?=\s|$)', command)))
+
+
+def runtime_ids_from_output(payload):
+    output = payload.get('output')
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return set()
+    if not isinstance(output, dict):
+        return set()
+    ids = set()
+    for key in ('session_id', 'cell_id'):
+        value = output.get(key)
+        if ((isinstance(value, str) and value) or
+                (isinstance(value, int) and not isinstance(value, bool))):
+            ids.add((key, value))
+    return ids
+
+
+def runtime_id_from_arguments(arguments):
+    for key in ('session_id', 'cell_id'):
+        value = arguments.get(key)
+        if ((isinstance(value, str) and value) or
+                (isinstance(value, int) and not isinstance(value, bool))):
+            return key, value
+    return None
+
+
 def token_count_input(payload):
     info = payload.get('info') if isinstance(payload.get('info'), dict) else {}
     usage = info.get('last_token_usage') if isinstance(info.get('last_token_usage'), dict) else info
@@ -296,6 +331,8 @@ def parse_session_file(path):
                'intervals': [], 'intervals_complete': True}
     pending_poll_calls = {}
     churn = {'resume_calls': 0, 'min_yield_ms': None, 'log_reads_between_resumes': 0}
+    pending_verification_calls = set()
+    verification_runtime_ids = set()
     resume_state = {}
     active_resume = None
     prose_chars_injected = 0
@@ -336,18 +373,22 @@ def parse_session_file(path):
                 prose_chars_read = None
             elif prose_kind == 'exact' and isinstance(call_id, str) and call_id:
                 pending_prose_reads.add(call_id)
+            if is_verification_launch(payload) and isinstance(call_id, str) and call_id:
+                pending_verification_calls.add(call_id)
             if call_name == 'write_stdin' and not arguments.get('chars'):
-                resume_key = arguments.get('session_id', arguments.get('cell_id', 'unknown'))
-                slot = resume_state.setdefault(resume_key, {'seen': False, 'pending_reads': 0})
-                if slot['seen']:
-                    churn['log_reads_between_resumes'] += slot['pending_reads']
-                slot.update(seen=True, pending_reads=0)
-                active_resume = resume_key
-                churn['resume_calls'] += 1
-                yield_ms = arguments.get('yield_time_ms')
-                if isinstance(yield_ms, int) and yield_ms >= 0:
-                    current = churn['min_yield_ms']
-                    churn['min_yield_ms'] = yield_ms if current is None else min(current, yield_ms)
+                resume_key = runtime_id_from_arguments(arguments)
+                active_resume = None
+                if resume_key in verification_runtime_ids:
+                    slot = resume_state.setdefault(resume_key, {'seen': False, 'pending_reads': 0})
+                    if slot['seen']:
+                        churn['log_reads_between_resumes'] += slot['pending_reads']
+                    slot.update(seen=True, pending_reads=0)
+                    active_resume = resume_key
+                    churn['resume_calls'] += 1
+                    yield_ms = arguments.get('yield_time_ms')
+                    if isinstance(yield_ms, int) and yield_ms >= 0:
+                        current = churn['min_yield_ms']
+                        churn['min_yield_ms'] = yield_ms if current is None else min(current, yield_ms)
             elif active_resume is not None and is_log_read(payload):
                 resume_state[active_resume]['pending_reads'] += 1
             if poll_call:
@@ -368,6 +409,9 @@ def parse_session_file(path):
                 if prose_chars_read is not None:
                     prose_chars_read += output_chars(payload)
                 pending_prose_reads.remove(call_id)
+            if isinstance(call_id, str) and call_id in pending_verification_calls:
+                verification_runtime_ids.update(runtime_ids_from_output(payload))
+                pending_verification_calls.remove(call_id)
             if isinstance(call_id, str) and call_id in pending_poll_calls:
                 ended = record_timestamp(rec)
                 if ended is None:

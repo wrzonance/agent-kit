@@ -18,10 +18,10 @@ harness_tools_line() {
             list=Agent,TaskOutput,SendMessage
             ;;
         *)
-            spawn=unavailable
-            wait=unavailable
-            send=unavailable
-            list=unavailable
+            spawn=unknown
+            wait=unknown
+            send=unknown
+            list=unknown
             ;;
     esac
 

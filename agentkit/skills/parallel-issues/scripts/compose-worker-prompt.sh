@@ -160,6 +160,7 @@ repo_config=$script_dir/../../.shared/scripts/repo-config.sh
 contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
 sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
 harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
+contract_cache_lib=$script_dir/../../.shared/scripts/lib/contract-cache.sh
 yield_cap_lib=$script_dir/../../.shared/scripts/lib/yield-cap.sh
 wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
@@ -167,6 +168,7 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 [[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
+[[ -r $contract_cache_lib ]] || die "missing contract-cache.sh: $contract_cache_lib"
 [[ -r $yield_cap_lib ]] || die "missing yield-cap.sh: $yield_cap_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
 fence_script=$script_dir/fence-untrusted-data.sh
@@ -179,7 +181,11 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 [[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] ||
     die "could not parse a numeric wait bound from wait-discipline.md's Worker implementation wait row: $worker_wait_bound_row"
 
-contract=$worktree/.agent/env-contract.txt
+# Resolve the same current-harness contract that contract-read.sh reads and
+# agent-preflight.sh --ensure repairs. The bare name is only its legacy fallback.
+# shellcheck disable=SC1090,SC1091
+source "$contract_cache_lib"
+contract=$(contract_cache_contract_file "$worktree")
 spec=
 prior_art=
 emit_acceptance_declarations() {
@@ -280,15 +286,16 @@ yield_cap_ms=${yield_cap_line#yield-cap= ms=}
 yield_cap_ms=${yield_cap_ms%% *}
 
 emit_verify_runbook() {
+    if [[ -z $verify_command ]]; then
+        printf 'verify= unavailable reason=no-scoped-command\n'
+        return
+    fi
     printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
         "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
 }
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
 source "$sandbox_comparator_lib"
-# shellcheck disable=SC1090,SC1091
-source "$script_dir/../../.shared/scripts/lib/contract-cache.sh"
-
 root_git_common=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null) || root_git_common=''
 # Initialized unconditionally (issue #332 F4): this branch does not always
 # run (root_git_common can be empty outside a git work tree), and an unset
@@ -373,7 +380,6 @@ while IFS='=' read -r key value; do
     command_names+=("$name")
     command_keys+=("$key")
 done <<< "$command_list"
-((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
 
 # --- write-set scoping of the declared-command list (issue #336) -----------
 # A dispatch whose write set is `frontend/src/**` cannot make a .NET backend
@@ -444,7 +450,9 @@ scope_commands() {
     # declared component (a docs-only dispatch in a fully-componentised
     # monorepo) keeps the full list, exactly as before the filter existed.
     # Refusing here would convert a legitimate dispatch into a blocker.
-    if ((${#scoped_command_names[@]} == 0)); then
+    if ((${#scoped_command_names[@]} == 0 && ${#command_names[@]} > 0)); then
+        # A lone scoped-out test has no safe substitute; leave it unavailable.
+        ((${#command_names[@]} != 1)) || [[ ${command_keys[0]} != AGENT_CMD_TEST ]] || return 0
         scoped_command_names=("${command_names[@]}")
         scoped_command_keys=("${command_keys[@]}")
         dropped_commands=()
@@ -474,16 +482,8 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
-# focus_declared is read from the FULL declaration list, but `--cmd test --only`
-# selects one specific command -- and the write-set filter may have scoped that
-# command out. Emitting the focused selector anyway points the worker at a suite
-# this dispatch has no business running, and (when that suite drives Compose)
-# does so without the isolation prose, since compose_reachable only inspects
-# scoped commands. Both the selector and the Compose decision must therefore
-# follow the SCOPED test command, not the mere existence of a declaration.
-#
-# A repo with no AGENT_CMD_TEST resolves `test` through its runner instead;
-# there is no per-command rundir to scope by, so that case is never scoped out.
+# A scoped-out test must lose both its focused selector and Compose prose. A
+# runner-resolved test has no per-command rundir and therefore stays in scope.
 focus_test_scoped_out=0
 if ((focus_declared)) && ((test_declared)); then
     focus_test_in_scope=0
@@ -506,7 +506,11 @@ elif query_test_resolution; then
     runbook_test_runnable=1
 fi
 if ((runbook_test_runnable == 0)); then
-    verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+    if ((${#scoped_command_names[@]})); then
+        verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+    else
+        verify_command=''
+    fi
 fi
 
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'

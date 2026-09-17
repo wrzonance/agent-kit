@@ -48,8 +48,8 @@ unknown_home="$tmp/unknown-home"
 mkdir -p "$unknown_home"
 out=$("${clean_harness_env[@]}" HOME="$unknown_home" "$script" --worktree "$repo" 2> /dev/null)
 assert_contains "$out" 'harness=' 'the block names the harness it ran under'
-assert_contains "$out" "tools= spawn=unavailable wait=unavailable send=unavailable list='unavailable'" \
-    'a signal-free runner does not guess another harness runtime tools'
+assert_contains "$out" "tools= spawn=unknown wait=unknown send=unknown list='unknown'" \
+    'a signal-free runner preserves unknown runtime tools for live inspection'
 assert_contains "$out" 'yield-cap= ms=30000 source=default harness=unknown' \
     'a signal-free runner advertises the conservative unknown-harness default'
 assert_rc 0 'a preflight in a bare repository still exits 0' -- \

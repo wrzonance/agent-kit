@@ -1200,7 +1200,7 @@ probe_harness() {
     if declare -F harness_tools_line > /dev/null; then
         emit "$(harness_tools_line "$harness")"
     else
-        emit "tools= spawn=unavailable wait=unavailable send=unavailable list='unavailable'"
+        emit "tools= spawn=unknown wait=unknown send=unknown list='unknown'"
     fi
     if declare -F yield_cap_line > /dev/null; then
         emit "$(yield_cap_line "$harness")"

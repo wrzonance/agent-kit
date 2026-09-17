@@ -21,13 +21,21 @@ assert_eq \
     'Claude names its Agent-tool equivalents exactly'
 
 assert_eq \
-    "tools= spawn=unavailable wait=unavailable send=unavailable list='unavailable'" \
+    "tools= spawn=unknown wait=unknown send=unknown list='unknown'" \
     "$(bash "$helper" unknown)" \
-    'an unmapped harness is explicit and never borrows another runtime mapping'
+    'an unmapped harness preserves unknown capability state for live inspection'
 
 assert_eq \
-    "tools= spawn=unavailable wait=unavailable send=unavailable list='unavailable'" \
+    "tools= spawn=unknown wait=unknown send=unknown list='unknown'" \
     "$(bash "$helper" opencode)" \
-    'a known harness without a declared sub-agent interface remains unavailable'
+    'OpenCode preserves unknown capability state instead of falsely degrading to self'
+
+spawn_contract=$(<"$root/agentkit/skills/.shared/spawn-contract.md")
+assert_contains "$spawn_contract" 'spawn=unknown' \
+    'the spawn contract distinguishes an unmapped capability from a known absence'
+assert_contains "$spawn_contract" 'inspect the live runtime' \
+    'unknown capability state directs the root to inspect its live runtime tools'
+assert_contains "$spawn_contract" 'only when that inspection shows no spawn capability' \
+    'unknown capability state reaches the degraded path only after live inspection proves absence'
 
 finish
