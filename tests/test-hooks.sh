@@ -2230,6 +2230,10 @@ for reader in awk sed grep rg; do
     assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
         "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
 done
+out=$(post_input "$active_repo" "awk --file '$active_skill_path' /dev/null" "$active_sid" |
+    "$hooks/post-tool-use.sh" 2>/dev/null)
+assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+    "$(ctx_of "$out")" 'awk --file recognizes the active skill as a read operand'
 for command in \
     "sed -es/foo/bar/ '$active_skill_path'" \
     "sed --expression=s/foo/bar/ '$active_skill_path'" \
@@ -2244,6 +2248,7 @@ for command in \
 done
 for command in \
     "awk -f'$active_skill_path' /dev/null" \
+    "awk --file='$active_skill_path' /dev/null" \
     "sed -f'$active_skill_path' /dev/null" \
     "sed --file='$active_skill_path' /dev/null" \
     "grep -f'$active_skill_path' /dev/null" \
@@ -2268,7 +2273,6 @@ for command in \
 done
 for command in \
     "awk -e'$active_skill_path' /dev/null" \
-    "awk --file='$active_skill_path' /dev/null" \
     "sed --regexp='$active_skill_path' /dev/null" \
     "cat -f'$active_skill_path' /dev/null"; do
     out=$(post_input "$active_repo" "$command" "$active_sid" |

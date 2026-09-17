@@ -94,7 +94,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
-readonly MAX_TREE_TOKENS=447711
+readonly MAX_TREE_TOKENS=447717
 
 violations=0
 checked=0
