@@ -24,7 +24,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
-    [skills/.shared/scripts/agent-preflight.sh]="1391:16971:800"
+    # #777 absolute-path guard + #778 harness-bound runtime-tool record.
+    [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776: verification records, typed failures, and terminal summaries.
     [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -32,6 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
+    # #778: validate runtime-tool metadata and print the exact repair command.
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1066:13055:800"
@@ -93,7 +96,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
+# #777 review repair + #778: refreshed readers and harness-bound cached tools.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
+# Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
@@ -101,7 +106,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #774/#776 + PR #794 merge-down: combined helper tree exact total.
 # #779 + PR #794 merge-down: 1,786,587 helper bytes / 4 = 446,646 tokens; exact total.
 # #777 review + PR #794 merge-down: 1,802,953 helper bytes / 4 = 450,738 tokens; exact total.
-readonly MAX_TREE_TOKENS=450738
+# #778 + PR #794 merge-down: 1,806,262 helper bytes / 4 = 451,565 tokens; exact total.
+readonly MAX_TREE_TOKENS=451565
 
 violations=0
 checked=0
