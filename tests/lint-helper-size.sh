@@ -112,7 +112,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #785 bot repair: reject duplicate run IDs across trusted state roots.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # #784 review plus final #792 parent: cached verdicts and reader fixes.
-readonly MAX_TREE_TOKENS=455563
+# Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #784 final #792 parser repairs: cached verdicts and reader fixes.
+readonly MAX_TREE_TOKENS=455569
 
 violations=0
 checked=0
