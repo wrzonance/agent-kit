@@ -98,8 +98,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
-# Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
-readonly MAX_TREE_TOKENS=448545
+# Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #783: computed coverage, atomic producers, and filename-bound report identity.
+readonly MAX_TREE_TOKENS=451554
 
 violations=0
 checked=0
