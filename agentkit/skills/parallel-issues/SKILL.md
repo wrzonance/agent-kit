@@ -53,7 +53,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 `--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
 
 **Unknown-flag disposition.** A `--token` outside the table above and not documented elsewhere in
-this skill (`--no-followup`'s Phase 3 opt-out remains recognized) still gets named in the opening
+this skill (`--no-followup`'s Step 3d opt-out remains recognized) still gets named in the opening
 flag announcement, never silently dropped, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a
 downstream-owned flag also carries into the handoff resume line below.
 
@@ -92,7 +92,8 @@ set the shared ledger identity before the first receipt. Run `"$agentkit/.shared
 The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
-`RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin`.
+`RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
+After establishing `RUN_ID`, run `"$agentkit/.shared/scripts/run-state.sh" init-summary --run-id "$RUN_ID" --repo-root "$repository_root"`; it preserves existing records.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
@@ -275,6 +276,7 @@ edges, decompose it into linear chains, and print the chain plan beside the conf
 get approval; `--fast-mode`: proceed). A cycle cannot be chained — report its members and fall back to
 drop/ask for exactly those. A multi-predecessor join is scheduled, not dropped: its merged, pushed start
 point is built per `references/chains.md` before dispatch. Chains cap 4 successor links; deeper tails enter the same refill queue as slot-cap overflow (`queued=N[#...]`). When a predecessor publishes, refill the next queued successor from that exact pushed SHA.
+On queueing an issue, run `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path queued --json "$issue"`.
 
 ### Step 4: Sequential brainstorm (user steers each) — SKIPPABLE
 
@@ -355,6 +357,7 @@ Role separation: the root/orchestrator must not implement when a real worker can
 Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap. As each lead is dispatched (or, on the degraded path, each issue is started), the root also moves that issue's board item — a no-op when the issue is not on a board:
 
 Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`, then `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help`, and follow their dispatch-cap and selected-issue move recipes.
+Immediately before each initial/refill dispatch, run `"$agentkit/.shared/scripts/run-state.sh" dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"`; absence succeeds.
 
 **The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
 per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
@@ -453,7 +456,7 @@ compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_numbe
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
 compose_output=$("$compose_script" "${compose_args[@]}") || exit 1
 chmod 600 -- "$prompt_file" || exit 1
-spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ -n $spec_verification && $spec_verification != *$'\n'* ]] || exit 1
+spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ $spec_verification != *$'\n'* ]] || exit 1
 spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
 wait_bound=$(printf '%s\n' "$compose_output" | grep -E '^wait-bound= ' || true); [[ -n $wait_bound && $wait_bound != *$'\n'* ]] || exit 1
 plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
@@ -469,6 +472,7 @@ fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
+    [[ $spec_verification ]] || return 0
     case $issue_number in ''|*[!0-9]*) return 1 ;; esac; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
     chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
     dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
@@ -478,7 +482,7 @@ persist_dispatch_verification_report() {
     [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
 }
 persist_dispatch_verification_report || exit 1
-printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "$spec_verification" "$spec_verification_plan"
+printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${spec_verification:-none}" "$spec_verification_plan"
 printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
 printf '%s\n' "$wait_bound"
 ```
@@ -497,8 +501,8 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → review the pushed diff, open the draft PR, move the issue to `In review`, and start Phase 3. Diff size is never a reason to withhold this PR — see Diff-size facts.
-- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves HEAD exists on its freshly queried configured remote branch but does not attribute the retained log to that tree: review the diff, open the draft, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; the NUL-delimited file preserves each protected path exactly, and the body's `## Operator action required` section discloses both the paths and verification limitation. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
+- **Completion report (branch + pushed SHA)** → review the pushed diff, open the draft PR, record its numeric identity with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, move the issue to `In review`, and start Phase 3. Diff size is never a reason to withhold this PR — see Diff-size facts.
+- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves HEAD exists on its freshly queried configured remote branch but does not attribute the retained log to that tree: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; the NUL-delimited file preserves each protected path exactly, and the body's `## Operator action required` section discloses both the paths and verification limitation. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
@@ -723,29 +727,19 @@ Per-PR follow-up exit line:
 ### Final draft sweep (mandatory before handoff)
 
 With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. A successful adversarial/verified-skip result increments receipts; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then once the redrive succeeds record (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`); duplicate/invalid evidence is unrecoverable: park the PR (`"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --path parked --value "$pr"`), report; handoff cannot print on a miss. Success prints `coverage= prs=<opened> receipts=<receipt_count> skipped=<skipped_count> parked=<parked_count> queued=<queued_count>`.
+then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"` and each verified skip with the same command using `--path skipped_prs`; the helper is idempotent across resumed sweeps. On `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
 
 ### Opt-out
-If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
+With `/parallel-issues --no-followup` (or "just open PRs, I'll review later"), skip only Step 3d; still run the mandatory Final draft sweep before handoff. Otherwise Phase 3 runs automatically.
 
 ## Do NOT Delete Worktrees
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Include each stored `spec-verification=` report verbatim in the final handoff plus shared `requests_per_wait_minute` metrics. Shell state does not persist: recompute `dispatch_reports_dir` from `dispatch_plan` and retrieve the durable root-owned records:
+**After the Final draft sweep passes**, print each worktree, PR/blocker, `.agent/` evidence, next step, and ONLY-after-merge-AND-user-confirmation cleanup, then paste this output verbatim:
 ```bash
-bash -c "$(cat <<'BASH_RECIPE'
-dispatch_plan=$1
-dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; dispatch_reports_dir="$dispatch_plan.verification-reports"
-[[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || exit 1; shopt -s nullglob
-dispatch_report_files=("$dispatch_reports_dir"/issue-*.report); ((${#dispatch_report_files[@]} > 0)) || exit 1
-for dispatch_report in "$dispatch_reports_dir"/issue-*.report; do
-    [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || exit 1; mapfile -t dispatch_report_lines < "$dispatch_report"
-    ((${#dispatch_report_lines[@]} == 1)) && [[ ${dispatch_report_lines[0]} == 'spec-verification= '* ]] || exit 1
-    printf '%s\n' "${dispatch_report_lines[0]}"
-done
-shopt -u nullglob
-BASH_RECIPE
-)" _ "${dispatch_plan:-}" || exit $?
+# final-handoff summary
+[[ ${dispatch_plan:-} == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || exit 1
+"$agentkit/.shared/scripts/run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root" --reports-dir "$dispatch_plan.verification-reports" || exit 1
 ```
 Cleanup requires user request after merge.
 
