@@ -34,9 +34,9 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     # #778: validate runtime-tool metadata and print the exact repair command.
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="772:10026:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="776:10043:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="1002:11283:800"
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
@@ -97,10 +97,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
-# #778: one harness-to-runtime-tool mapping and contract/composer integration.
-# #783: computed run-state handoff coverage and lifecycle blocker rendering.
-# #782 bot repair: provenance-aware root filename creation; exact integrated total.
-readonly MAX_TREE_TOKENS=449964
+# #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
+# #783: computed coverage plus atomic, idempotent summary producer and queue records.
+# #782 bot integration: provenance-aware root filename creation; exact combined total.
+readonly MAX_TREE_TOKENS=451604
 
 violations=0
 checked=0
