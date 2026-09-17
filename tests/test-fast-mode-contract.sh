@@ -166,9 +166,9 @@ done <<< "$canonical_funnels"
 assert_eq '0' "$canonical_mismatches" \
     'every canonical funnel example satisfies the accounting invariant'
 
-# #726: exact reference size including durable ownership and legacy limitations.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38642 ]] && printf yes || printf no)" \
-    'triage-and-selection reference stays at or under 38642 bytes'
+# #782 bot repair: exact size after the installed issue-path helper recipe.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 38800 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 38800 bytes'
 
 # Companion acknowledgement is derived from the active skill's declared map.
 assert_rc 0 'delegated skills preserve the governing active receipt' -- python3 - "$root" "$tmp" <<'PY'
