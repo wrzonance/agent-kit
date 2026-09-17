@@ -160,9 +160,12 @@ triage="$root/agentkit/skills/parallel-issues/references/triage-and-selection.md
 bulk_recipe=$(extract_recipe "$triage" 'report_batch_failure()')
 needs_recipe=$(extract_recipe "$triage" 'mapfile -t needs_lines')
 handback_recipe=$(extract_recipe "$parallel_skill" '--scratch-label handback')
+final_handoff_recipe=$(extract_recipe "$parallel_skill" 'final-handoff summary')
 for recipe in "$bulk_recipe" "$needs_recipe" "$handback_recipe"; do
     assert_contains "$recipe" 'bash -c' 'runtime regression extracted a complete Bash fence'
 done
+assert_contains "$final_handoff_recipe" 'run-state.sh" summary' \
+    'runtime regression extracts the executable final-handoff summary fence'
 fixture_root="$tmp/recipe inputs"
 mkdir -p "$fixture_root/kit/.shared/scripts" "$fixture_root/kit/review-remote-pr/scripts" "$fixture_root/worktree" "$fixture_root/root-repo/.agent"
 cp "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh" "$fixture_root/kit/review-remote-pr/scripts/run-dir.sh"
@@ -185,11 +188,19 @@ cat > "$fixture_root/kit/.shared/scripts/validate-handback.sh" <<'SCRIPT'
 [[ -f $4 && -f $8 && $6 == 723 ]] || exit 2
 printf '%s\0' "$2/commit-helper" "$6" "$4" "$8"
 SCRIPT
+cat > "$fixture_root/kit/.shared/scripts/run-state.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+[[ $1 == summary && $2 == --run-id && $3 == run && $4 == --repo-root &&
+   $5 == "$EXPECTED_REPOSITORY_ROOT" && $6 == --reports-dir &&
+   $7 == "$EXPECTED_DISPATCH_PLAN.verification-reports" ]] || exit 2
+printf 'fixture-summary\n'
+SCRIPT
 cat > "$fixture_root/worktree/commit-helper" <<'SCRIPT'
 #!/usr/bin/env bash
 printf 'commit=%s:%s\n' "$PWD" "$*"
 SCRIPT
 chmod +x "$fixture_root/ledger-helper" "$fixture_root/kit/.shared/scripts/validate-handback.sh" \
+    "$fixture_root/kit/.shared/scripts/run-state.sh" \
     "$fixture_root/worktree/commit-helper"
 mkdir -p "$fixture_root/worktree/.agent/cache"
 printf 'preserve worker target' >"$fixture_root/worker-target"
@@ -243,6 +254,18 @@ for parent_shell in bash zsh; do
         _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/missing" "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell handback refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell handback refusal cannot continue"
+
+    : > "$fixture_root/dispatch-plan"
+    handoff_inputs='agentkit=$1; dispatch_plan=$2; RUN_ID=run; repository_root=$3; export EXPECTED_DISPATCH_PLAN=$2 EXPECTED_REPOSITORY_ROOT=$3'
+    output=$("$parent_shell" -f -c "$handoff_inputs"$'\n'"$final_handoff_recipe"$'\n'"$completed" \
+        _ "$fixture_root/kit" "$fixture_root/dispatch-plan" "$fixture_root/root-repo" 2>&1)
+    assert_eq 0 "$?" "$parent_shell final handoff accepts a valid dispatch plan"
+    assert_contains "$output" fixture-summary "$parent_shell final handoff executes the computed summary"
+    assert_contains "$output" parent-completed "$parent_shell final handoff returns after successful summary"
+    output=$("$parent_shell" -f -c "$handoff_inputs"$'\n'"$final_handoff_recipe"$'\n'"$completed" \
+        _ "$fixture_root/kit" "$fixture_root/missing-plan" "$fixture_root/root-repo" 2>&1)
+    assert_eq 1 "$?" "$parent_shell final handoff refuses a missing dispatch plan"
+    assert_not_contains "$output" parent-completed "$parent_shell missing-plan refusal cannot continue"
 
 done
 

@@ -698,6 +698,11 @@ assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
 # --- issue #494: auto-review completion coverage and recoverable redrive ----
 assert_contains "$normalized_text" 'Final draft sweep' \
     'auto-review performs a named final draft sweep before handoff'
+opt_out_section=$(sed -n '/^### Opt-out/,/^## Do NOT Delete Worktrees/p' "$skill")
+assert_contains "$opt_out_section" 'still run the mandatory Final draft sweep before handoff' \
+    '--no-followup skips follow-up creation without bypassing final verification'
+assert_not_contains "$opt_out_section" 'skip Phase 3 and jump straight to handoff' \
+    '--no-followup no longer makes the mandatory sweep unreachable'
 assert_contains "$normalized_text" 'CI settled' \
     'the final sweep requires settled CI for every opened PR'
 assert_contains "$normalized_text" 'Code Quality dispositioned' \
