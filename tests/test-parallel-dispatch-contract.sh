@@ -63,10 +63,65 @@ assert_contains "$repo_config_help" 'Recipe: establish repository facts' \
     'repo-config help owns the removed repository-facts recipe'
 assert_contains "$triage_help" 'Recipe: triage once' \
     'triage help owns the removed one-call recipe'
+triage_recipe="$tmp/triage-recipe.sh"
+printf '%s\n' "$triage_help" | awk '
+    /^Recipe: triage once$/ { inside=1; next }
+    /^The digest is evidence:/ { exit }
+    inside { sub(/^  /, ""); print }
+' >"$triage_recipe"
+triage_agentkit="$tmp/triage-agentkit"
+mkdir -p "$triage_agentkit/.shared/scripts"
+cat >"$triage_agentkit/.shared/scripts/triage-issues.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TRIAGE_CALLS"
+EOF
+chmod +x "$triage_agentkit/.shared/scripts/triage-issues.sh"
+triage_calls="$tmp/triage-calls"
+agentkit="$triage_agentkit" agentkit_provenance=ok TRIAGE_CALLS="$triage_calls" \
+    bash "$triage_recipe"
+assert_eq 1 "$(wc -l <"$triage_calls")" \
+    'the copied triage recipe executes exactly one query'
+assert_eq '--limit 30' "$(<"$triage_calls")" \
+    'the default copied triage recipe selects only the automatic backlog query'
 assert_contains "$concurrency_help" 'Recipe: read the dispatch cap' \
     'concurrency-cap help owns its removed invocation recipe'
 assert_contains "$move_help" 'Recipe: move a selected issue set' \
     'project-item help owns its removed invocation recipe'
+assert_contains "$move_help" ': "${issue_numbers_csv:?replace with the selected issue numbers}"' \
+    'the board recipe requires the caller-selected issue set'
+assert_contains "$move_help" ': "${target_status:?set In progress at dispatch or In review when the draft opens}"' \
+    'the board recipe requires the lifecycle target status'
+assert_contains "$move_help" '--status "$target_status"' \
+    'the board recipe forwards the selected lifecycle target'
+move_recipe="$tmp/move-recipe.sh"
+printf '%s\n' "$move_help" | awk '
+    /^Recipe: move a selected issue set$/ { inside=1; next }
+    inside { sub(/^  /, ""); print }
+' >"$move_recipe"
+move_agentkit="$tmp/move-agentkit"
+mkdir -p "$move_agentkit/.shared/scripts" "$move_agentkit/parallel-issues/scripts"
+cat >"$move_agentkit/.shared/scripts/contract-read.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' owner/repo
+EOF
+cat >"$move_agentkit/parallel-issues/scripts/move-github-project-item.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MOVE_CALLS"
+EOF
+chmod +x "$move_agentkit/.shared/scripts/contract-read.sh" \
+    "$move_agentkit/parallel-issues/scripts/move-github-project-item.sh"
+move_missing_rc=0
+move_missing_err=$(env -u issue_numbers_csv -u target_status agentkit="$move_agentkit" \
+    agentkit_provenance=ok contract_root="$tmp" bash "$move_recipe" 2>&1) || move_missing_rc=$?
+assert_eq 1 "$move_missing_rc" \
+    'the copied board recipe refuses an unspecified issue set and lifecycle status'
+assert_contains "$move_missing_err" 'replace with the selected issue numbers' \
+    'the board recipe refusal tells the caller which input is missing'
+move_calls="$tmp/move-calls"
+agentkit="$move_agentkit" agentkit_provenance=ok contract_root="$tmp" \
+    issue_numbers_csv=777 target_status='In review' MOVE_CALLS="$move_calls" bash "$move_recipe"
+assert_eq '--issue-numbers 777 --status In review --repo owner/repo' "$(<"$move_calls")" \
+    'the copied board recipe forwards the selected issue and In review lifecycle target'
 assert_contains "$boundary_help" 'Recipe: select once before fetching' \
     'boundary-mode help owns its removed selection recipe'
 assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \

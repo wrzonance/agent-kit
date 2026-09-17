@@ -7,6 +7,8 @@ Avoid empty wait cycles that do not advance collection.
 ## The rule
 
 **A wait must never spend model turns.** This is the cost goal, not a guarantee: a runtime may yield even while a helper blocks. Use a bounded helper — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test`. A `sleep N` + re-check issued as its own tool call is churn: the helper already owns the polling loop.
+Use the largest permitted yield. After a runtime yield, resume the same running session or cell;
+never restart the helper.
 
 Root calls already-blocking bounded helpers directly: CI `gh-pr-state.sh --wait-ci` and
 duration-bounded adversarial runs need no waiter. Redirect output to a log and report one
