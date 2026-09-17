@@ -98,10 +98,11 @@ readonly MAX_HELPER_TOKENS=10000
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
+# #777 review: command-specific attached reader options and fail-fast ledger help.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
-# #784 review: cached requirements and work-shape enforcement atop the final parent; exact total.
-readonly MAX_TREE_TOKENS=452689
+# #784 review plus final #792 parent: cached verdicts and reader fixes; exact combined total.
+readonly MAX_TREE_TOKENS=452973
 
 violations=0
 checked=0
