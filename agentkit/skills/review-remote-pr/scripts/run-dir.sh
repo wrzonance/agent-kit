@@ -193,13 +193,10 @@ fallback_target() {
 existing_fallback_target() {
     local fallback_selector primary_agent primary_evidence primary_selector
     fallback_paths
-    print_existing_private_root "$FALLBACK_ROOT" 'fallback root' 0
-    [[ -e $FALLBACK_ROOT ]] || return 1
-    print_existing_private_root "$FALLBACK_REPO_ROOT" 'fallback repository root' 0
-    [[ -e $FALLBACK_REPO_ROOT ]] || return 1
+    optional_private_root_is_trusted "$FALLBACK_ROOT" || return 1
+    optional_private_root_is_trusted "$FALLBACK_REPO_ROOT" || return 1
     fallback_selector=$FALLBACK_REPO_ROOT/$SELECTOR
-    print_existing_private_root "$fallback_selector" 'fallback run directory' 0
-    [[ -e $fallback_selector ]] || return 1
+    optional_private_root_is_trusted "$fallback_selector" || return 1
 
     primary_agent=$REPO_ROOT/.agent
     [[ ! -L $primary_agent ]] || die "environment state directory must not be a symlink: $primary_agent"
@@ -218,6 +215,13 @@ existing_fallback_target() {
 }
 
 LISTED_ROOTS=0
+optional_private_root_is_trusted() {
+    local dir=$1 mode
+    [[ ! -L $dir && -d $dir && -O $dir ]] || return 1
+    mode=$(stat -c %a -- "$dir" 2>/dev/null) || return 1
+    [[ $mode == 700 ]]
+}
+
 print_existing_private_root() {
     local dir=$1 label=$2 emit=${3:-1} mode
     [[ ! -L $dir ]] || die "$label must not be a symlink: $dir"
@@ -237,8 +241,11 @@ list_run_roots() {
         print_existing_private_root "$evidence_dir" 'evidence directory'
     fi
     fallback_paths
-    print_existing_private_root "$FALLBACK_ROOT" 'fallback root' 0
-    [[ ! -e $FALLBACK_ROOT ]] || print_existing_private_root "$FALLBACK_REPO_ROOT" 'fallback repository root'
+    if optional_private_root_is_trusted "$FALLBACK_ROOT" &&
+        optional_private_root_is_trusted "$FALLBACK_REPO_ROOT"; then
+        printf '%s\n' "$FALLBACK_REPO_ROOT"
+        LISTED_ROOTS=$((LISTED_ROOTS + 1))
+    fi
     ((LISTED_ROOTS)) || exit 11
 }
 

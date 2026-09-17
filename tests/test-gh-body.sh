@@ -184,6 +184,37 @@ run_body() {
         bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" "${helper_args[@]}"
 }
 
+# Standalone callers retain the original verified transport without inventing
+# run context. This invokes the public helper directly, outside run_body's
+# parallel-publication context injection.
+: >"$tmp/gh.log"
+legacy_output=$(GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+    GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+    --repo owner/repo --body-file "$body" --draft --title 'Legacy verified transport')
+assert_contains "$legacy_output" 'https://github.com/owner/repo/pull/41' \
+    'standalone PR creation works without run-state context'
+assert_contains "$(cat "$tmp/gh.log")" 'pr create' \
+    'standalone PR creation reaches the verified gh transport'
+
+for partial_context in run-id repo-root; do
+    : >"$tmp/gh.log"
+    partial_rc=0
+    if [[ $partial_context == run-id ]]; then
+        partial_args=(--run-id partial-wave)
+    else
+        partial_args=(--repo-root "$run_state_repo")
+    fi
+    GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+        GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+        bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+        --repo owner/repo --body-file "$body" "${partial_args[@]}" \
+        >/dev/null 2>"$tmp/partial-$partial_context.err" || partial_rc=$?
+    assert_eq 1 "$partial_rc" "partial $partial_context context refuses PR creation"
+    assert_eq 0 "$(wc -l <"$tmp/gh.log" | tr -d '[:space:]')" \
+        "partial $partial_context context makes zero gh create calls"
+done
+
 : >"$tmp/gh.log"
 run_id='bad/run'
 invalid_context_rc=0

@@ -55,6 +55,22 @@ assert_eq "$repo1/.agent/evidence/pr-43" "$RUN_OUT" 'a different PR number resol
 assert_eq no "$( [[ -e "$RUN_OUT/marker" ]] && printf yes || printf no )" \
     'a different PR does not inherit another PR run directory contents'
 
+# A shared TMPDIR fallback is optional while the private primary backend works.
+# An untrusted pathname there must be ignored, never adopted or allowed to
+# deny primary resolution/listing.
+poison_tmp="$tmp/poisoned-optional-fallback"
+mkdir -p "$poison_tmp"
+poison_root="$poison_tmp/agent-kit-review-remote-pr.$(id -u)"
+ln -s "$tmp/untrusted-fallback-target" "$poison_root"
+poison_out=$(TMPDIR="$poison_tmp" /bin/bash "$script" --pr 44 --repo-root "$repo1")
+assert_eq "$repo1/.agent/evidence/pr-44" "$poison_out" \
+    'an untrusted optional fallback does not block a usable primary backend'
+poison_roots=$(TMPDIR="$poison_tmp" /bin/bash "$script" --list-run-roots --repo-root "$repo1")
+assert_contains "$poison_roots" "$repo1/.agent/evidence" \
+    'root discovery retains a usable primary beside an untrusted optional fallback'
+assert_not_contains "$poison_roots" "$poison_root" \
+    'root discovery never adopts an untrusted optional fallback'
+
 # --- PR number validation happens before the value becomes a path component -
 for bad_pr in 0 007 -5 abc '5/../etc' '5;rm -rf /' '5 6'; do
     run "$repo1" "$bad_pr"
@@ -448,7 +464,7 @@ assert_contains "$unavailable_agent_err" 'could not create environment state dir
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #785 adds durable fallback selection and explicit split-backend refusal.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 277 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 277 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 284 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 284 lines'
 
 finish

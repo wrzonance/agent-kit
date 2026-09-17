@@ -47,8 +47,9 @@ usage() {
     cat <<EOF
 Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options...]
 
-PR creation also requires --run-id ID --repo-root DIR. These local options
-durably record the assigned PR number and are never forwarded to gh.
+PR creation may pass --run-id ID --repo-root DIR together. These local options
+durably record the assigned PR number and are never forwarded to gh. Standalone
+creation may omit both; providing only one is refused before mutation.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
@@ -243,10 +244,8 @@ validate_body() {
     if [[ -n $RUN_STATE_ID || -n $RUN_STATE_REPO_ROOT ]]; then
         [[ $RESOURCE == pr && $ACTION == create ]] ||
             die '--run-id/--repo-root apply to pr create only'
-    fi
-    if [[ $RESOURCE == pr && $ACTION == create ]]; then
         [[ -n $RUN_STATE_ID && -n $RUN_STATE_REPO_ROOT ]] ||
-            die 'pr create requires --run-id ID and --repo-root DIR'
+            die '--run-id and --repo-root must be provided together'
         [[ -x $RUN_STATE_SH ]] || die "run-state helper is unavailable: $RUN_STATE_SH"
     fi
     [[ $CLOSING_REFERENCE_RETRY_DELAY =~ ^[0-9]+$ ]] ||
@@ -259,6 +258,7 @@ validate_body() {
 
 validate_run_state_destination() {
     [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    [[ -n $RUN_STATE_ID ]] || return 0
     local existing='' rc=0
     existing=$("$RUN_STATE_SH" get --run-id "$RUN_STATE_ID" \
         --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs) || rc=$?
@@ -398,6 +398,7 @@ endpoint_from_url() {
 
 record_created_pr() {
     [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    [[ -n $RUN_STATE_ID ]] || return 0
     local repair=''
     if "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
         --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"; then

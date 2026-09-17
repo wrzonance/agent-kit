@@ -126,6 +126,13 @@ latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
 assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" 'latest identifies the newest run'
 assert_eq '[11,13]' "$(jq -c '.value' <<<"$latest_json")" 'latest returns the selected path as JSON'
 
+poison_tmp="$tmp/poisoned-latest-fallback"
+mkdir -p "$poison_tmp"
+ln -s "$tmp/untrusted-latest-target" "$poison_tmp/agent-kit-review-remote-pr.$(id -u)"
+latest_json=$(TMPDIR="$poison_tmp" "$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" \
+    'latest ignores an untrusted optional fallback when primary evidence is valid'
+
 assert_rc 0 'a same-second older run can record opened PRs' -- \
     "$script" set --run-id z-nano-old --repo-root "$repo" --path opened_prs --json '[17]'
 touch -d '2031-09-16 01:00:00.100000000' "$repo/.agent/evidence/run-z-nano-old/run-state.json"

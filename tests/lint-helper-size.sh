@@ -105,7 +105,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #782 bot repair: provenance-aware root filename creation; exact integrated total.
 # #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
 # #783: atomic, idempotent summary producer and queue records.
-readonly MAX_TREE_TOKENS=454076
+# #785 review: optional fallback trust filtering and standalone PR transport.
+readonly MAX_TREE_TOKENS=454123
 
 violations=0
 checked=0
