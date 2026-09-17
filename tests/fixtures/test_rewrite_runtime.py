@@ -252,6 +252,7 @@ class NativeRuntime(unittest.TestCase):
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The process group already exited, so teardown has nothing left to kill.
                 pass
             process.communicate(timeout=3)
 

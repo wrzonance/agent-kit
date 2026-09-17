@@ -2230,6 +2230,51 @@ for reader in awk sed grep rg; do
     assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
         "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
 done
+for command in \
+    "sed -es/foo/bar/ '$active_skill_path'" \
+    "sed --expression=s/foo/bar/ '$active_skill_path'" \
+    "grep -eneedle '$active_skill_path'" \
+    "grep --regexp=needle '$active_skill_path'" \
+    "rg -eneedle '$active_skill_path'" \
+    "rg --regexp=needle '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached expression leaves the active skill as a read operand: $command"
+done
+for command in \
+    "awk -f'$active_skill_path' /dev/null" \
+    "sed -f'$active_skill_path' /dev/null" \
+    "sed --file='$active_skill_path' /dev/null" \
+    "grep -f'$active_skill_path' /dev/null" \
+    "grep --file='$active_skill_path' /dev/null" \
+    "rg -f'$active_skill_path' /dev/null" \
+    "rg --file='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached file option recognizes the active skill: $command"
+done
+for command in \
+    "sed -e'$active_skill_path' /dev/null" \
+    "sed --expression='$active_skill_path' /dev/null" \
+    "grep -e'$active_skill_path' /dev/null" \
+    "grep --regexp='$active_skill_path' /dev/null" \
+    "rg -e'$active_skill_path' /dev/null" \
+    "rg --regexp='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "an attached expression path remains pattern text: $command"
+done
+for command in \
+    "awk -e'$active_skill_path' /dev/null" \
+    "awk --file='$active_skill_path' /dev/null" \
+    "sed --regexp='$active_skill_path' /dev/null" \
+    "cat -f'$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "unsupported attached reader flags do not classify a file: $command"
+done
 for wrapped_reader in "env cat '$active_skill_path'" "command cat '$active_skill_path'"; do
     out=$(post_input "$active_repo" "$wrapped_reader" "$active_sid" |
         "$hooks/post-tool-use.sh" 2>/dev/null)

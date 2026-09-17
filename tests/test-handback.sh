@@ -86,7 +86,10 @@ git -C "$partial_repo" remote add origin "$partial_origin"
 git -C "$partial_repo" config user.name test
 git -C "$partial_repo" config user.email test@example.invalid
 printf 'base\n' >"$partial_repo/src/change.txt"
-git -C "$partial_repo" add -- .agent/config.env src/change.txt
+partial_log="$partial_repo/.agent/logs/test.log"
+printf '%s\n' '=== agent-run tests/run-tests.sh' \
+    '=== agent-run exited rc=0 after 3s' >"$partial_log"
+git -C "$partial_repo" add -- .agent/config.env .agent/logs/test.log src/change.txt
 git -C "$partial_repo" commit -qm base
 printf 'delivered\n' >"$partial_repo/src/change.txt"
 git -C "$partial_repo" add -- src/change.txt
@@ -96,10 +99,7 @@ partial_sha=$(git -C "$partial_repo" rev-parse HEAD)
 printf 'operator edit\n' >"$partial_repo/secrets/one.conf"
 printf 'second operator edit\n' >"$partial_repo/secrets/two.conf"
 printf 'comma operator edit\n' >"$partial_repo/secrets/with,comma.conf"
-printf '.agent/logs/\n' >>"$partial_repo/.git/info/exclude"
-partial_log="$partial_repo/.agent/logs/test.log"
-printf '%s\n' '=== agent-run tests/run-tests.sh' \
-    '=== agent-run exited rc=0 after 3s' >"$partial_log"
+printf 'backslash operator edit\n' >"$partial_repo/secrets/with\\slash.conf"
 partial_handback="$tmp/partial.handback"
 partial_blockers="$partial_repo/.agent/logs/partial-blockers.list"
 cat >"$partial_handback" <<EOF
@@ -118,10 +118,20 @@ assert_eq 'disposition=partial-pushed pr=open blocker-file=written verification=
     'BLOCKED with a pushed SHA and green log is classified as partial-pushed'
 assert_eq 'secrets/one.conf
 secrets/two.conf
-secrets/with,comma.conf' "$(tr '\0' '\n' <"$partial_blockers")" \
-    'classification writes exact NUL-delimited blocker paths, including commas'
+secrets/with,comma.conf
+secrets/with\slash.conf' "$(tr '\0' '\n' <"$partial_blockers")" \
+    'classification writes exact NUL-delimited blocker paths, including commas and backslashes'
 assert_contains "$partial_output" 'verification=unbound' \
     'an unrelated rc0-shaped log is disclosed rather than attributed to the pushed tree'
+
+printf 'ordinary dirty path\n' >"$partial_repo/src/unprotected.txt"
+unprotected_output=$(
+    "$script" --classify-completion --worktree "$partial_repo" \
+        --handback-file "$partial_handback" --blocker-file "$partial_blockers"
+)
+assert_contains "$unprotected_output" 'disposition=blocked pr=none' \
+    'excluding the blocker output does not hide another unprotected dirty path'
+rm -- "$partial_repo/src/unprotected.txt"
 
 git --git-dir="$partial_origin" update-ref -d refs/heads/feat/partial
 deleted_remote_output=$(
