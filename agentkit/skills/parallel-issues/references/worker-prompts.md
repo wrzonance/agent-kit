@@ -401,7 +401,7 @@ baseline_exclusion_args=()
 linkage_args=()
 [[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
 "$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
-  --title "$pr_title" --base "$base" --head "$branch" "${linkage_args[@]}"
+  --title "$pr_title" --base "$base" --head "$branch" --run-id "$RUN_ID" --repo-root "$repository_root" "${linkage_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front

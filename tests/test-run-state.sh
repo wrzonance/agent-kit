@@ -32,6 +32,20 @@ assert_eq '' "$absent_out" 'and prints nothing'
 assert_rc 0 'append starts an array' -- "$script" append --file "$state" --path parked --value 253
 assert_rc 0 'append extends it' -- "$script" append --file "$state" --path parked --value 254
 assert_eq '["253","254"]' "$("$script" get --file "$state" --path parked)" 'append keeps insertion order'
+assert_rc 0 'append-unique starts a numeric array' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+assert_rc 0 'append-unique ignores an equal value' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+touch -d '2030-09-16 01:00:00.123456789' "$state"
+duplicate_mtime=$(stat -c %y "$state")
+assert_rc 0 'append-unique accepts an already-recorded value idempotently' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 41
+assert_eq "$duplicate_mtime" "$(stat -c %y "$state")" \
+    'append-unique does not rewrite state when the value already exists'
+assert_rc 0 'append-unique preserves first-seen order' -- \
+    "$script" append-unique --file "$state" --path opened_prs --json 43
+assert_eq '[41,43]' "$("$script" get --file "$state" --path opened_prs)" \
+    'append-unique stores numeric values once in first-seen order'
 append_scalar_rc=0
 "$script" append --file "$state" --path redrive.52 --value x >/dev/null 2>&1 || append_scalar_rc=$?
 assert_eq '1' "$append_scalar_rc" 'append onto a non-array refuses'
@@ -102,6 +116,124 @@ assert_rc 0 '--run-id resolves the file through run-dir.sh' -- \
 assert_eq '1' "$(jq -r '.redrive["7"]' "$repo/.agent/evidence/run-wave4-run/run-state.json")" \
     'the run-scoped state lives at <run dir>/run-state.json'
 
+assert_rc 0 'an older run can record opened PRs' -- \
+    "$script" set --run-id older --repo-root "$repo" --path opened_prs --json '[7]'
+touch -t 203009160101 "$repo/.agent/evidence/run-older/run-state.json"
+assert_rc 0 'a newer run can record opened PRs' -- \
+    "$script" set --run-id newer --repo-root "$repo" --path opened_prs --json '[11,13]'
+touch -t 203009160102 "$repo/.agent/evidence/run-newer/run-state.json"
+latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" 'latest identifies the newest run'
+assert_eq '[11,13]' "$(jq -c '.value' <<<"$latest_json")" 'latest returns the selected path as JSON'
+
+poison_tmp="$tmp/poisoned-latest-fallback"
+mkdir -p "$poison_tmp"
+ln -s "$tmp/untrusted-latest-target" "$poison_tmp/agent-kit-review-remote-pr.$(id -u)"
+latest_json=$(TMPDIR="$poison_tmp" "$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'newer' "$(jq -r '.run_id' <<<"$latest_json")" \
+    'latest ignores an untrusted optional fallback when primary evidence is valid'
+
+assert_rc 0 'a same-second older run can record opened PRs' -- \
+    "$script" set --run-id z-nano-old --repo-root "$repo" --path opened_prs --json '[17]'
+touch -d '2031-09-16 01:00:00.100000000' "$repo/.agent/evidence/run-z-nano-old/run-state.json"
+assert_rc 0 'a same-second newer run can record opened PRs' -- \
+    "$script" set --run-id a-nano-new --repo-root "$repo" --path opened_prs --json '[19]'
+touch -d '2031-09-16 01:00:00.900000000' "$repo/.agent/evidence/run-a-nano-new/run-state.json"
+latest_json=$("$script" latest --repo-root "$repo" --path opened_prs)
+assert_eq 'a-nano-new' "$(jq -r '.run_id' <<<"$latest_json")" \
+    'latest uses sub-second state mtime before its deterministic run-ID tiebreak'
+
+no_runs_repo="$tmp/no-runs"
+mkdir -p "$no_runs_repo"
+latest_absent_rc=0
+latest_absent_out=$("$script" latest --repo-root "$no_runs_repo" --path opened_prs 2>/dev/null) || latest_absent_rc=$?
+assert_eq 11 "$latest_absent_rc" 'latest exits 11 when no run evidence exists'
+assert_eq '' "$latest_absent_out" 'latest prints nothing when no run evidence exists'
+assert_rc 0 'a latest run may omit opened_prs' -- \
+    "$script" set --run-id empty --repo-root "$no_runs_repo" --path other --json '[]'
+latest_absent_rc=0
+latest_absent_out=$("$script" latest --repo-root "$no_runs_repo" --path opened_prs 2>/dev/null) || latest_absent_rc=$?
+assert_eq 11 "$latest_absent_rc" 'latest exits 11 when the newest run omits the requested path'
+assert_eq '' "$latest_absent_out" 'latest missing-path output stays empty'
+
+unsafe_repo="$tmp/unsafe-latest"
+mkdir -p "$unsafe_repo/.agent/evidence"
+chmod 700 "$unsafe_repo/.agent/evidence"
+ln -s "$repo/.agent/evidence/run-newer" "$unsafe_repo/.agent/evidence/run-linked"
+assert_rc 1 'latest refuses a symlinked candidate run directory' -- \
+    "$script" latest --repo-root "$unsafe_repo" --path opened_prs
+
+linked_agent_repo="$tmp/linked-agent"
+mkdir -p "$linked_agent_repo"
+ln -s "$repo/.agent" "$linked_agent_repo/.agent"
+assert_rc 1 'latest refuses an evidence root reached through a symlinked .agent directory' -- \
+    "$script" latest --repo-root "$linked_agent_repo" --path opened_prs
+
+malformed_repo="$tmp/malformed-latest"
+mkdir -p "$malformed_repo"
+assert_rc 0 'latest malformed fixture begins as trusted state' -- \
+    "$script" set --run-id bad --repo-root "$malformed_repo" --path opened_prs --json '[19]'
+printf 'not json\n' >"$malformed_repo/.agent/evidence/run-bad/run-state.json"
+chmod 600 "$malformed_repo/.agent/evidence/run-bad/run-state.json"
+assert_rc 1 'latest refuses malformed candidate evidence' -- \
+    "$script" latest --repo-root "$malformed_repo" --path opened_prs
+
+fallback_repo="$tmp/fallback-repo"
+fallback_tmp="$tmp/fallback-tmp"
+mkdir -p "$fallback_repo/.agent" "$fallback_tmp"
+chmod 555 "$fallback_repo/.agent"
+assert_rc 0 'run-scoped state records through the deterministic private fallback' -- \
+    env TMPDIR="$fallback_tmp" "$script" append-unique --run-id fallback-wave \
+    --repo-root "$fallback_repo" --path opened_prs --json 71
+chmod 755 "$fallback_repo/.agent"
+assert_rc 0 'an existing fallback run stays on that backend after primary access recovers' -- \
+    env TMPDIR="$fallback_tmp" "$script" append-unique --run-id fallback-wave \
+    --repo-root "$fallback_repo" --path opened_prs --json 73
+fallback_latest=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs)
+assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
+    'latest discovers the same fallback backend used by run-scoped mutations'
+assert_eq '[71,73]' "$(jq -c '.value' <<<"$fallback_latest")" \
+    'latest preserves opened PRs across fallback selection and recovered primary access'
+
+fallback_slug=$(printf '%s' "$fallback_repo" | sha256sum | cut -c1-16)
+fallback_root="$fallback_tmp/agent-kit-review-remote-pr.$(id -u)/$fallback_slug"
+assert_rc 0 'a distinct primary run can coexist with trusted fallback evidence' -- \
+    "$script" set --run-id primary-wave --repo-root "$fallback_repo" --path opened_prs --json '[79]'
+touch -d '2032-09-16 01:00:00.100000000' \
+    "$fallback_repo/.agent/evidence/run-primary-wave/run-state.json"
+touch -d '2032-09-16 01:00:00.900000000' \
+    "$fallback_root/run-fallback-wave/run-state.json"
+fallback_latest=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs)
+assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
+    'latest compares distinct trusted run IDs across primary and fallback roots'
+
+assert_rc 0 'duplicate-run fixture begins with trusted primary state' -- \
+    "$script" set --run-id duplicate-wave --repo-root "$fallback_repo" --path opened_prs --json '[83]'
+mkdir -m 700 "$fallback_root/run-duplicate-wave"
+duplicate_latest_rc=0
+duplicate_latest_err=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" \
+    --path opened_prs 2>&1 >/dev/null) || duplicate_latest_rc=$?
+assert_eq 1 "$duplicate_latest_rc" \
+    'latest refuses a duplicate run ID across trusted primary and fallback roots'
+assert_contains "$duplicate_latest_err" 'duplicate run ID' \
+    'duplicate refusal names the cross-backend run identity collision'
+
+printf '%s\n' '{"opened_prs":[89]}' >"$fallback_root/run-duplicate-wave/run-state.json"
+chmod 600 "$fallback_root/run-duplicate-wave/run-state.json"
+touch -d '2033-09-16 01:00:00.100000000' \
+    "$fallback_repo/.agent/evidence/run-duplicate-wave/run-state.json"
+touch -d '2033-09-16 01:00:00.900000000' \
+    "$fallback_root/run-duplicate-wave/run-state.json"
+duplicate_latest_rc=0
+TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs \
+    >"$tmp/duplicate-latest.out" 2>"$tmp/duplicate-latest.err" || duplicate_latest_rc=$?
+assert_eq 1 "$duplicate_latest_rc" \
+    'latest refuses conflicting populated copies of one run ID instead of choosing by mtime'
+assert_eq '' "$(<"$tmp/duplicate-latest.out")" \
+    'duplicate populated backends emit no arbitrary latest JSON result'
+assert_contains "$(<"$tmp/duplicate-latest.err")" 'duplicate run ID' \
+    'populated duplicate refusal retains the collision diagnosis'
+
 # Independent successful workers must not overwrite each other's bookkeeping.
 pids=()
 for n in {1..12}; do
@@ -110,6 +242,14 @@ for n in {1..12}; do
 done
 for pid in "${pids[@]}"; do wait "$pid"; done
 assert_eq 12 "$(jq '.workers | length' "$state")" 'concurrent updates retain every successful worker ID'
+pids=()
+for n in {101..112}; do
+    "$script" append-unique --file "$state" --path concurrent_prs --json "$n" &
+    pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+assert_eq 12 "$(jq '.concurrent_prs | unique | length' "$state")" \
+    'concurrent append-unique mutations retain every distinct PR number'
 assert_rc 11 'get keeps absent semantics when the parent directory is missing' -- \
     "$script" get --file "$tmp/missing/run-state.json" --path absent
 finish
