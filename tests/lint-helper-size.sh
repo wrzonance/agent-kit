@@ -87,11 +87,13 @@ readonly MAX_HELPER_TOKENS=10000
 # #760 review: 1,751,372 helper bytes / 4 = 437,843 tokens; exact total.
 # #764 + #770 review: 1,764,114 helper bytes / 4 = 441,028 tokens; exact total.
 # #776: terminal verification summaries and the composed runbook; exact total.
+# #774 + #776: partial publication evidence and terminal verification summaries.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
 # #776 + PR #794 merge-down: combined helper tree exact total.
-readonly MAX_TREE_TOKENS=444304
+# #774/#776 + PR #794 merge-down: combined helper tree exact total.
+readonly MAX_TREE_TOKENS=446471
 
 violations=0
 checked=0
