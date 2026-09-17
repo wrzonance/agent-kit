@@ -843,9 +843,11 @@ done
 selected=$("$boundary_selector" --visibility false --yolo 2>/dev/null | tail -n 1)
 assert_eq 'boundary mode: yolo-trusted' "$selected" \
     'explicit yolo selects yolo-trusted regardless of visibility'
-assert_contains "$text" 'one canonical issue-body fetch during preparation' \
-    'triage digest limits surviving issue body reads to preparation'
-assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
+assert_contains "$normalized_text" 'one canonical body fetch by the picker' \
+    'triage digest limits each issue body to its picker fetch'
+assert_contains "$text" 'Set `body_cache` from the selected record' \
+    'preparation consumes the picker body-cache reference'
+assert_contains "$normalized_text" 'Do not fetch timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
 assert_contains "$move_help" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
@@ -997,7 +999,11 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
     assert_contains "$prompt_text" 'Every file operation must use an absolute path rooted in this assigned' "$prompt_label uses absolute worktree paths"
     assert_contains "$prompt_text" 'writable sandbox commonly spans the parent tree' "$prompt_label names the sandbox ownership hazard"
-    assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    if [[ $prompt_label == 'issue-lead prompt' ]]; then
+        assert_contains "$prompt_text" 'git -C "$affected_worktree" diff --binary' "$prompt_label carries affected-worktree restoration"
+    else
+        assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    fi
     assert_contains "$prompt_text" 'report the incident and restoration in the completion report' "$prompt_label reports restored incidents"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Codex' "$prompt_label has no literal Codex provider trailer"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Claude' "$prompt_label has no literal Claude provider trailer"
@@ -1025,6 +1031,18 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" '<PASTE, verbatim, the agent-preflight.sh contract' \
         "$prompt_label carries the environment-contract paste placeholder"
 done
+assert_contains "$issue_lead_prompt" 'git -C "$affected_worktree" diff --binary -- "$path"' \
+    'issue-lead restoration reads the affected worktree and scopes the tracked path'
+assert_contains "$issue_lead_prompt" 'git -C "$affected_worktree" apply -R' \
+    'issue-lead restoration reverses the patch in the affected worktree'
+assert_contains "$issue_lead_prompt" 'worker-owned untracked' \
+    'issue-lead restoration handles proven worker-owned untracked files separately'
+assert_contains "$issue_lead_prompt" 'only when all emitted changes are proven worker-owned' \
+    'issue-lead whole-path restoration never reverses unrelated shared-file changes'
+assert_contains "$issue_lead_prompt" 'For mixed ownership, apply a verified own patch/preimage' \
+    'issue-lead mixed-ownership restoration scopes reversal to verified worker bytes'
+assert_contains "$issue_lead_prompt" 'or stop and report' \
+    'issue-lead restoration stops instead of guessing at ambiguous ownership'
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'

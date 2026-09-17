@@ -171,11 +171,11 @@ Run `"$agentkit/.shared/scripts/triage-issues.sh" --help` and follow its one-cal
 Each line reads `#N  <status>  <verdict>  adr=<paths|->  pr=<ref|->`:
 
 The digest is authoritative for each surviving issue's board Status, board membership, and
-prior-art references. After it completes, the only permitted reads are: the named PR for a
-`merged-ref`, `in-flight`, or `attempted` verdict; the `gh api` issue fetch for an `unknown` verdict; and
-one canonical issue-body fetch during preparation for each issue that survives selection. Do not fetch issue timelines, `projectItems`, or re-read individual issues to confirm data already in
-the digest. Do not follow a board move with a `projectItems` query: the helper's terminal line is
-the evidence.
+prior-art references. After it completes, permitted reads are the named PR for a `merged-ref`,
+`in-flight`, or `attempted` verdict; the `gh api` issue fetch for `unknown`; and one canonical body
+fetch by the picker. Preparation receives the selected record's private `bodyCache` reference and
+fetches only title, labels, and comments. Do not fetch timelines, `projectItems`, or facts already in
+the digest; the board helper's terminal line is evidence.
 
 **The verdicts are evidence, not conclusions.** The script proves that a pull
 request references an issue; it cannot prove that pull request covered the whole
@@ -222,7 +222,7 @@ Use this for automatic or numbered thematic-Backlog selection; otherwise explici
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
 in full. Selection consumes `pick-issues.sh` output only: a body-free record carries status,
-eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, and
+eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and
 `workShape`. `workShape: "no-code"` means HOLD before worktree creation; retain `holdReason`, count
 `no-code-hold`, and use the anchored [work-shape verdict](references/triage-and-selection.md#work-shape-verdict)
 for ambiguity.
@@ -391,10 +391,10 @@ path implements serially with the same ownership gate, labelled `worker=self (sp
 
 ### Root canonical issue fetch and fence preparation
 
-The root fetches issue-derived data once, validates it, and persists the canonical fenced bytes
-before constructing a worker prompt. Workers never repeat this fetch.
+The root reuses the selected picker record's private `bodyCache`, validates it, and persists canonical
+fenced bytes before constructing a worker prompt. Workers never fetch issue data.
 
-Run `"$agentkit/parallel-issues/scripts/select-boundary-mode.sh" --help`, then `"$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh" --help`, and follow their select-once and canonical-artifact recipes. Pass `--prior-art` only when Step 2 produced a digest; otherwise the helper supplies its sentinel. Exit `12` means the complete set already exists; use the printed `--resume` command instead of retrying.
+Run `"$agentkit/parallel-issues/scripts/select-boundary-mode.sh" --help`, then the preparation helper's help. Set `body_cache` from the selected record before following its canonical-artifact recipe. Pass `--prior-art` only for a Step 2 digest; exit `12` uses the printed `--resume` command.
 
 The root is the sole artifact producer: the script fetches, validates, and atomically publishes the
 fenced files, raw payload, and ready marker into excluded `.agent/` state, and the prompt embeds

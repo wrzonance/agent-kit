@@ -423,14 +423,24 @@ def item_payload(record):
     return record.get('payload') if isinstance(record.get('payload'), dict) else {}
 
 
-def captured_text_length(value):
+def captured_text_evidence(value):
     if isinstance(value, str):
-        return len(value)
+        return len(value), True
     if isinstance(value, list):
-        return sum(captured_text_length(item) for item in value)
+        parts = [captured_text_evidence(item) for item in value]
+        return sum(length for length, _ in parts), all(complete for _, complete in parts)
     if isinstance(value, dict):
-        return sum(captured_text_length(value.get(key)) for key in ('text', 'content', 'output'))
-    return 0
+        text_keys = ('text', 'content', 'output')
+        parts = [captured_text_evidence(value[key]) for key in text_keys if key in value]
+        unknown_keys = set(value) - set(text_keys) - {'type'}
+        has_text_shape = bool(parts) or not value
+        return (sum(length for length, _ in parts),
+                has_text_shape and not unknown_keys and all(complete for _, complete in parts))
+    return 0, value is None
+
+
+def captured_text_length(value):
+    return captured_text_evidence(value)[0]
 
 
 def collect_pre_spawn_chars(records):
@@ -451,10 +461,11 @@ def collect_pre_spawn_chars(records):
             else:
                 missing_attribution = True
         elif payload.get('type') in CALL_OUTPUT_TYPES:
-            length = captured_text_length(payload.get('output'))
+            length, output_complete = captured_text_evidence(payload.get('output'))
             call_id = stable_call_id(payload.get('call_id'))
             category = call_categories.get(call_id, 'unknown_other')
-            missing_attribution = missing_attribution or (length > 0 and call_id not in call_categories)
+            missing_attribution = missing_attribution or not output_complete or (
+                length > 0 and call_id not in call_categories)
             counts[category] += length
             has_text = has_text or length > 0
         elif payload.get('type') == 'message':

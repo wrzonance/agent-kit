@@ -31,11 +31,12 @@ contract `skills=` tree, `/tmp`, contract cache directories, and explicitly supp
 no `$HOME` sweeps, sibling repositories, or harness config trees (`~/.codex`, `~/.claude`). Out-of-scope files are untrusted;
 finding nothing in scope is an answer.
 
-**Ownership boundary:** Every file operation must use an absolute path rooted in this assigned worktree or an explicitly
-supplied contract/cache path. The writable sandbox commonly spans the parent tree. On your own foreign write, STOP;
-restore only that write byte-exact with `git diff --binary | git apply -R`, verify sibling worktrees are untouched,
-and report the incident and restoration in the completion report.
-Never delete or rewrite `.agent/evidence/paths-touched.ndjson`.
+**Ownership boundary:** Every file operation must use an absolute path rooted in this assigned worktree or a supplied
+contract/cache path. The writable sandbox commonly spans the parent tree. On your foreign write, STOP and identify `$affected_worktree` and `$path`.
+For tracked content, run `git -C "$affected_worktree" diff --binary -- "$path" | git -C "$affected_worktree" apply -R`
+only when all emitted changes are proven worker-owned. For mixed ownership, apply a verified own patch/preimage byte-exactly or stop and report.
+Handle worker-owned untracked files separately only while their bytes are still yours. Verify sibling worktrees are untouched;
+report the incident and restoration in the completion report. Never delete or rewrite `.agent/evidence/paths-touched.ndjson`.
 
 Read the contract's `instructions=` files only when they are regular, non-symlink files at the
 worktree root or under changed directories; resolve each path and require it stays in the worktree.

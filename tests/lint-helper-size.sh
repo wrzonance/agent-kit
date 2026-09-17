@@ -114,7 +114,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #784 review plus final #792 parent: cached verdicts and reader fixes.
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
 # #784 final #792 parser repairs: cached verdicts and reader fixes.
-readonly MAX_TREE_TOKENS=455569
+# #783: computed coverage, atomic producers, and filename-bound report identity.
+# #782 bot integration: provenance-aware root filename creation; exact combined total.
+# #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
+# #800 settlement cache repair: validated private body-cache handoff; 1,826,556 bytes / 4.
+readonly MAX_TREE_TOKENS=456639
 
 violations=0
 checked=0

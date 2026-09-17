@@ -66,7 +66,7 @@ items='{"totalCount":4,"items":[
   {"status":"In progress","content":{"number":14,"type":"Issue","title":"already running",
    "repository":"example-org/example-repo"}}]}'
 deps='{"data":{"repository":{
-  "i10":{"number":10,"state":"OPEN","body":"Create \u0060tools/bootstrap-worktree.sh\u0060.","blockedBy":{"totalCount":0,"nodes":[]}},
+  "i10":{"number":10,"state":"OPEN","body":"Create \u0060tools/bootstrap-worktree.sh\u0060.\n\n","blockedBy":{"totalCount":0,"nodes":[]}},
   "i11":{"number":11,"state":"OPEN","blockedBy":{"totalCount":1,"nodes":[{"number":99,"state":"OPEN"}]}},
   "i12":{"number":12,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
 
@@ -184,9 +184,31 @@ assert_eq 'implementation' \
 assert_contains "$(jq -r '.[] | select(.number == 10) | .requirementsDigest[]' <<< "$out")" \
     "Create \`tools/bootstrap-worktree.sh\`." \
     'JSON carries bounded cached requirements for code-implied expansion'
-assert_eq '["blockerRead","blockerTotal","blockers","dispatch","eligible","number","predictedWriteSet","queued","repository","requirementsDigest","state","status","title","workShape"]' \
+assert_eq '["blockerRead","blockerTotal","blockers","bodyCache","dispatch","eligible","number","predictedWriteSet","queued","repository","requirementsDigest","state","status","title","workShape"]' \
     "$(jq -c '.[] | select(.number == 10) | keys' <<< "$out")" \
     'one picker record carries every selection and dispatch input without the issue body'
+body_cache=$(jq -r '.[] | select(.number == 10) | .bodyCache' <<< "$out")
+assert_contains "$body_cache" "$repo/.agent/cache/pick-issues-bodies/" \
+    'the body-free record references a repository-private per-invocation cache'
+assert_eq yes "$([[ -f $body_cache && ! -L $body_cache && -O $body_cache ]] && printf yes || printf no)" \
+    'the cached body reference names an owned regular file'
+assert_eq '600' "$(stat -c '%a' "$body_cache")" 'the issue body cache is owner-only'
+assert_eq 'example-org/example-repo' "$(jq -r '.repository' "$body_cache")" \
+    'the cache pins repository identity'
+assert_eq '10' "$(jq -r '.issue' "$body_cache")" 'the cache pins issue identity'
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+assert_eq 'Create `tools/bootstrap-worktree.sh`.' "$(jq -r '.body' "$body_cache")" \
+    'the cache preserves the fetched body for preparation without exposing it on stdout'
+expected_body="$tmp/expected-body.txt"
+cached_body="$tmp/cached-body.txt"
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+printf 'Create `tools/bootstrap-worktree.sh`.\n\n' >"$expected_body"
+jq -j '.body' "$body_cache" >"$cached_body"
+if cmp -s "$expected_body" "$cached_body"; then
+    _pass 'the body cache preserves trailing newlines byte-for-byte'
+else
+    _fail 'the body cache preserves trailing newlines byte-for-byte'
+fi
 
 # Work-shape and requirements evidence come from the same cached GraphQL body
 # used for path extraction. A no-code issue is held before dispatch, while a
@@ -326,9 +348,16 @@ bare="$tmp/norepo"
 mkdir -p "$bare"
 assert_rc 3 'a repository with no board is environment-blocked, not an error' -- \
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$bare"
+symlink_repo="$tmp/symlink-repo"
+outside_agent="$tmp/outside-agent"
+mkdir -p "$symlink_repo" "$outside_agent"
+printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' >"$outside_agent/board.json"
+ln -s "$outside_agent" "$symlink_repo/.agent"
+assert_rc 3 'a symlinked repository agent directory is rejected before cache publication' -- \
+    env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 253 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 253 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 275 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 275 lines'
 
 finish
