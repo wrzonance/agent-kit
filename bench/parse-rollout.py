@@ -59,7 +59,7 @@ PROGRAM = 'parse-rollout'
 REFERENCE_PATH_RE = re.compile(r'(?:^|[\s"\'])((?:[\w./-]*?)(?:references|\.shared)/[\w.-]+\.md)')
 PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|more)(?=\s)')
 CUSTOM_EXEC_CMD_RE = re.compile(
-    r'''tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')''',
+    r'''tools\.exec_command\s*\(\s*\{[^{}]*?\bcmd\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')''',
     re.DOTALL)
 INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
@@ -169,7 +169,7 @@ def command_reads_prose(command):
 
 
 def command_has_mixed_output(command):
-    return bool(re.search(r'(?:&&|\|\||[;\n]|(?<!\|)\|(?!\|))', command))
+    return bool(re.search(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command))
 
 
 def mentions_unparsed_prose_read(raw):
@@ -183,7 +183,11 @@ def prose_read_kind(payload):
     if call_type == 'custom_tool_call':
         if call_name != 'exec':
             return 'none'
+        raw = payload.get('input', '')
         commands = custom_exec_commands(payload)
+        invocation_count = len(re.findall(r'tools\.exec_command\s*\(', raw)) if isinstance(raw, str) else 0
+        if invocation_count != len(commands):
+            return 'unavailable' if mentions_unparsed_prose_read(raw) else 'none'
         if len(commands) > 1:
             return 'unavailable' if any(command_reads_prose(command) for command in commands) else 'none'
         if len(commands) != 1:

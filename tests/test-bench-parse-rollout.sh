@@ -355,6 +355,32 @@ assert_eq '0' "$RUN_RC" 'single-quoted and conservative prose boundaries parse w
 assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'compound, unsupported, or unmatched markdown reads make prose characters unavailable'
 
+prose_mixed_boundaries_fixture="$tmp/prose-cost-mixed-boundaries.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"unparsed-first",name:"functions.exec",input:"const a=await tools.exec_command({cmd:`cat one.md`}); const b=await tools.exec_command({cmd:\u0027printf noise\u0027}); text(a.output); text(b.output);"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"unparsed-first",output:"markdown plus noise"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-mixed-boundaries",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_mixed_boundaries_fixture"
+run "$prose_mixed_boundaries_fixture" --timestamp 2026-09-16T03:05:00Z
+assert_eq '0' "$RUN_RC" 'an unsupported custom call before a supported call still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'an unparsed Markdown call before a supported custom call makes prose characters unavailable'
+
+background_prose_fixture="$tmp/prose-cost-background.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"background-mixed",name:"exec_command",arguments:"{\"cmd\":\"cat two.md & git status\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"background-mixed",output:"markdown and status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-background",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$background_prose_fixture"
+run "$background_prose_fixture" --timestamp 2026-09-16T03:06:00Z
+assert_eq '0' "$RUN_RC" 'a background shell read still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'background mixed output makes prose characters unavailable'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'
