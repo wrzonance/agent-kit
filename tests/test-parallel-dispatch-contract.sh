@@ -1294,8 +1294,8 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'At the effective cap, repeat that capped wait' \
-    'a capped timed-out wait does not force a premature stall check'
+assert_contains "$normalized_wait_text" 'one call per cap' \
+    'native collection uses each full contract cap without short polling'
 assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 
