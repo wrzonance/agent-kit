@@ -345,7 +345,6 @@ def merge_polling_report(actors):
 
 
 def function_call_text(arguments_raw):
-    decoded = arguments_raw
     if isinstance(arguments_raw, str):
         text = arguments_raw
     else:
