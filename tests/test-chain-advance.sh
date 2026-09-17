@@ -1539,7 +1539,9 @@ case " $* " in
         [[ " $* " != *' --slurp '* || " $* " != *' --jq '* ]] || exit 2
         [[ " $* " == *' --slurp '* ]] || exit 24
         if [[ ${COMMENTS_FAIL_AFTER_PAGE:-0} == 1 ]]; then
-            printf '%s\n' '[[{"id":1}]]'
+            # Emit a complete, ledger-acceptable artifact before failing so
+            # only pipefail can preserve the transport error.
+            printf '%s\n' '[[{"id":1}],[{"id":2}]]'
             exit 42
         fi
         if [[ ${COMMENTS_MALFORMED_PAGE:-0} == 1 ]]; then
