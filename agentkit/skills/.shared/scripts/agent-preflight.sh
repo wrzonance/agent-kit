@@ -1324,9 +1324,11 @@ main() {
             if existing="$(cat -- "$ARG_WRITE")"; then
                 existing_tools_count=$(grep -c '^tools=' <<< "$existing" || true)
                 existing_tools_line=$(grep -m1 '^tools=' <<< "$existing" || true)
+                existing_tools_harness=$(contract_cache_harness_name 2> /dev/null || printf unknown)
                 if grep -q '^protected=' <<< "$existing" && grep -q '^skills-content=' <<< "$existing" &&
-                    [[ $existing_tools_count == 1 ]] && declare -F harness_tools_record_valid > /dev/null &&
-                    harness_tools_record_valid "$existing_tools_line" && grep -q '^yield-cap=' <<< "$existing"; then
+                    [[ $existing_tools_count == 1 ]] && declare -F harness_tools_record_matches > /dev/null &&
+                    harness_tools_record_matches "$existing_tools_line" "$existing_tools_harness" &&
+                    grep -q '^yield-cap=' <<< "$existing"; then
                     # Presence proves the KEYS exist, not that their VALUES
                     # describe this tree (issue #453 review): recompute both
                     # live values (the cost a fresh preflight already pays) and
