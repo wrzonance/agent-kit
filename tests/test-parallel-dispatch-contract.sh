@@ -633,7 +633,7 @@ assert_contains "$final_sweep_section" '10:receipt=none' \
     'only a missing receipt is eligible for final-sweep recovery'
 assert_contains "$final_sweep_section" 'receipt-redrive.<pr>' \
     'receipt recovery is tracked per PR in run-state for a one-shot limit'
-assert_contains "$final_sweep_section" 'record-summary --run-id "$RUN_ID" --path receipt_prs --json "$pr"' \
+assert_contains "$final_sweep_section" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"' \
     'successful review receipts are stored idempotently as numeric PR identities'
 assert_contains "$final_sweep_section" '--path skipped_prs' \
     'verified skips use their own durable PR collection'
@@ -658,9 +658,11 @@ assert_contains "$normalized_text" 'run-state.sh" summary' \
     'handoff emits helper-computed opened-PR receipt coverage totals'
 assert_contains "$normalized_text" 'run-state.sh" init-summary --run-id "$RUN_ID"' \
     'run setup initializes every required summary collection without resetting it'
-assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --path queued --json "$issue"' \
+assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path queued --json "$issue"' \
     'queue producers persist issue identities idempotently'
-assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --path opened_prs --json "$pr"' \
+assert_contains "$normalized_text" 'dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"' \
+    'dispatch and refill remove the issue from durable queue coverage'
+assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
     'draft publication persists PR identities idempotently'
 assert_contains "$normalized_text" 'recoverable' \
     'Collect classifies recoverable blocked leads'
@@ -699,6 +701,8 @@ assert_contains "$normalized_text" 'both completion paths' \
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
 # before the redrive runs, with the set write recorded only after it succeeds.
 blocked_bullet=$(grep '^- \*\*BLOCKED\*\*' "$skill")
+assert_contains "$blocked_bullet" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
+    'partial-pushed draft publication records the PR in durable coverage'
 assert_contains "$blocked_bullet" 'exit 11 (absent)' \
     'the BLOCKED bullet names the absent-key exit code before redriving'
 if [[ $blocked_bullet == *'run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>'*'exit 11 (absent)'*'run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>'* ]]; then

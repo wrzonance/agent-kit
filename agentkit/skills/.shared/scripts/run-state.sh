@@ -26,6 +26,7 @@ usage() {
 Usage: $PROGNAME get|set|append|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
+       $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
        $PROGNAME summary --run-id ID [--repo-root DIR] [--reports-dir DIR]
 get     print the value at --path (scalars raw, objects/arrays compact JSON, null as "null");
         exit 11 when the key is absent -- a key explicitly set to JSON null is present, not absent
@@ -36,6 +37,7 @@ unset   remove --path
 summary print handoff coverage from durable run state and active-worker lifecycle evidence
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
+dequeue-summary remove one queued issue identity when its dispatch starts (absent is success)
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
 Writes are atomic (temp file beside it, mode 0600, rename).
@@ -49,7 +51,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|unset|init-summary|record-summary|summary) ACTION=$1; shift ;;
+        get|set|append|unset|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -84,6 +86,12 @@ parse_args() {
         [[ -z $REPORTS_DIR ]] || die_usage 'record-summary takes no --reports-dir'
         case $KEY_PATH in opened_prs|queued|receipt_prs|skipped_prs) ;; *) die_usage 'record-summary --path must name a summary collection' ;; esac
         [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'record-summary requires --json POSITIVE_INTEGER'
+    elif [[ $ACTION == dequeue-summary ]]; then
+        [[ -z $FILE ]] || die_usage 'dequeue-summary requires --run-id, not --file'
+        [[ -n $RUN_ID ]] || die_usage 'dequeue-summary requires --run-id'
+        [[ -z $KEY_PATH && -z $REPORTS_DIR ]] || die_usage 'dequeue-summary takes no --path/--reports-dir'
+        [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'dequeue-summary requires --json POSITIVE_INTEGER'
+        KEY_PATH=queued
     else
         [[ -z $REPORTS_DIR ]] || die_usage "$ACTION takes no --reports-dir"
         [[ -n $KEY_PATH ]] || die_usage '--path is required'
@@ -246,7 +254,7 @@ main() {
     # parent aliases so independent writers cannot lose successful updates.
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
-    if [[ $ACTION == set || $ACTION == append || $ACTION == unset || $ACTION == init-summary || $ACTION == record-summary ]]; then
+    if [[ $ACTION == set || $ACTION == append || $ACTION == unset || $ACTION == init-summary || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
         FILE=$parent/$(basename -- "$FILE")
         lock=$FILE.lock
@@ -257,7 +265,7 @@ main() {
     read_state
     local path='' next present value=''
     [[ $ACTION == summary || $ACTION == init-summary ]] || path=$(jq_path)
-    if [[ $ACTION == set || $ACTION == append || $ACTION == record-summary ]]; then
+    if [[ $ACTION == set || $ACTION == append || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         value=$(value_json) || exit $?
     fi
     case $ACTION in
@@ -303,21 +311,22 @@ main() {
             ' <<<"$STATE" 2>/dev/null) || die 'could not initialize invalid summary collections'
             write_state "$next"
             ;;
-        record-summary)
-            [[ $value =~ ^[1-9][0-9]*$ ]] || die_usage 'record-summary --json must be a positive integer'
-            next=$(jq -ec --arg name "$KEY_PATH" --argjson v "$value" '
+        record-summary|dequeue-summary)
+            [[ $value =~ ^[1-9][0-9]*$ ]] || die_usage "$ACTION --json must be a positive integer"
+            next=$(jq -ec --arg name "$KEY_PATH" --argjson v "$value" --arg action "$ACTION" '
                 def valid_ids($name):
                     has($name) and (.[$name] | type) == "array" and
                     all(.[$name][]; type == "number" and . > 0 and floor == .) and
                     ((.[$name] | length) == (.[$name] | unique | length));
                 if valid_ids("opened_prs") and valid_ids("queued") and
                    valid_ids("receipt_prs") and valid_ids("skipped_prs")
-                then if (.[$name] | index($v)) == null then .[$name] += [$v] else . end
+                then if $action == "dequeue-summary" then .queued -= [$v]
+                     elif (.[$name] | index($v)) == null then .[$name] += [$v] else . end
                     | if ((.receipt_prs - .opened_prs) | length) > 0 or ((.skipped_prs - .opened_prs) | length) > 0 or
                          ((.receipt_prs + .skipped_prs | length) != (.receipt_prs + .skipped_prs | unique | length))
                       then error("inconsistent summary collections") else . end
                 else error("missing or invalid summary collection") end
-            ' <<<"$STATE" 2>/dev/null) || die 'could not record summary identity; initialize and repair summary collections first'
+            ' <<<"$STATE" 2>/dev/null) || die 'could not update summary identity; initialize and repair summary collections first'
             write_state "$next"
             ;;
         summary)

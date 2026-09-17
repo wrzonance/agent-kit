@@ -77,6 +77,8 @@ assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]
 
 "$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
 "$script" record-summary --run-id wave --repo-root "$repo" --path queued --json 301
+"$script" dequeue-summary --run-id wave --repo-root "$repo" --json 301
+"$script" dequeue-summary --run-id wave --repo-root "$repo" --json 301
 "$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
 "$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 203
 "$script" record-summary --run-id wave --repo-root "$repo" --path opened_prs --json 204
@@ -84,9 +86,9 @@ assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]
 "$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
-assert_eq '{"opened_prs":[201,202,203,204],"queued":[301],"receipt_prs":[203],"skipped_prs":[204]}' \
+assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204]}' \
     "$(jq -c . "$state")" \
-    'producer recording is numeric and idempotent across resumed sweeps'
+    'producer recording and queue-to-dispatch removal are idempotent across resumed sweeps'
 
 printf '%s\n' '{"opened_prs":[201],"queued":[],"receipt_prs":[201,201]}' >"$state"
 bad_state_rc=0
