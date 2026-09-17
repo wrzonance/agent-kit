@@ -263,6 +263,17 @@ if [[ -z $yield_cap_line ]]; then
 fi
 [[ $yield_cap_line =~ ^yield-cap=\ ms=[1-9][0-9]*\ source=(measured|default)\ harness=[a-z][a-z0-9_-]*$ ]] ||
     die "invalid yield-cap record in environment contract: $yield_cap_line"
+yield_cap_ms=${yield_cap_line#yield-cap= ms=}
+yield_cap_ms=${yield_cap_ms%% *}
+
+emit_verify_runbook() {
+    if [[ -z $verify_command ]]; then
+        printf 'verify= unavailable reason=no-scoped-command\n'
+        return
+    fi
+    printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
+        "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
+}
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
 source "$sandbox_comparator_lib"
@@ -353,7 +364,6 @@ while IFS='=' read -r key value; do
     command_names+=("$name")
     command_keys+=("$key")
 done <<< "$command_list"
-((${#command_names[@]})) || die 'repository declares no verification AGENT_CMD_* commands'
 
 # --- write-set scoping of the declared-command list (issue #336) -----------
 # A dispatch whose write set is `frontend/src/**` cannot make a .NET backend
@@ -424,7 +434,9 @@ scope_commands() {
     # declared component (a docs-only dispatch in a fully-componentised
     # monorepo) keeps the full list, exactly as before the filter existed.
     # Refusing here would convert a legitimate dispatch into a blocker.
-    if ((${#scoped_command_names[@]} == 0)); then
+    if ((${#scoped_command_names[@]} == 0 && ${#command_names[@]} > 0)); then
+        # A lone scoped-out test has no safe substitute; leave it unavailable.
+        ((${#command_names[@]} != 1)) || [[ ${command_keys[0]} != AGENT_CMD_TEST ]] || return 0
         scoped_command_names=("${command_names[@]}")
         scoped_command_keys=("${command_keys[@]}")
         dropped_commands=()
@@ -454,16 +466,8 @@ if ((focus_declared)) && ((test_declared == 0)) && ! query_test_resolution; then
     die 'AGENT_CMD_TEST_FOCUS is declared but no test command resolves: declare AGENT_CMD_TEST or an executable repository runner'
 fi
 
-# focus_declared is read from the FULL declaration list, but `--cmd test --only`
-# selects one specific command -- and the write-set filter may have scoped that
-# command out. Emitting the focused selector anyway points the worker at a suite
-# this dispatch has no business running, and (when that suite drives Compose)
-# does so without the isolation prose, since compose_reachable only inspects
-# scoped commands. Both the selector and the Compose decision must therefore
-# follow the SCOPED test command, not the mere existence of a declaration.
-#
-# A repo with no AGENT_CMD_TEST resolves `test` through its runner instead;
-# there is no per-command rundir to scope by, so that case is never scoped out.
+# A scoped-out test must lose both its focused selector and Compose prose. A
+# runner-resolved test has no per-command rundir and therefore stays in scope.
 focus_test_scoped_out=0
 if ((focus_declared)) && ((test_declared)); then
     focus_test_in_scope=0
@@ -474,6 +478,23 @@ if ((focus_declared)) && ((test_declared)); then
         fi
     done
     ((focus_test_in_scope)) || focus_test_scoped_out=1
+fi
+
+verify_command='agent-run.sh --cmd test --summary'
+runbook_test_runnable=0
+if ((test_declared)); then
+    for scoped_key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
+        [[ $scoped_key != AGENT_CMD_TEST ]] || runbook_test_runnable=1
+    done
+elif query_test_resolution; then
+    runbook_test_runnable=1
+fi
+if ((runbook_test_runnable == 0)); then
+    if ((${#scoped_command_names[@]})); then
+        verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+    else
+        verify_command=''
+    fi
 fi
 
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
@@ -574,6 +595,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         __LEAF_ROLE__) emit_leaf_contract; continue ;;
         __DECLARED_COMMANDS__) emit_commands; continue ;;
         __DECLARED_FOCUS__) emit_focus; continue ;;
+        *__VERIFY_RUNBOOK__*) emit_verify_runbook; continue ;;
         __BLOCKER_CONTRACT__) emit_blocker_contract; continue ;;
         __COMPOSE_ISOLATION__) emit_compose_isolation; continue ;;
         __IMAGE_INVALIDATING_WRITERS__) emit_image_invalidating_writers; continue ;;
@@ -618,6 +640,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         $line == *'__BASE_BRANCH__'* || $line == *'__WORKER_EFFORT__'* ||
         $line == *'__MATERIALITY_BASE__'* ||
         $line == *'__DECLARED_'* || $line == *'__BOUNDARY_'* ||
+        $line == *'__VERIFY_RUNBOOK__'* ||
         $line == *'__COMPOSE_ISOLATION__'* || $line == *'__IMAGE_INVALIDATING_WRITERS__'* ||
         $line == *'__SPEC_COMMAND_PRECEDENCE__'* ||
         $line == *'__ACCEPTANCE_DECLARATIONS__'* ||

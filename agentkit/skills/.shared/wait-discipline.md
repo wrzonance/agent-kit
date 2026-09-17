@@ -7,6 +7,8 @@ Avoid empty wait cycles that do not advance collection.
 ## The rule
 
 **A wait must never spend model turns.** This is the cost goal, not a guarantee: a runtime may yield even while a helper blocks. Use a bounded helper — `claude-adversarial-review.sh … > verdict.json`, `gh-pr-state.sh --wait-ci --rounds N --interval S`, or `agent-run.sh --cmd test`. A `sleep N` + re-check issued as its own tool call is churn: the helper already owns the polling loop.
+Use the largest permitted yield. After a runtime yield, resume the same running session or cell;
+never restart the helper.
 
 Root calls already-blocking bounded helpers directly: CI `gh-pr-state.sh --wait-ci` and
 duration-bounded adversarial runs need no waiter. Redirect output to a log and report one
@@ -16,10 +18,8 @@ or when useful root work continues concurrently. Give that waiter a finite obser
 use the **Throwaway waiter prompt** and spawn-contract isolation rules, never a setup/fix worker.
 
 Every wait names an explicit bound: adversarial duration, CI round cap, or native collection
-deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Resume
-the same running helper session after a runtime yield; never restart it. Run tests in the
-foreground or collect test-runner logs inside one bounded harness cell, never separate sleep/tail calls.
-Require the worker completion marker/contract or runner completion marker as terminal evidence.
+deadline below. A CI round cap bounds polling sleeps, not network-request wall time. Require the
+worker completion marker/contract or runner completion marker as terminal evidence.
 
 **A bounded wait must be silent until its terminal condition.** Emit one completion or expiry
 line: every line of background output wakes the orchestrator for a turn. Send any progress heartbeat

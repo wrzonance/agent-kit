@@ -238,14 +238,22 @@ class NativeRuntime(unittest.TestCase):
             process.communicate(timeout=3)
             self.assertEqual(-signal.SIGTERM, process.returncode)
             path = Path("/proc") / str(helper_pid) / "stat"
-            try:
-                state = path.read_text().rsplit(") ", 1)[1].split()[0]
-            except (FileNotFoundError, ProcessLookupError):
-                state = "absent"
+            deadline = time.monotonic() + 1
+            state = "unknown"
+            while state not in {"Z", "absent"} and time.monotonic() < deadline:
+                try:
+                    state = path.read_text().rsplit(") ", 1)[1].split()[0]
+                except (FileNotFoundError, ProcessLookupError):
+                    state = "absent"
+                if state not in {"Z", "absent"}:
+                    time.sleep(0.01)
             self.assertIn(state, {"Z", "absent"})
         finally:
-            if process.poll() is None:
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # The process group already exited, so teardown has nothing left to kill.
+                pass
             process.communicate(timeout=3)
 
 
