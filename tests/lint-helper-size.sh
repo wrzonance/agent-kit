@@ -99,8 +99,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #779: destination-adjacent atomic scratch and .agent parent validation.
 # #778: one harness-to-runtime-tool mapping and contract/composer integration.
 # #783: computed run-state handoff coverage and lifecycle blocker rendering.
-# #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
-readonly MAX_TREE_TOKENS=449869
+# #782 bot repair: provenance-aware root filename creation; exact integrated total.
+readonly MAX_TREE_TOKENS=449964
 
 violations=0
 checked=0
