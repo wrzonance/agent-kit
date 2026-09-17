@@ -229,19 +229,26 @@ print_summary() {
     [[ ! -e $REPORTS_DIR || (-d $REPORTS_DIR && -O $REPORTS_DIR) ]] ||
         die "verification reports must be an owned directory: $REPORTS_DIR"
     [[ -e $REPORTS_DIR ]] || return 0
-    local reports_mode report report_mode report_text
+    local reports_mode report report_mode report_text report_issue content_issue
     reports_mode=$(stat -c %a -- "$REPORTS_DIR") || die "could not inspect verification reports: $REPORTS_DIR"
     (( (8#$reports_mode & 8#077) == 0 )) || die "verification reports directory must be owner-private: $REPORTS_DIR"
     local -a reports=("$REPORTS_DIR"/issue-*.report)
     [[ -e ${reports[0]} ]] || return 0
     for report in "${reports[@]}"; do
+        [[ ${report##*/} =~ ^issue-([1-9][0-9]*)\.report$ ]] ||
+            die "verification report filename must be issue-POSITIVE_INTEGER.report: $report"
+        report_issue=${BASH_REMATCH[1]}
         [[ ! -L $report && -f $report && -O $report ]] || die "verification report must be an owned regular file: $report"
         report_mode=$(stat -c %a -- "$report") || die "could not inspect verification report: $report"
         (( (8#$report_mode & 8#077) == 0 )) || die "verification report must be owner-private: $report"
         report_text=$(cat -- "$report") || die "could not read verification report: $report"
-        [[ $(wc -l <"$report") -eq 1 && $report_text != *$'\n'* &&
-            $report_text =~ ^spec-verification=\ issue=[0-9]+\ steps=[1-9][0-9]*\  ]] ||
+        [[ $(wc -l <"$report") -eq 1 && $report_text != *$'\n'* ]] ||
             die "malformed durable verification report: $report"
+        [[ $report_text =~ ^spec-verification=\ issue=([1-9][0-9]*)\ steps=[1-9][0-9]*\  ]] ||
+            die "malformed durable verification report: $report"
+        content_issue=${BASH_REMATCH[1]}
+        [[ $content_issue == "$report_issue" ]] ||
+            die "verification report filename issue does not match content issue: $report"
         cat -- "$report"
     done
 }

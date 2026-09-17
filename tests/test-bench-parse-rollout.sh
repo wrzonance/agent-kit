@@ -299,8 +299,9 @@ injected_prefix='agentkit invocation boundary: explicit workflow delivery, not n
 injected_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
 read_output=$'# Reading discipline\nRead this once.\n'
 custom_read_output=$'# Parallel Issues\nInjected bodies are authoritative.\n'
+single_quoted_output=$'# Single quoted command\n'
 jq -nc --arg prefix "$injected_prefix" --arg body "$injected_body" --arg read "$read_output" \
-    --arg custom_read "$custom_read_output" \
+    --arg custom_read "$custom_read_output" --arg single_read "$single_quoted_output" \
     '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
      {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
      {type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:($prefix+"\nInstalled skills root: /skills\n\n"+$body)}]}},
@@ -308,6 +309,8 @@ jq -nc --arg prefix "$injected_prefix" --arg body "$injected_body" --arg read "$
      {type:"response_item",payload:{type:"function_call_output",call_id:"read-prose",output:$read}},
      {type:"response_item",payload:{type:"custom_tool_call",call_id:"custom-read-prose",name:"functions.exec",input:"text(await tools.exec_command({cmd:\"cat agentkit/skills/parallel-issues/SKILL.md\",workdir:\"/repo\"}));"}},
      {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"custom-read-prose",output:$custom_read}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"single-quoted-prose",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat notes.md\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"single-quoted-prose",output:$single_read}},
      {type:"response_item",payload:{type:"function_call",call_id:"message-mention",name:"send_message",arguments:"{\"message\":\"please cat agentkit/skills/parallel-issues/SKILL.md\"}"}},
      {type:"response_item",payload:{type:"function_call_output",call_id:"message-mention",output:"message delivered"}},
      {type:"bench_trial_meta",payload:{run_id:"prose-cost",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
@@ -317,7 +320,7 @@ assert_eq '0' "$RUN_RC" 'a rollout with injected and tool-read prose parses'
 assert_eq "${#injected_body}" \
     "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_injected' <<< "$RUN_OUT")" \
     'injected prose counts the exact delivered SKILL.md body, excluding the hook wrapper'
-assert_eq "$((${#read_output} + ${#custom_read_output}))" \
+assert_eq "$((${#read_output} + ${#custom_read_output} + ${#single_quoted_output}))" \
     "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'read prose counts exact output characters from direct and custom nested markdown reads'
 
@@ -333,6 +336,50 @@ run "$ambiguous_prose_fixture" --timestamp 2026-09-16T03:03:00Z
 assert_eq '0' "$RUN_RC" 'a mixed custom execution rollout still parses'
 assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'mixed custom execution marks prose-read characters unavailable instead of asserting zero'
+
+prose_boundaries_fixture="$tmp/prose-cost-boundaries.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"single-quoted",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat one.md\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"single-quoted",output:"one markdown"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"compound-shell",name:"exec_command",arguments:"{\"cmd\":\"cat two.md; git status\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"compound-shell",output:"markdown and status"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"unsupported-js",name:"functions.exec",input:"text(await tools.exec_command({cmd:`cat three.md`}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"unsupported-js",output:"three markdown"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"missing-output",name:"exec_command",arguments:"{\"cmd\":\"cat four.md\"}"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-boundaries",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_boundaries_fixture"
+run "$prose_boundaries_fixture" --timestamp 2026-09-16T03:04:00Z
+assert_eq '0' "$RUN_RC" 'single-quoted and conservative prose boundaries parse without crashing'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'compound, unsupported, or unmatched markdown reads make prose characters unavailable'
+
+prose_mixed_boundaries_fixture="$tmp/prose-cost-mixed-boundaries.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"unparsed-first",name:"functions.exec",input:"const a=await tools.exec_command({cmd:`cat one.md`}); const b=await tools.exec_command({cmd:\u0027printf noise\u0027}); text(a.output); text(b.output);"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"unparsed-first",output:"markdown plus noise"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-mixed-boundaries",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$prose_mixed_boundaries_fixture"
+run "$prose_mixed_boundaries_fixture" --timestamp 2026-09-16T03:05:00Z
+assert_eq '0' "$RUN_RC" 'an unsupported custom call before a supported call still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'an unparsed Markdown call before a supported custom call makes prose characters unavailable'
+
+background_prose_fixture="$tmp/prose-cost-background.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"background-mixed",name:"exec_command",arguments:"{\"cmd\":\"cat two.md & git status\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"background-mixed",output:"markdown and status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-background",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$background_prose_fixture"
+run "$background_prose_fixture" --timestamp 2026-09-16T03:06:00Z
+assert_eq '0' "$RUN_RC" 'a background shell read still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'background mixed output makes prose characters unavailable'
 
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
