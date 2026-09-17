@@ -41,6 +41,28 @@ case "$*" in
     esac
     ;;
   *'api graphql'*)
+    if [[ -n ${DISTINCT_BATCH:-}${STALE_FIRST_BATCH:-} ]]; then
+        if [[ $* == *'number=782'* ]]; then
+            membership=10; pid=PVT_distinct_ten; title='Distinct Ten'; issue_id=782
+        else
+            membership=9; pid=PVT_unlinked; title='Unlinked Board'; issue_id=781
+        fi
+        jq -n --argjson number "$membership" --arg id "$pid" --arg title "$title" \
+          --arg item_id "PVTI_$issue_id" \
+          '{data:{repository:{issue:{projectItems:{nodes:[{id:$item_id,project:{id:$id,number:$number,title:$title,owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
+        exit 0
+    elif [[ -n ${AMBIGUOUS_FIRST_BATCH:-} && $* == *'number=782'* ]]; then
+        jq -n '{data:{repository:{issue:{projectItems:{nodes:[
+          {id:"PVTI_782",project:{id:"PVT_distinct_ten",number:10,title:"Distinct Ten",owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}
+        ],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
+        exit 0
+    elif [[ -n ${AMBIGUOUS_MEMBERSHIP:-}${AMBIGUOUS_FIRST_BATCH:-} ]]; then
+        jq -n '{data:{repository:{issue:{projectItems:{nodes:[
+          {id:"PVTI_ambiguous_nine",project:{id:"PVT_unlinked",number:9,title:"Unlinked Board",owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}},
+          {id:"PVTI_ambiguous_ten",project:{id:"PVT_distinct_ten",number:10,title:"Distinct Ten",owner:{login:"example-org"}},fieldValueByName:{name:"Ready",optionId:"opt-ready"}}
+        ],pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
+        exit 0
+    fi
     membership=${MEMBERSHIP_PROJECT:-none}
     if [[ $membership == none ]]; then
         printf '%s\n' '{"data":{"repository":{"issue":{"projectItems":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}'
@@ -67,6 +89,12 @@ case "$*" in
   *'project item-list'*)
     if [[ -n ${LINKED_PROJECT_MISS:-} && $* == *'project item-list 7 '* ]]; then
         printf '%s\n' '{"totalCount":0,"items":[]}'
+    elif [[ -n ${STALE_FIRST_BATCH:-} && $* == *'project item-list 9 '* ]]; then
+        printf '%s\n' '{"totalCount":0,"items":[]}'
+    elif [[ -n ${DISTINCT_BATCH:-}${STALE_FIRST_BATCH:-}${AMBIGUOUS_FIRST_BATCH:-} && $* == *'project item-list 10 '* ]]; then
+        printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_782","status":"Ready","content":{"type":"Issue","number":782,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/782"}}]}'
+    elif [[ -n ${DISTINCT_BATCH:-} && $* == *'project item-list 9 '* ]]; then
+        printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_781","status":"Ready","content":{"type":"Issue","number":781,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/781"}}]}'
     elif [[ -n ${MIXED_BATCH:-} && $* == *'project item-list 9 '* ]]; then
         printf '%s\n' '{"totalCount":1,"items":[{"id":"PVTI_782","status":"Ready","content":{"type":"Issue","number":782,"repository":"example-org/example-repo","url":"https://github.com/example-org/example-repo/issues/782"}}]}'
     else
@@ -145,6 +173,68 @@ assert_eq false "$([[ -e $outside_agent/board.json ]] && printf true || printf f
     'a symlink cannot redirect board.json outside the repository'
 assert_not_contains "$(cat -- "$log")" 'project item-edit' \
     'a blocked cache write performs no mutation'
+
+# A dangling symlink is still an existing unsafe path even though `-e` is
+# false. Preserve the unsafe-path status instead of downgrading it to an
+# unavailable optional cache.
+dangling_repo="$tmp/dangling-repo"
+mkdir -p "$dangling_repo"
+git -C "$dangling_repo" init -q
+ln -s "$tmp/missing-agent-target" "$dangling_repo/.agent"
+: > "$log"
+set +e
+dangling_out=$(GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$dangling_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+dangling_rc=$?
+set -e
+assert_eq 1 "$dangling_rc" 'a dangling .agent symlink preserves unsafe-path rejection'
+assert_contains "$dangling_out" 'unsafe .agent cache path' \
+    'a dangling .agent symlink reports the unsafe cache boundary'
+assert_not_contains "$(cat -- "$log")" 'project item-edit' \
+    'a dangling .agent symlink blocks mutation before cache staging'
+
+# Existing cache directories must be owner-controlled before the writer stages
+# anything. Both common group/world-writable modes fail with the established
+# unsafe-path status and leave no temporary or final cache file behind.
+for unsafe_mode in 775 777; do
+    unsafe_repo="$tmp/unsafe-$unsafe_mode"
+    mkdir -p "$unsafe_repo/.agent"
+    git -C "$unsafe_repo" init -q
+    chmod "$unsafe_mode" "$unsafe_repo/.agent"
+    : > "$log"
+    set +e
+    unsafe_out=$(GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+        --repo-root "$unsafe_repo" --repo example-org/example-repo \
+        --issue-number 781 --status 'In progress' 2>&1)
+    unsafe_rc=$?
+    set -e
+    assert_eq 1 "$unsafe_rc" "mode $unsafe_mode .agent preserves unsafe-path rejection"
+    assert_contains "$unsafe_out" 'unsafe .agent cache path' \
+        "mode $unsafe_mode .agent reports the unsafe cache boundary"
+    assert_eq 0 "$(find "$unsafe_repo/.agent" -maxdepth 1 -name '.board.*' -o -name board.json | wc -l)" \
+        "mode $unsafe_mode .agent creates no staged or final cache file"
+    assert_not_contains "$(cat -- "$log")" 'project item-edit' \
+        "mode $unsafe_mode .agent blocks mutation before an unsafe cache write"
+done
+
+# A missing .agent directory is created privately even under a permissive
+# caller umask, then the same public invocation completes its live move.
+permissive_repo="$tmp/permissive-repo"
+mkdir -p "$permissive_repo"
+git -C "$permissive_repo" init -q
+: > "$log"
+permissive_out=$(umask 000; GH_STUB_LOG="$log" PATH="$bin:$PATH" "$mover" \
+    --repo-root "$permissive_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+permissive_rc=$?
+assert_eq 0 "$permissive_rc" 'a missing cache directory works under umask 000'
+assert_eq 700 "$(stat -c '%a' "$permissive_repo/.agent")" \
+    'the writer creates a missing .agent directory privately'
+assert_eq 600 "$(stat -c '%a' "$permissive_repo/.agent/board.json")" \
+    'the permissive caller umask never weakens the cache file'
+assert_contains "$permissive_out" 'moved #781 -> "In progress"' \
+    'private cache creation preserves the live move'
 
 # Multiple linked boards are selected by the issue's actual membership.
 multi_repo="$tmp/multi-repo"
@@ -295,5 +385,80 @@ assert_not_contains "$mixed_out" 'no-op: issue #782 is not on any project board'
     'the mixed batch never drops the unresolved issue as unboarded'
 assert_eq 2 "$(grep -c 'project item-edit' "$log" || true)" \
     'the mixed batch mutates each issue exactly once'
+
+# Membership selection is per unresolved issue. Two issues with distinct,
+# individually unambiguous unlinked boards must not become one false ambiguity.
+distinct_repo="$tmp/distinct-repo"
+mkdir -p "$distinct_repo/.agent"
+git -C "$distinct_repo" init -q
+: > "$log"
+distinct_out=$(LINKED_MODE=none DISTINCT_BATCH=1 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$distinct_repo" --repo example-org/example-repo \
+    --issue-number 781 --issue-number 782 --status 'In progress' 2>&1)
+distinct_rc=$?
+assert_eq 0 "$distinct_rc" 'distinct per-issue memberships succeed'
+assert_contains "$distinct_out" 'moved #781 -> "In progress" on project #9 "Unlinked Board"' \
+    'the first issue moves on its unique board'
+assert_contains "$distinct_out" 'moved #782 -> "In progress" on project #10 "Distinct Ten"' \
+    'the second issue moves on its different unique board'
+assert_not_contains "$distinct_out" 'multiple project boards' \
+    'distinct unique memberships are never merged into a false ambiguity'
+assert_eq 2 "$(grep -c 'project item-edit' "$log" || true)" \
+    'each distinct issue is mutated exactly once'
+
+# Genuine ambiguity remains safe: one issue on two candidate boards is not
+# moved until the caller explicitly chooses all-board behavior.
+ambiguous_repo="$tmp/ambiguous-repo"
+mkdir -p "$ambiguous_repo/.agent"
+git -C "$ambiguous_repo" init -q
+: > "$log"
+ambiguous_out=$(LINKED_MODE=none AMBIGUOUS_MEMBERSHIP=1 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$ambiguous_repo" --repo example-org/example-repo \
+    --issue-number 781 --status 'In progress' 2>&1)
+ambiguous_rc=$?
+assert_eq 0 "$ambiguous_rc" 'a genuinely ambiguous issue is a safe no-op'
+assert_contains "$ambiguous_out" 'issue #781 is on multiple project boards' \
+    'a genuinely ambiguous issue reports its own ambiguity'
+assert_not_contains "$(cat -- "$log")" 'project item-edit' \
+    'a genuinely ambiguous issue performs no mutation'
+
+# One ambiguous issue does not poison the rest of a batch. Its no-op is
+# recorded independently and a later issue with one board still moves.
+partial_repo="$tmp/partial-ambiguity-repo"
+mkdir -p "$partial_repo/.agent"
+git -C "$partial_repo" init -q
+: > "$log"
+partial_out=$(LINKED_MODE=none AMBIGUOUS_FIRST_BATCH=1 GH_STUB_LOG="$log" PATH="$bin:$PATH" \
+    "$mover" --repo-root "$partial_repo" --repo example-org/example-repo \
+    --issue-number 781 --issue-number 782 --status 'In progress' 2>&1)
+partial_rc=$?
+assert_eq 0 "$partial_rc" 'one ambiguous issue does not fail its batch'
+assert_contains "$partial_out" 'issue #781 is on multiple project boards' \
+    'the ambiguous issue keeps its own safe no-op'
+assert_contains "$partial_out" 'moved #782 -> "In progress" on project #10 "Distinct Ten"' \
+    'a later uniquely placed issue still moves'
+assert_eq 1 "$(grep -c 'project item-edit' "$log" || true)" \
+    'only the unambiguous issue is mutated'
+
+# A stale unique membership can disagree with the selected board's item list.
+# Bound that no-progress case per issue and continue the rest of the batch.
+stale_repo="$tmp/stale-membership-repo"
+mkdir -p "$stale_repo/.agent"
+git -C "$stale_repo" init -q
+: > "$log"
+set +e
+stale_out=$(timeout 20s env LINKED_MODE=none STALE_FIRST_BATCH=1 GH_STUB_LOG="$log" \
+    PATH="$bin:$PATH" "$mover" --repo-root "$stale_repo" \
+    --repo example-org/example-repo --issue-number 781 --issue-number 782 \
+    --status 'In progress' 2>&1)
+stale_rc=$?
+set -e
+assert_eq 0 "$stale_rc" 'a stale selected membership terminates without looping'
+assert_contains "$stale_out" 'no-op: issue #781 is not on any project board' \
+    'the stale selected issue keeps the established absence no-op'
+assert_contains "$stale_out" 'moved #782 -> "In progress" on project #10 "Distinct Ten"' \
+    'a stale first issue does not skip a later valid issue'
+assert_eq 1 "$(grep -c 'project item-edit' "$log" || true)" \
+    'the stale batch mutates only the valid issue'
 
 finish

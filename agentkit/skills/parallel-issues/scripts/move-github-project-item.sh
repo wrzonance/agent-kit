@@ -649,10 +649,6 @@ try_known_board() {
     return 0
 }
 
-# Resolve issues that were absent from the declared board item listing by
-# reading their own project memberships. This is deliberately the final
-# default path when board.json is trusted: an issue on another board is a
-# terminal no-op, not permission to scan every project in the organization.
 try_declared_memberships() {
     local project_number project_id project_title field_id option_id project_owner
     local memberships membership_count item_id current_status issue_number read_rc
@@ -728,9 +724,6 @@ try_declared_memberships() {
     return 0
 }
 
-# --all-boards is the only mode allowed to inspect boards beyond board.json.
-# It walks the issue's paginated projectItems connection, then resolves each
-# matching board's Status field without listing that board's cards.
 process_project_memberships() {
     local memberships issue_number item_id project_number project_id project_title project_owner
     local current_status fields_json status_field_id option_id read_rc
@@ -936,9 +929,10 @@ process_project() {
     return 0
 }
 
-# Select unresolved memberships; unreadable evidence is a no-op and empty is 2.
+selected_membership_issue=
 select_unresolved_membership_project() {
-    local memberships issue_number membership_rc cold_memberships='[]'
+    local memberships issue_number membership_rc
+    selected_membership_issue=
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         membership_rc=0
@@ -948,29 +942,34 @@ select_unresolved_membership_project() {
             completed_issues[$issue_number]=1
             continue
         fi
-        cold_memberships=$(jq -c -n --argjson accumulated "$cold_memberships" --argjson \
-            current "$memberships" '$accumulated + $current') || die 'Could not combine issue project memberships.'
+        [[ $(jq -r 'length' <<< "$memberships") != 0 ]] || continue
+        selected_membership_issue=$issue_number
+        board_cache_select "$repo_root" "$repository" "$memberships"
+        return $?
     done
-    [[ $(jq -r 'length' <<< "$cold_memberships") != 0 ]] || return 2
-    board_cache_select "$repo_root" "$repository" "$cold_memberships"
+    return 2
+}
+complete_selected_membership_miss() {
+    [[ -n $selected_membership_issue ]] || return 0
+    [[ ${completed_issues[$selected_membership_issue]+yes} == yes ]] && return 0
+    report_noop "no-op: issue #$selected_membership_issue is not on any project board"
+    completed_issues[$selected_membership_issue]=1
 }
 discover_rc=0; board_cache_discover "$repo_root" "$repository" || discover_rc=$?
 if ((discover_rc == 2 || discover_rc == 5)); then
     discover_rc=0
     select_unresolved_membership_project || discover_rc=$?
 fi
+while ((discover_rc == 5)); do
+    report_noop "no-op: issue #$selected_membership_issue is on multiple project boards; use --all-boards to inspect all project boards"
+    completed_issues[$selected_membership_issue]=1
+    discover_rc=0
+    select_unresolved_membership_project || discover_rc=$?
+done
 if ((discover_rc == 2)); then
     for issue_number in "${issue_numbers[@]}"; do
         [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
         report_noop "no-op: issue #$issue_number is not on any project board"
-    done
-    report_summary
-    exit 0
-fi
-if ((discover_rc == 5)); then
-    for issue_number in "${issue_numbers[@]}"; do
-        [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
-        report_noop "no-op: issue #$issue_number is on multiple project boards; use --all-boards to inspect all project boards"
     done
     report_summary
     exit 0
@@ -986,22 +985,23 @@ printf 'board: cache cold, discovered project #%s "%s" (%s)\n' \
 owner=$BOARD_CACHE_DISCOVERED_OWNER
 process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" \
     "$BOARD_CACHE_DISCOVERED_TITLE" "$BOARD_CACHE_DISCOVERED_FIELDS" || :
-if ((${#completed_issues[@]} < ${#issue_numbers[@]})); then
+complete_selected_membership_miss
+while ((${#completed_issues[@]} < ${#issue_numbers[@]})); do
     membership_project_rc=0; select_unresolved_membership_project || membership_project_rc=$?
     if ((membership_project_rc == 0)); then
         owner=$BOARD_CACHE_DISCOVERED_OWNER
         process_project "$BOARD_CACHE_DISCOVERED_NUMBER" "$BOARD_CACHE_DISCOVERED_ID" "$BOARD_CACHE_DISCOVERED_TITLE" \
             "$BOARD_CACHE_DISCOVERED_FIELDS" || :
+        complete_selected_membership_miss
     elif ((membership_project_rc == 5)); then
-        for issue_number in "${issue_numbers[@]}"; do
-            [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
-            report_noop "no-op: issue #$issue_number is on multiple project boards; use --all-boards to inspect all project boards"
-            completed_issues[$issue_number]=1
-        done
+        report_noop "no-op: issue #$selected_membership_issue is on multiple project boards; use --all-boards to inspect all project boards"
+        completed_issues[$selected_membership_issue]=1
+    elif ((membership_project_rc == 2)); then
+        break
     elif ((membership_project_rc != 2)); then
         die 'Could not select a project from issue memberships.'
     fi
-fi
+done
 for issue_number in "${issue_numbers[@]}"; do
     [[ ${completed_issues[$issue_number]+yes} == yes ]] && continue
     report_noop "no-op: issue #$issue_number is not on any project board"

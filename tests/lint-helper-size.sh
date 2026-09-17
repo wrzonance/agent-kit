@@ -161,7 +161,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #756 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #780 PR #793 final review repair: curly-quote consent boundary; exact total.
 # #781 merge-down with PR #793: measured combined helper tree.
-readonly MAX_TREE_TOKENS=464458
+# #781 review repair: private cache parent and per-issue membership selection.
+readonly MAX_TREE_TOKENS=464430
 
 violations=0
 checked=0

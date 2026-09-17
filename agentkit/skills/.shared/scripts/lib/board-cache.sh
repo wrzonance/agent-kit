@@ -12,6 +12,13 @@ board_cache_path_is_private() {
     [[ ${mode:1:1} != [2367] && ${mode:2:1} != [2367] ]]
 }
 
+board_cache_directory_is_private() {
+    local path=$1 mode
+    [[ -d $path && ! -L $path && -O $path ]] || return 1
+    mode=$(stat -c '%a' -- "$path" 2>/dev/null) || return 1
+    (( (8#$mode & 8#022) == 0 ))
+}
+
 # Write a complete cache from already-discovered project and Status-field data.
 # Arguments: repo-root repository board-owner project-number project-id title fields-json
 board_cache_write() {
@@ -23,12 +30,12 @@ board_cache_write() {
     [[ -n $repo_root ]] || return 4
     agent_dir="$repo_root/.agent"
     board_file="$agent_dir/board.json"
-    [[ ! -L $agent_dir ]] || return 3
-    if [[ -e $agent_dir ]]; then
-        [[ -d $agent_dir && -O $agent_dir ]] || return 3
-    elif ! mkdir -p -- "$agent_dir" 2>/dev/null; then
+    if [[ -e $agent_dir || -L $agent_dir ]]; then
+        board_cache_directory_is_private "$agent_dir" || return 3
+    elif ! (umask 077 && mkdir -- "$agent_dir") 2>/dev/null; then
         return 4
     fi
+    board_cache_directory_is_private "$agent_dir" || return 3
     [[ -w $agent_dir ]] || return 4
 
     status_field=$(jq -c \

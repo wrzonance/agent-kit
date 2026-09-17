@@ -310,15 +310,24 @@ assert_contains "$log" '--id PVTI_example57' \
     'a group/world-writable cache directory still falls back to the requested-repository card'
 chmod 700 "$repo/.agent/cache"
 
-# The same applies to .agent/ itself: it backs both board.json and the item
-# cache, so a writable .agent/ forces a full fallback to live discovery.
+# The same applies to .agent/ itself: the cold-cache writer refuses the unsafe
+# parent before staging metadata or mutating a project item.
 repo=$(seed_repo)
 chmod 777 "$repo/.agent"
 : > "$tmp/gh.log"
-run_mv "$repo" --issue-number 57 --status Ready > /dev/null 2>&1
+set +e
+unsafe_agent_out=$(run_mv "$repo" --issue-number 57 --status Ready 2>&1)
+unsafe_agent_rc=$?
+set -e
 log=$(cat "$tmp/gh.log")
+assert_eq 1 "$unsafe_agent_rc" \
+    'a group/world-writable .agent directory preserves unsafe-path rejection'
+assert_contains "$unsafe_agent_out" 'unsafe .agent cache path' \
+    'the unsafe parent is reported at the public mover boundary'
 assert_contains "$log" 'projectsV2(first:20' \
-    'a group/world-writable .agent/ directory falls back to linked-board discovery'
+    'an unsafe .agent still permits read-only linked-board discovery'
+assert_not_contains "$log" 'project item-edit' \
+    'an unsafe .agent blocks mutation before cache staging'
 chmod 700 "$repo/.agent"
 
 # A rejected cached mutation invalidates that issue's cache entry before the
