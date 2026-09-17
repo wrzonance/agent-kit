@@ -67,11 +67,14 @@ assert_contains "$(cat "$onboard_skill")" 'Once it resolves `$agentkit`, read' \
     'onboarding reads the shared policy only after its path is available'
 
 shell_policy_text=$(cat "$shell_policy" 2>/dev/null || true)
-for required in mapfile readarray BASH_REMATCH SH_WORD_SPLIT 'array index' \
+for required in BASH_REMATCH SH_WORD_SPLIT 'array index' nomatch \
+    "rg --glob '*.md'" 'ls … 2>/dev/null' \
     'python3 -c' 'pipe and heredoc' 'bash -c' 'nested quoting'; do
     assert_contains "$shell_policy_text" "$required" \
         "the shared shell policy covers $required"
 done
+assert_eq yes "$([[ $(wc -l < "$shell_policy") -le 50 ]] && printf yes || printf no)" \
+    'shell-portability policy does not grow beyond its 50-line baseline'
 assert_contains "$shell_policy_text" 'producer \| python3' \
     'the pipe-plus-heredoc example escapes its GFM table delimiter'
 assert_contains "$(cat "$provider_rules")" \
@@ -88,12 +91,91 @@ mkdir -p "$tmp/skills/example"
 for recipe in 'mapfile -t items' 'readarray -t items' 'read -a items' \
     'IFS=, read -ra items' 'read -r -a items' \
     'read -d "" -ra items' \
-    'true; mapfile -t items'; do
+    'true; mapfile -t items' 'true|shopt -s nullglob'; do
     printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
     output=$("$lint" "$tmp/skills" 2>&1)
-    assert_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+    assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
         "lint rejects unwrapped $recipe"
 done
+
+for recipe in 'shopt -s nullglob' 'declare -A items=()' \
+    '[[ ${items[0]} =~ ^item-([0-9]+)$ ]]'; do
+    printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
+    output=$("$lint" "$tmp/skills" 2>&1)
+    assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+        "lint rejects unwrapped $recipe"
+done
+
+for recipe in 'printf "%s\n" .markdownlint*' 'printf "%s\n" file?.md' \
+    'printf "%s\n" file[0-9].md' \
+    'for transcript in "$run_dir"/*.transcript; do printf "%s\n" "$transcript"; done'; do
+    printf '```bash\n%s\n```\n' "$recipe" > "$tmp/skills/example/SKILL.md"
+    output=$("$lint" "$tmp/skills" 2>&1)
+    assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+        "lint rejects zsh-nomatch hazard $recipe"
+done
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if [[ $branch == feature/* ]]; then printf '%s\n' "$branch"; fi
+case $branch in
+    feature/*) printf '%s\n' "$branch" ;;
+esac
+```
+MARKDOWN
+assert_rc 0 'lint accepts conditional and case pattern syntax after control prefixes' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+if ! [[ $ref =~ ^refs/heads/(.+)$ ]]; then exit 1; fi
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks regex syntax after repeated control prefixes'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+case $kind in
+    markdown) printf '%s\n' *.md ;;
+esac
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks executable commands inside case arms'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+globbed="$(printf '%s\n' *.md)"
+bash_state="$(shopt -p nullglob)"
+```
+MARKDOWN
+output=$("$lint" "$tmp/skills" 2>&1)
+assert_contains "$output" 'unquoted glob outside explicit Bash boundary' \
+    'lint checks globs in a quoted command substitution'
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
+    'lint checks Bash-only commands in a quoted command substitution'
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+product="$((6 * 7))"
+printf '%s\n' "$product"
+```
+MARKDOWN
+assert_rc 0 'lint does not treat quoted arithmetic expansion as a command substitution' -- \
+    "$lint" "$tmp/skills"
+
+# This is the failure boundary the lint prevents: Bash passes a non-matching
+# glob literally, while zsh aborts before the command can run.
+mkdir -p "$tmp/empty-glob-dir"
+assert_rc 0 'bash leaves an unmatched recipe glob for the command' -- \
+    bash -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
+if command -v zsh >/dev/null; then
+    assert_rc 1 'zsh nomatch aborts an unmatched recipe glob' -- \
+        zsh -f -c 'printf "%s\n" "$1"/*.transcript >/dev/null' _ "$tmp/empty-glob-dir"
+fi
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
 ```bash
@@ -105,6 +187,26 @@ FIXTURE_RECIPE
 ```
 MARKDOWN
 assert_rc 0 'lint accepts explicit Bash boundary with alternate delimiter' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -s -- "$run_dir" <<'FIXTURE_RECIPE'
+shopt -s nullglob
+declare -A counts=()
+files=("$1"/*.transcript)
+FIXTURE_RECIPE
+```
+MARKDOWN
+assert_rc 0 'lint accepts Bash-only syntax and globs inside a bash -s boundary' -- \
+    "$lint" "$tmp/skills"
+
+cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
+```bash
+bash -c 'shopt -s nullglob; files=(.markdownlint*)'
+```
+MARKDOWN
+assert_rc 0 'lint accepts a single-quoted bash -c boundary' -- \
     "$lint" "$tmp/skills"
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
@@ -129,7 +231,7 @@ mapfile -t outside
 ```
 MARKDOWN
 output=$("$lint" "$tmp/skills" 2>&1)
-assert_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+assert_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
     'lint still checks commands after a parameterized Bash boundary'
 
 cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
@@ -138,14 +240,17 @@ cat > "$tmp/skills/example/SKILL.md" <<'MARKDOWN'
 printf '%s\n' 'readarray -t items'
 printf '%s\n' 'bad; mapfile -t items'
 printf '%s\n' "bad; read -ra items"
+printf '%s\n' '.markdownlint*; shopt -s nullglob'
 true # bad; readarray -t items
 ```
 MARKDOWN
 assert_rc 0 'lint leaves comment and quoted negative examples alone' -- \
     "$lint" "$tmp/skills"
 output=$("$lint" "$root/agentkit/skills" 2>&1)
-assert_not_contains "$output" 'Bash-only builtin outside explicit Bash boundary' \
+assert_not_contains "$output" 'Bash-only syntax outside explicit Bash boundary' \
     'all shipped recipes put Bash-only builtins behind a Bash boundary'
+assert_not_contains "$output" 'outside explicit Bash boundary' \
+    'all shipped recipes avoid parent-shell Bash syntax and unquoted globs'
 
 # Run complete shipped fences in ordinary parent shells. Nothing here exports
 # recipe inputs or removes a wrapper to make a failing boundary pass.

@@ -459,7 +459,7 @@ spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verificatio
 spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
 wait_bound=$(printf '%s\n' "$compose_output" | grep -E '^wait-bound= ' || true); [[ -n $wait_bound && $wait_bound != *$'\n'* ]] || exit 1
 plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
-plan_sha=${spec_verification_plan##* plan-sha=}; [[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
+plan_sha=${spec_verification_plan##* plan-sha=}; [[ ${#plan_sha} -eq 64 && $plan_sha != *[!0-9a-f]* ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
 if [[ $plan_update != none ]]; then
     [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
     plan_replace_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || { rm -f -- "$plan_update"; exit 1; }
@@ -471,11 +471,11 @@ fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
 persist_dispatch_verification_report() {
     local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
-    [[ -n $spec_verification ]] || return 0
-    [[ $issue_number =~ ^[0-9]+$ ]] || return 1; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
+    [[ $spec_verification ]] || return 0
+    case $issue_number in ''|*[!0-9]*) return 1 ;; esac; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
     chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
     dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
-    if ! { printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
+    if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
         rm -f -- "$dispatch_report_tmp"; return 1
     fi
     [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1

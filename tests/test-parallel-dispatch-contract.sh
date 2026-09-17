@@ -596,6 +596,10 @@ assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$pla
     'dispatch verifies copied replacement bytes before publication'
 assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
     'dispatch verifies the exact final record before spawn'
+assert_not_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
+    'dispatch does not require parent-shell associative-array state'
+assert_contains "$dispatch_handoff" '${spec_verification:-none}' \
+    'dispatch prints the current coverage report without Bash-only storage'
 assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
     'dispatch accepts an empty zero-step report while still rejecting multiple report lines'
 assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
