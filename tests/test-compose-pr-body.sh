@@ -68,7 +68,7 @@ assert_rc 0 'composer supports stdout output' -- bash "$compose" \
 blocker_output="$tmp/blocker-body.md"
 blocker_file="$tmp/blockers.list"
 printf '%s\0' 'addin/AGENTS.md' '.github/workflows/release.yml' \
-    'secrets/with,comma.conf' >"$blocker_file"
+    'secrets/with,comma.conf' 'secrets/with\slash.conf' >"$blocker_file"
 assert_rc 0 'composer accepts protected blocker paths' -- bash "$compose" \
     --issue 137 --why-file "$why" --what-file "$what" \
     --decisions-file "$decisions" --testing-file "$testing" \
@@ -83,6 +83,8 @@ assert_contains "$blocker_text" '- `.github/workflows/release.yml`' \
     'the blocker section names every protected path'
 assert_contains "$blocker_text" '- `secrets/with,comma.conf`' \
     'the blocker section preserves a literal comma in one protected path'
+assert_contains "$blocker_text" '- `secrets/with\slash.conf`' \
+    'the blocker section preserves a literal backslash in one protected path'
 assert_contains "$blocker_text" 'Verification limitation:' \
     'a partial-pushed PR body discloses that retained verification is unbound'
 assert_contains "$blocker_text" 'may include the protected worktree paths above' \
