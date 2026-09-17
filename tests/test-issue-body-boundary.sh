@@ -29,6 +29,8 @@ skill=${skill//$'\n'/ }
 # and the pointer to the single-sourced prompt.
 dispatcher=$(<"$root/agentkit/skills/parallel-issues/SKILL.md")
 dispatcher=${dispatcher//$'\n'/ }
+boundary_recipe=$("$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh" --help)
+boundary_recipe=${boundary_recipe//$'\n'/ }
 assert_contains "$dispatcher" 'references/worker-prompts.md' \
     'the dispatcher points at the single-sourced worker prompts'
 script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh")
@@ -89,11 +91,11 @@ assert_not_contains "$skill" 'agent reads the issue body as the spec and proceed
     'skip guidance no longer describes raw issue text as a specification'
 
 # --- visibility and explicit invocation exceptions -------------------------
-assert_contains "$dispatcher" 'repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=' \
+assert_contains "$boundary_recipe" 'repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=' \
     'the visibility selector resolves its repository in-block'
-assert_contains "$dispatcher" 'gh repo view "$repository" --json isPrivate' \
+assert_contains "$boundary_recipe" 'gh repo view "$repository" --json isPrivate' \
     'visibility comes from the repository, not issue-derived text'
-assert_contains "$dispatcher" ': "${yolo_invocation:?set from the invocation line}"' \
+assert_contains "$boundary_recipe" ': "${yolo_invocation:?set from the invocation line}"' \
     'the selector requires invocation policy instead of silently defaulting it'
 assert_contains "$dispatcher" '--boundary "$boundary_mode"' \
     'the dispatcher forwards the selected mode through to the composer'

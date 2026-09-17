@@ -11,7 +11,6 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh"
-skill="$root/agentkit/skills/parallel-issues/SKILL.md"
 stub_gh="$here/stub/gh"
 fixture="$here/fixtures/issue-fetch.json"
 # Invoked by absolute path so a curated, jq-less PATH (used below to simulate
@@ -42,9 +41,9 @@ run_prepare() {
 # The canonical recipe must therefore defer cleanup until after it handles the
 # result, retaining the private digest long enough to run that command.
 recipe_fetch="$tmp_dir/fetch-recipe.txt"
-sed -n '/^fetch_rc=0$/,/^esac$/p' "$skill" >"$recipe_fetch"
-recipe_before_case=$(sed -n '/^fetch_rc=0$/,/^case "\$fetch_rc"/p' "$recipe_fetch")
-recipe_case=$(sed -n '/^case "\$fetch_rc"/,/^esac$/p' "$recipe_fetch")
+"$script" --help | sed 's/^  //' | sed -n '/^fetch_rc=0$/,/^esac$/p' >"$recipe_fetch"
+recipe_before_case=$(sed '/^case \$fetch_rc in$/,$d' "$recipe_fetch")
+recipe_case=$(sed -n '/^case \$fetch_rc in$/,/^esac$/p' "$recipe_fetch")
 assert_not_contains "$recipe_before_case" 'rm -f -- "$prior_art_file"' \
     'the canonical recipe retains prior-art input until the result is classified'
 assert_contains "$recipe_case" 'rm -f -- "$prior_art_file"' \
@@ -390,7 +389,7 @@ rc=0
 assert_eq 0 "$rc" '--help exits 0'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 487 ]] && printf yes || printf no)" \
-    'prepare-issue-artifacts.sh stays at or under 487 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 511 ]] && printf yes || printf no)" \
+    'prepare-issue-artifacts.sh stays at or under 511 lines'
 
 finish
