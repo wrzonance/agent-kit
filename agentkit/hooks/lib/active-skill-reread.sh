@@ -60,7 +60,7 @@ guard_active_skill_reread() {
                     attached_role='expression'; attached_value=${token#*=} ;;
                 sed:-f?*|awk:-f?*|grep:-f?*|rg:-f?*)
                     attached_role='file'; attached_value=${token#-f} ;;
-                sed:--file=*|grep:--file=*|rg:--file=*)
+                sed:--file=*|awk:--file=*|grep:--file=*|rg:--file=*)
                     attached_role='file'; attached_value=${token#*=} ;;
             esac
             if [[ -n $attached_role && -n $attached_value ]]; then
@@ -78,7 +78,7 @@ guard_active_skill_reread() {
             case $verb:$token in
                 sed:-e|sed:--expression|grep:-e|grep:--regexp|rg:-e|rg:--regexp)
                     pending_role='expression'; continue ;;
-                sed:-f|sed:--file|awk:-f|grep:-f|grep:--file|rg:-f|rg:--file)
+                sed:-f|sed:--file|awk:-f|awk:--file|grep:-f|grep:--file|rg:-f|rg:--file)
                     pending_role='file'; continue ;;
                 awk:-v) pending_role='assignment'; continue ;;
                 head:-n|head:--lines|head:-c|head:--bytes|tail:-n|tail:--lines|tail:-c|tail:--bytes)

@@ -164,6 +164,28 @@ def custom_exec_commands(payload):
     return commands
 
 
+def grep_has_noncontent_mode(options):
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token in {'--files-with-matches', '--count'}:
+            return True
+        if token in {'-e', '-f', '--regexp', '--file'}:
+            index += 2
+            continue
+        if token.startswith('-') and not token.startswith('--'):
+            flags = token[1:]
+            for offset, flag in enumerate(flags):
+                if flag in {'e', 'f'}:
+                    if offset == len(flags) - 1:
+                        index += 1
+                    break
+                if flag in {'l', 'c'}:
+                    return True
+        index += 1
+    return False
+
+
 def command_reads_prose(command):
     for raw_segment in re.split(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command):
         segment = raw_segment.strip()
@@ -175,8 +197,7 @@ def command_reads_prose(command):
             options = options[:options.index('--')]
         if words and words[0] == 'rg' and '--files' in options:
             continue
-        if words and words[0] == 'grep' and any(
-                flag in options for flag in ('-l', '-c', '--files-with-matches', '--count')):
+        if words and words[0] == 'grep' and grep_has_noncontent_mode(options):
             continue
         return True
     return False
