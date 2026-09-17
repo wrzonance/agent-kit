@@ -19,6 +19,7 @@ readonly CLOSING_REFERENCE_ATTEMPTS=3
 readonly CLOSING_REFERENCE_RETRY_DELAY=${GH_BODY_CLOSING_RETRY_DELAY:-5}
 
 GH_BIN=${GH_BODY_GH:-gh}
+RUN_STATE_SH=${GH_BODY_RUN_STATE_SH:-$STACKED_CI_DIR/run-state.sh}
 RESOURCE=''
 ACTION=''
 BODY_FILE=''
@@ -39,10 +40,16 @@ CI_SNAPSHOT='null'
 JSON_MODE=0
 TICK_TEXT=''
 TICK_NOTE=''
+RUN_STATE_ID=''
+RUN_STATE_REPO_ROOT=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options...]
+
+PR creation may pass --run-id ID --repo-root DIR together. These local options
+durably record the assigned PR number and are never forwarded to gh. Standalone
+creation may omit both; providing only one is refused before mutation.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
@@ -67,12 +74,12 @@ still emitted -- with closing_issue.state "failed" -- when closing-issue
 verification exhausts its retries, so a caller (such as a bulk-apply ledger)
 can record the created number/html_url before deciding how to handle a
 verification-stage failure; the exit status still reports failure (1) in that
-case. The one-object guarantee covers exactly those two outcomes: a
-successful mutation, and a successful mutation whose closing-issue
-verification later failed. When the gh mutation itself fails (nothing was
-created or edited), no JSON object is emitted at all: stdout stays empty and
-gh's raw output moves to stderr alongside the failure diagnosis. Default
-text-mode output and exit codes are unchanged by this flag.
+case. The one-object guarantee also covers a created PR whose run-state
+recording fails: its assigned identity is emitted with closing_issue null and
+the exact repair command goes to stderr. When the gh mutation itself fails
+(nothing was created or edited), no JSON object is emitted at all: stdout
+stays empty and gh's raw output moves to stderr alongside the failure
+diagnosis. Default text-mode output and exit codes are unchanged by this flag.
 
 --tick TEXT [--note TEXT]  (edit only) flip the one unchecked "- [ ] TEXT..."
 checkbox, appending " (NOTE)", before the exact-verify edit.
@@ -117,7 +124,8 @@ parse_args() {
                     case $1 in
                         --body|-b|--body=*|-b?*|--body-file|--body-file=*|\
                             --expect-closing-issue|--expect-closing-issue=*|\
-                            --tick|--tick=*|--note|--note=*)
+                            --tick|--tick=*|--note|--note=*|\
+                            --run-id|--run-id=*|--repo-root|--repo-root=*)
                             die 'body options must precede --; use --body-file FILE'
                             ;;
                         *)
@@ -184,6 +192,24 @@ parse_args() {
                 JSON_MODE=1
                 shift
                 ;;
+            --run-id)
+                require_value "$1" "${2-}"
+                RUN_STATE_ID=$2
+                shift 2
+                ;;
+            --run-id=*)
+                RUN_STATE_ID=${1#*=}
+                shift
+                ;;
+            --repo-root)
+                require_value "$1" "${2-}"
+                RUN_STATE_REPO_ROOT=$2
+                shift 2
+                ;;
+            --repo-root=*)
+                RUN_STATE_REPO_ROOT=${1#*=}
+                shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -215,12 +241,37 @@ validate_body() {
         die "--repo must look like OWNER/REPO, got: $REPO"
     [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE =~ $UINT_RE ]] ||
         die '--expect-closing-issue must be a positive integer'
+    if [[ -n $RUN_STATE_ID || -n $RUN_STATE_REPO_ROOT ]]; then
+        [[ $RESOURCE == pr && $ACTION == create ]] ||
+            die '--run-id/--repo-root apply to pr create only'
+        [[ -n $RUN_STATE_ID && -n $RUN_STATE_REPO_ROOT ]] ||
+            die '--run-id and --repo-root must be provided together'
+        [[ -x $RUN_STATE_SH ]] || die "run-state helper is unavailable: $RUN_STATE_SH"
+    fi
     [[ $CLOSING_REFERENCE_RETRY_DELAY =~ ^[0-9]+$ ]] ||
         die 'GH_BODY_CLOSING_RETRY_DELAY must be a non-negative integer'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
     command -v cmp >/dev/null 2>&1 || die 'cmp not found on PATH; evidence unavailable'
     command -v diff >/dev/null 2>&1 || die 'diff not found on PATH; evidence unavailable'
     command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
+}
+
+validate_run_state_destination() {
+    [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    [[ -n $RUN_STATE_ID ]] || return 0
+    local existing='' rc=0
+    existing=$("$RUN_STATE_SH" get --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs) || rc=$?
+    case $rc in
+        0)
+            jq -e 'type == "array" and
+                all(.[]; type == "number" and . > 0 and floor == .) and
+                ((unique | length) == length)' <<<"$existing" >/dev/null ||
+                die 'existing opened_prs must be a unique array of positive integer PR numbers'
+            ;;
+        11) ;;
+        *) die 'run-state destination is unavailable; PR was not created' ;;
+    esac
 }
 
 validate_footer() {
@@ -338,10 +389,30 @@ endpoint_from_url() {
                 VERIFY_ENDPOINT+="/issues/${BASH_REMATCH[5]}"
             fi
             MUTATION_URL=$line
+            TARGET_NUMBER=${BASH_REMATCH[5]}
             return 0
         fi
     done <"$WORK_DIR/mutation.out"
     die "gh $RESOURCE create did not return a usable GitHub URL; body was not verified"
+}
+
+record_created_pr() {
+    [[ $RESOURCE == pr && $ACTION == create ]] || return 0
+    [[ -n $RUN_STATE_ID ]] || return 0
+    local repair=''
+    if "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"; then
+        return 0
+    fi
+    printf 'created PR #%s: %s\n' "$TARGET_NUMBER" "$MUTATION_URL" >&2
+    if ((JSON_MODE)); then
+        jq -nc --argjson number "$TARGET_NUMBER" --arg html_url "$MUTATION_URL" \
+            '{number: $number, html_url: $html_url, closing_issue: null}'
+    fi
+    printf -v repair '%q ' "$RUN_STATE_SH" append-unique --run-id "$RUN_STATE_ID" \
+        --repo-root "$RUN_STATE_REPO_ROOT" --path opened_prs --json "$TARGET_NUMBER"
+    repair=${repair% }
+    die "PR was created but run-state recording failed; record it once with: $repair"
 }
 
 endpoint_from_target() {
@@ -557,12 +628,14 @@ main() {
     parse_args "$@"
     validate_body
     apply_tick
+    validate_run_state_destination
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-body.XXXXXX")
     trap cleanup EXIT
     run_mutation
 
     if [[ $ACTION == create ]]; then
         endpoint_from_url
+        record_created_pr
     else
         endpoint_from_target
     fi

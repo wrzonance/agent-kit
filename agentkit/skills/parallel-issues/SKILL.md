@@ -94,7 +94,7 @@ changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
 `RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
 After establishing `RUN_ID`, run `"$agentkit/.shared/scripts/run-state.sh" init-summary --run-id "$RUN_ID" --repo-root "$repository_root"`; it preserves existing records.
-`QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
+`QUOTE` is the human's verbatim quote; never put secrets or credentials in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
 **Authorization is checked once per run, not per command.** Record each grant with a stable
@@ -725,7 +725,7 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
+With `--auto-review`, immediately before iteration read `opened_prs_json=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs)`; exit `11` means `[]`, while every other error blocks. Require `type == "array"`, positive integer entries, and deduplicate in first-seen order before sweeping. Each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
 then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"` and each verified skip with the same command using `--path skipped_prs`; the helper is idempotent across resumed sweeps. On `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
 
 ### Opt-out

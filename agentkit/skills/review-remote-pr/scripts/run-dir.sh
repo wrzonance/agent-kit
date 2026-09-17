@@ -20,14 +20,17 @@ REPO=''
 BASE=''
 SCRATCH_LABEL=''
 SCRATCH_NEAR=''
+LIST_RUN_ROOTS=0
 readonly RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME (--pr N | --run-id ID | --scratch-label LABEL [--scratch-near PATH] | --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH) [--repo-root DIR]
+       $PROGNAME --list-run-roots [--repo-root DIR]
 
 Prints a private run directory or creates unique mode-0600 scratch. Run state
 uses DIR/.agent/evidence; DIR defaults to the Git root with a private fallback.
+--list-run-roots prints existing trusted primary/fallback roots; exit 11 means none.
 EOF
 }
 
@@ -47,6 +50,7 @@ parse_args() {
             --pr=*) PR=${1#*=}; shift ;;
             --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;
             --run-id=*) RUN_ID=${1#*=}; shift ;;
+            --list-run-roots) LIST_RUN_ROOTS=1; shift ;;
             --scratch-label) require_value "$1" "${2:-}"; SCRATCH_LABEL=$2; shift 2 ;;
             --scratch-label=*) SCRATCH_LABEL=${1#*=}; shift ;;
             --scratch-near) require_value "$1" "${2:-}"; SCRATCH_NEAR=$2; shift 2 ;;
@@ -92,6 +96,11 @@ create_scratch() {
 
 validate_selector() {
     local canonical_count=0 ledger="$SCRIPT_DIR/../../.shared/scripts/session-ledger.sh"
+    if ((LIST_RUN_ROOTS)); then
+        [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE ]] ||
+            die_usage '--list-run-roots is mutually exclusive with run selectors'
+        return
+    fi
     [[ -z $PROCEDURE_SET ]] || canonical_count=$((canonical_count + 1))
     [[ -z $SCOPE ]] || canonical_count=$((canonical_count + 1))
     [[ -z $REPO ]] || canonical_count=$((canonical_count + 1))
@@ -164,20 +173,86 @@ try_primary() {
     TARGET=$evidence_dir/$SELECTOR
 }
 
-fallback_target() {
-    local repo_slug fallback_root
+FALLBACK_ROOT=''
+FALLBACK_REPO_ROOT=''
+fallback_paths() {
+    local repo_slug
     repo_slug=$(printf '%s' "$REPO_ROOT" | sha256sum | cut -c1-16) ||
         die 'could not derive the repository fallback identity'
-    fallback_root="${TMPDIR:-/tmp}/agent-kit-review-remote-pr.$(id -u)"
-    ensure_private_root "$fallback_root" ||
-        die "could not create the fallback run-directory root: $fallback_root; evidence unavailable"
-    TARGET=$fallback_root/$repo_slug/$SELECTOR
+    FALLBACK_ROOT="${TMPDIR:-/tmp}/agent-kit-review-remote-pr.$(id -u)"
+    FALLBACK_REPO_ROOT=$FALLBACK_ROOT/$repo_slug
+}
+
+fallback_target() {
+    fallback_paths
+    ensure_private_root "$FALLBACK_ROOT" ||
+        die "could not create the fallback run-directory root: $FALLBACK_ROOT; evidence unavailable"
+    TARGET=$FALLBACK_REPO_ROOT/$SELECTOR
+}
+
+existing_fallback_target() {
+    local fallback_selector primary_agent primary_evidence primary_selector
+    fallback_paths
+    optional_private_root_is_trusted "$FALLBACK_ROOT" || return 1
+    optional_private_root_is_trusted "$FALLBACK_REPO_ROOT" || return 1
+    fallback_selector=$FALLBACK_REPO_ROOT/$SELECTOR
+    optional_private_root_is_trusted "$fallback_selector" || return 1
+
+    primary_agent=$REPO_ROOT/.agent
+    [[ ! -L $primary_agent ]] || die "environment state directory must not be a symlink: $primary_agent"
+    if [[ -e $primary_agent ]]; then
+        [[ -d $primary_agent ]] || die "environment state directory must be a directory: $primary_agent"
+        primary_evidence=$primary_agent/evidence
+        print_existing_private_root "$primary_evidence" 'evidence directory' 0
+        if [[ -e $primary_evidence ]]; then
+            primary_selector=$primary_evidence/$SELECTOR
+            print_existing_private_root "$primary_selector" 'primary run directory' 0
+            [[ ! -e $primary_selector ]] ||
+                die "run selector exists in both primary and fallback backends: $SELECTOR"
+        fi
+    fi
+    TARGET=$fallback_selector
+}
+
+LISTED_ROOTS=0
+optional_private_root_is_trusted() {
+    local dir=$1 mode
+    [[ ! -L $dir && -d $dir && -O $dir ]] || return 1
+    mode=$(stat -c %a -- "$dir" 2>/dev/null) || return 1
+    [[ $mode == 700 ]]
+}
+
+print_existing_private_root() {
+    local dir=$1 label=$2 emit=${3:-1} mode
+    [[ ! -L $dir ]] || die "$label must not be a symlink: $dir"
+    [[ -e $dir ]] || return 0
+    [[ -d $dir && -O $dir ]] || die "$label must be an owned directory: $dir"
+    mode=$(stat -c %a -- "$dir") || die "could not inspect $label: $dir"
+    [[ $mode == 700 ]] || die "$label must have mode 0700: $dir"
+    if ((emit)); then printf '%s\n' "$dir"; LISTED_ROOTS=$((LISTED_ROOTS + 1)); fi
+}
+
+list_run_roots() {
+    local agent_dir=$REPO_ROOT/.agent evidence_dir
+    [[ ! -L $agent_dir ]] || die "environment state directory must not be a symlink: $agent_dir"
+    if [[ -e $agent_dir ]]; then
+        [[ -d $agent_dir ]] || die "environment state directory must be a directory: $agent_dir"
+        evidence_dir=$agent_dir/evidence
+        print_existing_private_root "$evidence_dir" 'evidence directory'
+    fi
+    fallback_paths
+    if optional_private_root_is_trusted "$FALLBACK_ROOT" &&
+        optional_private_root_is_trusted "$FALLBACK_REPO_ROOT"; then
+        printf '%s\n' "$FALLBACK_REPO_ROOT"
+        LISTED_ROOTS=$((LISTED_ROOTS + 1))
+    fi
+    ((LISTED_ROOTS)) || exit 11
 }
 
 parse_args "$@"
 if [[ -n $SCRATCH_LABEL ]]; then
     [[ $SCRATCH_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die_usage 'scratch label must use letters, numbers, ., _, or -'
-    [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE ]] || die_usage '--scratch-label is mutually exclusive with run selectors'
+    [[ -z $PR$RUN_ID$PROCEDURE_SET$SCOPE$FLAGS$REPO$BASE && $LIST_RUN_ROOTS == 0 ]] || die_usage '--scratch-label is mutually exclusive with run selectors'
     if [[ -n $SCRATCH_NEAR ]]; then [[ -z $REPO_ROOT ]] || die_usage '--scratch-near cannot be combined with --repo-root'; else resolve_repo_root; fi
     create_scratch
     exit 0
@@ -185,6 +260,16 @@ fi
 [[ -z $SCRATCH_NEAR ]] || die_usage '--scratch-near requires --scratch-label'
 validate_selector
 resolve_repo_root
+
+if ((LIST_RUN_ROOTS)); then
+    list_run_roots
+    exit 0
+fi
+
+if existing_fallback_target; then
+    private_dir_ensure "$TARGET" 'run directory'; printf '%s\n' "$TARGET"
+    exit 0
+fi
 
 if try_primary; then
     private_dir_ensure "$TARGET" 'run directory'

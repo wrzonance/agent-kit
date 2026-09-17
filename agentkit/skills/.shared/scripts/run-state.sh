@@ -23,7 +23,8 @@ ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=
 
 usage() {
     cat <<EOF
-Usage: $PROGNAME get|set|append|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
+Usage: $PROGNAME get|set|append|append-unique|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
+       $PROGNAME latest --repo-root DIR --path a.b.c
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
        $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
@@ -33,7 +34,10 @@ get     print the value at --path (scalars raw, objects/arrays compact JSON, nul
 set     store --value (string), --json (parsed), or true when neither is given
 append  append --value/--json to the array at --path (created when absent; a non-array, including
         an existing null-valued key, refuses)
+append-unique  append only when the same JSON value is not already present; preserves first-seen order
 unset   remove --path
+latest  select the newest trusted run state and print {"run_id":ID,"value":VALUE};
+        exit 11 when no run state or requested path exists
 summary print handoff coverage from durable run state and active-worker lifecycle evidence
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
@@ -41,7 +45,7 @@ dequeue-summary remove one queued issue identity when its dispatch starts (absen
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
 Writes are atomic (temp file beside it, mode 0600, rename).
-Exit: 0 ok; 1 evidence unavailable or unparseable state; 2 usage; 11 get: absent.
+Exit: 0 ok; 1 evidence unavailable or unparseable state; 2 usage; 11 get/latest: absent.
 EOF
 }
 die() { printf '%s: %s\n' "$PROGNAME" "$1" >&2; exit 1; }
@@ -51,7 +55,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|unset|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
+        get|set|append|append-unique|unset|latest|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -75,6 +79,12 @@ parse_args() {
         [[ -z $FILE ]] || die_usage 'summary requires --run-id, not --file'
         [[ -n $RUN_ID ]] || die_usage 'summary requires --run-id'
         [[ -z $KEY_PATH && $VALUE_SET == 0 ]] || die_usage 'summary takes no --path/--value/--json'
+    elif [[ $ACTION == latest ]]; then
+        [[ -z $FILE && -z $RUN_ID ]] || die_usage 'latest accepts --repo-root, not --file/--run-id'
+        [[ -n $REPO_ROOT ]] || die_usage 'latest requires --repo-root'
+        [[ -n $KEY_PATH ]] || die_usage '--path is required'
+        [[ $KEY_PATH =~ $PATH_RE ]] || die_usage "--path must be dot-separated [A-Za-z0-9_-] segments: $KEY_PATH"
+        ((VALUE_SET == 0)) || die_usage 'latest takes no --value/--json'
     elif [[ $ACTION == init-summary ]]; then
         [[ -z $FILE ]] || die_usage 'init-summary requires --run-id, not --file'
         [[ -n $RUN_ID ]] || die_usage 'init-summary requires --run-id'
@@ -124,6 +134,56 @@ resolve_summary_ledger() {
     primary_root=$(realpath -e -- "$primary_root") || die 'could not resolve the primary checkout'
     REPO_ROOT=$selected_root
     LEDGER=$primary_root/.agent/runs/active-workers.ndjson
+}
+
+latest_state() {
+    local roots='' roots_rc=0 evidence candidate state_file mode mtime run_id seen_run_id
+    local selected_mtime='' selected_run_id='' selected_state=''
+    local -a seen_run_ids=()
+    [[ -x $RUN_DIR_SH ]] || die "run-dir.sh not found at $RUN_DIR_SH; evidence unavailable"
+    roots=$("$RUN_DIR_SH" --list-run-roots --repo-root "$REPO_ROOT") || roots_rc=$?
+    case $roots_rc in
+        0) ;;
+        11) exit 11 ;;
+        *) die 'could not resolve trusted run-state roots' ;;
+    esac
+
+    shopt -s nullglob
+    while IFS= read -r evidence; do
+        [[ -n $evidence ]] || continue
+        for candidate in "$evidence"/run-*; do
+            [[ ! -L $candidate ]] || die "candidate run directory must not be a symlink: $candidate"
+            [[ -d $candidate && -O $candidate ]] || die "candidate run must be an owned directory: $candidate"
+            mode=$(stat -c %a -- "$candidate") || die "candidate run mode was unreadable: $candidate"
+            [[ $mode == 700 ]] || die "candidate run must be owner-private (mode 0700): $candidate"
+            run_id=${candidate##*/run-}
+            for seen_run_id in "${seen_run_ids[@]}"; do
+                [[ $seen_run_id != "$run_id" ]] ||
+                    die "duplicate run ID across trusted run-state roots: $run_id"
+            done
+            seen_run_ids+=("$run_id")
+            state_file=$candidate/run-state.json
+            [[ ! -L $state_file ]] || die "state file must not be a symlink: $state_file"
+            [[ -e $state_file ]] || continue
+            FILE=$state_file
+            read_state
+            mtime=$(stat -c %y -- "$state_file") || die "state file mtime was unreadable: $state_file"
+            if [[ -z $selected_mtime || $mtime > $selected_mtime ||
+                ($mtime == "$selected_mtime" && $run_id > $selected_run_id) ]]; then
+                selected_mtime=$mtime
+                selected_run_id=$run_id
+                selected_state=$STATE
+            fi
+        done
+    done <<<"$roots"
+    [[ -n $selected_run_id ]] || exit 11
+
+    local path present value
+    path=$(jq_path)
+    present=$(jq -r --argjson p "$path" "$PATH_EXISTS_DEF"' path_exists($p) | if . then "present" else "absent" end' <<< "$selected_state")
+    [[ $present == present ]] || exit 11
+    value=$(jq -c --argjson p "$path" 'getpath($p)' <<< "$selected_state") || die 'could not read latest run state path'
+    jq -nc --arg run_id "$selected_run_id" --argjson value "$value" '{run_id: $run_id, value: $value}'
 }
 
 resolve_file() {
@@ -178,9 +238,7 @@ print_summary() {
     local counts ledger_mode parked_rows parked_count
     counts=$(jq -er '
         def positive_ids($name; $required):
-            (if has($name) then .[$name]
-             elif $required then error($name + " is required")
-             else [] end) as $value |
+            (if has($name) then .[$name] elif $required then error($name + " is required") else [] end) as $value |
             if ($value | type) == "array" and all($value[]; type == "number" and . > 0 and floor == .)
                 and (($value | length) == ($value | unique | length))
             then $value else error($name + " must be a unique positive-integer array") end;
@@ -195,7 +253,6 @@ print_summary() {
         else [($prs | length), ($receipts | length), ($skipped | length), ($queued | length)] | @tsv end
     ' <<<"$STATE" 2>/dev/null) ||
         die 'summary state requires valid opened_prs, queued, receipt_prs, and skipped_prs collections'
-
     [[ ! -L $LEDGER && -f $LEDGER && -r $LEDGER && -O $LEDGER ]] ||
         die "active-workers evidence must be an owned readable regular file: $LEDGER"
     ledger_mode=$(stat -c %a -- "$LEDGER") || die "could not inspect active-workers evidence: $LEDGER"
@@ -204,8 +261,7 @@ print_summary() {
         (split("\n") | map(select(length > 0) | fromjson)) as $rows |
         if all($rows[]; type == "object") | not then error("row is not an object") else . end |
         [$rows[] | select(.runId? == $run)] as $run_rows |
-        if all($run_rows[];
-            .version == 2 and (.issue | type == "number" and . > 0 and floor == .) and
+        if all($run_rows[]; .version == 2 and (.issue | type == "number" and . > 0 and floor == .) and
             (.attempt | type == "string" and length > 0) and
             (.state == "unknown" or .state == "active" or .state == "terminal") and
             (.disposition | type == "string") and (.evidence | type == "string")) | not
@@ -213,11 +269,9 @@ print_summary() {
         reduce $run_rows[] as $row ({}; .[$row.issue | tostring] = $row) |
         [.[] | select(.state == "terminal" and .disposition == "handed-back") |
             if (.evidence | length > 0 and (explode | all(. >= 32 and . != 127)))
-            then . else error("invalid handback evidence") end] |
-        sort_by(.issue)
+            then . else error("invalid handback evidence") end] | sort_by(.issue)
     ' "$LEDGER" 2>/dev/null) || die "unparseable active-workers evidence: $LEDGER"
     parked_count=$(jq 'length' <<<"$parked_rows")
-
     local prs receipts skipped queued
     IFS=$'\t' read -r prs receipts skipped queued <<<"$counts"
     printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s\n' \
@@ -256,12 +310,17 @@ print_summary() {
 main() {
     parse_args "$@"
     resolve_summary_ledger
+    if [[ $ACTION == latest ]]; then
+        latest_state
+        return
+    fi
     resolve_file
     # Lock a stable inode, not the JSON inode replaced by write_state. Resolve
     # parent aliases so independent writers cannot lose successful updates.
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
-    if [[ $ACTION == set || $ACTION == append || $ACTION == unset || $ACTION == init-summary || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
+    if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||
+        $ACTION == init-summary || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
         FILE=$parent/$(basename -- "$FILE")
         lock=$FILE.lock
@@ -272,7 +331,8 @@ main() {
     read_state
     local path='' next present value=''
     [[ $ACTION == summary || $ACTION == init-summary ]] || path=$(jq_path)
-    if [[ $ACTION == set || $ACTION == append || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
+    if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique ||
+        $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         value=$(value_json) || exit $?
     fi
     case $ACTION in
@@ -293,6 +353,17 @@ main() {
                  else setpath($p; [$v]) end' \
                 <<< "$STATE" 2>/dev/null) || die "append target is not an array: $KEY_PATH"
             write_state "$next"
+            ;;
+        append-unique)
+            next=$(jq -ec --argjson p "$path" --argjson v "$value" \
+                "$PATH_EXISTS_DEF"' path_exists($p) as $present | getpath($p) as $cur |
+                 if $present then
+                     (if ($cur | type) == "array" then
+                         setpath($p; if any($cur[]; . == $v) then $cur else $cur + [$v] end)
+                      else error("not an array") end)
+                 else setpath($p; [$v]) end' \
+                <<< "$STATE" 2>/dev/null) || die "append-unique target is not an array: $KEY_PATH"
+            [[ $next == "$STATE" ]] || write_state "$next"
             ;;
         unset)
             next=$(jq -c --argjson p "$path" 'delpaths([$p])' <<< "$STATE") || die 'could not unset the path'

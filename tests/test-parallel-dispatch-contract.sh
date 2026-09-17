@@ -725,6 +725,12 @@ assert_contains "$normalized_text" 'Code Quality dispositioned' \
 assert_contains "$normalized_text" 'exactly one of {adversarial receipt, verified skip receipt}' \
     'the final sweep requires exactly one receipt kind per opened PR'
 final_sweep_section=$(sed -n '/^### Final draft sweep/,/^### Opt-out/p' "$skill")
+assert_contains "$final_sweep_section" 'run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs' \
+    'the final sweep rehydrates opened PRs from invocation run-state'
+assert_contains "$final_sweep_section" 'type == "array"' \
+    'the final sweep validates the durable opened PR array'
+assert_not_contains "$final_sweep_section" 'sweep `opened_prs`' \
+    'the final sweep no longer relies on a context-only opened_prs value'
 assert_contains "$final_sweep_section" 'gh-pr-state.sh' \
     'the final sweep refreshes live PR evidence before classifying receipts'
 assert_contains "$final_sweep_section" '--full --no-cache' \
@@ -1185,6 +1191,8 @@ publication_section=$(
 )
 assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication uses the byte-verifying body transport'
+assert_contains "$publication_section" '--run-id "$RUN_ID" --repo-root "$repository_root"' \
+    'draft PR publication attributes the created PR to the invocation run'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
 assert_contains "$publication_section" 'compose-pr-body.sh' \
