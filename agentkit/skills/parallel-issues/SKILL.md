@@ -456,7 +456,11 @@ plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ 
 plan_sha=${spec_verification_plan##* plan-sha=}; [[ $plan_sha =~ ^[0-9a-f]{64}$ ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
 if [[ $plan_update != none ]]; then
     [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
-    chmod --reference="$dispatch_plan" "$plan_update" && mv -f -- "$plan_update" "$dispatch_plan" || exit 1
+    plan_replace_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || { rm -f -- "$plan_update"; exit 1; }
+    plan_replace_rc=0
+    { cat -- "$plan_update" >"$plan_replace_tmp" && chmod --reference="$dispatch_plan" "$plan_replace_tmp" && [[ $(plan_digest "$plan_replace_tmp") == "$plan_sha" ]] && mv -f -- "$plan_replace_tmp" "$dispatch_plan"; } || plan_replace_rc=$?
+    rm -f -- "$plan_update" "$plan_replace_tmp" || ((plan_replace_rc != 0)) || plan_replace_rc=1
+    ((plan_replace_rc == 0)) || exit "$plan_replace_rc"
 fi
 [[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
 persist_dispatch_verification_report() {
@@ -716,7 +720,7 @@ Per-PR follow-up exit line:
 ### Final draft sweep (mandatory before handoff)
 
 With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR in run-state `receipt_prs` and each verified skip in `skipped_prs`; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
+then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR with `"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --path receipt_prs --json "$pr"` and each verified skip with the same command using `--path skipped_prs`; on `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
 
 ### Opt-out
 If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.

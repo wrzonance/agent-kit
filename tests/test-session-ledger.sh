@@ -264,13 +264,14 @@ for skill in parallel-issues review-remote-pr; do
 done
 
 parallel_text=$(<"$root/agentkit/skills/parallel-issues/SKILL.md")
-assert_contains "$parallel_text" \
+parallel_run_id_recipe=$($script --help)
+assert_contains "$parallel_run_id_recipe" \
     'issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"' \
     'parallel run IDs use the requested or selected issue scope'
-assert_contains "$parallel_text" \
+assert_contains "$parallel_run_id_recipe" \
     'invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"' \
     'parallel run IDs include canonical authorization flags'
-assert_contains "$parallel_text" \
+assert_contains "$parallel_run_id_recipe" \
     'session-ledger.sh" run-id --procedure-set parallel-issues' \
     'parallel run IDs delegate canonicalization to the shared helper'
 assert_not_contains "$parallel_text" 'starting_head=' \
