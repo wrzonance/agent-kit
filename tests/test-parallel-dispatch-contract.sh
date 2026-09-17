@@ -1591,6 +1591,14 @@ assert_contains "$normalized_text" 'shared build config, lockfiles, and generate
     'dispatch-plan compaction preserves shared conflict inputs'
 assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
     'selection uses the body-free picker record as its sole mechanical input'
+assert_contains "$normalized_text" 'workShape: "no-code"' \
+    'selection holds the picker-record no-code verdict before worktree creation'
+assert_contains "$normalized_text" '(references/triage-and-selection.md#work-shape-verdict)' \
+    'the compact no-code rule retains its adjudication anchor'
+assert_contains "$normalized_text" 'never sufficient conflict evidence by itself' \
+    'an empty or partial literal path seed cannot prove no conflict'
+assert_contains "$normalized_text" 'requirementsDigest' \
+    'conflict analysis expands paths from cached issue requirements'
 assert_not_contains "$normalized_text" 'Read each issue' \
     'root conflict analysis does not reread issue bodies or repository documents'
 assert_not_contains "$worker_prompts_only_text" '## Issue-lead prompt' \

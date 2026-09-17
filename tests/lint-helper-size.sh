@@ -100,7 +100,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
 # #783: computed coverage plus atomic, idempotent summary producer and queue records.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
-readonly MAX_TREE_TOKENS=451604
+# #784 review: cached requirements and work-shape enforcement in selection; exact total.
+readonly MAX_TREE_TOKENS=451869
 
 violations=0
 checked=0

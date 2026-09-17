@@ -178,9 +178,45 @@ assert_eq 'false' "$(jq -r '.[] | select(.number == 11) | .eligible' <<< "$out")
 assert_eq '["tools/bootstrap-worktree.sh"]' \
     "$(jq -c '.[] | select(.number == 10) | .predictedWriteSet' <<< "$out")" \
     'JSON carries issue-derived write-set literals into dispatch planning'
-assert_eq '["blockerRead","blockerTotal","blockers","dispatch","eligible","number","predictedWriteSet","queued","repository","state","status","title"]' \
+assert_eq 'implementation' \
+    "$(jq -r '.[] | select(.number == 10) | .workShape' <<< "$out")" \
+    'JSON carries the cached-body work-shape verdict'
+assert_contains "$(jq -r '.[] | select(.number == 10) | .requirementsDigest[]' <<< "$out")" \
+    "Create \`tools/bootstrap-worktree.sh\`." \
+    'JSON carries bounded cached requirements for code-implied expansion'
+assert_eq '["blockerRead","blockerTotal","blockers","dispatch","eligible","number","predictedWriteSet","queued","repository","requirementsDigest","state","status","title","workShape"]' \
     "$(jq -c '.[] | select(.number == 10) | keys' <<< "$out")" \
     'one picker record carries every selection and dispatch input without the issue body'
+
+# Work-shape and requirements evidence come from the same cached GraphQL body
+# used for path extraction. A no-code issue is held before dispatch, while a
+# prose-only implementation keeps requirements evidence even with no literal
+# path seed so conflict analysis cannot mistake [] for "no overlap".
+set_board '{"totalCount":2,"items":[
+  {"status":"Ready","content":{"number":16,"type":"Issue","title":"research only",
+   "repository":"example-org/example-repo"}},
+  {"status":"Ready","content":{"number":17,"type":"Issue","title":"parser accounting",
+   "repository":"example-org/example-repo"}}]}' \
+  '{"data":{"repository":{
+    "i16":{"number":16,"state":"OPEN","body":"Do not create a branch or pull request. Return analysis only.","blockedBy":{"totalCount":0,"nodes":[]}},
+    "i17":{"number":17,"state":"OPEN","body":"Change the rollout parser so mixed wrapper output remains partial.","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
+out=$(run --json)
+assert_eq 'no-code' "$(jq -r '.[] | select(.number == 16) | .workShape' <<< "$out")" \
+    'a no-code verdict is present in the actual picker record'
+assert_eq 'false' "$(jq -r '.[] | select(.number == 16) | .eligible' <<< "$out")" \
+    'a no-code candidate is held before worktree dispatch'
+assert_eq 'false' "$(jq -r '.[] | select(.number == 16) | .dispatch' <<< "$out")" \
+    'the no-code hold cannot enter the dispatch wave'
+assert_contains "$(jq -r '.[] | select(.number == 16) | .holdReason' <<< "$out")" \
+    'Do not create a branch or pull request.' \
+    'the no-code hold records its cached-body source'
+assert_eq '[]' "$(jq -c '.[] | select(.number == 17) | .predictedWriteSet' <<< "$out")" \
+    'a prose-only implementation may have no literal path seed'
+assert_contains "$(jq -r '.[] | select(.number == 17) | .requirementsDigest[]' <<< "$out")" \
+    'mixed wrapper output remains partial' \
+    'prose-only requirements survive for code-implied conflict expansion'
+assert_eq 'false' "$(jq -r 'any(.[]; has("body"))' <<< "$out")" \
+    'compact verdict and requirements evidence do not expose an issue body field'
 
 # Path extraction is part of selection evidence. A missing or failing helper
 # must fail the picker instead of returning an empty predictedWriteSet that a
@@ -189,6 +225,7 @@ shadow="$tmp/shadow"
 mkdir -p "$shadow/.shared/scripts" "$shadow/parallel-issues/scripts"
 cp "$script" "$shadow/.shared/scripts/pick-issues.sh"
 cp "$root/agentkit/skills/.shared/scripts/repo-config.sh" "$shadow/.shared/scripts/repo-config.sh"
+cp "$root/agentkit/skills/.shared/scripts/triage-issues.sh" "$shadow/.shared/scripts/triage-issues.sh"
 rc=0
 out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a missing issue-paths helper fails selection'
@@ -199,7 +236,7 @@ chmod +x "$shadow/parallel-issues/scripts/issue-paths.sh"
 rc=0
 out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --json 2>&1) || rc=$?
 assert_eq '1' "$rc" 'a failed issue-paths helper fails selection'
-assert_contains "$out" 'could not derive paths for issue #10' 'the failed-helper error names the affected issue'
+assert_contains "$out" 'could not derive paths for issue #16' 'the failed-helper error names the affected issue'
 
 # Fast mode caps the current wave and leaves later pickup-order candidates for
 # refill. The attended path still returns the complete eligible set; only the
