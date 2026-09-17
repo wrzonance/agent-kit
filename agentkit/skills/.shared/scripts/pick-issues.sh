@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Select the issues an autonomous run may start, in two calls: OPEN, board Status
-# Ready (or Backlog with --include-backlog), and nothing it is blocked by still open
-# -- dependencies live on the issue, not the project item, so a board read alone
-# would hand --fast-mode a blocked issue. Conflict analysis stays with the agent.
-#
 # Usage:
 #   pick-issues.sh [--repo-root DIR] [--limit N] [--include-backlog]
 #                  [--ready-only] [--fast-mode --slot-cap N] [--json]
@@ -12,14 +7,7 @@
 set -euo pipefail
 
 readonly PROGRAM=${0##*/}
-# 1000, not 50. A 123-card board answered through a 50-item window reported
-# "candidates=3 of=123" -- two numbers describing different populations on one
-# line, read by an unattended run as a whole-board scan. board-list.sh already
-# carries this lesson (see its ARG_LIMIT comment); this script did not inherit
-# it until this default caught the same defect on a live run.
 readonly DEFAULT_LIMIT=1000
-# Dependencies deep enough to exceed this are a planning problem, not a paging
-# problem; the count is reported so a truncated read never reads as "unblocked".
 readonly BLOCKER_PAGE=20
 readonly FAST_MODE_CAP=10
 
@@ -99,10 +87,6 @@ board_owner=$(jq -r '.owner // empty' "$board_file" 2> /dev/null || true)
 [[ -n $project_number && -n $board_owner ]] ||
     die_blocked '.agent/board.json declares no project number or owner'
 
-# The board is shared across repositories more often than not, so an item's
-# repository decides whether it is ours. Resolving it from --repo-root rather
-# than the process working directory is the same correctness rule the board
-# reader learned the hard way.
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository=''
 if [[ -x "$script_dir/repo-config.sh" ]]; then
@@ -126,10 +110,7 @@ items=$(gh project item-list "$project_number" --owner "$board_owner" \
 declared_total=$(jq -r '.totalCount // empty' <<< "$items" 2> /dev/null || true)
 fetched=$(jq -r '(.items // []) | length' <<< "$items" 2> /dev/null || printf '0')
 
-# A truncated read must not produce a selection: selection is an eligibility
-# judgement over the whole board, and a partial read cannot make it. Reporting
-# a plausible-looking subset here is the exact defect this script exists to
-# avoid -- a confident, silently-wrong answer instead of a slow, honest one.
+# Eligibility requires the whole board; a truncated read cannot select safely.
 if [[ -n $declared_total ]] && ((fetched < declared_total)); then
     printf 'pick= project=%s owner=%s scanned=%s of=%s calls=1\n' \
         "$project_number" "$board_owner" "$fetched" "$declared_total" >&2
@@ -143,8 +124,6 @@ fi
 wanted_statuses='["ready"]'
 ((include_backlog == 0)) || wanted_statuses='["ready","backlog"]'
 
-# Repository comes back as OWNER/REPO on some gh versions and as a URL on
-# others; normalise both rather than matching either.
 candidates=$(jq -c --arg repo "${repository,,}" --argjson want "$wanted_statuses" '
     [ (.items // [])[]
       | select((.content.type // "") == "Issue")
@@ -172,23 +151,19 @@ if ((count == 0)); then
 fi
 
 # ---------------------------------------------------------------- call two ---
-# One aliased batch, not one request per issue. The alias has to start with a
-# letter, so the issue number is prefixed rather than used bare.
 owner=${repository%%/*}
 name=${repository##*/}
 # shellcheck disable=SC2016  # GraphQL variable names, not shell expansions.
 query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {'
 while IFS= read -r n; do
-    query+=" i${n}: issue(number: ${n}) { number state"
+    query+=" i${n}: issue(number: ${n}) { number state body"
     query+=" blockedBy(first: ${BLOCKER_PAGE}) { totalCount nodes { number state } } }"
 done < <(jq -r '.[].number' <<< "$candidates")
 query+=' } }'
 
 deps=$(gh api graphql -f query="$query" -f owner="$owner" -f name="$name" 2> /dev/null) ||
     die 'could not read issue dependencies'
-# A rejected GraphQL query is an HTTP 200 with an errors array, so a zero exit
-# is not proof the answer is usable. Selecting on a partial answer would call a
-# blocked issue eligible, which is the one mistake this script exists to avoid.
+# GraphQL errors can accompany HTTP 200; partial data cannot prove eligibility.
 if [[ $(jq -r 'has("errors")' <<< "$deps" 2> /dev/null) == true ]] ||
     [[ $(jq -r '.data.repository | type' <<< "$deps" 2> /dev/null) != object ]]; then
     die "the dependency query was rejected: $(jq -rc '.errors[0].message // "no data"' <<< "$deps" 2> /dev/null)"
@@ -200,6 +175,7 @@ selection=$(jq -c --argjson deps "$(jq -c '.data.repository' <<< "$deps")" '
       | ($deps["i" + ($item.number | tostring)] // null) as $d
       | ($d.blockedBy.nodes // []) as $b
       | . + { state: ($d.state // "UNKNOWN"),
+              body: ($d.body // ""),
               blockers: [ $b[] | select(.state == "OPEN") | .number ],
               blockerTotal: ($d.blockedBy.totalCount // 0),
               blockerRead: ($b | length) }
@@ -209,9 +185,20 @@ selection=$(jq -c --argjson deps "$(jq -c '.data.repository' <<< "$deps")" '
     | sort_by([(if (.status | ascii_downcase) == "ready" then 0 else 1 end), .number])
 ' <<< "$candidates") || die 'could not merge dependency state'
 
-# The picker owns only mechanical eligibility. In fast mode it additionally
-# marks the first N eligible issues for this wave and leaves the remainder
-# explicitly queued for refill; the caller still performs conflict analysis.
+issue_paths=$script_dir/../../parallel-issues/scripts/issue-paths.sh
+[[ -x $issue_paths ]] || die 'issue-paths.sh is unavailable'
+while IFS=$'\t' read -r issue body_b64; do
+    body=$(base64 -d <<<"$body_b64")
+    records=$(printf '%s' "$body" | "$issue_paths" --issue "$issue" \
+        --repo-root "$repo_root" --body-file -) || die "could not derive paths for issue #$issue"
+    paths=$(awk '{sub(/^[^ ]+ /, ""); print}' <<<"$records" |
+        jq -Rsc 'split("\n") | map(select(length > 0))')
+    selection=$(jq -c --argjson issue "$issue" --argjson paths "$paths" \
+        'map(if .number == $issue then .predictedWriteSet = $paths else . end)' <<<"$selection")
+done < <(jq -r '.[] | [.number, (.body | @base64)] | @tsv' <<<"$selection")
+selection=$(jq -c 'map(del(.body))' <<<"$selection")
+
+# Fast mode marks the first N eligible issues and queues the rest for refill.
 if ((fast_mode)); then
     selection=$(jq -c --argjson cap "$slot_cap" '
       [ .[] | select(.eligible) ] as $eligible |

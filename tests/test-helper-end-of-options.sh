@@ -27,8 +27,8 @@ marker_rejection() {
 }
 
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -111 | sort)
-# 71: #764 adds ci-artifacts.sh with the same end-of-options contract.
-assert_eq 71 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# 72: #782 adds issue-paths.sh with the same end-of-options contract.
+assert_eq 72 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
