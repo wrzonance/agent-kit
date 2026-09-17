@@ -24,7 +24,8 @@ declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2262:24666:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
-    [skills/.shared/scripts/agent-preflight.sh]="1391:16971:800"
+    # #777 absolute-path guard + #778 harness-bound runtime-tool record.
+    [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776: verification records, typed failures, and terminal summaries.
     [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
@@ -33,6 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     # #781 follow-up: a linked-project miss now resolves issue memberships.
+    # #778: validate runtime-tool metadata and print the exact repair command.
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
@@ -95,14 +98,17 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
+# #777 review repair + #778: refreshed readers and harness-bound cached tools.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
+# Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
 # #781: shared repository-linked board discovery and atomic cache writer.
 # #781 review: paginated discovery, membership selection and optional persistence.
 # #781 merge-down with #776: measured combined helper tree.
 # #781 merge-down with #774/#776: measured combined helper tree.
 # #781 merge-down with #779: measured combined helper tree.
 # #781 merge-down with #777: measured combined helper tree.
-readonly MAX_TREE_TOKENS=450334
+# #781 merge-down with #778: measured combined helper tree.
+readonly MAX_TREE_TOKENS=451162
 
 violations=0
 checked=0

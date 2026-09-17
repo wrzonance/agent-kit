@@ -55,7 +55,7 @@ The root may skip dispatch for an inline correction only when all four condition
 is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed
 lines; the root authored the exact diff during review; and the full declared verification is rerun.
 Record the inline decision and its recorded reason, and use root harness attribution for its
-commit. Anything else must resume the same worker with `collaboration.followup_task` first; a fresh
+commit. Anything else must resume the same worker with `tools.send` first; a fresh
 worker is only the fallback when follow-up is unavailable. A qualifying correction costs zero
 dispatches, and the skip is never silent.
 
