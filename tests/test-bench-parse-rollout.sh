@@ -398,8 +398,14 @@ assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "
 noncontent_search_fixture="$tmp/prose-cost-noncontent-search.jsonl"
 content_search_output=$'matching prose\n'
 pattern_search_output=$'-c appears as content\n'
+expression_search_output=$'lc appears as expression content\n'
+attached_expression_output=$'-c appears as attached expression content\n'
+long_argument_output=$'-lc remains a long-option argument\n'
 jq -nc --arg content "$content_search_output" \
     --arg pattern_content "$pattern_search_output" \
+    --arg expression_content "$expression_search_output" \
+    --arg attached_expression_content "$attached_expression_output" \
+    --arg long_argument_content "$long_argument_output" \
     '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
      {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
      {type:"response_item",payload:{type:"function_call",call_id:"rg-files",name:"exec_command",arguments:"{\"cmd\":\"rg --files -g '*.md'\"}"}},
@@ -412,11 +418,25 @@ jq -nc --arg content "$content_search_output" \
      {type:"response_item",payload:{type:"function_call_output",call_id:"grep-content",output:$content}},
      {type:"response_item",payload:{type:"function_call",call_id:"grep-pattern",name:"exec_command",arguments:"{\"cmd\":\"grep -- -c notes.md\"}"}},
      {type:"response_item",payload:{type:"function_call_output",call_id:"grep-pattern",output:$pattern_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-lc",name:"exec_command",arguments:"{\"cmd\":\"grep -lc needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-lc",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-cl",name:"exec_command",arguments:"{\"cmd\":\"grep -cl needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-cl",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-bundle-ncl",name:"exec_command",arguments:"{\"cmd\":\"grep -ncl needle notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-bundle-ncl",output:"notes.md\n"}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-expression",name:"exec_command",arguments:"{\"cmd\":\"grep -e lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-expression",output:$expression_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-attached-expression",name:"exec_command",arguments:"{\"cmd\":\"grep -e-c notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-attached-expression",output:$attached_expression_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-long-expression",name:"exec_command",arguments:"{\"cmd\":\"grep --regexp -lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-long-expression",output:$long_argument_content}},
+     {type:"response_item",payload:{type:"function_call",call_id:"grep-long-file",name:"exec_command",arguments:"{\"cmd\":\"grep --file -lc notes.md\"}"}},
+     {type:"response_item",payload:{type:"function_call_output",call_id:"grep-long-file",output:$long_argument_content}},
      {type:"bench_trial_meta",payload:{run_id:"prose-noncontent-search",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
     > "$noncontent_search_fixture"
 run "$noncontent_search_fixture" --timestamp 2026-09-16T03:08:00Z
 assert_eq '0' "$RUN_RC" 'Markdown discovery and content search modes parse'
-assert_eq "$((${#content_search_output} + ${#pattern_search_output}))" \
+assert_eq "$((${#content_search_output} + ${#pattern_search_output} + ${#expression_search_output} + ${#attached_expression_output} + 2 * ${#long_argument_output}))" \
     "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'file discovery and list/count output are excluded while grep content is counted'
 
