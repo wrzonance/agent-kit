@@ -102,7 +102,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
 # #785: durable PR recording, trusted backend discovery, and default review rehydration.
 # #785: preserve a trusted fallback selector after primary access recovers.
-readonly MAX_TREE_TOKENS=452330
+# #782 bot repair: provenance-aware root filename creation; exact integrated total.
+readonly MAX_TREE_TOKENS=452425
 
 violations=0
 checked=0
