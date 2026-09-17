@@ -97,14 +97,29 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
+# #778: one harness-to-runtime-tool mapping and contract/composer integration.
+# #783: computed run-state handoff coverage and lifecycle blocker rendering.
+# #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
+# #785: durable PR recording, trusted backend discovery, and default review rehydration.
+# #785: preserve a trusted fallback selector after primary access recovers.
+# #782 bot repair: provenance-aware root filename creation; exact integrated total.
+# #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
+# #783: atomic, idempotent summary producer and queue records.
+# #785 review: optional fallback trust filtering and standalone PR transport.
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
+# #783: filename-bound report identity.
+# #784 review: cached requirements and work-shape enforcement atop the final parent.
+# #785 bot repair: reject duplicate run IDs across trusted state roots.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
+# #784 review plus final #792 parent: cached verdicts and reader fixes.
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #784 final #792 parser repairs: cached verdicts and reader fixes.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
 # #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
 # #784 settlement repair: validated private body-cache handoff; exact combined total.
+# #800 settlement cache repair: validated private body-cache handoff; 1,826,556 bytes / 4.
 # #756: ordered stdin redirects and queued heredoc recovery; exact total.
 # PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
 # PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
@@ -116,7 +131,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #783 + PR #794 merge-down: 1,818,298 helper bytes / 4 = 454,574 tokens; exact total.
 # #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
 # #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
-readonly MAX_TREE_TOKENS=457069
+# #800 + PR #794 merge-down: 1,838,638 helper bytes / 4 = 459,659 tokens; exact total.
+readonly MAX_TREE_TOKENS=459659
 
 violations=0
 checked=0

@@ -55,6 +55,22 @@ assert_eq "$repo1/.agent/evidence/pr-43" "$RUN_OUT" 'a different PR number resol
 assert_eq no "$( [[ -e "$RUN_OUT/marker" ]] && printf yes || printf no )" \
     'a different PR does not inherit another PR run directory contents'
 
+# A shared TMPDIR fallback is optional while the private primary backend works.
+# An untrusted pathname there must be ignored, never adopted or allowed to
+# deny primary resolution/listing.
+poison_tmp="$tmp/poisoned-optional-fallback"
+mkdir -p "$poison_tmp"
+poison_root="$poison_tmp/agent-kit-review-remote-pr.$(id -u)"
+ln -s "$tmp/untrusted-fallback-target" "$poison_root"
+poison_out=$(TMPDIR="$poison_tmp" /bin/bash "$script" --pr 44 --repo-root "$repo1")
+assert_eq "$repo1/.agent/evidence/pr-44" "$poison_out" \
+    'an untrusted optional fallback does not block a usable primary backend'
+poison_roots=$(TMPDIR="$poison_tmp" /bin/bash "$script" --list-run-roots --repo-root "$repo1")
+assert_contains "$poison_roots" "$repo1/.agent/evidence" \
+    'root discovery retains a usable primary beside an untrusted optional fallback'
+assert_not_contains "$poison_roots" "$poison_root" \
+    'root discovery never adopts an untrusted optional fallback'
+
 # --- PR number validation happens before the value becomes a path component -
 for bad_pr in 0 007 -5 abc '5/../etc' '5;rm -rf /' '5 6'; do
     run "$repo1" "$bad_pr"
@@ -192,6 +208,23 @@ RUN_OUT2=''
 RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>/dev/null)
 chmod 755 -- "$fallback_repo/.agent"
 assert_eq "$RUN_OUT" "$RUN_OUT2" 'the fallback path is stable across repeated calls for the same PR'
+
+RUN_OUT2=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>/dev/null)
+assert_eq "$RUN_OUT" "$RUN_OUT2" \
+    'an existing trusted fallback selector remains sticky after primary access recovers'
+
+mkdir -p "$fallback_repo/.agent/evidence/pr-7"
+chmod 700 "$fallback_repo/.agent/evidence" "$fallback_repo/.agent/evidence/pr-7"
+RUN_RC=0
+RUN_ERR=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --pr 7 --repo-root "$fallback_repo" 2>&1) || RUN_RC=$?
+assert_eq 1 "$RUN_RC" 'a selector present in both run-state backends fails closed'
+assert_contains "$RUN_ERR" 'both primary and fallback' 'the split-backend refusal names the conflict'
+
+roots_rc=0
+roots_out=$(TMPDIR="$fake_tmpdir" /bin/bash "$script" --list-run-roots --repo-root "$fallback_repo" 2>"$tmp/.stderr") || roots_rc=$?
+assert_eq 0 "$roots_rc" '--list-run-roots discovers an existing fallback backend'
+assert_contains "$roots_out" "$(dirname -- "$RUN_OUT")" \
+    '--list-run-roots returns the same repository fallback root used for writes'
 
 # A different repository under the same fallback TMPDIR must not collide on
 # the same PR number.
@@ -444,7 +477,8 @@ assert_contains "$unavailable_agent_err" 'could not create environment state dir
     'scratch creation failure names the unavailable .agent parent'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 199 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 199 lines'
+# Issue #785 adds durable fallback selection and explicit split-backend refusal.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 284 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 284 lines'
 
 finish
