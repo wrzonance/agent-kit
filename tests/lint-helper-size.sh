@@ -109,7 +109,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
 # #783: filename-bound report identity.
 # #784 review: cached requirements and work-shape enforcement atop the final parent.
-readonly MAX_TREE_TOKENS=455208
+# #785 bot repair: reject duplicate run IDs across trusted state roots.
+readonly MAX_TREE_TOKENS=455280
 
 violations=0
 checked=0

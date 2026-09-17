@@ -137,8 +137,9 @@ resolve_summary_ledger() {
 }
 
 latest_state() {
-    local roots='' roots_rc=0 evidence candidate state_file mode mtime run_id
+    local roots='' roots_rc=0 evidence candidate state_file mode mtime run_id seen_run_id
     local selected_mtime='' selected_run_id='' selected_state=''
+    local -a seen_run_ids=()
     [[ -x $RUN_DIR_SH ]] || die "run-dir.sh not found at $RUN_DIR_SH; evidence unavailable"
     roots=$("$RUN_DIR_SH" --list-run-roots --repo-root "$REPO_ROOT") || roots_rc=$?
     case $roots_rc in
@@ -155,13 +156,18 @@ latest_state() {
             [[ -d $candidate && -O $candidate ]] || die "candidate run must be an owned directory: $candidate"
             mode=$(stat -c %a -- "$candidate") || die "candidate run mode was unreadable: $candidate"
             [[ $mode == 700 ]] || die "candidate run must be owner-private (mode 0700): $candidate"
+            run_id=${candidate##*/run-}
+            for seen_run_id in "${seen_run_ids[@]}"; do
+                [[ $seen_run_id != "$run_id" ]] ||
+                    die "duplicate run ID across trusted run-state roots: $run_id"
+            done
+            seen_run_ids+=("$run_id")
             state_file=$candidate/run-state.json
             [[ ! -L $state_file ]] || die "state file must not be a symlink: $state_file"
             [[ -e $state_file ]] || continue
             FILE=$state_file
             read_state
             mtime=$(stat -c %y -- "$state_file") || die "state file mtime was unreadable: $state_file"
-            run_id=${candidate##*/run-}
             if [[ -z $selected_mtime || $mtime > $selected_mtime ||
                 ($mtime == "$selected_mtime" && $run_id > $selected_run_id) ]]; then
                 selected_mtime=$mtime

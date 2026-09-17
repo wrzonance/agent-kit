@@ -195,6 +195,45 @@ assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
 assert_eq '[71,73]' "$(jq -c '.value' <<<"$fallback_latest")" \
     'latest preserves opened PRs across fallback selection and recovered primary access'
 
+fallback_slug=$(printf '%s' "$fallback_repo" | sha256sum | cut -c1-16)
+fallback_root="$fallback_tmp/agent-kit-review-remote-pr.$(id -u)/$fallback_slug"
+assert_rc 0 'a distinct primary run can coexist with trusted fallback evidence' -- \
+    "$script" set --run-id primary-wave --repo-root "$fallback_repo" --path opened_prs --json '[79]'
+touch -d '2032-09-16 01:00:00.100000000' \
+    "$fallback_repo/.agent/evidence/run-primary-wave/run-state.json"
+touch -d '2032-09-16 01:00:00.900000000' \
+    "$fallback_root/run-fallback-wave/run-state.json"
+fallback_latest=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs)
+assert_eq 'fallback-wave' "$(jq -r '.run_id' <<<"$fallback_latest")" \
+    'latest compares distinct trusted run IDs across primary and fallback roots'
+
+assert_rc 0 'duplicate-run fixture begins with trusted primary state' -- \
+    "$script" set --run-id duplicate-wave --repo-root "$fallback_repo" --path opened_prs --json '[83]'
+mkdir -m 700 "$fallback_root/run-duplicate-wave"
+duplicate_latest_rc=0
+duplicate_latest_err=$(TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" \
+    --path opened_prs 2>&1 >/dev/null) || duplicate_latest_rc=$?
+assert_eq 1 "$duplicate_latest_rc" \
+    'latest refuses a duplicate run ID across trusted primary and fallback roots'
+assert_contains "$duplicate_latest_err" 'duplicate run ID' \
+    'duplicate refusal names the cross-backend run identity collision'
+
+printf '%s\n' '{"opened_prs":[89]}' >"$fallback_root/run-duplicate-wave/run-state.json"
+chmod 600 "$fallback_root/run-duplicate-wave/run-state.json"
+touch -d '2033-09-16 01:00:00.100000000' \
+    "$fallback_repo/.agent/evidence/run-duplicate-wave/run-state.json"
+touch -d '2033-09-16 01:00:00.900000000' \
+    "$fallback_root/run-duplicate-wave/run-state.json"
+duplicate_latest_rc=0
+TMPDIR="$fallback_tmp" "$script" latest --repo-root "$fallback_repo" --path opened_prs \
+    >"$tmp/duplicate-latest.out" 2>"$tmp/duplicate-latest.err" || duplicate_latest_rc=$?
+assert_eq 1 "$duplicate_latest_rc" \
+    'latest refuses conflicting populated copies of one run ID instead of choosing by mtime'
+assert_eq '' "$(<"$tmp/duplicate-latest.out")" \
+    'duplicate populated backends emit no arbitrary latest JSON result'
+assert_contains "$(<"$tmp/duplicate-latest.err")" 'duplicate run ID' \
+    'populated duplicate refusal retains the collision diagnosis'
+
 # Independent successful workers must not overwrite each other's bookkeeping.
 pids=()
 for n in {1..12}; do
