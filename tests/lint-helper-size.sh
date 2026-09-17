@@ -110,7 +110,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #783: filename-bound report identity.
 # #784 review: cached requirements and work-shape enforcement atop the final parent.
 # #785 bot repair: reject duplicate run IDs across trusted state roots.
-readonly MAX_TREE_TOKENS=455280
+# #777 review: command-specific attached reader options and fail-fast ledger help.
+# #784 review plus final #792 parent: cached verdicts and reader fixes.
+readonly MAX_TREE_TOKENS=455563
 
 violations=0
 checked=0

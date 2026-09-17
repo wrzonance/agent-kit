@@ -92,7 +92,7 @@ set the shared ledger identity before the first receipt. Run `"$agentkit/.shared
 The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
-invocation-level `RUN_ID` for every issue, never a worker-local value. Append every human grant, steer, or board adjudication immediately with `"$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote "$QUOTE"`.
+`RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
 After establishing `RUN_ID`, run `"$agentkit/.shared/scripts/run-state.sh" init-summary --run-id "$RUN_ID" --repo-root "$repository_root"`; it preserves existing records.
 `QUOTE` is the verbatim quote in the human's own words; never put secrets or credential material in any field.
 After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.

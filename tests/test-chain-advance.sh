@@ -48,7 +48,7 @@ case " $* " in
 JSON
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -130,7 +130,7 @@ case " $* " in
     *"compare/222222222222222222222222222222222222222a...main"*)
         printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -165,7 +165,7 @@ case " $* " in
     *"compare/333333333333333333333333333333333333333a...main"*)
         printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"},{"filename":"src/app.py"}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -197,7 +197,7 @@ case " $* " in
     *"check-runs"*)
         printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit","app":{"slug":"coderabbitai"}}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -225,7 +225,7 @@ case " $* " in
     *"check-runs"*)
         printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit","app":{"slug":"coderabbitai"}}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -261,7 +261,7 @@ case " $* " in
     *"check-runs"*)
         printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit compatibility tests","app":{"slug":"internal-ci"}}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -295,7 +295,7 @@ case " $* " in
         printf 'boom: check-runs unavailable\n' >&2
         exit 1
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -325,7 +325,7 @@ case " $* " in
     *"compare/main...888888888888888888888888888888888888888a"*)
         printf '%s\n' '{"status":"diverged","behind_by":1,"ahead_by":2}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -359,7 +359,7 @@ case " $* " in
     *"compare/999999999999999999999999999999999999999a...main"*)
         printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -385,7 +385,7 @@ case " $* " in
     *"repos/owner/repo/compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -407,7 +407,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main..."*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -474,7 +474,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -498,7 +498,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"IN_PROGRESS","startedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -523,7 +523,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -546,7 +546,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -575,7 +575,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2023-12-31T23:00:00Z","completedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -602,7 +602,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -627,7 +627,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:10:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:10:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -652,7 +652,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -680,7 +680,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED","submittedAt":"2023-12-31T23:00:00Z","commit":{"oid":"1111111111111111111111111111111111111111"}},{"state":"APPROVED","submittedAt":"2024-01-01T00:05:00Z","commit":{"oid":"2222222222222222222222222222222222222222"}}],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -712,7 +712,7 @@ case " $* " in
     *"compare/main...fd1400424e6617826deb7974dddcda3cb521a051"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -739,7 +739,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":"APPROVED","reviews":"not-an-array","statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","createdAt":"2024-01-01T00:05:00Z","completedAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -773,7 +773,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*)
-        printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]'
+        printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]'
         ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -863,7 +863,7 @@ case " $* " in
         printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}'
         ;;
@@ -904,7 +904,7 @@ case " $* " in
         printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[]}' ;;
     *"actions/workflows/43/dispatches"*) printf '{"message":"workflow does not support workflow_dispatch","status":422}\n' >&2; exit 1 ;;
     *"actions/workflows"*) printf '%s\n' '{"workflows":[{"id":43,"name":"CodeQL","path":".github/workflows/codeql.yml","state":"active"}]}' ;;
@@ -945,7 +945,7 @@ case " $* " in
         ;;
     *"timeline"*)
         # This mirrors the REST payload: no base_ref/base_ref_name field.
-        printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z","performed_via_github_app":null}]'
+        printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z","performed_via_github_app":null}]]'
         ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -972,9 +972,9 @@ assert_eq 'no' "$( [[ -e $repo/.agent/evidence/chain-advance-pr-7-base-main.json
 # strictly between them. Reading only page 1 (the bug) makes that check look
 # post-boundary (fresh); reading every page and taking the LAST match (the
 # fix) correctly places the boundary at page 2 and marks the same check
-# stale. `--paginate` without `--slurp` emits one bare JSON array per page
-# concatenated on the wire -- exactly what the fake `gh` below reproduces --
-# while `--paginate --slurp --jq 'add'` wraps and flattens them first.
+# stale. `--paginate --slurp` emits an array containing one result array per
+# page -- exactly what the fake `gh` below reproduces. The fake also rejects
+# combining `--slurp` with `--jq`, matching gh's public CLI boundary.
 cat >"$tmp/gh-timeline-pages" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -986,21 +986,18 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*)
+        [[ " $* " != *' --slurp '* || " $* " != *' --jq '* ]] || {
+            printf 'cannot use --slurp or --jq with pagination\n' >&2
+            exit 2
+        }
+        [[ " $* " == *' --slurp '* ]] || exit 24
         page1='[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]'
         page2='[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T01:00:00Z"}]'
-        case " $* " in
-            *' --slurp '*)
-                if [[ " $* " == *' --jq '* ]]; then
-                    jq -cn --argjson p1 "$page1" --argjson p2 "$page2" '[$p1,$p2] | add'
-                else
-                    jq -cn --argjson p1 "$page1" --argjson p2 "$page2" '[$p1,$p2]'
-                fi
-                ;;
-            *)
-                printf '%s\n' "$page1"
-                printf '%s\n' "$page2"
-                ;;
-        esac
+        if [[ ${TIMELINE_FAIL_AFTER_PAGE:-0} == 1 ]]; then
+            printf '[%s]\n' "$page1"
+            exit 42
+        fi
+        printf '[%s,%s]\n' "$page1" "$page2"
         ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -1016,6 +1013,20 @@ assert_eq '1' "$timeline_pages_rc" \
 assert_contains "$timeline_pages_output" 'CI evidence predates the retarget (stale: tests)' \
     'the boundary is proven from every timeline page, not truncated to the first'
 
+# A valid first page followed by a transport failure is still a failed
+# timeline read. External jq may parse the partial stream successfully, but
+# pipefail must retain gh's nonzero status and refuse the incomplete evidence.
+set +e
+timeline_partial_output=$(cd -- "$repo" && TIMELINE_FAIL_AFTER_PAGE=1 PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-timeline-pages" bash "$advance" \
+    --retarget --repo owner/partial --pr 17 --base main 2>&1)
+timeline_partial_rc=$?
+set -e
+assert_eq '1' "$timeline_partial_rc" \
+    'a timeline request that fails after valid partial JSON cannot authorize a retarget'
+assert_contains "$timeline_partial_output" 'evidence provenance is unavailable' \
+    'the partial timeline failure is reported as missing authoritative evidence'
+
 # --- unlabeled CI evidence cannot disappear into an empty diagnostic ----------
 cat >"$tmp/gh-unnamed-check" <<'EOF'
 #!/usr/bin/env bash
@@ -1025,7 +1036,7 @@ case " $* " in
         printf '%s\n' '{"number":9,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1049,7 +1060,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","headSha":"1111111111111111111111111111111111111111","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2023-12-31T23:00:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1073,7 +1084,7 @@ case " $* " in
         printf '%s\n' '{"number":7,"baseRefName":"main","headRefName":"feat/child","headRefOid":"1111111111111111111111111111111111111111","reviewDecision":null,"reviews":[],"statusCheckRollup":[{"name":"tests","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"","createdAt":"2024-01-01T00:05:00Z"}],"closingIssuesReferences":[{"number":137}]}'
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1219,7 +1230,7 @@ case " $* " in
         printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:00:00Z\"},{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
     *"actions/runs/42/rerun"*) : ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
@@ -1262,7 +1273,7 @@ case " $* " in
         printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"CodeQL\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\",\"createdAt\":\"2024-01-01T00:05:00Z\"},{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
-    *"timeline"*) printf '%s\n' '[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL\\u001b[31m\\nInjected","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
     *"actions/runs/42/rerun"*) : ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
@@ -1491,25 +1502,81 @@ assert_not_contains "$(<"$tmp/gh-recover.log")" 'method DELETE' \
 assert_contains "$(cat "$tmp/moved-ref.stderr")" 'no longer points at' \
     'F2: the skipped cleanup is reported, not silently dropped'
 
-# -- issue #567 fix batch #2: the retarget lineage hook's review-ledger.sh
-#    cover call site -- F3 (restrict coverage to the adversarial entry) and
-#    F4 (flatten multi-page gh api output into one JSON array). The hook's
-#    own gh/script resolution makes a full functional stub impractical here
-#    (its sibling-script path is hardcoded, not overridable), so this pins
-#    the exact recipe shape the way this suite's other cross-file contracts
-#    already do.
-# shellcheck disable=SC2016  # single-quoted on purpose: these are literal
-# sed patterns matching the shell metacharacters in the source text itself,
-# never meant to expand here.
-cover_call_block=$(sed -n '/"\$script" cover/,/repo-root "\$repo_root"/p' "$advance" | tr '\n' ' ')
-assert_contains "$cover_call_block" '--kind adversarial' \
-    'F3: the cover_retarget_lineage cover call restricts coverage to the adversarial-kind entry'
-# shellcheck disable=SC2016
-gh_comments_call_block=$(sed -n '/"\$GH_BIN" api "repos\/\$repo\/issues\/\$pr\/comments"/,/Accept: application\/vnd.github+json/p' "$advance" | tr '\n' ' ')
-assert_contains "$gh_comments_call_block" '--slurp' \
-    'F4: the retarget lineage hook slurps every gh api page into one wrapper array'
-assert_contains "$gh_comments_call_block" "--jq 'add'" \
-    "F4: the retarget lineage hook flattens the slurped pages with gh's own jq add"
+# -- issue #803: exercise the retarget lineage hook at its process boundary.
+# A copied script keeps its hardcoded sibling lookup while a fake ledger pins
+# the exact flattened comment artifact and adversarial-kind wiring it receives.
+lineage_kit="$tmp/lineage-kit/agentkit/skills"
+mkdir -p "$lineage_kit/parallel-issues/scripts" "$lineage_kit/review-remote-pr/scripts"
+cp -- "$advance" "$lineage_kit/parallel-issues/scripts/chain-advance.sh"
+cat >"$lineage_kit/review-remote-pr/scripts/review-ledger.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+invocation=$*
+comments=''
+while (($#)); do
+    case $1 in
+        --comments) comments=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+jq -e 'type == "array" and map(.id) == [1, 2]' "$comments" >/dev/null
+printf '%s\n' "$invocation" >>"$LEDGER_LOG"
+EOF
+chmod +x "$lineage_kit/review-remote-pr/scripts/review-ledger.sh"
+cat >"$tmp/gh-comment-pages" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":18,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":null,\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
+    *"issues/18/comments"*)
+        [[ " $* " != *' --slurp '* || " $* " != *' --jq '* ]] || exit 2
+        [[ " $* " == *' --slurp '* ]] || exit 24
+        if [[ ${COMMENTS_FAIL_AFTER_PAGE:-0} == 1 ]]; then
+            # Emit a complete, ledger-acceptable artifact before failing so
+            # only pipefail can preserve the transport error.
+            printf '%s\n' '[[{"id":1}],[{"id":2}]]'
+            exit 42
+        fi
+        if [[ ${COMMENTS_MALFORMED_PAGE:-0} == 1 ]]; then
+            printf '%s\n' '[[{"id":1}],[{"id":99}]]'
+            exit 0
+        fi
+        printf '%s\n' '[[{"id":1}],[{"id":2}]]'
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-comment-pages"
+: >"$tmp/ledger.log"
+lineage_advance="$lineage_kit/parallel-issues/scripts/chain-advance.sh"
+lineage_out=$(cd -- "$repo" && EDIT_STATE="$tmp/lineage-edit.state" LEDGER_LOG="$tmp/ledger.log" \
+    CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
+    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main)
+assert_contains "$lineage_out" 'retargeted pr #18' \
+    'multi-page comment retrieval preserves the successful retarget result'
+assert_contains "$(<"$tmp/ledger.log")" '--kind adversarial' \
+    'the functional lineage hook restricts coverage to the adversarial entry'
+assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
+    'both comment pages are flattened into one successful ledger cover call'
+
+(cd -- "$repo" && COMMENTS_MALFORMED_PAGE=1 EDIT_STATE="$tmp/lineage-malformed-edit.state" \
+    LEDGER_LOG="$tmp/ledger.log" CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
+    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main >/dev/null)
+assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
+    'a malformed flattened comment artifact never records a successful ledger call'
+
+(cd -- "$repo" && COMMENTS_FAIL_AFTER_PAGE=1 EDIT_STATE="$tmp/lineage-failed-edit.state" \
+    LEDGER_LOG="$tmp/ledger.log" CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
+    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main >/dev/null)
+assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
+    'a comment request failure after valid partial JSON cannot be masked by jq'
 
 # Issue #707: disclose absent CI on stacked target branches.
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17850 ]] && printf yes || printf no)" 'chains reference stays at or under 17850 bytes'

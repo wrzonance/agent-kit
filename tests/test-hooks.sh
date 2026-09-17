@@ -1752,6 +1752,10 @@ edit_input() {
 # policy guards must not treat its workflow or trunk branch as this workspace.
 fixture_repo=$(mktemp -d "$tmp/fixture.XXXXXX")
 classification_sid=${tmp##*/}
+classification_repo=$(make_repo)
+mkdir -p "$classification_repo/.github/workflows"
+printf 'AGENT_REPO_SLUG=example-org/classification-repo\n' \
+    > "$classification_repo/.agent/config.env"
 git -C "$fixture_repo" init -q
 mkdir -p "$fixture_repo/.agent" "$fixture_repo/.github/workflows"
 printf 'AGENT_BASE_BRANCH=main\n' > "$fixture_repo/.agent/config.env"
@@ -1762,14 +1766,14 @@ git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
 git -C "$fixture_repo" -c user.email=t@example.invalid -c user.name=t \
     commit -qm base
 
-out=$(pre_input "$root" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
+out=$(pre_input "$classification_repo" "cd $fixture_repo && printf x > .github/workflows/ci.yml" \
     "fixture-workflow" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture workflow write is allowed'
 
 # A later shell segment must not change the repository of an earlier write.
 # Without segment-aware target resolution, the trailing cd makes the workspace
 # workflow look like a fixture target and silently skips its protection.
-out=$(pre_input "$root" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
+out=$(pre_input "$classification_repo" "printf x > .github/workflows/ci.yml; cd $fixture_repo" \
     "${classification_sid}-workspace-write-before-cd" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a protected workspace write stays guarded before a later fixture cd'
@@ -1789,7 +1793,7 @@ foreign_repo=$(mktemp -d "$foreign_parent/hooks-foreign.XXXXXX")
 git -C "$foreign_repo" init -q
 mkdir -p "$foreign_repo/.agent" "$foreign_repo/.github/workflows"
 printf 'AGENT_REPO_SLUG=foreign/example\n' > "$foreign_repo/.agent/config.env"
-out=$(pre_input "$root" "printf x > $foreign_repo/.github/workflows/ci.yml" \
+out=$(pre_input "$classification_repo" "printf x > $foreign_repo/.github/workflows/ci.yml" \
     "${classification_sid}-foreign-protected-write" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" \
     'a foreign repository protected write is still guarded'
@@ -1802,15 +1806,15 @@ out=$(pre_input "$fixture_repo" 'git commit --allow-empty -m fixture' \
     "fixture-trunk" | AGENT_FIXTURE_ROOT="$tmp" "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'allow' "$(decision "$out")" 'a designated fixture main commit is allowed'
 
-out=$(edit_input "$root" '.github/workflows/ci.yml' "${classification_sid}-workspace" |
+out=$(edit_input "$classification_repo" '.github/workflows/ci.yml' "${classification_sid}-workspace" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq 'deny' "$(decision "$out")" 'the workspace workflow remains guarded'
 assert_contains "$out" 'classification: workspace' \
     'workspace refusal states the computed classification'
-assert_contains "$out" "$root" 'workspace refusal names the repository target'
+assert_contains "$out" "$classification_repo" 'workspace refusal names the repository target'
 
 foreign_walk=$(mktemp -d "$foreign_parent/hooks-foreign-walk.XXXXXX")
-out=$(pre_input "$root" "cd $foreign_walk && find . -name AGENTS.md" \
+out=$(pre_input "$classification_repo" "cd $foreign_walk && find . -name AGENTS.md" \
     "${classification_sid}-foreign" | "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_contains "$(pre_context "$out")" 'reads outside the workspace' \
     'a relative walk in foreign territory receives a scope advisory'
@@ -1818,7 +1822,7 @@ rm -rf -- "$foreign_walk"
 
 # `-C` is a grep context flag, not a directory. It must not create a fake
 # command root and a false scope advisory for an otherwise in-scope walk.
-out=$(pre_input "$root" 'grep -r -C 3 secret .' "grep-context" |
+out=$(pre_input "$classification_repo" 'grep -r -C 3 secret .' "grep-context" |
     "$hooks/pre-tool-use.sh" 2>/dev/null)
 assert_eq '' "$(pre_context "$out")" \
     'grep context flags do not become effective directories'
@@ -2229,6 +2233,51 @@ for reader in awk sed grep rg; do
         "$hooks/post-tool-use.sh" 2>/dev/null)
     assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
         "$(ctx_of "$out")" "$reader -f recognizes the active skill as a read operand"
+done
+for command in \
+    "sed -es/foo/bar/ '$active_skill_path'" \
+    "sed --expression=s/foo/bar/ '$active_skill_path'" \
+    "grep -eneedle '$active_skill_path'" \
+    "grep --regexp=needle '$active_skill_path'" \
+    "rg -eneedle '$active_skill_path'" \
+    "rg --regexp=needle '$active_skill_path'"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached expression leaves the active skill as a read operand: $command"
+done
+for command in \
+    "awk -f'$active_skill_path' /dev/null" \
+    "sed -f'$active_skill_path' /dev/null" \
+    "sed --file='$active_skill_path' /dev/null" \
+    "grep -f'$active_skill_path' /dev/null" \
+    "grep --file='$active_skill_path' /dev/null" \
+    "rg -f'$active_skill_path' /dev/null" \
+    "rg --file='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq 'agentkit: this body is already in your context (injected at invocation)' \
+        "$(ctx_of "$out")" "an attached file option recognizes the active skill: $command"
+done
+for command in \
+    "sed -e'$active_skill_path' /dev/null" \
+    "sed --expression='$active_skill_path' /dev/null" \
+    "grep -e'$active_skill_path' /dev/null" \
+    "grep --regexp='$active_skill_path' /dev/null" \
+    "rg -e'$active_skill_path' /dev/null" \
+    "rg --regexp='$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "an attached expression path remains pattern text: $command"
+done
+for command in \
+    "awk -e'$active_skill_path' /dev/null" \
+    "awk --file='$active_skill_path' /dev/null" \
+    "sed --regexp='$active_skill_path' /dev/null" \
+    "cat -f'$active_skill_path' /dev/null"; do
+    out=$(post_input "$active_repo" "$command" "$active_sid" |
+        "$hooks/post-tool-use.sh" 2>/dev/null)
+    assert_eq '' "$(ctx_of "$out")" "unsupported attached reader flags do not classify a file: $command"
 done
 for wrapped_reader in "env cat '$active_skill_path'" "command cat '$active_skill_path'"; do
     out=$(post_input "$active_repo" "$wrapped_reader" "$active_sid" |
