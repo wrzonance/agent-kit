@@ -139,7 +139,7 @@ validate_blockers() {
         done <"$BLOCKER_FILE"
     fi
     for path in "${BLOCKER_PATHS[@]}"; do
-        [[ -n $path && $path != /* && $path != *\\* && $path != *'`'* &&
+        [[ -n $path && $path != /* && $path != *'`'* &&
             $path != *$'\n'* && $path != *$'\r'* ]] ||
             die "--blocker contains an unsafe repository path: $path"
         IFS=/ read -r -a parts <<<"$path"

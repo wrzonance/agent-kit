@@ -142,7 +142,7 @@ def call_command_text(payload):
 
 def is_log_read(payload):
     command = call_command_text(payload)
-    return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:tail|sed)(?=\s)', command))
+    return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:cat|tail|sed)(?=\s)', command))
 
 
 def custom_exec_commands(payload):

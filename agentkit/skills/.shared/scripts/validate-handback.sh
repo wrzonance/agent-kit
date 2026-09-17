@@ -659,6 +659,8 @@ def classify_completion(root, handback_path, blocker_path):
         protected = []
         unprotected = []
         for path in sorted(changed_paths(root)):
+            if path == blocker_path:
+                continue
             relative = path.relative_to(root).as_posix()
             if protected_pattern(root, relative, declared):
                 protected.append(relative)
