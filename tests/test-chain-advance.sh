@@ -1511,7 +1511,7 @@ cp -- "$advance" "$lineage_kit/parallel-issues/scripts/chain-advance.sh"
 cat >"$lineage_kit/review-remote-pr/scripts/review-ledger.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$LEDGER_LOG"
+invocation=$*
 comments=''
 while (($#)); do
     case $1 in
@@ -1520,6 +1520,7 @@ while (($#)); do
     esac
 done
 jq -e 'type == "array" and map(.id) == [1, 2]' "$comments" >/dev/null
+printf '%s\n' "$invocation" >>"$LEDGER_LOG"
 EOF
 chmod +x "$lineage_kit/review-remote-pr/scripts/review-ledger.sh"
 cat >"$tmp/gh-comment-pages" <<'EOF'
@@ -1541,6 +1542,10 @@ case " $* " in
             printf '%s\n' '[[{"id":1}]]'
             exit 42
         fi
+        if [[ ${COMMENTS_MALFORMED_PAGE:-0} == 1 ]]; then
+            printf '%s\n' '[[{"id":1}],[{"id":99}]]'
+            exit 0
+        fi
         printf '%s\n' '[[{"id":1}],[{"id":2}]]'
         ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
@@ -1559,9 +1564,15 @@ assert_contains "$(<"$tmp/ledger.log")" '--kind adversarial' \
 assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
     'both comment pages are flattened into one successful ledger cover call'
 
-COMMENTS_FAIL_AFTER_PAGE=1 EDIT_STATE="$tmp/lineage-failed-edit.state" LEDGER_LOG="$tmp/ledger.log" \
-    CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
-    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main >/dev/null
+(cd -- "$repo" && COMMENTS_MALFORMED_PAGE=1 EDIT_STATE="$tmp/lineage-malformed-edit.state" \
+    LEDGER_LOG="$tmp/ledger.log" CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
+    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main >/dev/null)
+assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
+    'a malformed flattened comment artifact never records a successful ledger call'
+
+(cd -- "$repo" && COMMENTS_FAIL_AFTER_PAGE=1 EDIT_STATE="$tmp/lineage-failed-edit.state" \
+    LEDGER_LOG="$tmp/ledger.log" CHAIN_ADVANCE_GH="$tmp/gh-comment-pages" \
+    bash "$lineage_advance" --retarget --repo owner/repo --pr 18 --base main >/dev/null)
 assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
     'a comment request failure after valid partial JSON cannot be masked by jq'
 
