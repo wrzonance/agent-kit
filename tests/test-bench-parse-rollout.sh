@@ -381,6 +381,19 @@ assert_eq '0' "$RUN_RC" 'a background shell read still parses'
 assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
     'background mixed output makes prose characters unavailable'
 
+custom_compound_prose_fixture="$tmp/prose-cost-custom-compound.jsonl"
+jq -nc \
+    '{type:"session_meta",payload:{originator:"orchestrator",model:"gpt-5.6-luna"}},
+     {type:"turn_context",payload:{model:"gpt-5.6-luna",effort:"low"}},
+     {type:"response_item",payload:{type:"custom_tool_call",call_id:"custom-compound",name:"functions.exec",input:"text(await tools.exec_command({cmd:\u0027cat two.md; git status\u0027}));"}},
+     {type:"response_item",payload:{type:"custom_tool_call_output",call_id:"custom-compound",output:"markdown and status"}},
+     {type:"bench_trial_meta",payload:{run_id:"prose-custom-compound",plugin_sha:"53e7e8c850380444cd4fb0edb25ebfd8adb32b61",fixture_version:"prose-v1",assigned_model:"gpt-5.6-luna",assigned_effort:"low",is_drift_control:false,selected_issues:[],chain_plan:[],serialization_events:[],retry_events:[],worker_count:0,wall_clock_seconds:1,exit_condition:"complete"}}' \
+    > "$custom_compound_prose_fixture"
+run "$custom_compound_prose_fixture" --timestamp 2026-09-16T03:07:00Z
+assert_eq '0' "$RUN_RC" 'a single custom compound shell read still parses'
+assert_eq 'null' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RUN_OUT")" \
+    'a single custom command with mixed output makes prose characters unavailable'
+
 # --- acceptance is optional: omitting it still yields a valid record ------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'

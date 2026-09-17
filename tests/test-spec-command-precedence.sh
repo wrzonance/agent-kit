@@ -5,6 +5,9 @@
 # shellcheck disable=SC2016  # literal $worktree / backticked text is assertion data
 set -uo pipefail
 
+# This suite's environment contracts intentionally use the Codex mapping.
+export CONTRACT_CACHE_HARNESS_NAME_MEMO=codex
+
 TEST_NAME='spec-command-precedence'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
