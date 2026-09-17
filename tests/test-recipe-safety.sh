@@ -193,6 +193,8 @@ cat > "$fixture_root/kit/.shared/scripts/run-state.sh" <<'SCRIPT'
 [[ $1 == summary && $2 == --run-id && $3 == run && $4 == --repo-root &&
    $5 == "$EXPECTED_REPOSITORY_ROOT" && $6 == --reports-dir &&
    $7 == "$EXPECTED_DISPATCH_PLAN.verification-reports" ]] || exit 2
+jq -e '.schemaVersion == 1 and (.entries | type == "array") and (.conflictMap | type == "object")' \
+    "$EXPECTED_DISPATCH_PLAN" >/dev/null || exit 2
 printf 'fixture-summary\n'
 SCRIPT
 cat > "$fixture_root/worktree/commit-helper" <<'SCRIPT'
@@ -255,7 +257,8 @@ for parent_shell in bash zsh; do
     assert_eq 1 "$?" "$parent_shell handback refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell handback refusal cannot continue"
 
-    : > "$fixture_root/dispatch-plan"
+    printf '%s\n' '{"schemaVersion":1,"entries":[],"conflictMap":{"pairs":[],"revisions":[]}}' \
+        > "$fixture_root/dispatch-plan"
     handoff_inputs='agentkit=$1; dispatch_plan=$2; RUN_ID=run; repository_root=$3; export EXPECTED_DISPATCH_PLAN=$2 EXPECTED_REPOSITORY_ROOT=$3'
     output=$("$parent_shell" -f -c "$handoff_inputs"$'\n'"$final_handoff_recipe"$'\n'"$completed" \
         _ "$fixture_root/kit" "$fixture_root/dispatch-plan" "$fixture_root/root-repo" 2>&1)
