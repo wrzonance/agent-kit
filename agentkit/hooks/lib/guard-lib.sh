@@ -1227,7 +1227,7 @@ guard_heredoc_consumer_is_shell() {
     ((i >= ${#words[@]} && ${#words[@]} > 0)) && [[ -z $word ]] && return 0
 
     case ${word##*/} in
-        bash|sh|zsh|dash|ksh|ash|mksh) return 0;;
+        bash|sh|zsh|dash|ksh|ash|mksh|source|.) return 0;;
     esac
     return 1
 }

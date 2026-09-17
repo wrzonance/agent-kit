@@ -1,7 +1,6 @@
 # Worker prompt templates
 
 ## Contents
-- [Issue-lead prompt](#issue-lead-prompt) — pasted verbatim when dispatching a Phase 2 issue lead
 - [Structured result contract](#structured-result-contract) — atomic artifact and independent root acceptance
 - [Throwaway waiter prompt](#throwaway-waiter-prompt) — one bounded CI/review observation in fresh context
 - [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
@@ -9,13 +8,8 @@
 - [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
 - [PR-fix-batch worker prompt](#pr-fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker with accepted findings
 
-Read this before dispatching any worker in `parallel-issues`, or before the root publishes a
-draft PR. The worker prompts are pasted **verbatim** — every placeholder filled, every
-environment-contract block pasted in — because a worker forked with `fork_context: false` starts
-with no memory of the dispatching session; a pointer to this file is not something it can follow.
-The draft-PR body template is root-owned dispatch-*output* content instead, read at the moment of
-publication. The dispatcher body names the one-line gate and points here at the exact step where
-each template binds.
+Read only the setup, fix-batch, or publication section in use. The implementation-worker prompt
+lives in [implementation-worker.md](implementation-worker.md), which the composer embeds directly.
 
 ## Fast-mode round contract
 
@@ -39,21 +33,6 @@ Canonical helper argv is documented here so callers do not reconstruct it from m
 
 Pure trigger/command comments skip attribution banners. Compose every comment body with
 `compose-comment-body.sh` from owned body files, then transport it with `gh-comment.sh`; forbid hand-rolled shell heredocs for agent-composed comments.
-
-## Issue-lead prompt
-
-The canonical compact leaf template is [implementation-worker.md](implementation-worker.md).
-The composer embeds it in full; never dispatch only a link. It retains required repository
-instructions, permissions, verification and publication constraints for every model.
-
-### Root completion classification
-
-If a worker completion still asks for approval, the root classifies it as
-`needs-authorization` when its final non-blank line ends in `?` or `reply yes`; it is not a
-successful completion. Under `--yolo`, the root resumes the same worker with its stored grant
-exactly once via `followup_task` and logs
-`auto_resume_authorization=needs-authorization attempt=1`; repeated approval requests are parked.
-
 
 ## Structured result contract
 
@@ -422,7 +401,7 @@ baseline_exclusion_args=()
 linkage_args=()
 [[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
 "$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
-  --title "$pr_title" --base "$base" --head "$branch" "${linkage_args[@]}"
+  --title "$pr_title" --base "$base" --head "$branch" --run-id "$RUN_ID" --repo-root "$repository_root" "${linkage_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front

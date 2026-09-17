@@ -33,10 +33,12 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
+    # #781 follow-up: a linked-project miss now resolves issue memberships.
     # #778: validate runtime-tool metadata and print the exact repair command.
     [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="1003:11315:800"
+    # #781 merge-down with #777: measured combined helper.
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
@@ -97,12 +99,70 @@ readonly MAX_HELPER_TOKENS=10000
 # #774 + #776: partial publication evidence and terminal verification summaries.
 # #777: preserve complete helper-owned recipes after the blocker-file merge-down.
 # #779: destination-adjacent atomic scratch and .agent parent validation.
+# #778: one harness-to-runtime-tool mapping and contract/composer integration.
+# #783: computed run-state handoff coverage and lifecycle blocker rendering.
+# #782 + final #778 merge-down: literal-create validation and contract fixtures; exact total.
+# #785: durable PR recording, trusted backend discovery, and default review rehydration.
+# #785: preserve a trusted fallback selector after primary access recovers.
+# #782 bot repair: provenance-aware root filename creation; exact integrated total.
+# #778 + updated #777: keyed tool contracts and explicit unavailable runbooks.
+# #783: atomic, idempotent summary producer and queue records.
+# #785 review: optional fallback trust filtering and standalone PR transport.
 # #777 review repair + #778: refreshed readers and harness-bound cached tools.
+# #780: affirmative consent parsing and refused-source provenance; exact total.
+# #780 PR #793 review: bind authorization, reviewer/model, and review purpose; exact total.
+# #780 PR #793 bot repair: bind persisted destination and purpose; exact total.
+# #776 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #774 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #779 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #783: filename-bound report identity.
+# #784 review: cached requirements and work-shape enforcement atop the final parent.
+# #785 bot repair: reject duplicate run IDs across trusted state roots.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
+# Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
+# #784 review plus final #792 parent: cached verdicts and reader fixes.
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
+# #784 final #792 parser repairs: cached verdicts and reader fixes.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
+# #781: shared repository-linked board discovery and atomic cache writer.
+# #781 review: paginated discovery, membership selection and optional persistence.
+# #781 merge-down with #776: measured combined helper tree.
+# #781 merge-down with #774/#776: measured combined helper tree.
+# #781 merge-down with #779: measured combined helper tree.
+# #781 merge-down with #777: measured combined helper tree.
+# #781 merge-down with #778: measured combined helper tree.
+# #781 merge-down with #783: measured combined helper tree.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
-readonly MAX_TREE_TOKENS=452714
+# #781 merge-down with #782: measured combined helper tree.
+# #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
+# #781 merge-down with #784/#792: measured combined helper tree.
+# #800 settlement cache repair: validated private body-cache handoff; 1,826,556 bytes / 4.
+# #781 merge-down with #785/#800: measured combined helper tree.
+# #756: ordered stdin redirects and queued heredoc recovery; exact total.
+# PR #794: descriptor provenance for aliased and nonstdin heredocs; exact total.
+# PR #794 bot follow-up: descriptor moves and nested command scopes; exact total.
+# #776 + PR #794 merge-down: combined helper tree exact total.
+# #774/#776 + PR #794 merge-down: combined helper tree exact total.
+# #779 + PR #794 merge-down: 1,786,587 helper bytes / 4 = 446,646 tokens; exact total.
+# #777 review + PR #794 merge-down: 1,802,953 helper bytes / 4 = 450,738 tokens; exact total.
+# #778 + PR #794 merge-down: 1,806,262 helper bytes / 4 = 451,565 tokens; exact total.
+# #783 + PR #794 merge-down: 1,818,298 helper bytes / 4 = 454,574 tokens; exact total.
+# #782 + PR #794 merge-down: 1,822,939 helper bytes / 4 = 455,734 tokens; exact total.
+# #784/#792 + PR #794 merge-down: 1,828,276 helper bytes / 4 = 457,069 tokens; exact total.
+# #800 + PR #794 merge-down: 1,838,638 helper bytes / 4 = 459,659 tokens; exact total.
+# #781 merge-down with PR #794: measured combined helper tree.
+# #777 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #778 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #783 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #782 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #784 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #785 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #756 + #780 merge-down: canonical helper lint measured the exact combined total.
+# #780 PR #793 final review repair: curly-quote consent boundary; exact total.
+# #781 merge-down with PR #793: measured combined helper tree.
+# #781 review repair: private cache parent and per-issue membership selection.
+readonly MAX_TREE_TOKENS=464430
 
 violations=0
 checked=0
