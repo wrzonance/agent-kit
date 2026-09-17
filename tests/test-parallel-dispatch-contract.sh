@@ -176,7 +176,10 @@ prepare_script_text=$(<"$root/agentkit/skills/parallel-issues/scripts/prepare-is
 # only a gate statement + pointer at each binding step. Template-content
 # assertions below therefore check the reference file, never the body.
 worker_prompts="$root/agentkit/skills/parallel-issues/references/worker-prompts.md"
-worker_prompts_text=$(cat "$worker_prompts" "${worker_prompts%/*}/implementation-worker.md")
+implementation_worker="${worker_prompts%/*}/implementation-worker.md"
+worker_prompts_text=$(cat "$worker_prompts" "$implementation_worker")
+worker_prompts_only_text=$(<"$worker_prompts")
+implementation_worker_text=$(<"$implementation_worker")
 # The bulk-mutation ledger recipe and the triage/prior-art/board adjudication
 # detail are single-sourced in references/triage-and-selection.md (issue
 # #107 phase 3's split); SKILL.md's body keeps only the one-line verdict
@@ -349,9 +352,11 @@ assert_contains "$normalized_text" 'require `schemaVersion=1 valid`' \
     'dispatch requires the schema-1 validation success marker'
 assert_contains "$triage_and_selection_text" 'same owner-only file' \
     'dispatch-plan and merge-plan names are documented as lifecycle aliases'
+assert_contains "$triage_and_selection_text" 'body-free `predictedWriteSet` in `pick-issues.sh` output' \
+    'conflict analysis seeds predictions from picker path evidence'
 assert_contains "$triage_and_selection_text" \
-    '"$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root"' \
-    'conflict analysis invokes the installed issue-path helper from the repository root'
+    'printf '\''%s'\'' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -' \
+    'conflict analysis seeds paths from the cached issue body without another forge read'
 assert_contains "$triage_and_selection_text" \
     '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
     'the issue-path recipe fails closed without provenance-bound installed helpers'
@@ -832,9 +837,11 @@ done
 selected=$("$boundary_selector" --visibility false --yolo 2>/dev/null | tail -n 1)
 assert_eq 'boundary mode: yolo-trusted' "$selected" \
     'explicit yolo selects yolo-trusted regardless of visibility'
-assert_contains "$text" 'one canonical issue-body fetch during preparation' \
-    'triage digest limits surviving issue body reads to preparation'
-assert_contains "$text" 'Do not fetch issue timelines, `projectItems`' \
+assert_contains "$normalized_text" 'one canonical body fetch by the picker' \
+    'triage digest limits each issue body to its picker fetch'
+assert_contains "$text" 'Set `body_cache` from the selected record' \
+    'preparation consumes the picker body-cache reference'
+assert_contains "$normalized_text" 'Do not fetch timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
 assert_contains "$move_help" '--issue-numbers "$issue_numbers_csv"' \
     'dispatch moves selected issues with one batch invocation'
@@ -986,7 +993,11 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     prompt_text=$([[ $prompt_label == 'issue-lead prompt' ]] && printf '%s' "$issue_lead_prompt" || printf '%s' "$draft_loop_prompt")
     assert_contains "$prompt_text" 'Every file operation must use an absolute path rooted in this assigned' "$prompt_label uses absolute worktree paths"
     assert_contains "$prompt_text" 'writable sandbox commonly spans the parent tree' "$prompt_label names the sandbox ownership hazard"
-    assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    if [[ $prompt_label == 'issue-lead prompt' ]]; then
+        assert_contains "$prompt_text" 'git -C "$affected_worktree" diff --binary' "$prompt_label carries affected-worktree restoration"
+    else
+        assert_contains "$prompt_text" 'git diff --binary | git apply -R' "$prompt_label carries incident restoration"
+    fi
     assert_contains "$prompt_text" 'report the incident and restoration in the completion report' "$prompt_label reports restored incidents"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Codex' "$prompt_label has no literal Codex provider trailer"
     assert_not_contains "$prompt_text" 'Co-Authored-By: Claude' "$prompt_label has no literal Claude provider trailer"
@@ -1014,6 +1025,18 @@ for prompt_label in 'issue-lead prompt' 'draft-loop prompt'; do
     assert_contains "$prompt_text" '<PASTE, verbatim, the agent-preflight.sh contract' \
         "$prompt_label carries the environment-contract paste placeholder"
 done
+assert_contains "$issue_lead_prompt" 'git -C "$affected_worktree" diff --binary -- "$path"' \
+    'issue-lead restoration reads the affected worktree and scopes the tracked path'
+assert_contains "$issue_lead_prompt" 'git -C "$affected_worktree" apply -R' \
+    'issue-lead restoration reverses the patch in the affected worktree'
+assert_contains "$issue_lead_prompt" 'worker-owned untracked' \
+    'issue-lead restoration handles proven worker-owned untracked files separately'
+assert_contains "$issue_lead_prompt" 'only when all emitted changes are proven worker-owned' \
+    'issue-lead whole-path restoration never reverses unrelated shared-file changes'
+assert_contains "$issue_lead_prompt" 'For mixed ownership, apply a verified own patch/preimage' \
+    'issue-lead mixed-ownership restoration scopes reversal to verified worker bytes'
+assert_contains "$issue_lead_prompt" 'or stop and report' \
+    'issue-lead restoration stops instead of guessing at ambiguous ownership'
 assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
@@ -1602,8 +1625,10 @@ assert_contains "$normalized_text" 'Digest flags: read [prior-art]' \
     'adjudication section reads remain conditional on digest flags'
 assert_contains "$normalized_text" '; skip `clean`.' \
     'clean issues require no adjudication reference reads'
-assert_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
-    'the single-issue dispatch set retains worker prompts'
+assert_contains "$single_issue_reference_set" 'references/implementation-worker.md' \
+    'the common dispatch path reads only the issue-lead template'
+assert_not_contains "$single_issue_reference_set" 'references/worker-prompts.md' \
+    'the common dispatch path does not read setup and publication templates'
 assert_contains "$single_issue_reference_set" '.shared/spawn-contract.md' \
     'the single-issue dispatch set retains the spawn contract'
 assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
@@ -1620,6 +1645,30 @@ assert_contains "$normalized_text" 'non-empty repository-relative `predictedWrit
     'dispatch-plan compaction preserves repository-relative non-empty predictions'
 assert_contains "$normalized_text" 'shared build config, lockfiles, and generated contracts' \
     'dispatch-plan compaction preserves shared conflict inputs'
+assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
+    'selection uses the body-free picker record as its sole mechanical input'
+assert_contains "$normalized_text" 'workShape: "no-code"' \
+    'selection holds the picker-record no-code verdict before worktree creation'
+assert_contains "$normalized_text" '(references/triage-and-selection.md#work-shape-verdict)' \
+    'the compact no-code rule retains its adjudication anchor'
+assert_contains "$normalized_text" 'never sufficient conflict evidence by itself' \
+    'an empty or partial literal path seed cannot prove no conflict'
+assert_contains "$normalized_text" 'requirementsDigest' \
+    'conflict analysis expands paths from cached issue requirements'
+assert_not_contains "$normalized_text" 'Read each issue' \
+    'root conflict analysis does not reread issue bodies or repository documents'
+assert_not_contains "$worker_prompts_only_text" '## Issue-lead prompt' \
+    'the broad prompt reference no longer contains issue-lead material'
+assert_not_contains "$worker_prompts_only_text" '### Root completion classification' \
+    'root completion classification lives with the issue-lead contract'
+assert_contains "$implementation_worker_text" '## Issue-lead prompt' \
+    'the dedicated implementation-worker reference owns the issue-lead template'
+assert_contains "$implementation_worker_text" '### Root completion classification' \
+    'the dedicated implementation-worker reference owns root completion classification'
+prose_lines=$(wc -l < "$skill")
+prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
+assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
+    'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

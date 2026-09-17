@@ -109,11 +109,14 @@ readonly MAX_HELPER_TOKENS=10000
 # Combined #777 review repairs + #778: GNU awk and bundled-option parsing.
 # #783: computed coverage, atomic producers, and filename-bound report identity.
 # #782 bot integration: provenance-aware root filename creation; exact combined total.
+# #784 review plus final #792 parser repairs: cached verdicts and reader fixes; exact total.
+# #784 settlement repair: validated private body-cache handoff; exact combined total.
 # #777 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #778 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #783 + #780 merge-down: canonical helper lint measured the exact combined total.
 # #782 + #780 merge-down: canonical helper lint measured the exact combined total.
-readonly MAX_TREE_TOKENS=454865
+# #784 + #780 merge-down: canonical helper lint measured the exact combined total.
+readonly MAX_TREE_TOKENS=456200
 
 violations=0
 checked=0

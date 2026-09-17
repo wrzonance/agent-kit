@@ -135,6 +135,51 @@ assert_eq "$expect_worker_prompts_w1" "$(get '.reference_hits["agentkit/skills/p
     'worker:1 reference hit count for worker-prompts.md matches the raw fixture (dispatched-template callback)'
 assert_eq "$expect_worker_prompts_w2" "$(get '.reference_hits["agentkit/skills/parallel-issues/references/worker-prompts.md"].workers["worker:2"]')" \
     'worker:2 reference hit count for worker-prompts.md matches the raw fixture'
+assert_eq '0' "$(get '(.reference_hits["agentkit/skills/parallel-issues/references/chains.md"] // {}) | length')" \
+    'the no-chain fixture records no chains.md reads'
+
+assert_eq 'true' "$(get '.pre_spawn_seconds == 180')" \
+    'pre_spawn_seconds spans the session start through the first spawn_agent call'
+assert_eq '28' "$(get .pre_spawn_chars.skill_reference_prose)" \
+    'pre-spawn skill and reference output characters are counted together'
+assert_eq '28' "$(get .pre_spawn_chars.repository_source_docs)" \
+    'repository docs and script-helper output share the source/docs category'
+assert_eq '10' "$(get .pre_spawn_chars.issue_forge_data)" \
+    'pre-spawn issue and forge data characters have their own category'
+assert_eq '11' "$(get .pre_spawn_chars.tool_interface_discovery)" \
+    'pre-spawn tool discovery characters have their own category'
+assert_eq '10' "$(get .pre_spawn_chars.unknown_other)" \
+    'uncategorized pre-spawn text is visible in the explicit unknown bucket'
+assert_eq '87' "$(get .pre_spawn_chars.total)" \
+    'pre-spawn total is the sum of category character counts'
+assert_eq 'complete' "$(get .pre_spawn_evidence.status)" \
+    'complete spawn, timestamp, and category evidence is named explicitly'
+assert_eq '0' "$(get '.pre_spawn_evidence.missing | length')" \
+    'complete pre-spawn evidence carries no missing reasons'
+assert_eq '59' "$(get '.dynamic_efficiency.actors[] | select(.actor == "orchestrator") | .prose_chars_read')" \
+    'the supported custom-exec fixture contributes its markdown output to orchestrator prose reads'
+
+injected_pre_spawn_fixture="$tmp/injected-pre-spawn.jsonl"
+injected_pre_spawn_prefix='agentkit invocation boundary: explicit workflow delivery, not native registry evidence.'
+injected_pre_spawn_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
+jq -c --arg text "$injected_pre_spawn_prefix
+
+$injected_pre_spawn_body" \
+    'if .type == "response_item" and .payload.type == "message" then .payload.content = $text else . end' \
+    "$sessions/orchestrator.jsonl" > "$injected_pre_spawn_fixture"
+run "$injected_pre_spawn_fixture" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" \
+    --acceptance "$acceptance_fixture" --timestamp 2026-08-20T00:00:00Z
+assert_eq "$((28 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.skill_reference_prose' <<< "$RUN_OUT")" \
+    'an injected skill body is attributed to skill prose inside a message'
+assert_eq "$((${#injected_pre_spawn_prefix} + 2))" \
+    "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" \
+    'only the injected message wrapper remains in the unknown bucket'
+assert_eq "$((87 - 10 + ${#injected_pre_spawn_prefix} + 2 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'injected message attribution preserves the original total plus the replacement text delta'
+assert_eq 'true' "$(jq -r '.pre_spawn_chars as $c | $c.total == ([$c.skill_reference_prose, $c.repository_source_docs, $c.issue_forge_data, $c.tool_interface_discovery, $c.unknown_other] | add)' <<< "$RUN_OUT")" \
+    'injected message categories still sum exactly to the reported total'
 
 assert_eq '842' "$(get .wall_clock_seconds)" 'wall_clock_seconds passes through from bench_trial_meta'
 assert_eq '2' "$(get .worker_count)" 'worker_count passes through from bench_trial_meta'
@@ -468,6 +513,111 @@ assert_eq '0' "$(jq -r '.dynamic_efficiency.actors[0].prose_chars_read' <<< "$RU
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
 assert_eq '0' "$RUN_RC" 'omitting --acceptance still succeeds'
 assert_eq 'null' "$(jq -r '.acceptance' <<< "$RUN_OUT" 2> /dev/null)" 'omitting --acceptance leaves acceptance explicitly null, not omitted'
+
+# A missing spawn boundary, timestamps, or countable category evidence is
+# unavailable evidence. The parser reports null plus the exact reason instead
+# of manufacturing a zero-duration or zero-character pre-spawn phase.
+sed 's/multi_agent_v1__spawn_agent/multi_agent_v1__submit_task/' "$sessions/orchestrator.jsonl" > "$tmp/no-spawn.jsonl"
+run "$tmp/no-spawn.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'missing spawn boundary leaves seconds null'
+assert_eq 'null' "$(jq -r '.pre_spawn_chars' <<< "$RUN_OUT")" 'missing spawn boundary leaves character counts null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("spawn_boundary") != null' <<< "$RUN_OUT")" \
+    'missing spawn boundary is reported explicitly'
+
+jq -c 'del(.timestamp) | if .type == "session_meta" then .payload |= del(.timestamp) else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/no-timestamps.jsonl"
+run "$tmp/no-timestamps.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'missing timestamps leave seconds null'
+assert_eq '87' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" 'character evidence survives missing timestamps'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'missing timestamp evidence is reported explicitly'
+
+jq -c 'select(.type == "session_meta" or .type == "turn_context" or .type == "bench_trial_meta" or
+    (.type == "response_item" and .payload.call_id == "c-spawn" and .payload.type == "custom_tool_call"))' \
+    "$sessions/orchestrator.jsonl" > "$tmp/no-category-evidence.jsonl"
+run "$tmp/no-category-evidence.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'true' "$(jq -r '.pre_spawn_seconds == 180' <<< "$RUN_OUT")" 'elapsed evidence survives missing category text'
+assert_eq 'null' "$(jq -r '.pre_spawn_chars' <<< "$RUN_OUT")" 'missing category evidence leaves character counts null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_evidence") != null' <<< "$RUN_OUT")" \
+    'missing category evidence is reported explicitly'
+
+jq -c 'if .payload.call_id? == "c-repo" then
+    .payload.call_id = (if (.payload.type | endswith("output")) then {bad: 1} else ["bad"] end)
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unhashable-call-ids.jsonl"
+run "$tmp/unhashable-call-ids.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'list and object call ids do not crash pre-spawn parsing'
+assert_eq '87' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" 'ambiguous call ids preserve the total character count'
+assert_eq '25' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'unattributed output moves to the explicit unknown bucket'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'ambiguous output attribution is explicitly partial'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'ambiguous call ids name missing category attribution'
+
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {text:"known", body:"issue body", metadata:{text:"not captured"}}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unknown-structured-output.jsonl"
+run "$tmp/unknown-structured-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'mixed known and unknown structured output parses conservatively'
+assert_eq '18' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'only the allowlisted text member contributes to its category'
+assert_eq '77' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unknown body and metadata members do not inflate the character total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unknown structured output prevents complete evidence'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'unknown structured output names incomplete attribution evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" and (.payload.type | endswith("output")) then
+    .payload.output = {body:"issue body"}
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/unsupported-only-output.jsonl"
+run "$tmp/unsupported-only-output.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'unsupported-only structured output does not crash parsing'
+assert_eq '13' "$(jq -r '.pre_spawn_chars.repository_source_docs' <<< "$RUN_OUT")" \
+    'unsupported-only output contributes no invented characters beside separate known output'
+assert_eq '72' "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'unsupported-only output is excluded from the preserved known total'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" \
+    'unsupported-only output cannot claim complete evidence because another output was known'
+
+jq -c 'if .payload.call_id? == "c-forge" and .payload.type == "function_call" then
+    .payload |= (.type = "custom_tool_call" | .name = "functions.exec" |
+      .input = {code: "await tools.exec_command({cmd: \"gh issue view 784; cat agentkit/skills/parallel-issues/SKILL.md\"})"} |
+      del(.arguments))
+    else . end' "$sessions/orchestrator.jsonl" > "$tmp/mixed-wrapper.jsonl"
+run "$tmp/mixed-wrapper.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'a mixed-category functions wrapper parses without guessing'
+assert_eq '0' "$(jq -r '.pre_spawn_chars.issue_forge_data' <<< "$RUN_OUT")" 'mixed wrapper output is not assigned wholesale to forge data'
+assert_eq '20' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'mixed wrapper output moves to the unknown bucket'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'mixed wrapper attribution is explicitly partial'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_attribution") != null' <<< "$RUN_OUT")" \
+    'mixed wrapper names missing category attribution'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "c2" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/duplicate-call-id.jsonl"
+run "$tmp/duplicate-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '1' "$RUN_RC" 'duplicate call ids fail the rollout instead of overwriting attribution silently'
+assert_contains "$RUN_OUT" 'conflicting event identity' 'the duplicate-id refusal names the ambiguous identity evidence'
+
+jq -c 'if .payload.call_id? == "c-repo" then .payload.call_id = "" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/empty-call-id.jsonl"
+run "$tmp/empty-call-id.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'empty call ids do not become a shared attribution key'
+assert_eq 'partial' "$(jq -r '.pre_spawn_evidence.status' <<< "$RUN_OUT")" 'empty call ids make category evidence partial'
+assert_eq '25' "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" 'empty-id output moves to the unknown bucket'
+
+jq -c 'if .payload.call_id? == "c-spawn" then .timestamp = "2026-08-20T10:03:00" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/mixed-timestamps.jsonl"
+run "$tmp/mixed-timestamps.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq '0' "$RUN_RC" 'mixed naive and aware timestamps do not crash pre-spawn parsing'
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'mixed timestamp awareness leaves elapsed time null'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'mixed timestamp awareness is reported as unavailable timestamp evidence'
+
+jq -c 'if .payload.call_id? == "c-spawn" then .timestamp = "2026-08-20T09:59:00.000Z" else . end' \
+    "$sessions/orchestrator.jsonl" > "$tmp/negative-duration.jsonl"
+run "$tmp/negative-duration.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
+assert_eq 'null' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'a negative pre-spawn duration is unavailable, not emitted'
+assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("timestamps") != null' <<< "$RUN_OUT")" \
+    'negative timestamp ordering is reported explicitly'
 
 # --- void: workers disagree with each other --------------------------------
 run "$sessions/orchestrator.jsonl" "$sessions/worker-1-drift.jsonl" "$sessions/worker-2.jsonl" --timestamp 2026-08-20T00:00:00Z
