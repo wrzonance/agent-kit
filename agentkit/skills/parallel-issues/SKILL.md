@@ -53,7 +53,7 @@ line only — nothing infers them from tone, urgency, or a previous run.
 `--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
 
 **Unknown-flag disposition.** A `--token` outside the table above and not documented elsewhere in
-this skill (`--no-followup`'s Phase 3 opt-out remains recognized) still gets named in the opening
+this skill (`--no-followup`'s Step 3d opt-out remains recognized) still gets named in the opening
 flag announcement, never silently dropped, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a
 downstream-owned flag also carries into the handoff resume line below.
 
@@ -729,12 +729,17 @@ With `--auto-review`, sweep `opened_prs`: each PR needs CI settled, Code Quality
 then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"` and each verified skip with the same command using `--path skipped_prs`; the helper is idempotent across resumed sweeps. On `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
 
 ### Opt-out
-If user runs `/parallel-issues --no-followup` (or says "just open PRs, I'll review later"), skip Phase 3 and jump straight to handoff. Default is to run Phase 3 automatically once Phase 2 completes.
+With `/parallel-issues --no-followup` (or "just open PRs, I'll review later"), skip only Step 3d; still run the mandatory Final draft sweep before handoff. Otherwise Phase 3 runs automatically.
 
 ## Do NOT Delete Worktrees
 **Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
 
-**Print a handoff only after the Final draft sweep passes**, with each worktree, PR/blocker, `.agent/` evidence, next step, and cleanup labelled ONLY-after-merge-AND-user-confirmation. Paste `"$agentkit/.shared/scripts/run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root" --reports-dir "$dispatch_plan.verification-reports"` output verbatim; this includes each validated nonzero-step durable `spec-verification=` report verbatim beside coverage and blockers.
+**After the Final draft sweep passes**, print each worktree, PR/blocker, `.agent/` evidence, next step, and ONLY-after-merge-AND-user-confirmation cleanup, then paste this output verbatim:
+```bash
+# final-handoff summary
+[[ ${dispatch_plan:-} == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || exit 1
+"$agentkit/.shared/scripts/run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root" --reports-dir "$dispatch_plan.verification-reports" || exit 1
+```
 Cleanup requires user request after merge.
 
 At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`.
