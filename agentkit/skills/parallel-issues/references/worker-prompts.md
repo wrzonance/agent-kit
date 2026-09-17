@@ -98,7 +98,8 @@ Helper argv: <one trusted bounded helper invocation, including numeric rounds/in
 Helper bound: <seconds>; effective tool caps: <advertised names and milliseconds>.
 Output: <absolute dedicated result file>; diagnostics: <absolute dedicated log file>.
 Run exactly that helper once in the supplied worktree, redirecting stdout/stderr to those files.
-Follow the composed `verify=` line for yield, resume, and read behavior. No repository exploration,
+Use the largest permitted yield; after a runtime yield, resume the same running session and never
+restart the helper. No repository exploration,
 edits, review launches, messages to other actors, stall checks, or additional commands. Never treat a timeout as success.
 At helper completion/expiry/error, return exactly one result line:
 wait-result status=<complete|expired|error> exit=<code> elapsed_seconds=<measured>

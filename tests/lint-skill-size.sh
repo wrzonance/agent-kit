@@ -31,7 +31,8 @@ declare -A KNOWN_OVERSIZE=(
     [review-remote-pr]="473:8411:450"
     # #777: helper-owned recipes shrink the injected body toward the standard budget.
     # #779: retain destination-adjacent plan publication in the extracted body.
-    [parallel-issues]="752:15756:500"
+    # #783 + #785: atomic summary producers with durable sweep rehydration.
+    [parallel-issues]="752:15777:500"
 )
 
 readonly MAX_BODY_LINES=500

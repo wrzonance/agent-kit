@@ -47,8 +47,8 @@ Recipe: triage once
       printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
   # Automatic selection: one GraphQL request for the recent open backlog.
   "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
-  # Explicit issue selection is still one aliased GraphQL request.
-  "$agentkit/.shared/scripts/triage-issues.sh" --issues 57,54
+  # Alternative explicit mode (replace with the requested numbers; do not run both):
+  # "$agentkit/.shared/scripts/triage-issues.sh" --issues 57,54
 
 The digest is evidence: each line includes issue number, board Status,
 prior-art verdict, ADR candidates, and referencing PR. It also warms the
