@@ -138,7 +138,7 @@ assert_eq "$expect_worker_prompts_w2" "$(get '.reference_hits["agentkit/skills/p
 assert_eq '0' "$(get '(.reference_hits["agentkit/skills/parallel-issues/references/chains.md"] // {}) | length')" \
     'the no-chain fixture records no chains.md reads'
 
-assert_eq '180.0' "$(get .pre_spawn_seconds)" \
+assert_eq 'true' "$(get '.pre_spawn_seconds == 180')" \
     'pre_spawn_seconds spans the session start through the first spawn_agent call'
 assert_eq '28' "$(get .pre_spawn_chars.skill_reference_prose)" \
     'pre-spawn skill and reference output characters are counted together'
@@ -156,6 +156,30 @@ assert_eq 'complete' "$(get .pre_spawn_evidence.status)" \
     'complete spawn, timestamp, and category evidence is named explicitly'
 assert_eq '0' "$(get '.pre_spawn_evidence.missing | length')" \
     'complete pre-spawn evidence carries no missing reasons'
+assert_eq '59' "$(get '.dynamic_efficiency.actors[] | select(.actor == "orchestrator") | .prose_chars_read')" \
+    'the supported custom-exec fixture contributes its markdown output to orchestrator prose reads'
+
+injected_pre_spawn_fixture="$tmp/injected-pre-spawn.jsonl"
+injected_pre_spawn_prefix='agentkit invocation boundary: explicit workflow delivery, not native registry evidence.'
+injected_pre_spawn_body=$'---\nname: parallel-issues\n---\n# Parallel Issues\n'
+jq -c --arg text "$injected_pre_spawn_prefix
+
+$injected_pre_spawn_body" \
+    'if .type == "response_item" and .payload.type == "message" then .payload.content = $text else . end' \
+    "$sessions/orchestrator.jsonl" > "$injected_pre_spawn_fixture"
+run "$injected_pre_spawn_fixture" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl" \
+    --acceptance "$acceptance_fixture" --timestamp 2026-08-20T00:00:00Z
+assert_eq "$((28 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.skill_reference_prose' <<< "$RUN_OUT")" \
+    'an injected skill body is attributed to skill prose inside a message'
+assert_eq "$((${#injected_pre_spawn_prefix} + 2))" \
+    "$(jq -r '.pre_spawn_chars.unknown_other' <<< "$RUN_OUT")" \
+    'only the injected message wrapper remains in the unknown bucket'
+assert_eq "$((87 - 10 + ${#injected_pre_spawn_prefix} + 2 + ${#injected_pre_spawn_body}))" \
+    "$(jq -r '.pre_spawn_chars.total' <<< "$RUN_OUT")" \
+    'injected message attribution preserves the original total plus the replacement text delta'
+assert_eq 'true' "$(jq -r '.pre_spawn_chars as $c | $c.total == ([$c.skill_reference_prose, $c.repository_source_docs, $c.issue_forge_data, $c.tool_interface_discovery, $c.unknown_other] | add)' <<< "$RUN_OUT")" \
+    'injected message categories still sum exactly to the reported total'
 
 assert_eq '842' "$(get .wall_clock_seconds)" 'wall_clock_seconds passes through from bench_trial_meta'
 assert_eq '2' "$(get .worker_count)" 'worker_count passes through from bench_trial_meta'
@@ -512,7 +536,7 @@ jq -c 'select(.type == "session_meta" or .type == "turn_context" or .type == "be
     (.type == "response_item" and .payload.call_id == "c-spawn" and .payload.type == "custom_tool_call"))' \
     "$sessions/orchestrator.jsonl" > "$tmp/no-category-evidence.jsonl"
 run "$tmp/no-category-evidence.jsonl" "$sessions/worker-1.jsonl" "$sessions/worker-2.jsonl"
-assert_eq '180.0' "$(jq -r '.pre_spawn_seconds' <<< "$RUN_OUT")" 'elapsed evidence survives missing category text'
+assert_eq 'true' "$(jq -r '.pre_spawn_seconds == 180' <<< "$RUN_OUT")" 'elapsed evidence survives missing category text'
 assert_eq 'null' "$(jq -r '.pre_spawn_chars' <<< "$RUN_OUT")" 'missing category evidence leaves character counts null'
 assert_eq 'true' "$(jq -r '.pre_spawn_evidence.missing | index("category_evidence") != null' <<< "$RUN_OUT")" \
     'missing category evidence is reported explicitly'

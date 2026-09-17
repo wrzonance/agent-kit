@@ -1345,6 +1345,14 @@ assert_contains "$(<"$implementation_worker")" 'followup_task' \
     'Collect resumes the same worker through followup_task'
 assert_contains "$(<"$implementation_worker")" 'exactly once' \
     'Collect limits automatic authorization resumption to one attempt'
+assert_contains "$(<"$implementation_worker")" 'May I proceed with the protected write?' \
+    'Collect recognizes a direct approval question as an authorization handoff'
+assert_contains "$(<"$implementation_worker")" 'Reply yes to authorize the deployment.' \
+    'Collect recognizes an explicit reply-yes approval instruction'
+assert_contains "$(<"$implementation_worker")" 'Would you like a summary?' \
+    'Collect keeps an unrelated completion question out of the authorization class'
+assert_contains "$(<"$implementation_worker")" 'The log says "reply yes".' \
+    'Collect keeps a quoted reply-yes phrase out of the authorization class'
 
 # --- three-hop integration: select-boundary-mode.sh -> prepare-issue-artifacts.sh
 # -> compose-worker-prompt.sh, per mode, asserting the mode survives all three

@@ -355,8 +355,8 @@ assert_contains "$triage_and_selection_text" 'same owner-only file' \
 assert_contains "$triage_and_selection_text" 'body-free `predictedWriteSet` in `pick-issues.sh` output' \
     'conflict analysis seeds predictions from picker path evidence'
 assert_contains "$triage_and_selection_text" \
-    '"$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root"' \
-    'conflict analysis invokes the installed issue-path helper from the repository root'
+    'printf '\''%s'\'' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -' \
+    'conflict analysis seeds paths from the cached issue body without another forge read'
 assert_contains "$triage_and_selection_text" \
     '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
     'the issue-path recipe fails closed without provenance-bound installed helpers'
@@ -1656,7 +1656,7 @@ assert_contains "$implementation_worker_text" '## Issue-lead prompt' \
 assert_contains "$implementation_worker_text" '### Root completion classification' \
     'the dedicated implementation-worker reference owns root completion classification'
 prose_lines=$(wc -l < "$skill")
-prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts")))
+prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
