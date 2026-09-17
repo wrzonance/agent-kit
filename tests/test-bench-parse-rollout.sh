@@ -212,6 +212,7 @@ printf '%s\n' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"unknown-read","name":"exec_command","arguments":"{\"cmd\":\"tail -20 /repo/.agent/logs/unknown.log\"}"}}' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-2","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\",\"yield_time_ms\":1000}"}}' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"read-2","name":"shell","arguments":"{\"command\":[\"sed\",\"-n\",\"1,20p\",\"/repo/.agent/logs/test.log\"]}"}}' \
+    '{"type":"response_item","payload":{"type":"function_call","call_id":"read-3","name":"exec_command","arguments":"{\"cmd\":\"cat /repo/.agent/logs/test.log\"}"}}' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"resume-3","name":"write_stdin","arguments":"{\"session_id\":7,\"chars\":\"\"}"}}' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"cell-resume","name":"write_stdin","arguments":"{\"cell_id\":\"verify-cell\",\"chars\":\"\",\"yield_time_ms\":2000}"}}' \
     '{"type":"response_item","payload":{"type":"function_call","call_id":"missing-id-resume","name":"write_stdin","arguments":"{\"chars\":\"\",\"yield_time_ms\":1}"}}' \
@@ -225,8 +226,8 @@ assert_eq '4' "$(jq -r '.worker_resume_calls["worker:776"]' <<< "$RUN_OUT")" \
     'only resumes correlated to verification launch session or cell IDs are counted'
 assert_eq '1000' "$(jq -r '.worker_min_yield_ms["worker:776"]' <<< "$RUN_OUT")" \
     'minimum worker yield ignores missing values and non-empty writes'
-assert_eq '2' "$(jq -r '.log_reads_between_resumes["worker:776"]' <<< "$RUN_OUT")" \
-    'helper and unknown-session log reads do not inflate verification churn'
+assert_eq '3' "$(jq -r '.log_reads_between_resumes["worker:776"]' <<< "$RUN_OUT")" \
+    'literal tail, sed, and cat reads count without helper or unknown-session inflation'
 
 poll_gap_fixture="$tmp/poll-telemetry-gap.jsonl"
 printf '%s\n' \
