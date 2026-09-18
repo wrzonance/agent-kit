@@ -293,8 +293,8 @@ emit_verify_runbook() {
         claude) collect=completion-notification; read=returned-output-file ;;
         *) collect=advertised-tool ;;
     esac
-    printf 'verify= cmd="%s" shell_yield_hint_ms=%s collect=%s limits=live-tool-and-session read=%s\n' \
-        "$verify_command" "$yield_cap_ms" "$collect" "$read"
+    printf 'verify= cmd_name="%s" cmd="%s" shell_yield_hint_ms=%s collect=%s limits=live-tool-and-session read=%s\n' \
+        "$verify_command_name" "$verify_command" "$yield_cap_ms" "$collect" "$read"
 }
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -493,6 +493,7 @@ if ((focus_declared)) && ((test_declared)); then
 fi
 
 verify_command='agent-run.sh --cmd test --summary'
+verify_command_name='test'
 runbook_test_runnable=0
 if ((test_declared)); then
     for scoped_key in ${scoped_command_keys[@]+"${scoped_command_keys[@]}"}; do
@@ -503,8 +504,10 @@ elif query_test_resolution; then
 fi
 if ((runbook_test_runnable == 0)); then
     if ((${#scoped_command_names[@]})); then
-        verify_command="agent-run.sh --cmd ${scoped_command_names[0]} --summary"
+        verify_command_name=${scoped_command_names[0]}
+        verify_command="agent-run.sh --cmd $verify_command_name --summary"
     else
+        verify_command_name=''
         verify_command=''
     fi
 fi

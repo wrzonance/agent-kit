@@ -43,7 +43,7 @@ owner-private artifact. Version 1 requires exactly these fields (no extra or dup
   absolute canonical `worktree`, `branch`, full `baseSha` and `headSha`.
 - `writeSet`: assigned globs including recorded dispositions; `touchedPaths`: actual relative
   paths from the base/head diff plus staged, unstaged and untracked work, including rename sources.
-- `verification`: one object per root-required command: `command`, `status` (`pass`, `fail`,
+- `verification`: one object per root-required command: `command` is the bare runbook `cmd_name` matching `[a-z][a-z0-9-]*`, never its command line; `status` (`pass`, `fail`,
   `skipped`, `unavailable`, `unknown`), optional `log`, `fingerprint`, `reason` (required for non-pass).
 - `push`: `pushed`, `not-pushed` or `unknown`; `obligations`: unique strings including
   `root-review`, `root-ci`, `draft-pr`, and `root-push` when publication is outstanding.

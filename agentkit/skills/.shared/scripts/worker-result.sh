@@ -19,11 +19,25 @@ import sys
 import tempfile
 
 HELPERS = Path(sys.argv[1])
+RESULT_FIELDS = ('schemaVersion','runId','attempt','workerId','issue','worktree','branch','baseSha',
+                 'headSha','writeSet','touchedPaths','verification','push','obligations','findings','blocker')
+COMMAND_PATTERN = '[a-z][a-z0-9-]*'
 class Rejected(Exception): pass
 class Unknown(Exception): pass
 
 def require(condition, reason):
     if not condition: raise Rejected(reason)
+
+def require_field(condition, field, value, expected):
+    require(condition, f'invalid {field} {value!r}: expected {expected}')
+
+def exact_fields(field, value, required, optional=()):
+    require_field(isinstance(value,dict), field, value, 'an object')
+    expected=set(required)|set(optional)
+    missing=sorted(set(required)-set(value)); extra=sorted(set(value)-expected)
+    suffix=f" and optional {', '.join(optional)}" if optional else ''
+    require(not missing and not extra,
+            f"invalid {field}: missing={missing!r} extra={extra!r}; expected {', '.join(required)}{suffix}")
 
 def read(path):
     p = Path(path)
@@ -55,44 +69,49 @@ def path_pattern(value):
         p not in ('', '.', '..') for p in value.split('/'))
 
 def schema(r):
-    fields = {'schemaVersion','runId','attempt','workerId','issue','worktree','branch','baseSha',
-              'headSha','writeSet','touchedPaths','verification','push','obligations','findings','blocker'}
-    require(isinstance(r,dict) and set(r)==fields, 'result requires exactly the documented v1 fields')
-    require(type(r['schemaVersion']) is int and r['schemaVersion']==1, 'schemaVersion must be integer 1')
-    require(type(r['issue']) is int and r['issue']>0, 'issue must be a positive integer')
+    rf=require_field
+    exact_fields('result fields',r,RESULT_FIELDS)
+    rf(type(r['schemaVersion']) is int and r['schemaVersion']==1,'schemaVersion',r['schemaVersion'],'integer 1')
+    rf(type(r['issue']) is int and r['issue']>0,'issue',r['issue'],'a positive integer')
     for key in ('runId','attempt','workerId','worktree','branch'):
-        require(text(r[key]), f'{key} must be a non-empty string without controls')
-    require(re.fullmatch(r'[A-Za-z0-9_-]+', r['attempt']), 'attempt must be a stable identifier')
-    require(Path(r['worktree']).is_absolute(), 'worktree must be absolute')
+        rf(text(r[key]),key,r[key],'a non-empty string without controls')
+    rf(bool(re.fullmatch(r'[A-Za-z0-9_-]+',r['attempt'])),'attempt',r['attempt'],'a stable identifier matching [A-Za-z0-9_-]+')
+    rf(Path(r['worktree']).is_absolute(),'worktree',r['worktree'],'an absolute path')
     for key in ('baseSha','headSha'):
-        require(isinstance(r[key],str) and re.fullmatch('[0-9a-f]{40}',r[key]), f'{key} must be a full SHA')
+        rf(isinstance(r[key],str) and bool(re.fullmatch('[0-9a-f]{40}',r[key])),key,r[key],'a full SHA of 40 lowercase hexadecimal characters')
     for key in ('writeSet','touchedPaths','obligations','findings'):
-        require(strings(r[key]), f'{key} must contain unique non-empty strings')
-    require(r['writeSet'] and all(path_pattern(p) for p in r['writeSet']+r['touchedPaths']),
-            'writeSet and touchedPaths must be safe repository-relative paths')
-    require({'root-review','root-ci','draft-pr'} <= set(r['obligations']), 'root obligations must remain explicit')
-    require(r['push'] in ('pushed','not-pushed','unknown'), 'push must be pushed, not-pushed or unknown')
-    require(r['push']=='pushed' or 'root-push' in r['obligations'], 'unpublished work must retain root-push obligation')
-    require(isinstance(r['verification'],list) and r['verification'], 'verification must name required checks')
+        rf(strings(r[key]),key,r[key],'a list of unique non-empty strings without controls')
+    paths={'writeSet':r['writeSet'],'touchedPaths':r['touchedPaths']}
+    rf(bool(r['writeSet']) and all(path_pattern(p) for values in paths.values() for p in values),
+       'writeSet/touchedPaths',paths,'a non-empty writeSet and safe repository-relative paths')
+    rf({'root-review','root-ci','draft-pr'}<=set(r['obligations']),'obligations',r['obligations'],'entries for root-review, root-ci, and draft-pr')
+    rf(r['push'] in ('pushed','not-pushed','unknown'),'push',r['push'],'one of pushed, not-pushed, or unknown')
+    rf(r['push']=='pushed' or 'root-push' in r['obligations'],'obligations',r['obligations'],'a root-push entry while push is unpublished')
+    rf(isinstance(r['verification'],list) and bool(r['verification']),'verification',r['verification'],'a non-empty list naming required checks')
     names=[]
-    for v in r['verification']:
-        require(isinstance(v,dict) and set(v) <= {'command','status','log','fingerprint','reason'} and
-                {'command','status'} <= set(v), 'verification requires command and status')
-        require(text(v['command']) and re.fullmatch('[a-z][a-z0-9-]*',v['command']), 'invalid verification command')
-        require(v['status'] in ('pass','fail','skipped','unavailable','unknown'), 'invalid verification status')
-        require(all(text(value) for value in v.values()), 'verification values must be non-empty strings')
-        require(v['status']=='pass' or text(v.get('reason')), 'non-pass verification needs a reason')
+    for index,v in enumerate(r['verification']):
+        prefix=f'verification[{index}]'
+        exact_fields(f'{prefix} fields',v,('command','status'),('log','fingerprint','reason'))
+        rf(text(v['command']) and bool(re.fullmatch(COMMAND_PATTERN,v['command'])),f'{prefix}.command',v['command'],
+           f'the declared command NAME (agent-run.sh --cmd), matching {COMMAND_PATTERN}, not the command line')
+        rf(v['status'] in ('pass','fail','skipped','unavailable','unknown'),f'{prefix}.status',v['status'],
+           'one of pass, fail, skipped, unavailable, or unknown')
+        invalid=next(((key,value) for key,value in v.items() if not text(value)),None)
+        rf(invalid is None,f'{prefix}.{invalid[0]}' if invalid else prefix,invalid[1] if invalid else v,
+           'a non-empty string without controls')
+        rf(v['status']=='pass' or text(v.get('reason')),f'{prefix}.reason',v.get('reason'),'a non-empty string required for non-pass status')
         names.append(v['command'])
-    require(len(names)==len(set(names)), 'duplicate verification command')
+    rf(len(names)==len(set(names)),'verification[].command',names,'unique declared command names')
     b=r['blocker']
-    require(b is None or (isinstance(b,dict) and set(b)=={'class','remainingAction','evidence'} and
-            b['class'] in ('publication','write-set','baseline-red','filesystem','harness','other') and
-            all(text(v) for v in b.values())), 'blocker requires a typed class, remainingAction and evidence')
+    if b is not None:
+        exact_fields('blocker fields',b,('class','remainingAction','evidence'))
+        rf(b['class'] in ('publication','write-set','baseline-red','filesystem','harness','other') and all(text(v) for v in b.values()),
+           'blocker',b,'a typed class plus non-empty remainingAction and evidence strings')
 
 def atomic(path, value):
     p=Path(path)
-    require(not p.is_symlink() and (not p.exists() or (p.is_file() and p.stat().st_uid==os.getuid())),
-            'output must be an owned regular non-symlink file')
+    require_field(not p.is_symlink() and (not p.exists() or (p.is_file() and p.stat().st_uid==os.getuid())),
+                  'output', str(p), 'a missing path or an owned regular non-symlink file')
     name=None
     try:
         fd,name=tempfile.mkstemp(prefix='.worker-result-',dir=p.parent)
@@ -275,9 +294,15 @@ def store_receipt(a,receipt):
     return reused
 
 def main():
-    p=argparse.ArgumentParser(description='Write or independently validate worker-result v1; never execute worker commands.')
+    p=argparse.ArgumentParser(prog='worker-result.sh',
+                              description='Write or independently validate worker-result v1; never execute worker commands.')
     sub=p.add_subparsers(dest='action',required=True)
-    w=sub.add_parser('write'); w.add_argument('--input',required=True); w.add_argument('--output',required=True)
+    write_help=(f"Schema-check and atomically write worker-result v1. Required fields: {', '.join(RESULT_FIELDS)}. "
+                f'verification[].command is the declared NAME passed to agent-run.sh --cmd, matching {COMMAND_PATTERN}, not the command line.')
+    w=sub.add_parser('write', help='schema-check and atomically write worker-result v1', description=write_help,
+                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    w.add_argument('--input',required=True,help='input worker-result v1 JSON file')
+    w.add_argument('--output',required=True,help='output artifact replaced atomically after validation')
     v=sub.add_parser('validate')
     for name in ('result','dispatch-plan','owners','state','run-id','attempt','worker-id','worktree','base-sha'):
         v.add_argument('--'+name,required=True)
