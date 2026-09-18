@@ -32,7 +32,7 @@ snapshot_repo() {
     "$cross_write" snapshot --root "$dir" --output "$snap" --write-set 'src/**' >/dev/null
 }
 
-# --- regression: unchanged refs still report cross-write=none --------------
+# --- regression: unchanged refs still report a clean current state ----------
 regress_root="$tmp/regress-root"
 regress_worker="$tmp/regress-worker"
 make_repo "$regress_root"
@@ -47,8 +47,8 @@ regress_out=$(
 )
 regress_rc=$?
 assert_eq 0 "$regress_rc" 'an unchanged root still exits clean'
-assert_contains "$regress_out" 'cross-write=none' \
-    'no ref or file mutation still reports cross-write=none'
+assert_contains "$regress_out" 'current-state=none' \
+    'no ref or file mutation reports a clean standalone comparison'
 
 # --- git reset --soft moves HEAD's SHA with zero file changes --------------
 reset_root="$tmp/reset-root"
@@ -267,8 +267,8 @@ worker_out=$(
 worker_rc=$?
 assert_eq 0 "$worker_rc" \
     'a worker commit on its own branch is not a root incident (issue #352)'
-assert_contains "$worker_out" 'cross-write=none' \
-    'a worker committing on its own branch still reports cross-write=none'
+assert_contains "$worker_out" 'current-state=none' \
+    'a worker committing on its own branch leaves the current state clean'
 assert_not_contains "$worker_out" 'cross-ref=' \
     'the worker branch move produces no cross-ref incident at all'
 
@@ -306,7 +306,7 @@ alias_snapshot="$alias_root/.agent/alias.snapshot"
 "$cross_write" snapshot --root "$alias_root" --output "$alias_snapshot" --write-set 'src/**' >/dev/null
 alias_out=$("$cross_write" collect --root "$alias_root" --snapshot "$alias_snapshot" \
     --worktree "$alias_worker" --issue 352 --write-set 'src/**')
-assert_contains "$alias_out" 'cross-write=none' \
+assert_contains "$alias_out" 'current-state=none' \
     '--worktree aliases --worker-worktree for Collect'
 
 # --- issue #579: --worker-start/--worker-end accept ISO-8601 UTC, not just --
@@ -329,8 +329,8 @@ iso_out=$(
 )
 iso_rc=$?
 assert_eq 0 "$iso_rc" 'Collect accepts ISO-8601 UTC for --worker-start/--worker-end'
-assert_contains "$iso_out" 'cross-write=none' \
-    'an ISO-8601 worker window still reports cross-write=none for an unchanged root'
+assert_contains "$iso_out" 'current-state=none' \
+    'an ISO-8601 worker window reports a clean standalone comparison'
 
 # The two accepted forms must actually agree: a file written inside an
 # ISO-8601-expressed window is attributed exactly like the equivalent epoch
@@ -379,11 +379,8 @@ assert_contains "$bad_error" 'ISO-8601' \
 assert_contains "$bad_error" 'epoch' \
     'the rejection also names the epoch-integer form'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-# Lowered 815 -> 777 by the helper-size ratchet fix wave: comment prose was
-# trimmed to bring the file back under tests/lint-helper-size.sh's 800-line
-# per-file budget without touching behaviour.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 777 ]] && printf yes || printf no)" \
-    'cross-write-check.sh stays at or under 777 lines'
+# Keep the helper within lint-helper-size.sh's 800-line production budget.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 800 ]] && printf yes || printf no)" \
+    'cross-write-check.sh stays at or under 800 lines'
 
 finish

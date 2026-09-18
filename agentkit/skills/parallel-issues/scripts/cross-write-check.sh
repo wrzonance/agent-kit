@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # cross-write-check.sh -- snapshot a root checkout and account for dirt that
-# appears in a dispatched worker's predicted write set. The root is the
-# observation point; a worker worktree is only the byte-comparison source and
-# is never written to. Clean output is `cross-write=none`; an incident names
-# its mtime attribution and duplicate/divergent disposition.
+# appears in a dispatched worker's predicted write set.
 set -euo pipefail
 
 PROGRAM=${0##*/}
+DISPATCH_AUDIT=no
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$1" >&2
     exit 2
+}
+
+audit_unavailable() {
+    printf 'audit-unavailable=invariant=%s next-action=%s\n' "$1" "$2"
+    exit 11
 }
 
 usage() {
@@ -21,7 +24,7 @@ Usage:
       --write-set GLOB [--write-set GLOB ...] \
       [--worker-start EPOCH|ISO8601 --worker-end EPOCH|ISO8601] [--dispose-duplicates]
   cross-write-check.sh dispose --root PATH --worktree PATH --path RELATIVE [--expected-hash HASH]
-  cross-write-check.sh dispatch-fence [snapshot flags | collect flags]
+  cross-write-check.sh dispatch-fence --run-id ID [--baseline-id ID] [snapshot flags | collect flags]
       Routes to snapshot (no --worker-worktree) or collect (--worker-worktree
       given) so the dispatch skill's fence recipe names one entry point.
 
@@ -85,9 +88,6 @@ path_is_inside() {
     [[ $target == "$root" || $target == "$root"/* ]]
 }
 
-# Resolve every component (incl. parent symlinks); a missing leaf is safe
-# once its parent is proven inside the checkout. Return 3 for a resolved
-# escape so callers can report containment failure rather than skip it.
 resolve_inside_root() {
     local root=$1 path=$2 candidate parent base resolved resolved_root
     [[ -n $path && $path != /* && $path != . && $path != ../* &&
@@ -163,13 +163,19 @@ snapshot_at() {
     sed -n 's/^captured-at=//p' "$snapshot" | head -n 1
 }
 
+snapshot_value() {
+    sed -n "s/^$2=//p" "$1" | head -n 1
+}
+
+snapshot_digest() {
+    sed '$d' "$1" | sha256sum | awk '{print $1}'
+}
+
 snapshot_write_sets() {
     local snapshot=$1
     sed -n 's/^write-set=//p' "$snapshot"
 }
 
-# capture_head_ref -- the symbolic ref HEAD points at (e.g. "refs/heads/main"),
-# or the literal "HEAD" when detached (no resolvable symbolic ref).
 capture_head_ref() {
     local root=$1
     git -C "$root" symbolic-ref -q HEAD || printf 'HEAD\n'
@@ -180,18 +186,11 @@ capture_head_sha() {
     git -C "$root" rev-parse HEAD
 }
 
-# capture_ref_reflog_count -- reflog entry count for a fully-qualified ref, or
-# 0 if it has none. Entries (not wall-clock timestamps) detect mutation
-# reliably: reflog timestamps are whole-second, so a fast dispatch could
-# snapshot and mutate within the same second; a growing entry count can't.
 capture_ref_reflog_count() {
     local root=$1 fullref=$2
     git -C "$root" reflog show "$fullref" 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
-# capture_ref_reflog_usable -- "yes" when Git maintains a reflog for this ref,
-# "no" otherwise. `reflog show` on an unlogged ref exits 0 with empty output --
-# indistinguishable from zero entries -- so this checks `reflog exists` instead.
 capture_ref_reflog_usable() {
     local root=$1 fullref=$2
     if git -C "$root" reflog exists "$fullref" >/dev/null 2>&1; then
@@ -201,11 +200,6 @@ capture_ref_reflog_usable() {
     fi
 }
 
-# list_worktree_branches -- branch names checked out by any *other* worktree
-# of this repository. Worker worktrees share refs/heads/* with root, so a
-# worker committing its own branch is a normal dispatch, not a root mutation.
-# Ownership comes from Git's own worktree metadata (`git worktree list
-# --porcelain`), never name pattern; root's own branch is never filtered out.
 list_worktree_branches() {
     local root=$1 line wt_path='' branch resolved
     while IFS= read -r line; do
@@ -221,11 +215,6 @@ list_worktree_branches() {
     done < <(git -C "$root" worktree list --porcelain)
 }
 
-# capture_branch_shas -- one "name<TAB>sha<TAB>reflog-count<TAB>reflog-usable"
-# line per local branch NOT checked out by another worktree, sorted by
-# refname. `exclude` is a newline-delimited set (leading newline included; a
-# trailing newline is NOT guaranteed -- built via `$(...)`, which strips it)
-# of branch names to skip -- those belong to other worktrees, not this one.
 capture_branch_shas() {
     local root=$1 exclude=$2 branch_name branch_sha fullref
     while IFS=$'\t' read -r branch_name branch_sha; do
@@ -239,8 +228,6 @@ capture_branch_shas() {
         --format='%(refname:short)%09%(objectname)' refs/heads/)
 }
 
-# branch_name_set -- join branch names (one per positional arg) into the
-# newline-delimited set format capture_branch_shas' `exclude` expects.
 branch_name_set() {
     local name out=$'\n'
     for name in "$@"; do
@@ -275,19 +262,11 @@ snapshot_branch_shas() {
     sed -n 's/^branch-sha=//p' "$snapshot"
 }
 
-# snapshot_excluded_branches -- branch names that were checked out by another
-# worktree at snapshot time, and were therefore left out of the snapshot's
-# branch-sha baseline entirely.
 snapshot_excluded_branches() {
     local snapshot=$1
     sed -n 's/^excluded-branch=//p' "$snapshot"
 }
 
-# reflog_activity -- has a ref's reflog grown past baseline_count, and if so
-# was the newest entry's timestamp inside [start, end]? Prints four
-# tab-separated fields: activity (yes|no), current count, newest subject
-# ("none" if no new activity), and window (in-window|outside-window|unknown).
-# "unknown" also covers a reflog that shrank (e.g. `git reflog expire`).
 reflog_activity() {
     local root=$1 fullref=$2 baseline_count=$3 start=$4 end=$5
     local current_count newest selector subject ts window=unknown _
@@ -314,23 +293,23 @@ reflog_activity() {
     printf 'yes\t%s\treflog-count-decreased\tunknown\n' "$current_count"
 }
 
-# normalise_epoch_timestamp -- accepts a Unix epoch integer or an ISO-8601 UTC
-# timestamp for --worker-start/--worker-end, printing the resolved epoch.
-# ISO-8601 is matched structurally before ever reaching `date -d`, so a value
-# can never fall through to GNU date's looser relative-date grammar
-# ("yesterday", "next friday") -- only the two forms in usage() are accepted.
-normalise_epoch_timestamp() {
-    local flag=$1 value=$2 epoch
+parse_epoch_timestamp() {
+    local value=$1 epoch
     if [[ $value =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$value"
         return 0
     fi
     if [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]]; then
-        epoch=$(date -u -d "$value" +%s 2>/dev/null) ||
-            die "$flag is not a valid ISO-8601 UTC timestamp: $value"
+        epoch=$(date -u -d "$value" +%s 2>/dev/null) || return 1
         printf '%s\n' "$epoch"
         return 0
     fi
+    return 1
+}
+
+normalise_epoch_timestamp() {
+    local flag=$1 value=$2
+    parse_epoch_timestamp "$value" ||
     die "$flag must be a Unix epoch integer or an ISO-8601 UTC timestamp (e.g. 2026-08-30T05:12:34Z): $value"
 }
 
@@ -436,7 +415,7 @@ dispose_path() {
 }
 
 snapshot_cmd() {
-    local root='' output='' arg write_set branch_name branch_sha
+    local root='' output='' run_id='' arg write_set branch_name branch_sha baseline_id version=1
     local branch_reflog_count branch_reflog_usable exclude_set excluded_branch
     local -a write_sets=() worktree_excluded=()
     while (($#)); do
@@ -445,6 +424,7 @@ snapshot_cmd() {
             --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
             --root | --worktree) (($# >= 2)) || die "$arg requires a value"; root=$2; shift 2;;
             --output) (($# >= 2)) || die '--output requires a value'; output=$2; shift 2;;
+            --run-id) (($# >= 2)) || die '--run-id requires a value'; run_id=$2; shift 2;;
             --write-set) (($# >= 2)) || die '--write-set requires a value'; write_sets+=("$2"); shift 2;;
             -h|--help) usage;;
             *) die "unknown snapshot option: $arg";;
@@ -458,6 +438,13 @@ snapshot_cmd() {
         "$root/.agent"/*) ;;
         *) die "snapshot output must stay under root .agent state: $output";;
     esac
+    if [[ $DISPATCH_AUDIT == yes ]]; then
+        [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] ||
+            audit_unavailable run-identity use-nonempty-stable-run-id
+        [[ ! -e $output && ! -L $output ]] ||
+            audit_unavailable baseline-exists use-new-snapshot-path
+        version=2
+    fi
     local output_parent=${output%/*} temp status_path captured
     [[ -d $output_parent ]] || die "snapshot parent is not a directory: $output_parent"
     temp=$(mktemp "$output.tmp.XXXXXXXXXX") || die "could not create snapshot temporary file"
@@ -466,7 +453,9 @@ snapshot_cmd() {
     mapfile -t worktree_excluded < <(list_worktree_branches "$root")
     exclude_set=$(branch_name_set "${worktree_excluded[@]}")
     {
-        printf 'version=1\nroot=%s\ncaptured-at=%s\n' "$root" "$captured"
+        printf 'version=%s\nroot=%s\n' "$version" "$root"
+        [[ $DISPATCH_AUDIT == yes ]] && printf 'run-id=%s\n' "$run_id"
+        printf 'captured-at=%s\n' "$captured"
         for write_set in "${write_sets[@]}"; do
             printf 'write-set=%s\n' "$write_set"
         done
@@ -485,17 +474,31 @@ snapshot_cmd() {
         printf 'path\tstatus\tmtime\tsha256\n'
         status_file "$root" "$status_path"
     } >"$temp"
+    if [[ $DISPATCH_AUDIT == yes ]]; then
+        baseline_id=$(sha256sum -- "$temp" | awk '{print $1}')
+        printf 'baseline-id=%s\n' "$baseline_id" >>"$temp"
+    fi
     chmod 600 -- "$temp" || die "could not secure snapshot"
-    mv -f -- "$temp" "$output" || die "could not publish snapshot: $output"
+    if [[ $DISPATCH_AUDIT == yes ]]; then
+        ln -- "$temp" "$output" 2>/dev/null || {
+            rm -f -- "$temp" "$status_path"
+            audit_unavailable baseline-exists use-new-snapshot-path
+        }
+        rm -f -- "$temp"
+    else
+        mv -f -- "$temp" "$output" || die "could not publish snapshot: $output"
+    fi
     rm -f -- "$status_path"
-    printf 'snapshot=%s root=%s captured-at=%s\n' "$output" "$root" "$captured"
+    printf 'snapshot=%s root=%s captured-at=%s' "$output" "$root" "$captured"
+    [[ $DISPATCH_AUDIT == yes ]] && printf ' run-id=%s baseline-id=%s' "$run_id" "$baseline_id"
+    printf '\n'
 }
 
 collect_cmd() {
-    local root='' snapshot='' worker='' issue='' worker_start='' worker_end='' dispose=no
+    local root='' snapshot='' worker='' issue='' run_id='' expected_baseline_id='' worker_start='' worker_end='' dispose=no
     local arg write_set path status mtime hash issue_attr attribute branch_match disposition
     local baseline_value baseline_hash baseline_changed root_file worker_file
-    local current_status current_raw captured now
+    local current_status current_raw captured now baseline_id recorded_run
     local baseline_head_ref baseline_head_sha baseline_head_reflog_count baseline_head_reflog_usable
     local current_head_ref current_head_sha current_head_reflog_usable
     local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
@@ -512,6 +515,8 @@ collect_cmd() {
             --snapshot) (($# >= 2)) || die '--snapshot requires a value'; snapshot=$2; shift 2;;
             --worker-worktree | --worktree) (($# >= 2)) || die "$arg requires a value"; worker=$2; shift 2;;
             --issue|--worker-id) (($# >= 2)) || die "$arg requires a value"; issue=${2#\#}; shift 2;;
+            --run-id) (($# >= 2)) || die '--run-id requires a value'; run_id=$2; shift 2;;
+            --baseline-id) (($# >= 2)) || die '--baseline-id requires a value'; expected_baseline_id=$2; shift 2;;
             --worker-start) (($# >= 2)) || die '--worker-start requires a value'; worker_start=$2; shift 2;;
             --worker-end) (($# >= 2)) || die '--worker-end requires a value'; worker_end=$2; shift 2;;
             --write-set) (($# >= 2)) || die '--write-set requires a value'; write_sets+=("$2"); shift 2;;
@@ -521,21 +526,51 @@ collect_cmd() {
         esac
     done
     [[ -n $root && -n $snapshot && -n $worker && -n $issue ]] || usage
-    [[ -r $snapshot && -f $snapshot && ! -L $snapshot ]] || die "snapshot is unreadable: $snapshot"
+    if [[ $DISPATCH_AUDIT == yes ]]; then
+        [[ -r $snapshot && -f $snapshot && ! -L $snapshot ]] ||
+            audit_unavailable baseline-readable create-new-run-snapshot
+        [[ $(snapshot_value "$snapshot" version) == 2 ]] ||
+            audit_unavailable baseline-version create-new-run-snapshot
+        recorded_run=$(snapshot_value "$snapshot" run-id)
+        [[ -n $run_id && $run_id == "$recorded_run" ]] ||
+            audit_unavailable run-identity reuse-original-run-id
+        baseline_id=$(snapshot_value "$snapshot" baseline-id)
+        [[ $expected_baseline_id =~ ^[0-9a-f]{64}$ && $baseline_id == "$expected_baseline_id" &&
+            $baseline_id == "$(snapshot_digest "$snapshot")" ]] ||
+            audit_unavailable baseline-identity reuse-original-baseline-id
+        [[ -n $worker_start ]] ||
+            audit_unavailable worker-start-required record-dispatch-start
+    else
+        [[ -r $snapshot && -f $snapshot && ! -L $snapshot ]] || die "snapshot is unreadable: $snapshot"
+    fi
     root=$(require_root "$root")
-    [[ $(sed -n 's/^root=//p' "$snapshot" | head -n 1) == "$root" ]] ||
+    if [[ $(snapshot_value "$snapshot" root) != "$root" ]]; then
+        [[ $DISPATCH_AUDIT == yes ]] && audit_unavailable baseline-root create-new-run-snapshot
         die 'snapshot root does not match the Collect root'
+    fi
     worker=$(canonical_dir "$worker") || die "cannot resolve worker worktree: $worker"
     require_matching_worktree "$root" "$worker"
     [[ ${#write_sets[@]} -gt 0 ]] || mapfile -t write_sets < <(snapshot_write_sets "$snapshot")
     ((${#write_sets[@]} > 0)) || die 'Collect requires at least one write set'
     captured=$(snapshot_at "$snapshot")
-    [[ $captured =~ ^[0-9]+$ ]] || die 'snapshot captured-at is invalid'
     now=$(date +%s)
-    [[ -n $worker_start ]] || worker_start=$captured
     [[ -n $worker_end ]] || worker_end=$now
-    worker_start=$(normalise_epoch_timestamp --worker-start "$worker_start")
-    worker_end=$(normalise_epoch_timestamp --worker-end "$worker_end")
+    if [[ $DISPATCH_AUDIT == yes ]]; then
+        [[ $captured =~ ^[0-9]+$ ]] || audit_unavailable captured-at-valid create-new-run-snapshot
+        worker_start=$(parse_epoch_timestamp "$worker_start") ||
+            audit_unavailable worker-start-valid record-valid-dispatch-start
+        worker_end=$(parse_epoch_timestamp "$worker_end") ||
+            audit_unavailable worker-end-valid record-valid-worker-end
+        ((captured <= worker_start)) ||
+            audit_unavailable capture-before-dispatch create-new-run-snapshot
+        ((worker_start <= worker_end)) ||
+            audit_unavailable ordered-worker-interval record-worker-end-after-start
+    else
+        [[ $captured =~ ^[0-9]+$ ]] || die 'snapshot captured-at is invalid'
+        [[ -n $worker_start ]] || worker_start=$captured
+        worker_start=$(normalise_epoch_timestamp --worker-start "$worker_start")
+        worker_end=$(normalise_epoch_timestamp --worker-end "$worker_end")
+    fi
 
     while IFS=$'\t' read -r path status mtime hash; do
         [[ $path == path || -z $path ]] && continue
@@ -610,9 +645,6 @@ collect_cmd() {
     done <"$current_status"
     rm -f -- "$current_status"
 
-    # --- ref incidents: HEAD's ref/sha and every baseline-tracked branch. `reset
-    # --soft`/`checkout`/`branch -f` move refs without writing a file and can
-    # land back at the same sha -- so each ref is also checked for reflog growth.
     baseline_head_ref=$(snapshot_head_ref "$snapshot")
     baseline_head_sha=$(snapshot_head_sha "$snapshot")
     baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
@@ -625,10 +657,6 @@ collect_cmd() {
         reflog_activity "$root" HEAD "$baseline_head_reflog_count" "$worker_start" "$worker_end"
     )
 
-    # A ref this fence cannot observe cannot be certified clean: an unusable
-    # reflog (core.logAllRefUpdates=false, or a ref Git never logs) is always
-    # a named incident -- "cross-write=none" must mean "checked", never
-    # "couldn't tell".
     if [[ $baseline_head_reflog_usable != yes || $current_head_reflog_usable != yes ]]; then
         incidents=$((incidents + 1))
         printf 'cross-ref=type=head-reflog-unavailable name=HEAD baseline=%s current=%s restored=unknown window=unknown reflog=unavailable\n' \
@@ -649,10 +677,6 @@ collect_cmd() {
             "$baseline_head_sha" "$current_head_sha" "$ref_window" "$ref_summary"
     fi
 
-    # A branch checked out by another worktree is out of scope for the ROOT ref
-    # fence (see list_worktree_branches). Ownership can change between snapshot
-    # and collect, so a branch excluded at EITHER end is excluded at BOTH --
-    # union, not intersection -- or a worktree lifecycle event reads as a fake incident.
     mapfile -t baseline_excluded < <(snapshot_excluded_branches "$snapshot")
     mapfile -t current_excluded < <(list_worktree_branches "$root")
     for excluded_branch in "${baseline_excluded[@]}" "${current_excluded[@]}"; do
@@ -673,9 +697,6 @@ collect_cmd() {
         current_branches["$branch_name"]=$branch_sha
     done < <(capture_branch_shas "$root" "$exclude_set")
 
-    # Compare the UNION of baseline and current branch names: a branch created
-    # in root never appears in baseline, and one deleted never appears in
-    # current -- either way it's a real ref mutation, never clean.
     mapfile -t sorted_branch_names < <(
         printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | sort -u
     )
@@ -727,7 +748,11 @@ collect_cmd() {
     done
 
     if ((incidents == 0)); then
-        printf 'cross-write=none root=%s\n' "$root"
+        if [[ $DISPATCH_AUDIT == yes ]]; then
+            printf 'cross-write=none root=%s run-id=%s baseline-id=%s\n' "$root" "$run_id" "$baseline_id"
+        else
+            printf 'current-state=none root=%s\n' "$root"
+        fi
         return 0
     fi
     return 10
@@ -752,12 +777,9 @@ dispose_cmd() {
     dispose_path "$root" "$worker" "$path" "$expected_hash"
 }
 
-# The dispatch skill's fence takes one snapshot before dispatch and one
-# collect per worker completion (issue #698's fold): rather than name both
-# subcommands in the recipe, this routes on the one flag that only a collect
-# call ever carries.
 dispatch_fence_cmd() {
     local arg
+    DISPATCH_AUDIT=yes
     for arg in "$@"; do
         [[ $arg == --worker-worktree ]] && { collect_cmd "$@"; return; }
     done

@@ -1776,16 +1776,19 @@ assert_contains "$snapshot_out" 'snapshot=' \
 fence_snapshot="$cross_root/.agent/cross-write-fence.snapshot"
 fence_snapshot_out=$(
     "$cross_write" dispatch-fence --root "$cross_root" --output "$fence_snapshot" \
-        --write-set 'src/**'
+        --run-id run-698 --write-set 'src/**'
 )
 assert_contains "$fence_snapshot_out" 'snapshot=' \
     'dispatch-fence with no --worker-worktree snapshots like the snapshot subcommand'
+fence_baseline_id=${fence_snapshot_out##*baseline-id=}
 printf 'fence worker bytes\n' > "$cross_worker/src/fence.txt"
 printf 'fence worker bytes\n' > "$cross_root/src/fence.txt"
+fence_start=$(date +%s)
 fence_collect_out=$(
     "$cross_write" dispatch-fence --root "$cross_root" --snapshot "$fence_snapshot" \
-        --worker-worktree "$cross_worker" --issue 698 \
-        --worker-start 1 --worker-end 2147483647 --write-set 'src/**' || true
+        --worker-worktree "$cross_worker" --issue 698 --run-id run-698 \
+        --baseline-id "$fence_baseline_id" \
+        --worker-start "$fence_start" --worker-end 2147483647 --write-set 'src/**' || true
 )
 assert_contains "$fence_collect_out" 'src/fence.txt' \
     'dispatch-fence with --worker-worktree collects like the collect subcommand'
