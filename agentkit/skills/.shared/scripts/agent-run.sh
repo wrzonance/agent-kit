@@ -1757,7 +1757,7 @@ if ((verification_key)); then
     exit 0
 fi
 
-# Configure Compose isolation before delegation or execution.
+# Isolate Compose.
 configure_compose_project
 
 tree_hash=''

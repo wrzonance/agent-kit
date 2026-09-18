@@ -132,12 +132,13 @@ def verification_capability(root, name):
     argv=[str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,'--verification-key']
     try: p=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
     except (OSError,subprocess.TimeoutExpired) as e: raise Unknown(f'verification capability query unavailable: {name}') from e
-    detail=(p.stdout+p.stderr).decode(errors='replace').strip()
-    if p.returncode and 'verification capability unavailable:' in detail:
-        raise Unknown(f'verification capability unavailable: {detail or name}')
-    if p.returncode or not re.fullmatch('[0-9a-f]{64}',detail):
+    fingerprint=p.stdout.decode(errors='replace').strip()
+    error=p.stderr.decode(errors='replace').strip()
+    if p.returncode and 'verification capability unavailable:' in error:
+        raise Unknown(f'verification capability unavailable: {error or name}')
+    if p.returncode or not re.fullmatch('[0-9a-f]{64}',fingerprint):
         raise Unknown(f'verification capability query failed: {name} (exit {p.returncode})')
-    return detail
+    return fingerprint
 
 def matches(path, glob):
     # * never crosses a slash; **/ also matches zero directory components.
@@ -145,7 +146,7 @@ def matches(path, glob):
     return re.fullmatch(regex,path) is not None
 
 def verify(root, r, git, a):
-    """Current local full-checkout evidence; unsupported handles stay unknown."""
+    """Validate current full-checkout evidence."""
     observed=[]; fingerprints={}
     for v in r['verification']:
         if v['status']=='fail': raise Rejected(f"verification failed: {v['command']}")
@@ -157,7 +158,7 @@ def verify(root, r, git, a):
     cache=read(root/'.agent/verification-cache').decode()
     for v in r['verification']:
         name=v['command']
-        # The read-only producer owns the tested-state identity.
+        # Match the tested state.
         fingerprint=fingerprints[name]
         if not re.fullmatch('[0-9a-f]{64}',fingerprint):
             raise Unknown(f'invalid current verification fingerprint: {name}')

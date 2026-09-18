@@ -498,7 +498,8 @@ if ((runbook_test_runnable == 0)); then
     fi
 fi
 if [[ $template_kind == issue-lead && -n $verify_command_name ]] &&
-    ! capability=$("$agent_run" --dir "$worktree" --cmd "$verify_command_name" --verification-key 2>&1); then
+    ! capability=$("$agent_run" --dir "$worktree" --cmd "$verify_command_name" --verification-key 2>&1) &&
+    [[ $capability == *'verification capability unavailable: '* ]]; then
     capability=${capability#*verification capability unavailable: }
     verification_capability_diagnostic=${capability%%$'\n'*}
 fi
