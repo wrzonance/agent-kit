@@ -192,6 +192,82 @@ six_step_loop_text=$(<"$shared_six_step_loop")
 verification_isolation_text=$(<"$verification_isolation")
 reference_manifest_text=$(<"$reference_manifest")
 worker_gate_text=$(<"$worker_gate")
+repair_recipe="$tmp/repair-recipe.sh"
+awk '
+    /^### Compose review repairs$/ { section=1; next }
+    section && /^```bash$/ { capture=1; next }
+    capture && /^```$/ { exit }
+    capture { print }
+' "$worker_gate" >"$repair_recipe"
+[[ -s $repair_recipe ]] || {
+    printf 'could not extract review repair recipe from %s\n' "$worker_gate" >&2
+    exit 1
+}
+repair_agentkit="$tmp/repair-agentkit"
+repair_root="$tmp/repair-root"
+mkdir -p "$repair_agentkit/.shared/scripts" "$repair_agentkit/parallel-issues/scripts" "$repair_root/.agent"
+cat >"$repair_agentkit/parallel-issues/scripts/cross-write-check.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$REPAIR_CROSS_CALLS"
+[[ $1 == snapshot ]] || exit 2
+for ((i=1; i<=$#; i++)); do
+    [[ ${!i} == --output ]] || continue
+    j=$((i + 1))
+    output=${!j}
+    break
+done
+[[ ${SNAPSHOT_FAIL:-no} != yes ]] || exit 1
+printf '%s\n' original >"$output"
+EOF
+cat >"$repair_agentkit/parallel-issues/scripts/compose-worker-prompt.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$REPAIR_COMPOSE_CALLS"
+for ((i=1; i<=$#; i++)); do
+    [[ ${!i} == --output ]] || continue
+    j=$((i + 1))
+    output=${!j}
+    break
+done
+printf '%s\n' '--cmd test' >"$output"
+[[ ${COMPOSE_FAIL:-no} != yes ]] || exit 1
+EOF
+chmod +x "$repair_agentkit/parallel-issues/scripts/"*.sh
+repair_cross_calls="$tmp/repair-cross-calls"
+repair_compose_calls="$tmp/repair-compose-calls"
+repair_run() {
+    local run_dir=${repair_run_dir:-"$repair_root/.agent"}
+    agentkit="$repair_agentkit" agentkit_provenance=ok RUN_DIR="$run_dir" REPO_ROOT="$repair_root" \
+        PR=42 repair_worktree="$repair_root" repair_branch=feat/repair repair_scope='src/**' \
+        accepted_findings="$tmp/accepted-findings.ndjson" repair_prompt="$tmp/repair-prompt" \
+        worker_model=gpt-5.6-luna worker_effort=high REPAIR_CROSS_CALLS="$repair_cross_calls" \
+        REPAIR_COMPOSE_CALLS="$repair_compose_calls" bash "$repair_recipe"
+}
+repair_run
+repair_snapshot="$repair_root/.agent/repair-42-pre-dispatch.snapshot"
+repair_snapshot_bytes=$(<"$repair_snapshot")
+repair_run
+assert_eq 1 "$(wc -l <"$repair_cross_calls")" \
+    'review repair resume preserves the original root snapshot'
+assert_eq "$repair_snapshot_bytes" "$(<"$repair_snapshot")" \
+    'review repair resume never overwrites the root snapshot bytes'
+assert_eq 2 "$(wc -l <"$repair_compose_calls")" \
+    'review repair resume composes a fresh leaf prompt'
+snapshot_failure_root="$tmp/snapshot-failure-root"
+mkdir -p "$snapshot_failure_root/.agent"
+snapshot_failure_rc=0
+# This invocation intentionally exercises no-argument failure handling.
+# shellcheck disable=SC2119
+repair_run_dir="$snapshot_failure_root/.agent" SNAPSHOT_FAIL=yes repair_run || snapshot_failure_rc=$?
+assert_eq nonzero "$([[ $snapshot_failure_rc != 0 ]] && printf nonzero || printf zero)" \
+    'review repair recipe stops when snapshot creation fails'
+assert_eq 2 "$(wc -l <"$repair_compose_calls")" \
+    'snapshot failure does not compose a leaf prompt'
+compose_failure_rc=0
+# This invocation intentionally exercises no-argument failure handling.
+# shellcheck disable=SC2119
+COMPOSE_FAIL=yes repair_run || compose_failure_rc=$?
+assert_eq nonzero "$([[ $compose_failure_rc != 0 ]] && printf nonzero || printf zero)" \
+    'review repair recipe stops when prompt composition fails'
 root_review_section=$(awk '
     $0 == "### Root review and draft PR after a worker push" { capture=1; next }
     capture && $0 == "### Polling discipline (applies to every wait in this skill)" { exit }

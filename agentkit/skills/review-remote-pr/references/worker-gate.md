@@ -27,14 +27,18 @@ baseline or discover `cross-write-check.sh`. Initial dispatches, follow-ups, and
 : "${repair_scope:?set accepted findings scoped write set}" "${accepted_findings:?set findings ledger}"
 : "${repair_prompt:?set root-owned prompt output path}"
 repair_snapshot="$RUN_DIR/repair-$PR-pre-dispatch.snapshot"
-"$agentkit/parallel-issues/scripts/cross-write-check.sh" snapshot \
-    --worktree "$REPO_ROOT" --output "$repair_snapshot" --write-set "$repair_scope"
+if [[ -e $repair_snapshot || -L $repair_snapshot ]]; then
+    [[ -f $repair_snapshot && ! -L $repair_snapshot ]] || exit 1
+else
+    "$agentkit/parallel-issues/scripts/cross-write-check.sh" snapshot \
+        --worktree "$REPO_ROOT" --output "$repair_snapshot" --write-set "$repair_scope" || exit 1
+fi
 repair_started_at=$(date -u +%FT%TZ)
 : "$repair_started_at"
 "$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" --template pr-fix-batch \
     --worktree "$repair_worktree" --issue "$PR" --branch "$repair_branch" \
     --worker-model "$worker_model" --worker-effort "$worker_effort" \
-    --write-set "$repair_scope" --findings-file "$accepted_findings" --output "$repair_prompt"
+    --write-set "$repair_scope" --findings-file "$accepted_findings" --output "$repair_prompt" || exit 1
 grep -Fq -- '--cmd test' "$repair_prompt" || exit 1
 # Spawn with $repair_prompt; root records its end, then Collects with this snapshot, interval, and scope.
 ```

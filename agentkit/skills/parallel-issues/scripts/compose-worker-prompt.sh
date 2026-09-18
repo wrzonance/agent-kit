@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compose a worker prompt from repository-controlled facts and persisted issue artifacts.
+# Compose worker prompts from persisted trusted facts.
 set -euo pipefail
 umask 077
 
