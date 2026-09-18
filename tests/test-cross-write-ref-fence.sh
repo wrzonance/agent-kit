@@ -379,8 +379,8 @@ assert_contains "$bad_error" 'ISO-8601' \
 assert_contains "$bad_error" 'epoch' \
     'the rejection also names the epoch-integer form'
 
-# Keep the helper within lint-helper-size.sh's 800-line production budget.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 800 ]] && printf yes || printf no)" \
-    'cross-write-check.sh stays at or under 800 lines'
+# Preserve the helper-size ratchet established by the prior cleanup wave.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 777 ]] && printf yes || printf no)" \
+    'cross-write-check.sh stays at or under 777 lines'
 
 finish

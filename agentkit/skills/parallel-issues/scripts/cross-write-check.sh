@@ -158,11 +158,6 @@ status_file() {
     done <"$output"
 }
 
-snapshot_at() {
-    local snapshot=$1
-    sed -n 's/^captured-at=//p' "$snapshot" | head -n 1
-}
-
 snapshot_value() {
     sed -n "s/^$2=//p" "$1" | head -n 1
 }
@@ -235,26 +230,6 @@ branch_name_set() {
         out+="$name"$'\n'
     done
     printf '%s' "$out"
-}
-
-snapshot_head_ref() {
-    local snapshot=$1
-    sed -n 's/^head-ref=//p' "$snapshot" | head -n 1
-}
-
-snapshot_head_sha() {
-    local snapshot=$1
-    sed -n 's/^head-sha=//p' "$snapshot" | head -n 1
-}
-
-snapshot_head_reflog_count() {
-    local snapshot=$1
-    sed -n 's/^head-reflog-count=//p' "$snapshot" | head -n 1
-}
-
-snapshot_head_reflog_usable() {
-    local snapshot=$1
-    sed -n 's/^head-reflog-usable=//p' "$snapshot" | head -n 1
 }
 
 snapshot_branch_shas() {
@@ -552,7 +527,7 @@ collect_cmd() {
     require_matching_worktree "$root" "$worker"
     [[ ${#write_sets[@]} -gt 0 ]] || mapfile -t write_sets < <(snapshot_write_sets "$snapshot")
     ((${#write_sets[@]} > 0)) || die 'Collect requires at least one write set'
-    captured=$(snapshot_at "$snapshot")
+    captured=$(snapshot_value "$snapshot" captured-at)
     now=$(date +%s)
     [[ -n $worker_end ]] || worker_end=$now
     if [[ $DISPATCH_AUDIT == yes ]]; then
@@ -645,11 +620,11 @@ collect_cmd() {
     done <"$current_status"
     rm -f -- "$current_status"
 
-    baseline_head_ref=$(snapshot_head_ref "$snapshot")
-    baseline_head_sha=$(snapshot_head_sha "$snapshot")
-    baseline_head_reflog_count=$(snapshot_head_reflog_count "$snapshot")
+    baseline_head_ref=$(snapshot_value "$snapshot" head-ref)
+    baseline_head_sha=$(snapshot_value "$snapshot" head-sha)
+    baseline_head_reflog_count=$(snapshot_value "$snapshot" head-reflog-count)
     [[ -n $baseline_head_reflog_count ]] || baseline_head_reflog_count=0
-    baseline_head_reflog_usable=$(snapshot_head_reflog_usable "$snapshot")
+    baseline_head_reflog_usable=$(snapshot_value "$snapshot" head-reflog-usable)
     current_head_ref=$(capture_head_ref "$root")
     current_head_sha=$(capture_head_sha "$root")
     current_head_reflog_usable=$(capture_ref_reflog_usable "$root" HEAD)

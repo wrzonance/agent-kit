@@ -1735,6 +1735,17 @@ assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
 assert_contains "$text" 'cross-write-check.sh' \
     'dispatch names the deterministic cross-write checker'
+cross_write_recipe="$tmp/cross-write-recipe.sh"
+awk '
+    /^### Root-checkout cross-write fence$/ { section=1; next }
+    section && /^```bash$/ { capture=1; next }
+    capture && /^```$/ { exit }
+    capture { print }
+' "$skill" >"$cross_write_recipe"
+assert_contains "$(<"$cross_write_recipe")" '--run-id "$RUN_ID"' \
+    'the canonical fence recipe binds snapshot and Collect to the run identity'
+assert_contains "$(<"$cross_write_recipe")" '--baseline-id "$cross_baseline_id"' \
+    'the canonical fence recipe reuses the recorded baseline identity'
 assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
@@ -1761,6 +1772,34 @@ git -C "$cross_root" -c user.name=t -c user.email=t@example.invalid \
     commit -qm base
 git -C "$cross_root" worktree add -q -b feat/worker "$cross_worker"
 printf 'worker bytes\n' > "$cross_worker/src/data.txt"
+
+recipe_root="$tmp/cross-recipe-root"
+recipe_worker="$tmp/cross-recipe-worker"
+mkdir -p "$recipe_root/.agent" "$recipe_root/src"
+git -C "$recipe_root" init -q -b main
+printf 'base\n' >"$recipe_root/src/data.txt"
+git -C "$recipe_root" add src/data.txt
+git -C "$recipe_root" -c user.name=t -c user.email=t@example.invalid commit -qm base
+git -C "$recipe_root" worktree add -q -b feat/recipe "$recipe_worker"
+recipe_out=''
+recipe_rc=0
+recipe_start=$(($(date +%s) + 5))
+recipe_out=$(
+    agentkit="$root/agentkit/skills" repository_root="$recipe_root" \
+        RUN_ID=recipe-830 worktree="$recipe_worker" issue_number=830 \
+        worker_started_at="$recipe_start" worker_finished_at=2147483647 \
+        bash -c 'all_dispatched_write_sets=("src/**"); worker_write_sets=("src/**"); source "$1"' \
+        _ "$cross_write_recipe"
+) || recipe_rc=$?
+assert_eq 0 "$recipe_rc" 'the canonical cross-write recipe completes against real worktrees'
+assert_contains "$recipe_out" 'cross-write=none' \
+    'the canonical recipe produces valid clean dispatch evidence'
+recipe_baseline_id=$(
+    "$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-830 \
+        --repo-root "$recipe_root" --path cross_write.baseline_id
+)
+assert_eq yes "$([[ $recipe_baseline_id =~ ^[0-9a-f]{64}$ ]] && printf yes || printf no)" \
+    'the canonical recipe durably records the original baseline identity'
 
 snapshot="$cross_root/.agent/cross-write.snapshot"
 snapshot_out=$(

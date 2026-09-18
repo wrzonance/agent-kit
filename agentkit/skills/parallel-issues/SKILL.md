@@ -404,26 +404,25 @@ and regenerates without touching implementation files.
 
 ### Root-checkout cross-write fence
 
-The root checkout gets one dirt snapshot immediately before dispatch, then one Collect check after
-each completion and at handoff — `dispatch-fence` below is the single entry point for both: no
-`--worker-worktree` snapshots, `--worker-worktree` given collects. The snapshot is the
-baseline for every Collect check; it is not a worker worktree artifact and it is never replaced
-after a worker starts. Pass every selected issue's `predictedWriteSet` as a separate `--write-set`
-argument, preserving globs byte-for-byte; `worker_started_at`/`worker_finished_at` are
-`$(date -u +%s)` (ISO-8601 UTC also accepted):
+Snapshot root once before dispatch; Collect after completions and at handoff. `dispatch-fence` routes to Collect with `--worker-worktree`. Reuse its snapshot and identities; never replace them. Pass every `predictedWriteSet` glob unchanged. Timestamps use epoch seconds or ISO-8601 UTC:
 
 ```bash
 cross_write="$agentkit/parallel-issues/scripts/cross-write-check.sh"
+run_state="$agentkit/.shared/scripts/run-state.sh"
 cross_snapshot="$repository_root/.agent/cross-write-dispatch.snapshot"
-snapshot_args=(--root "$repository_root" --output "$cross_snapshot")
+snapshot_args=(--root "$repository_root" --output "$cross_snapshot" --run-id "$RUN_ID")
 for write_set in "${all_dispatched_write_sets[@]}"; do
     snapshot_args+=(--write-set "$write_set")
 done
-"$cross_write" dispatch-fence "${snapshot_args[@]}"
-
+cross_snapshot_out=$("$cross_write" dispatch-fence "${snapshot_args[@]}") || exit 1
+printf '%s\n' "$cross_snapshot_out"
+cross_baseline_id=${cross_snapshot_out##*baseline-id=}
+"$run_state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id"
 collect_rc=0
+cross_baseline_id=$("$run_state" get --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id) || exit 1
 collect_args=(--root "$repository_root" --snapshot "$cross_snapshot" \
     --worker-worktree "$worktree" --issue "$issue_number" \
+    --run-id "$RUN_ID" --baseline-id "$cross_baseline_id" \
     --worker-start "$worker_started_at" --worker-end "$worker_finished_at" \
     --dispose-duplicates)
 for write_set in "${worker_write_sets[@]}"; do
@@ -431,17 +430,13 @@ for write_set in "${worker_write_sets[@]}"; do
 done
 "$cross_write" dispatch-fence "${collect_args[@]}" || collect_rc=$?
 case "$collect_rc" in
-    0) : ;; # cross-write=none
-    10) : ;; # named incident output is the evidence; handle divergent paths explicitly
+    0) : ;; # clean
+    10) : ;; # handle named incidents
     *) exit 1 ;;
 esac
 ```
 
-Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and
-`--dispose-duplicates` handles only exact in-window duplicates. Never fold dirt first observed
-inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs
-explicit disposition. Divergence blocks clean handoff pending root disposition; root dirt is never
-the human's.
+Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-window copies. Never fold dirt first observed inside a dispatch window into unrelated changes; divergent or outside-window dirt blocks clean handoff pending disposition.
 
 ### Compose the issue-lead prompt
 
