@@ -45,6 +45,9 @@ assert_exec() {
     fi
 }
 assert_exec "$create_sh" 'create-issue-worktree.sh is executable'
+assert_contains "$(<"$create_sh")" \
+    'preflight_args=(--worktree "$worktree" --inherit-session "$root_contract")' \
+    'preflight argv starts nonempty before optional activation arguments'
 
 # Fetch must complete before resumability is calculated, so a newly discovered
 # remote branch cannot contradict the summary printed to the caller.
@@ -106,15 +109,15 @@ assert_eq no "$(git -C "$refusal_repo" show-ref --verify --quiet refs/remotes/or
 assert_eq no "$(test -e "$refusal_repo/.fleet/feat/issue-39" && printf yes || printf no)" \
     'activation refusal creates no target worktree'
 
-# Bash 4.3 treats an empty array expansion as unset under nounset. The public
-# no-session path must use a nonempty argv and remain compatible.
+# Exercise the public no-session path on the current shell. The structural
+# assertion above pins the nonempty argv required by older Bash nounset.
 compat_repo="$tmp/compat-repo"
 mkdir -p "$compat_repo"
 make_repo "$compat_repo" >/dev/null
 compat_rc=0
-BASH_COMPAT=43 "$create_sh" --repo-root "$compat_repo" --issue 40 --base main \
+"$create_sh" --repo-root "$compat_repo" --issue 40 --base main \
     >/dev/null 2>&1 || compat_rc=$?
-assert_eq 0 "$compat_rc" 'no-session preparation works with Bash 4.3 nounset semantics'
+assert_eq 0 "$compat_rc" 'no-session preparation works on the current shell'
 
 # --- the ordinary case: root has already preflighted itself -----------------
 repo="$tmp/repo"
