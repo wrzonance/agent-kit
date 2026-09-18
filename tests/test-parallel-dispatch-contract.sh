@@ -1452,6 +1452,8 @@ assert_contains "$worker_prompts_text" '### Diff-size disclosure' \
     'worker-prompts.md carries the diff-size disclosure subsection'
 assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"' \
     'the disclosure recipe runs diff-facts.sh against the worktree'
+assert_contains "$worker_prompts_text" "'Diff-size disclosure:' >> \"\$pr_decisions_file\"" \
+    'the disclosure recipe labels machine-readable facts as Decisions prose'
 assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
     'the disclosure recipe pins the chain base for a chained issue'
 assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \

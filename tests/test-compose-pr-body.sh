@@ -166,11 +166,12 @@ for prose_section in why what decisions; do
         "the $prose_section metrics refusal explains the corrective action"
 done
 
-labelled_assignments="$tmp/labelled-assignments.md"
-printf '%s\n' 'Captured receipt:' 'base=origin/main' 'files=3' >"$labelled_assignments"
-assert_rc 0 'composer accepts assignment-shaped details surrounded by prose' -- bash "$compose" \
-    --issue 137 --why-file "$labelled_assignments" --what-file "$what" \
-    --decisions-file "$decisions" --testing-file "$testing" \
+labelled_diff_disclosure="$tmp/labelled-diff-disclosure.md"
+printf '%s\n' 'A root-approved decision.' '' 'Diff-size disclosure:' \
+    'base=origin/main' 'files=3' >"$labelled_diff_disclosure"
+assert_rc 0 'composer accepts the canonical labelled diff-size disclosure' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$labelled_diff_disclosure" --testing-file "$testing" \
     --agent 'Codex gpt-5.6-luna' --output "$output"
 
 # --- plain "- item" Testing bullets normalize to unchecked checkboxes ------
