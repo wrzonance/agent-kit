@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compose the canonical, file-backed PR body used by parallel-issues publication.
+# PR body composer.
 set -euo pipefail
 
 readonly PROGNAME=${0##*/}
@@ -96,23 +96,34 @@ validate_prose_section() {
         die "$label contains an unlabelled key=value block beginning '$first_assignment' in $path; replace the key=value block with prose or add a prose label"
 }
 
-readonly TESTING_CHECKBOX_RE='^-[[:space:]]\[[xX[:space:]]\][[:space:]].+'
+readonly TESTING_CHECKBOX_RE='^-[[:space:]]\[([xX[:space:]])\][[:space:]](.+)'
 readonly TESTING_BULLET_RE='^-[[:space:]]+(.+)$'
-# Only a one-character bracket is a malformed checkbox attempt; markdown links
-# remain plain bullets (#554 F3).
 readonly TESTING_MALFORMED_CHECKBOX_RE='^-[[:space:]]+\[[^]xX[:space:]]\]([[:space:]]|$)'
 
-# Normalize plain bullets to unchecked boxes; preserve boxes and blank lines.
-# Refuse every other line rather than silently dropping invalid input.
+validate_testing_action() {
+    local label=$1 lower
+    lower=$(printf '%s\n' "$2" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    if [[ $lower =~ (^|[^[:alnum:]_])(passed|was[[:space:]]+not[[:space:]]+run|remains)([^[:alnum:]_]|$) ]]; then
+        die "$label must contain completable verification actions; use ## Decisions for caveats or ## Operator action required when needed"
+    fi
+}
+
 normalize_testing_file() {
-    local label=$1 path=$2 line
+    local label=$1 path=$2 line testing_text
     while IFS= read -r line || [[ -n $line ]]; do
-        if [[ -z $line || $line =~ $TESTING_CHECKBOX_RE ]]; then
+        if [[ -z $line ]]; then
+            printf '%s\n' "$line"
+        elif [[ $line =~ $TESTING_CHECKBOX_RE ]]; then
+            testing_text=${BASH_REMATCH[2]}
+            [[ ${BASH_REMATCH[1]} == x || ${BASH_REMATCH[1]} == X ]] ||
+                validate_testing_action "$label" "$testing_text"
             printf '%s\n' "$line"
         elif [[ $line =~ $TESTING_MALFORMED_CHECKBOX_RE ]]; then
             die "$label must contain only markdown checkbox lines"
         elif [[ $line =~ $TESTING_BULLET_RE ]]; then
-            printf -- '- [ ] %s\n' "${BASH_REMATCH[1]}"
+            testing_text=${BASH_REMATCH[1]}
+            validate_testing_action "$label" "$testing_text"
+            printf -- '- [ ] %s\n' "$testing_text"
         else
             die "$label must contain only markdown checkbox lines"
         fi

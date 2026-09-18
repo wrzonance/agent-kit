@@ -23,7 +23,7 @@ expected="$tmp/expected.md"
 printf '%s\n\n' 'Motivation with `bytes` and $(literal).' >"$why"
 printf '%s\n' 'A terse outcome.' >"$what"
 printf '%s\n' 'A pivot containing & and backslashes.' >"$decisions"
-printf '%s\n' '- [ ] focused check' '- [x] full suite' >"$testing"
+printf '%s\n' '- [ ] focused check' '- [x] full suite passed' >"$testing"
 
 printf '%s\n' \
     'This was written agentically; verify its assertions:' \
@@ -43,7 +43,7 @@ printf '%s\n' \
     '## Testing' \
     '' \
     '- [ ] focused check' \
-    '- [x] full suite' \
+    '- [x] full suite passed' \
     '' \
     '🤖 Co-authored by Codex gpt-5.6-luna.' \
     '' \
@@ -176,7 +176,7 @@ assert_rc 0 'composer accepts the canonical labelled diff-size disclosure' -- ba
 
 # --- plain "- item" Testing bullets normalize to unchecked checkboxes ------
 plain_testing="$tmp/plain-testing.md"
-printf '%s\n' '- [x] already a checkbox' '- plain bullet one' '' '- plain bullet two' \
+printf '%s\n' '- [x] already a checkbox' '- Focused checks pass' '' '- Full suite passes' \
     >"$plain_testing"
 normalized_output="$tmp/normalized-body.md"
 assert_rc 0 'composer accepts plain "- item" Testing bullets' -- bash "$compose" \
@@ -186,12 +186,71 @@ assert_rc 0 'composer accepts plain "- item" Testing bullets' -- bash "$compose"
 normalized_text=$(<"$normalized_output")
 assert_contains "$normalized_text" '- [x] already a checkbox' \
     'an existing checkbox line is passed through unchanged'
-assert_contains "$normalized_text" '- [ ] plain bullet one' \
+assert_contains "$normalized_text" '- [ ] Focused checks pass' \
     'a plain bullet normalizes to an unchecked checkbox'
-assert_contains "$normalized_text" '- [ ] plain bullet two' \
+assert_contains "$normalized_text" '- [ ] Full suite passes' \
     'every plain bullet line normalizes independently'
-assert_not_contains "$normalized_text" '- plain bullet one' \
+assert_not_contains "$normalized_text" '- Focused checks pass' \
     'the normalized line replaces the original plain bullet text'
+
+# A composed action remains compatible with the only sanctioned checkbox
+# transition. The stub preserves gh-body.sh's real file mutation and exact
+# re-fetch comparison while replacing only the external GitHub process edge.
+tick_gh="$tmp/tick-gh"
+cat >"$tick_gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1-} == pr && ${2-} == edit ]]; then
+    shift 2
+    body_file=''
+    while (($#)); do
+        case $1 in
+            --body-file) body_file=$2; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    cp -- "$body_file" "$TICK_STORED_BODY"
+    exit 0
+fi
+if [[ ${1-} == api ]]; then
+    jq -Rs '{body: .}' <"$TICK_STORED_BODY"
+    exit 0
+fi
+exit 22
+EOF
+chmod +x -- "$tick_gh"
+assert_rc 0 'a composed Testing action is tickable through gh-body.sh' -- env \
+    GH_BODY_GH="$tick_gh" TICK_STORED_BODY="$tmp/tick-stored.md" \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr edit 41 \
+    --repo owner/repo --body-file "$normalized_output" --tick 'Focused checks pass'
+assert_contains "$(<"$normalized_output")" '- [x] Focused checks pass' \
+    'the sanctioned body editor ticks a composer-normalized action'
+
+# Testing records future-completable actions. Completion claims and caveats
+# belong in prose sections, because converting them into unchecked boxes makes
+# the body contradict itself or creates a checkbox this run cannot complete.
+rejected_testing_cases=(
+    'Focused Core contract tests passed.'
+    'Full verification was not run per sprint instruction.'
+    'Windows/Revit runtime verification remains required.'
+)
+for rejected_text in "${rejected_testing_cases[@]}"; do
+    rejected_testing="$tmp/rejected-testing.md"
+    printf '%s\n' "- [ ] $rejected_text" >"$rejected_testing"
+    rejected_err=$(bash "$compose" \
+        --issue 137 --why-file "$why" --what-file "$what" \
+        --decisions-file "$decisions" --testing-file "$rejected_testing" \
+        --agent 'Codex gpt-5.6-luna' --output "$output" 2>&1)
+    rejected_rc=$?
+    assert_eq '1' "$rejected_rc" \
+        "composer rejects non-completable Testing text: $rejected_text"
+    assert_contains "$rejected_err" 'completable verification actions' \
+        "the refusal states the Testing contract: $rejected_text"
+    assert_contains "$rejected_err" '## Decisions' \
+        "the refusal names the destination for caveats: $rejected_text"
+    assert_contains "$rejected_err" '## Operator action required' \
+        "the refusal names the destination for operator work: $rejected_text"
+done
 
 # A genuinely non-list line mixed in with valid bullets still fails the whole
 # composition -- normalization never silently drops or ignores an invalid line.
