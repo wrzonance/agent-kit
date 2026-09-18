@@ -24,18 +24,12 @@ ARG_WRITE_SET=0
 ARG_NO_WRITE=0
 ARG_ENSURE=0
 ARG_ACTIVATION_SESSION=""
+ARG_ACTIVATION_ORIGIN=""
 ARG_WORKFLOW=""
 ARG_MEASURED_FROM_SET=0
 ARG_INHERIT_SESSION=""
 ARG_INHERIT_SESSION_SET=0
-# Which process this run speaks for. A hook runs OUTSIDE the agent's sandbox,
-# so everything measured here about writability and sandboxing describes the
-# hook, not the shell that will run the commands -- see probe_sandbox().
-# "escalated" names a harness-escalated / approval-granted execution (issue
-# #332): a real class, but nothing in this script infers it -- there is no
-# verified signal for it (see probe_sandbox()). It exists in the vocabulary
-# for a caller that already knows its own escalation state from its own
-# harness; --measured-from is how that caller would assert it.
+# Hooks and explicitly escalated callers describe their own process; see probe_sandbox().
 ARG_MEASURED_FROM=agent-shell
 WORKTREE=""
 IN_REPO=0
@@ -99,7 +93,7 @@ Options:
   --ensure           Reuse and print a trusted existing contract; run the
                      preflight probes only when that contract is missing or
                      fails contract-read provenance checks.
-  --activation-session ID --workflow NAME
+  --activation-session ID --activation-origin PATH --workflow NAME
                      Require acknowledged workflow receipt and matching installed
                      content before any probes or cached-contract reuse. Missing
                      receipt is an error; installed bytes alone are not activation.
@@ -264,6 +258,7 @@ parse_args() {
             -h|--help)  usage; exit 0 ;;
             --worktree) need_value "$@"; ARG_WORKTREE="$2"; shift 2 ;;
             --activation-session) need_value "$@"; ARG_ACTIVATION_SESSION="$2"; shift 2 ;;
+            --activation-origin) need_value "$@"; ARG_ACTIVATION_ORIGIN="$2"; shift 2 ;;
             --workflow) need_value "$@"; ARG_WORKFLOW="$2"; shift 2 ;;
             --measured-from)
                 need_value "$@"
@@ -298,6 +293,9 @@ parse_args() {
     fi
     if [[ -n "$ARG_WORKTREE" && ! -d "$ARG_WORKTREE" ]]; then
         die "--worktree is not a directory: $ARG_WORKTREE"
+    fi
+    if [[ -n "$ARG_ACTIVATION_ORIGIN" && ! -d "$ARG_ACTIVATION_ORIGIN" ]]; then
+        die "--activation-origin is not a directory: $ARG_ACTIVATION_ORIGIN"
     fi
 }
 
@@ -1303,8 +1301,9 @@ main() {
         die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
     fi
     if [[ -n $ARG_ACTIVATION_SESSION || -n $ARG_WORKFLOW ]]; then
-        "$SCRIPT_DIR/workflow-activation.sh" check --repo-root "${ARG_WORKTREE:-$PWD}" \
-            --session "$ARG_ACTIVATION_SESSION" --skill "$ARG_WORKFLOW" >/dev/null || return 1
+        "$SCRIPT_DIR/workflow-activation.sh" check --repo-root "${ARG_ACTIVATION_ORIGIN:-${ARG_WORKTREE:-$PWD}}" \
+            --target-root "${ARG_WORKTREE:-$PWD}" --session "$ARG_ACTIVATION_SESSION" \
+            --skill "$ARG_WORKFLOW" >/dev/null || return 1
     fi
     resolve_worktree
     if declare -F preflight_required_declarations > /dev/null; then

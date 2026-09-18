@@ -15,11 +15,12 @@ REPO_ROOT=''
 ISSUE=''
 BASE=''
 CHAIN_BASE=''
+ACTIVATION_SESSION=''
 RESUME=no
 
 usage() {
     cat <<'EOF'
-Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA]
+Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA] [--activation-session ID]
        create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH --resume
 
 Create feat/issue-N below the configured AGENT_WORKTREE_ROOT (default
@@ -84,6 +85,7 @@ parse_args() {
                 CHAIN_BASE=${1#*=}
                 shift
                 ;;
+            --activation-session) worktree_setup_require_value "$1" "${2:-}" || exit 1; ACTIVATION_SESSION=$2; shift 2 ;;
             --resume)
                 RESUME=yes
                 shift
@@ -178,6 +180,7 @@ main() {
 
     local root config shared preflight worktree_root branch worktree start setup_declared
     local root_contract
+    local -a activation_args=()
     root=$(worktree_setup_resolve_repo_root "$REPO_ROOT") || exit 1
     config="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
     shared="$SCRIPT_DIR/../../.shared/scripts"
@@ -311,7 +314,8 @@ main() {
     # source for a root whose contract predates this key, or came from a
     # caller that still writes the bare name.
     root_contract=$(contract_cache_contract_file "$root")
-    "$preflight" --worktree "$worktree" --inherit-session "$root_contract" || {
+    [[ -z $ACTIVATION_SESSION ]] || activation_args=(--activation-origin "$root" --activation-session "$ACTIVATION_SESSION" --workflow parallel-issues)
+    "$preflight" --worktree "$worktree" --inherit-session "$root_contract" "${activation_args[@]}" || {
         worktree_setup_fail "preflight failed in $worktree"
         exit 1
     }

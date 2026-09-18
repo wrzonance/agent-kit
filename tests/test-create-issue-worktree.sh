@@ -24,6 +24,8 @@ stat_mode() {
 
 create_sh="$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh"
 preflight_sh="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
+activation_sh="$root/agentkit/skills/.shared/scripts/workflow-activation.sh"
+activation_hook="$root/agentkit/hooks/user-prompt-submit.sh"
 harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -73,6 +75,17 @@ make_repo() {
     printf '%s\n' "$repo"
 }
 
+activate_parallel() {
+    local repo=$1 session=$2 record nonce
+    jq -nc --arg cwd "$repo" --arg session "$session" \
+        '{cwd:$cwd,session_id:$session,hook_event_name:"UserPromptSubmit",prompt:"$agentkit:parallel-issues 827"}' |
+        "$activation_hook" >/dev/null
+    record=$(find "$repo/.agent/activation" -type f -name '*.json' -print -quit)
+    nonce=$(jq -r .nonce "$record")
+    "$activation_sh" ack --repo-root "$repo" --session "$session" \
+        --skill parallel-issues --nonce "$nonce" >/dev/null
+}
+
 # --- the ordinary case: root has already preflighted itself -----------------
 repo="$tmp/repo"
 mkdir -p "$repo"
@@ -81,8 +94,11 @@ make_repo "$repo" >/dev/null
 root_contract="$repo/.agent/env-contract.txt"
 assert_eq 'yes' "$([[ -f $root_contract ]] && printf yes || printf no)" \
     'fixture setup: the root has a real preflight contract to inherit from'
+activation_session=create-worktree-session
+activate_parallel "$repo" "$activation_session"
 
-out=$(umask 022; "$create_sh" --repo-root "$repo" --issue 41 --base main 2>&1)
+out=$(umask 022; "$create_sh" --repo-root "$repo" --issue 41 --base main \
+    --activation-session "$activation_session" 2>&1)
 rc=$?
 assert_eq '0' "$rc" 'issue setup completes'
 assert_contains "$out" 'resumable: no untracked=0 modified=0' \
@@ -96,6 +112,8 @@ assert_eq 'yes' "$([[ -d $worktree ]] && printf yes || printf no)" \
 worktree_contract="$worktree/.agent/env-contract.txt"
 assert_eq 'yes' "$([[ -f $worktree_contract ]] && printf yes || printf no)" \
     'issue setup leaves a preflight contract in the new worktree'
+assert_eq no "$(test -e "$worktree/.agent/activation" && printf yes || printf no)" \
+    'issue setup validates the origin receipt without copying it into the target'
 assert_eq 644 "$(stat_mode "$worktree/seed.txt")" \
     'issue setup preserves ambient checkout permissions'
 
@@ -110,6 +128,11 @@ for key in sandbox= tls= caches=; do
     assert_eq "$root_line" "$worktree_line" \
         "the worktree contract's $key line is byte-identical to the root's"
 done
+
+repeat_rc=0
+"$create_sh" --repo-root "$repo" --issue 41 --base main --resume \
+    --activation-session "$activation_session" >/dev/null 2>&1 || repeat_rc=$?
+assert_eq 0 "$repeat_rc" 'repeating activated preparation reuses the acknowledged origin receipt'
 
 # An existing worktree is resumable even when its branch is already upstream;
 # report its preserved implementation state before the normal refusal.
