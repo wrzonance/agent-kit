@@ -21,8 +21,8 @@ deadline below. A CI round cap bounds polling sleeps, not network-request wall t
 worker completion marker/contract or runner completion marker as terminal evidence.
 
 **A bounded wait must be silent until its terminal condition.** Emit one completion or expiry
-line: every line of background output wakes the orchestrator for a turn. Send any progress heartbeat
-to a log file, not stdout.
+line: event-forwarding tools such as Claude Monitor deliver stdout lines to the model; buffered
+shell output need not do so. Send any progress heartbeat to a log file, not stdout.
 
 For a wait to a known epoch, calculate the target and sleep once. The following copy/paste recipe is silent until its final line:
 
@@ -39,7 +39,7 @@ If a bounded loop is genuinely necessary, redirect each heartbeat with `>>"$log"
 stdout for the single completion or expiry line.
 
 - **One wait per interval.** For helper polling, the helper owns the interval. For native collection, an empty capped wait may be re-issued as specified below; short polling outside that rule is churn.
-- **Between waits, wait again; read durable state only when a wait reports an actual completion.** Empty yields do not justify repeated disk/forge inspection.
+- **After an empty yield, resume collection.** Inspect durable state for a completion or actionable blocker, not merely because time passed.
 - **Narrate only a state change or a decision.** Report completion, blockers, or review decisions; never narrate "still waiting" or "checking again".
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
@@ -67,11 +67,12 @@ hour; the durable fix is a separate machine identity (agent-kit#179), not spacin
 
 ## Default numeric bounds per wait class
 
-"An explicit bound" is a number, not an adjective; a wait without one falls back to the harness default (~110 s). The defaults:
+"An explicit bound" is a number, not an adjective. These are total observation windows, not
+per-call blocking durations; the tool schema owns call defaults and limits.
 
 | Wait class | Default bound |
 |---|---|
-| Worker implementation wait (`wait_agent` on an issue lead or fix-batch worker) | **900 s** minimum |
+| Worker implementation wait (`wait_agent` on an issue lead or fix-batch worker) | **900 s** collection window |
 | Draft-loop, review, or CI wait | **600 s** |
 | Helper-internal polling (`gh-pr-state.sh --wait-ci`, adversarial max-duration-seconds) | the helper's own `--rounds × --interval` / duration bound |
 
@@ -82,7 +83,39 @@ instead of recalling this rule — see `parallel-issues/SKILL.md`'s "Compose the
 prompt" step. Never duplicate this number as a literal in a script; change it here and the
 printed value follows.
 
-For native sub-agent collection, use the `yield-cap=` value from the environment contract: one call per cap, no narration between calls, and a finite class deadline whose expiry does not terminate a worker or authorize worktree writes.
+### Native and tool collection
+
+Use the current harness's advertised tools. `yield-cap=` is a legacy shell-yield
+hint, not a native-agent limit. Select each blocking duration from the live tool
+schema, observations of that same tool/session, the communication limit, and the
+remaining original collection window. If less than the tool minimum remains,
+expire collection without another call. An early event is not a timeout sample.
+
+| Running operation | Collection |
+|---|---|
+| Codex native child | Native `wait_agent`; current V2 uses `timeout_ms` and mailbox events. Other versions may require target IDs. |
+| Codex shell session | `write_stdin`: returned `session_id`, empty `chars`, `yield_time_ms`. |
+| Codex running exec cell | `functions.wait`: returned `cell_id`, `yield_time_ms`; only after a running-cell result. |
+| Claude background agent or shell | Completion notification, then its summary/output file if needed. Foreground calls already block where supported. |
+| Claude legacy explicit collection | Advertised `TaskOutput` only: returned `task_id`, `block: true`, `timeout` in milliseconds. Deprecated, not the default. |
+| Other harness | Advertised collector and returned handle; no borrowed API names. |
+
+For Codex, continue bounded native collection while children are outstanding;
+ending the root turn does not promise that completion mail starts a new one.
+Claude yields the turn with work recorded as pending and handles the later
+notification. Neither path declares the overall task complete before results.
+A mailbox wake can be a question, blocker, completion, or user input; act on that
+event and retain unfinished IDs. Empty capped yields resume the same operation,
+with no narration between calls except required user updates. They do not justify
+restarting helpers or inspecting disk/forge. Keep the original deadline. At its
+expiry, report outstanding IDs and the next action. Collection expiry does not terminate a worker or authorize worktree writes.
+Failure status remains failure.
+
+Sources: [OpenAI native-agent schemas](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_spec.rs),
+[OpenAI waiting guidance](https://github.com/openai/plugins/blob/main/plugins/superpowers/skills/using-superpowers/references/codex-tools%2Emd#waiting-on-children),
+[Claude foreground/background subagents](https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background),
+[Claude TaskOutput compatibility schema](https://code.claude.com/docs/en/agent-sdk/python#taskoutput), and
+[Claude Monitor behavior](https://code.claude.com/docs/en/tools-reference#monitor-tool).
 
 For implementation workers, record the last observed progress time at dispatch/completion
 and the next stall-check deadline: progress time plus `STALL_THRESHOLD_MINUTES` (default 12).

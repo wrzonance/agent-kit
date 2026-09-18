@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Legacy shell-yield hint. This record has no tool identity and must not be
+# treated as proof of a native-agent or later session-collection timeout limit.
 yield_cap_default_ms() {
     [[ ${1:-unknown} == claude ]] && printf '60000\n' || printf '30000\n'
 }

@@ -462,8 +462,6 @@ assert_contains "$wait_discipline_text" 'A `sleep N` + re-check issued as its ow
     'parallel wait rule rejects sleep and re-check tool churn'
 assert_contains "$wait_discipline_text" 'A bounded wait must be silent until its terminal condition.' \
     'parallel wait rule is silent until terminal'
-assert_contains "$wait_discipline_text" 'every line of background output wakes the orchestrator for a turn' \
-    'parallel wait rule explains why background output is forbidden'
 assert_contains "$wait_discipline_text" 'target_epoch - $(date +%s)' \
     'parallel wait rule provides a known-epoch sleep recipe'
 assert_contains "$wait_discipline_text" 'remaining=$(( target_epoch - $(date +%s) ))' \
@@ -486,8 +484,8 @@ assert_not_contains "$wait_discipline_text" 'Between waits, read durable state i
     'polling does not inspect durable state between empty waits'
 assert_not_contains "$text" 'Between waits, read durable state instead of waiting again' \
     'parallel body does not reintroduce the rejected wait phrasing'
-assert_contains "$wait_discipline_text" 'Between waits, wait again; read durable state only when a wait reports an actual completion.' \
-    'polling reads durable state only after completion'
+assert_contains "$wait_discipline_text" 'Inspect durable state for a completion or actionable blocker, not merely because time passed.' \
+    'polling reads durable state only for actionable events'
 assert_contains "$draft_loop_prompt" 'do not load `review-remote-pr/SKILL.md`' \
     'dispatch is self-contained without loading the worker skill'
 assert_not_contains "$text" 'Four total slots including the root' \
@@ -1547,9 +1545,7 @@ for bound in "${documented_bounds[@]}"; do
     assert_eq 'yes' "$( ((bound >= 600)) && printf yes || printf no )" \
         "documented wait bound $bound s is at least 600 s"
 done
-assert_contains "$normalized_wait_text" 'one call per cap' \
-    'native collection uses each full contract cap without short polling'
-assert_contains "$normalized_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
+assert_contains "$normalized_text" 'Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**' \
     'parallel skill names the numeric bound at its wait sites'
 
 # --- issue #224: stall detection as a rule (WS4) ------------------------------

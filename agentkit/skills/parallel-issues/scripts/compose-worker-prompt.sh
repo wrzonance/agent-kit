@@ -272,14 +272,15 @@ source "$harness_tools_lib"
 detected_tools_harness=$(contract_cache_harness_name 2> /dev/null || printf unknown)
 harness_tools_record_matches "$tools_line" "$detected_tools_harness" ||
     die "invalid tools= record in environment contract: $tools_line; recovery: $tools_recovery"
+harness_line=$(grep -m1 '^harness=' "$contract" 2>/dev/null || true)
+harness_name=${harness_line#* name=}
+harness_name=${harness_name%% *}
+[[ -n $harness_name ]] || harness_name=unknown
 yield_cap_line=$(grep -m1 '^yield-cap=' "$contract" 2>/dev/null || true)
 if [[ -z $yield_cap_line ]]; then
     # shellcheck disable=SC1090,SC1091
     source "$yield_cap_lib"
-    harness_line=$(grep -m1 '^harness=' "$contract" 2>/dev/null || true)
-    harness_name=${harness_line#* name=}
-    harness_name=${harness_name%% *}
-    yield_cap_line=$(yield_cap_line "${harness_name:-unknown}")
+    yield_cap_line=$(yield_cap_line "$harness_name")
 fi
 [[ $yield_cap_line =~ ^yield-cap=\ ms=[1-9][0-9]*\ source=(measured|default)\ harness=[a-z][a-z0-9_-]*$ ]] ||
     die "invalid yield-cap record in environment contract: $yield_cap_line"
@@ -287,12 +288,21 @@ yield_cap_ms=${yield_cap_line#yield-cap= ms=}
 yield_cap_ms=${yield_cap_ms%% *}
 
 emit_verify_runbook() {
+    local collection read_policy=once-at-marker
     if [[ -z $verify_command ]]; then
         printf 'verify= unavailable reason=no-scoped-command\n'
         return
     fi
-    printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
-        "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
+    case $harness_name in
+        codex) collection='shell:write_stdin,cell:functions.wait' ;;
+        claude)
+            collection=completion-notification
+            read_policy=returned-output-file
+            ;;
+        *) collection=advertised-tool ;;
+    esac
+    printf 'verify= cmd="%s" shell_yield_hint_ms=%s collect=%s limits=live-tool-and-session read=%s\n' \
+        "$verify_command" "$yield_cap_ms" "$collection" "$read_policy"
 }
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
