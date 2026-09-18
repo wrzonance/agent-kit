@@ -1065,7 +1065,7 @@ choose_log() {
     [[ -e $log ]] && log=$log_dir/$stamp-$label.$$.log
     printf '%s' "$log"
 }
-# Root supplies this final-log receipt through --log-sha256 after completion.
+# Worker-writable integrity sidecar; the trust pin comes from observed output.
 publish_log_sha256_receipt() {
     local digest receipt=$log_file.sha256 temp
     [[ ! -e $receipt && ! -L $receipt ]] || return 1
@@ -1679,7 +1679,7 @@ complete_verification() {
     [[ -n $verification_handle && -n $verification_fd ]] || return 0
     ((rc < 128)) || return 0
     # Baseline exclusions, signals, and transient retries are not reusable.
-    if [[ $baseline_excluded == yes ]] || ((load_flake_retry)) ||
+    if [[ ${receipt_failure:-no} == yes || $baseline_excluded == yes ]] || ((load_flake_retry)) ||
         compose_dependency_start_collision "$log_file" || probe_timeout_load_flake "$log_file" ||
         [[ $(compute_tree_hash 2>/dev/null || true) != "$tree_hash" ]]; then
         rm -f -- "$verification_handle/running"
@@ -1888,10 +1888,8 @@ fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 receipt_failure=no
 if ! publish_log_sha256_receipt; then
-    receipt_failure=yes rc=1 log_sha256=unavailable
-    log_sha256_receipt=$log_file.sha256
-    printf '=== agent-run evidence failure: final log sha256 receipt unavailable\n=== agent-run exited rc=1 after %ss\n' \
-        "$elapsed" >> "$log_file"
+    receipt_failure=yes log_sha256=unavailable log_sha256_receipt=unavailable
+    printf 'agent-run: WARNING: final log digest receipt unavailable; command status preserved\n' >&2
 fi
 complete_verification
 
@@ -1907,9 +1905,6 @@ if ((rc == 0)); then
     fi
 else
     report_failure "$rc" "$log_file"
-fi
-if [[ $receipt_failure == yes ]]; then
-    failure_class='verification-evidence-failure' failure_state='log-sha256-receipt-unavailable' failure_action='inspect-log-and-filesystem-before-rerun'
 fi
 if ((summary_cmd)); then
     summary_status=fail
