@@ -30,7 +30,13 @@ with tempfile.TemporaryDirectory() as temp:
     match = re.fullmatch(r'([0-9a-f]{64}) cmd=test log=(.+) at=\S+ focus=\n', cache)
     assert match, cache
     key, log = match.group(1), Path(match.group(2))
-    observed_digest = hashlib.sha256(log.read_bytes()).hexdigest()
+    digest_receipt = Path(str(log) + '.sha256')
+    receipt_text = digest_receipt.read_text()
+    assert re.fullmatch(r'[0-9a-f]{64}\n', receipt_text), receipt_text
+    observed_digest = receipt_text[:-1]
+    assert not digest_receipt.is_symlink() and digest_receipt.stat().st_uid == os.getuid()
+    assert oct(digest_receipt.stat().st_mode & 0o777) == '0o600'
+    assert observed_digest == hashlib.sha256(log.read_bytes()).hexdigest()
     plan = root / 'plan.json'; owners = root / 'owners.ndjson'; state = root / 'run-state.json'
     def write(path, value):
         path.write_text(json.dumps(value) + '\n'); path.chmod(0o600)
@@ -61,7 +67,7 @@ with tempfile.TemporaryDirectory() as temp:
                       '--required-check','test', *(['--log-sha256','test='+digest] if digest else []))
     save(); assert oct(artifact.stat().st_mode & 0o777) == '0o600'
     assert validate(2)['claims']['implementation']=='valid', 'legacy cache alone cannot establish original log bytes'
-    assert validate(digest=observed_digest)['status'] == 'accepted'
+    assert validate(digest=observed_digest)['status'] == 'accepted'  # Root passes the runner receipt.
     assert validate()['reused'] is True
     # Durable execution state cannot be replaced by the legacy green index.
     record=repo/'.agent/verification-records'/key/'result'
@@ -124,7 +130,7 @@ with tempfile.TemporaryDirectory() as temp:
         observed=re.fullmatch(r'([0-9a-f]{64}) cmd=test log=(.+) at=\S+ focus=',line)
         assert observed, line
         path=Path(observed.group(2))
-        return observed.group(1), path, hashlib.sha256(path.read_bytes()).hexdigest()
+        return observed.group(1), path, Path(str(path)+'.sha256').read_text().strip()
     key,log,observed_digest=fresh_execution()
     result['verification'][0].update(fingerprint=key,log=str(log)); save()
     validate(2); validate(digest=observed_digest)

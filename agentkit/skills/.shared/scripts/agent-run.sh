@@ -27,7 +27,7 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Require fresh execution, including recovery of unknown evidence.
                  An identical in-flight local command still returns its handle.
-  --summary      End with status, exit code, duration, and log path on one line.
+  --summary      End with status, exit code, duration, log path, digest, and receipt.
   --verification-key  Read-only query for one local, generic, full-checkout
                  command. Prints only its current fingerprint; creates no execution
                  records or logs. Rejects execution modifiers and unsupported inputs.
@@ -107,6 +107,7 @@ failure_class=usage
 failure_state=arguments
 failure_action=correct-arguments
 summary_ready=0
+log_sha256=unavailable log_sha256_receipt=unavailable
 # shellcheck disable=SC2329  # Invoked by EXIT, including early argument errors.
 failure_result() {
     local status=$?
@@ -117,7 +118,8 @@ failure_result() {
     fi
     if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
     if ((summary_ready)); then
-        printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q\n' "$summary_status" "$status" "$elapsed" "$log_file"
+        printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q log-sha256=%s receipt=%q\n' \
+            "$summary_status" "$status" "$elapsed" "$log_file" "$log_sha256" "$log_sha256_receipt"
     fi
     return "$status"
 }
@@ -1063,11 +1065,19 @@ choose_log() {
     [[ -e $log ]] && log=$log_dir/$stamp-$label.$$.log
     printf '%s' "$log"
 }
+# Root supplies this final-log receipt through --log-sha256 after completion.
+publish_log_sha256_receipt() {
+    local digest receipt=$log_file.sha256 temp
+    [[ ! -e $receipt && ! -L $receipt ]] || return 1
+    digest=$(sha256sum -- "$log_file" | awk '{print $1}') || return 1
+    [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+    temp=$(mktemp "$receipt.tmp.XXXXXX") || return 1
+    if ! printf '%s\n' "$digest" > "$temp" || ! chmod 600 -- "$temp" || ! mv -- "$temp" "$receipt"; then
+        rm -f -- "$temp"; return 1
+    fi
+    log_sha256=$digest log_sha256_receipt=$receipt
+}
 
-# Full-suite runs share a host, so a probe healthy in isolation can cross its
-# fixed startup bound while sibling suites consume the same cores. Keep
-# short-lived, owner-only markers in /tmp to derive a conservative load count
-# without process-name matching (ambiguous in nested shells and worktrees).
 suite_marker=''
 concurrent_suites=1
 timeout_scale=1
@@ -1484,9 +1494,7 @@ report_failure() {
 }
 
 # ---------------------------------------------------------------- verification cache ---
-# Only commands whose names describe verification are eligible for reusable
-# green evidence. State-producing commands must run again when their ignored
-# outputs disappear, even when the checkout bytes are unchanged.
+# State-producing commands are never eligible for reusable green evidence.
 verification_cache_eligible() {
     verification_ineligible_reason=''
     [[ $cmd_declared == yes ]] || { verification_ineligible_reason='not-declared'; return 1; }
@@ -1507,8 +1515,7 @@ hash_untracked_files() {
         return 1
     fi
 
-    # Explicit ignored files are dependency/config freshness receipts. Never
-    # follow repository symlinks into an undeclared external input tree.
+    # Explicit ignored files are receipts; never follow repository symlinks.
     for path in "${verification_paths[@]}"; do
         [[ ! -L $(realpath -ms -- "$git_top/$path") && -d $git_top/$path ]] || printf '%s\0' "$path" >> "$paths"
     done
@@ -1569,8 +1576,7 @@ hash_verification_toolchain() {
     done
 }
 
-# HEAD is conservative; scoped bytes, ignored receipts, command/config, cwd,
-# and declared executable bytes also participate. HEAD alone is insufficient.
+# HEAD, scoped bytes, command/config, cwd, and tool bytes form the identity.
 compute_tree_hash() {
     local hash_input digest
     [[ -n ${git_top:-} ]] || return 1
@@ -1604,8 +1610,7 @@ verification_cache_path() {
     printf '%s/.agent/verification-cache' "$git_top"
 }
 
-# The legacy green index remains an output interface. Reuse requires the new
-# durable record plus the exact log digest and final completion marker.
+# Reuse requires a durable record, exact digest, and completion marker.
 verification_cache_hit() {
     local result=$verification_handle/result prior_rc log digest actual
     ((force_cmd == 0)) || return 1
@@ -1629,9 +1634,7 @@ verification_cache_hit() {
     finish "$prior_rc"
 }
 
-# A nonblocking lease is inherited by the child: killing only the wrapper must
-# not release the lease while its command is still executing. No PID guessing,
-# sleeps, or stale-lock deletion. An abandoned running record needs --force.
+# The child inherits this nonblocking lease; abandoned records need --force.
 claim_verification() {
     local root=$git_top/.agent/verification-records
     command -v flock >/dev/null || {
@@ -1675,8 +1678,7 @@ claim_verification() {
 complete_verification() {
     [[ -n $verification_handle && -n $verification_fd ]] || return 0
     ((rc < 128)) || return 0
-    # Baseline exclusions, signals, and permitted transient retries never enter
-    # the reusable result store, even when their public return code is zero.
+    # Baseline exclusions, signals, and transient retries are not reusable.
     if [[ $baseline_excluded == yes ]] || ((load_flake_retry)) ||
         compose_dependency_start_collision "$log_file" || probe_timeout_load_flake "$log_file" ||
         [[ $(compute_tree_hash 2>/dev/null || true) != "$tree_hash" ]]; then
@@ -1822,10 +1824,7 @@ log_file=$(choose_log)
 register_suite_run
 trap failure_result EXIT
 
-# Announced BEFORE the run, not only after it. Output is captured, so a long
-# command looks identical to a hung one until it exits -- and an agent watching
-# a five-minute suite went hunting with ps and `ls -t .agent/logs` to find
-# something to tail. Naming the file up front costs one line and saves that.
+# Announce the log before captured output makes a long run look hung.
 if ((summary_cmd)); then
     printf 'running: %s (wait for the terminal agent-run-summary marker)\n' "$cmd_str" >&2
 else
@@ -1834,12 +1833,7 @@ else
 fi
 printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 
-# The log is bracketed, and the closing marker is the point: a log that once
-# held only the command's output was indistinguishable mid-stream from one
-# still being written or from a dead process -- a session with several logs
-# ending after their package manager's preamble had to `ps` to find out. No
-# "exited" line now means it did not finish. LOG_HEADER_LINES keeps the
-# "N lines suppressed" count honest by excluding this bookkeeping.
+# The closing marker distinguishes completed logs; exclude bookkeeping lines.
 readonly LOG_HEADER_LINES=2
 {
     printf '=== agent-run %s\n' "$cmd_str"
@@ -1848,12 +1842,8 @@ readonly LOG_HEADER_LINES=2
         "$concurrent_suites"
 } > "$log_file"
 
-# A killed run cannot write its own terminator on SIGKILL, which is correct:
-# that log SHOULD stay unterminated. TERM and INT are catchable, and a run the
-# operator interrupted is worth distinguishing from one that vanished.
-# shellcheck disable=SC2329,SC2317  # invoked from the trap strings below;
-# version 0.11 calls this SC2329, older releases call it SC2317, and a line
-# starting with the tool name would itself be read as a directive
+# SIGKILL stays unterminated; catchable interrupts get an explicit marker.
+# shellcheck disable=SC2329,SC2317  # Invoked from trap strings below.
 log_interrupted() {
     printf '=== agent-run interrupted by %s -- the command did not finish\n' "$1" >> "$log_file"
     exit 130
@@ -1896,6 +1886,13 @@ if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
     printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
 fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
+receipt_failure=no
+if ! publish_log_sha256_receipt; then
+    receipt_failure=yes rc=1 log_sha256=unavailable
+    log_sha256_receipt=$log_file.sha256
+    printf '=== agent-run evidence failure: final log sha256 receipt unavailable\n=== agent-run exited rc=1 after %ss\n' \
+        "$elapsed" >> "$log_file"
+fi
 complete_verification
 
 if ((rc == 0)); then
@@ -1910,6 +1907,9 @@ if ((rc == 0)); then
     fi
 else
     report_failure "$rc" "$log_file"
+fi
+if [[ $receipt_failure == yes ]]; then
+    failure_class='verification-evidence-failure' failure_state='log-sha256-receipt-unavailable' failure_action='inspect-log-and-filesystem-before-rerun'
 fi
 if ((summary_cmd)); then
     summary_status=fail

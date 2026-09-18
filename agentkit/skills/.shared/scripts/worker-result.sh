@@ -283,7 +283,7 @@ def main():
         v.add_argument('--'+name,required=True)
     v.add_argument('--issue',type=int,required=True)
     v.add_argument('--required-check',action='append',required=True)
-    v.add_argument('--log-sha256',action='append',default=[],help='root-observed original COMMAND=SHA256; never worker JSON')
+    v.add_argument('--log-sha256',action='append',default=[],help='root-read runner receipt COMMAND=SHA256; never worker JSON')
     a=p.parse_args(sys.argv[2:]); claims={k:'unknown' for k in ('ownership','implementation','push','verification')}
     try:
         if a.action=='validate':
@@ -293,7 +293,7 @@ def main():
             for item in a.log_sha256:
                 name,separator,digest=item.partition('=')
                 require(separator and name in a.required_check and name not in a.root_digests and
-                        re.fullmatch('[0-9a-f]{64}',digest), '--log-sha256 requires one root-observed COMMAND=SHA256 per check')
+                        re.fullmatch('[0-9a-f]{64}',digest), '--log-sha256 requires one root-read runner receipt COMMAND=SHA256 per check')
                 a.root_digests[name]=digest
         r=document(a.input if a.action=='write' else a.result); schema(r)
         if a.action=='write': atomic(a.output,r); print(json.dumps({'result':a.output})); return 0

@@ -108,6 +108,21 @@ terminal=$(tail -n1 <<< "$out")
 assert_contains "$terminal" 'agent-run-summary status=pass rc=0 duration_seconds=' \
     'summary success terminal carries status, exit code, and duration'
 assert_contains "$terminal" ' log=' 'summary success terminal carries the retained log path'
+summary_log=${terminal#* log=}
+summary_log=${summary_log%% log-sha256=*}
+summary_log=${summary_log% }
+summary_digest=${terminal#* log-sha256=}
+summary_digest=${summary_digest%% receipt=*}
+summary_digest=${summary_digest% }
+summary_receipt=${terminal#* receipt=}
+assert_eq "$summary_log.sha256" "$summary_receipt" \
+    'summary names the runner-owned digest receipt beside the final log'
+assert_eq "$summary_digest" "$(<"$summary_receipt")" \
+    'summary digest comes from the completed runner receipt'
+assert_eq "$summary_digest" "$(sha256sum -- "$summary_log" | awk '{print $1}')" \
+    'receipt digest covers the immutable final log bytes'
+assert_eq 600 "$(stat -c '%a' -- "$summary_receipt")" \
+    'digest receipt is owner-private'
 assert_not_contains "$out" 'tail it instead of waiting blind' \
     'summary mode does not invite intermediate log reads'
 
