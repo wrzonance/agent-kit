@@ -86,6 +86,36 @@ activate_parallel() {
         --skill parallel-issues --nonce "$nonce" >/dev/null
 }
 
+# An invalid origin receipt must fail before any worktree or repository mutation.
+refusal_repo="$tmp/refusal-repo"
+mkdir -p "$refusal_repo"
+make_repo "$refusal_repo" >/dev/null
+refusal_exclude=$(<"$refusal_repo/.git/info/exclude")
+refusal_rc=0
+refusal_out=$("$create_sh" --repo-root "$refusal_repo" --issue 39 --base main \
+    --activation-session missing-session 2>&1) || refusal_rc=$?
+assert_eq 1 "$refusal_rc" 'an invalid activation session refuses worktree preparation'
+assert_contains "$refusal_out" 'no receipt at activation origin' \
+    'the refusal names the missing origin receipt'
+assert_eq "$refusal_exclude" "$(<"$refusal_repo/.git/info/exclude")" \
+    'activation refusal leaves repository excludes unchanged'
+assert_eq no "$(git -C "$refusal_repo" show-ref --verify --quiet refs/heads/feat/issue-39 && printf yes || printf no)" \
+    'activation refusal creates no local issue branch'
+assert_eq no "$(git -C "$refusal_repo" show-ref --verify --quiet refs/remotes/origin/feat/issue-39 && printf yes || printf no)" \
+    'activation refusal pushes no remote issue branch'
+assert_eq no "$(test -e "$refusal_repo/.fleet/feat/issue-39" && printf yes || printf no)" \
+    'activation refusal creates no target worktree'
+
+# Bash 4.3 treats an empty array expansion as unset under nounset. The public
+# no-session path must use a nonempty argv and remain compatible.
+compat_repo="$tmp/compat-repo"
+mkdir -p "$compat_repo"
+make_repo "$compat_repo" >/dev/null
+compat_rc=0
+BASH_COMPAT=43 "$create_sh" --repo-root "$compat_repo" --issue 40 --base main \
+    >/dev/null 2>&1 || compat_rc=$?
+assert_eq 0 "$compat_rc" 'no-session preparation works with Bash 4.3 nounset semantics'
+
 # --- the ordinary case: root has already preflighted itself -----------------
 repo="$tmp/repo"
 mkdir -p "$repo"

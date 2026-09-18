@@ -180,7 +180,7 @@ main() {
 
     local root config shared preflight worktree_root branch worktree start setup_declared
     local root_contract
-    local -a activation_args=()
+    local -a preflight_args
     root=$(worktree_setup_resolve_repo_root "$REPO_ROOT") || exit 1
     config="$SCRIPT_DIR/../../.shared/scripts/repo-config.sh"
     shared="$SCRIPT_DIR/../../.shared/scripts"
@@ -190,6 +190,11 @@ main() {
     branch="feat/issue-$ISSUE"
     worktree="$root/$worktree_root/$branch"
     start=${CHAIN_BASE:-origin/$BASE}
+
+    if [[ -n $ACTIVATION_SESSION ]]; then
+        "$shared/workflow-activation.sh" check --repo-root "$root" \
+            --session "$ACTIVATION_SESSION" --skill parallel-issues >/dev/null || exit 1
+    fi
 
     worktree_setup_ensure_exclude "$root" "$worktree_root/" || exit 1
     git -C "$root" fetch origin || {
@@ -297,25 +302,16 @@ main() {
     fi
     worktree_setup_ensure_exclude "$root" '.agent/*' || exit 1
     worktree_setup_propagate_config "$root" "$worktree" || exit 1
-    # sandbox=, caches=, tls= are session-scoped facts; a per-worktree
-    # re-measurement in a differently-privileged process gives a truthful but
-    # contradictory answer (issue #332). Carry the root contract's copies
-    # forward verbatim; agent-preflight.sh falls back to a fresh probe for any
-    # line --inherit-session cannot find.
+    # Carry root session facts forward; target facts remain freshly measured.
     [[ -x $preflight ]] || {
         worktree_setup_fail "agent-preflight.sh is missing or not executable: $preflight"
         exit 1
     }
-    # The root's contract is keyed by harness (issue #551): SessionStart
-    # writes .agent/env-contract.<harness>.txt there, never the bare name, so
-    # inheriting from the bare name would silently degrade to a fresh probe
-    # on every dispatch. Prefer THIS process's own harness's file when it
-    # exists; fall back to the legacy bare name -- still a valid inherit
-    # source for a root whose contract predates this key, or came from a
-    # caller that still writes the bare name.
+    # Prefer the current harness's keyed contract, with legacy fallback.
     root_contract=$(contract_cache_contract_file "$root")
-    [[ -z $ACTIVATION_SESSION ]] || activation_args=(--activation-origin "$root" --activation-session "$ACTIVATION_SESSION" --workflow parallel-issues)
-    "$preflight" --worktree "$worktree" --inherit-session "$root_contract" "${activation_args[@]}" || {
+    preflight_args=(--worktree "$worktree" --inherit-session "$root_contract")
+    [[ -z $ACTIVATION_SESSION ]] || preflight_args+=(--activation-origin "$root" --activation-session "$ACTIVATION_SESSION" --workflow parallel-issues)
+    "$preflight" "${preflight_args[@]}" || {
         worktree_setup_fail "preflight failed in $worktree"
         exit 1
     }
