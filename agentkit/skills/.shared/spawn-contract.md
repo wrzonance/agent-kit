@@ -294,13 +294,10 @@ fresh-context equivalent. Never assume another harness's isolation parameter is 
 If isolation is unavailable, record degraded local waiting, not a fictitious fresh worker.
 Select model/effort with the declarations above; never inherit root context to save a spawn.
 
-The current tool schema owns parameter names and limits for each harness. Record its
-advertised `yield_time_ms` / `timeout_ms` maxima (or actual equivalent), then use the
-**effective cap**: the lesser of that maximum and higher-priority communication limits.
-Do not copy caps from another harness, probe invented values, or override a developer's
-maximum blocking duration. A waiter continues the same running cell/session after yields;
-it does not restart the helper. Root uses its own effective cap while collecting the result.
-At the cap, empty returns do not authorize stall checks before the shared threshold.
+Resolve native-agent, shell-session, and running-cell collection through
+[wait-discipline](wait-discipline.md). Each tool's live schema and observed session
+behavior own its cap; a legacy shell-yield hint is not a native-agent limit.
+Continue the same helper after yields, within the original observation window.
 
 ## Degraded path — `tools.spawn` unavailable (`multi_agent = false`)
 

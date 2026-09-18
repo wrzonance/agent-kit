@@ -164,8 +164,8 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Snapshot CI once; root assigns pending CI to a fresh throwaway waiter, never resumes setup
-as a poller. A failing check is a terminal setup result, not a fix batch:
+Snapshot CI once; return pending state to root, which applies shared wait-discipline. Never
+resume setup as a poller. A failing check is a terminal setup result, not a fix batch:
 
 setup_terminal='launch-ready'
 ci_red=0
@@ -325,8 +325,8 @@ has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_c
 `cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
 (agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
 review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
-exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root dispatches
-a fresh waiter. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
+exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root selects
+direct collection or a justified waiter under shared wait-discipline. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
 evidence line still reaches root regardless of which signal occupies the terminal slot.
 The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
 `ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,

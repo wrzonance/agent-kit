@@ -126,8 +126,9 @@ assert_eq yes "$([[ ${#neutral_prompt} -le 19760 ]] && printf yes || printf no)"
 assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the paired formatter fix'
 assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
 assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
-assert_contains "$prompt" 'verify= cmd="agent-run.sh --cmd test --summary" yield_ms=27000 resume=write_stdin("",27000) read=once-at-marker' \
-    'composed worker runbook binds verification, the measured cap, one resume shape, and one terminal read'
+assert_contains "$prompt" \
+    'verify= cmd="agent-run.sh --cmd test --summary" shell_yield_hint_ms=27000 collect=shell:write_stdin,cell:functions.wait limits=live-tool-and-session read=once-at-marker' \
+    'the composed Codex runbook selects collection by returned handle'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
@@ -135,6 +136,55 @@ assert_contains "$prompt" 'remaining-step=<exact next step>' \
 expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
 assert_contains "$prompt" "$expected_tools_line" \
     'issue-lead prompt carries the validated runtime-tool mapping verbatim'
+
+for matrix_case in codex:present:27000 codex:absent:30000 \
+    claude:present:27000 claude:absent:60000 \
+    opencode:present:27000 opencode:absent:30000 \
+    unknown:present:27000 unknown:absent:30000; do
+    IFS=: read -r matrix_harness matrix_cap matrix_expected <<< "$matrix_case"
+    matrix_repo="$tmp/wait-$matrix_harness-$matrix_cap"
+    matrix_contract=$(printf 'skills= path=%s/agentkit/skills\nharness= name=%s\n' \
+        "$root" "$matrix_harness")
+    if [[ $matrix_cap == present ]]; then
+        matrix_contract+=$'\n'
+        matrix_contract+="yield-cap= ms=27000 source=measured harness=$matrix_harness"
+    fi
+    make_repo "$matrix_repo" "$matrix_contract"
+    matrix_output=$(AGENT_YIELD_CAP_MS='' bash "$compose" \
+        --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$matrix_repo" --issue 136 --branch fix/native-agent-waiting \
+        --worker-model gpt-5.6-luna --worker-effort high)
+    matrix_rc=$?
+    assert_eq 0 "$matrix_rc" "$matrix_case composes successfully"
+    matrix_verify=$(printf '%s\n' "$matrix_output" | grep -m1 '^verify= ')
+    assert_contains "$matrix_verify" "shell_yield_hint_ms=$matrix_expected" \
+        "$matrix_case preserves the legacy shell hint"
+    assert_contains "$matrix_verify" 'limits=live-tool-and-session' \
+        "$matrix_case resolves collection limits independently"
+    case $matrix_harness in
+        codex)
+            assert_contains "$matrix_verify" \
+                'collect=shell:write_stdin,cell:functions.wait' \
+                "$matrix_case distinguishes returned handle types"
+            ;;
+        claude)
+            assert_contains "$matrix_verify" 'collect=completion-notification' \
+                "$matrix_case uses Claude completion delivery"
+            assert_contains "$matrix_verify" 'read=returned-output-file' \
+                "$matrix_case names Claude result retrieval"
+            assert_not_contains "$matrix_verify" 'write_stdin' \
+                "$matrix_case never borrows Codex collection"
+            ;;
+        *)
+            assert_contains "$matrix_verify" 'collect=advertised-tool' \
+                "$matrix_case does not invent a harness API"
+            assert_not_contains "$matrix_verify" 'write_stdin' \
+                "$matrix_case never defaults to Codex collection"
+            ;;
+    esac
+    assert_not_contains "$matrix_verify" 'collect=TaskOutput' \
+        "$matrix_case does not default to deprecated collection"
+done
 
 keyed_only_repo="$tmp/keyed-only-tools"
 make_repo "$keyed_only_repo" "$contract"

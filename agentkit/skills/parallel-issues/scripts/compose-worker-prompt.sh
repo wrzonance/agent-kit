@@ -181,8 +181,7 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 [[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] ||
     die "could not parse a numeric wait bound from wait-discipline.md's Worker implementation wait row: $worker_wait_bound_row"
 
-# Resolve the same current-harness contract that contract-read.sh reads and
-# agent-preflight.sh --ensure repairs. The bare name is only its legacy fallback.
+# Resolve the current-harness contract; the bare name is its legacy fallback.
 # shellcheck disable=SC1090,SC1091
 source "$contract_cache_lib"
 contract=$(contract_cache_contract_file "$worktree")
@@ -272,14 +271,14 @@ source "$harness_tools_lib"
 detected_tools_harness=$(contract_cache_harness_name 2> /dev/null || printf unknown)
 harness_tools_record_matches "$tools_line" "$detected_tools_harness" ||
     die "invalid tools= record in environment contract: $tools_line; recovery: $tools_recovery"
+harness_line=$(grep -m1 '^harness=' "$contract" 2>/dev/null || true)
+harness_name=${harness_line#* name=}; harness_name=${harness_name%% *}
+[[ -n $harness_name ]] || harness_name=unknown
 yield_cap_line=$(grep -m1 '^yield-cap=' "$contract" 2>/dev/null || true)
 if [[ -z $yield_cap_line ]]; then
     # shellcheck disable=SC1090,SC1091
     source "$yield_cap_lib"
-    harness_line=$(grep -m1 '^harness=' "$contract" 2>/dev/null || true)
-    harness_name=${harness_line#* name=}
-    harness_name=${harness_name%% *}
-    yield_cap_line=$(yield_cap_line "${harness_name:-unknown}")
+    yield_cap_line=$(yield_cap_line "$harness_name")
 fi
 [[ $yield_cap_line =~ ^yield-cap=\ ms=[1-9][0-9]*\ source=(measured|default)\ harness=[a-z][a-z0-9_-]*$ ]] ||
     die "invalid yield-cap record in environment contract: $yield_cap_line"
@@ -287,12 +286,15 @@ yield_cap_ms=${yield_cap_line#yield-cap= ms=}
 yield_cap_ms=${yield_cap_ms%% *}
 
 emit_verify_runbook() {
-    if [[ -z $verify_command ]]; then
-        printf 'verify= unavailable reason=no-scoped-command\n'
-        return
-    fi
-    printf 'verify= cmd="%s" yield_ms=%s resume=write_stdin("",%s) read=once-at-marker\n' \
-        "$verify_command" "$yield_cap_ms" "$yield_cap_ms"
+    local collect read=once-at-marker
+    [[ -n $verify_command ]] || { printf 'verify= unavailable reason=no-scoped-command\n'; return; }
+    case $harness_name in
+        codex) collect='shell:write_stdin,cell:functions.wait' ;;
+        claude) collect=completion-notification; read=returned-output-file ;;
+        *) collect=advertised-tool ;;
+    esac
+    printf 'verify= cmd="%s" shell_yield_hint_ms=%s collect=%s limits=live-tool-and-session read=%s\n' \
+        "$verify_command" "$yield_cap_ms" "$collect" "$read"
 }
 
 # shellcheck disable=SC1090,SC1091  # sibling library is resolved at runtime
@@ -382,20 +384,13 @@ while IFS='=' read -r key value; do
     command_keys+=("$key")
 done <<< "$command_list"
 
-# --- write-set scoping of the declared-command list (issue #336) -----------
-# A dispatch whose write set is `frontend/src/**` cannot make a .NET backend
-# suite fail or pass, so emitting it is prompt weight AND an invitation to run
-# an out-of-scope suite -- which, in a Compose-using repository, is exactly the
-# cross-worktree collision references/verification-isolation.md exists to
-# prevent. Filter by the ONE mechanical fact the repository declares about a
-# command's location, `AGENT_RUNDIR_<NAME>`: a command with no rundir is a
-# repo-wide gate and always survives. Nothing here guesses from a command's
-# name or argv.
-#
-# Prints the component-complete literal prefix of a glob: the longest leading
-# path that no metacharacter can widen. `frontend/src/**` -> `frontend/src`;
-# `front*/**` -> `` (the metacharacter cuts the FIRST component, so the glob
-# could name any top-level directory and no scoping claim is safe).
+# Keep repo-wide commands and commands whose declared `AGENT_RUNDIR` overlaps
+# the write set. This avoids offering an out-of-scope component check without
+# guessing from its name or command line. `glob_literal_prefix` returns the
+# complete leading path before a glob metacharacter: `frontend/src/**` becomes
+# `frontend/src`, while `front*/**` becomes empty because its first component
+# can match any top-level directory and supports no safe scoping claim. A
+# command without a declared run directory remains a repo-wide verification gate.
 glob_literal_prefix() {
     local glob=$1 literal
     glob=${glob#./}

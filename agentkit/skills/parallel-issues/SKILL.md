@@ -573,7 +573,7 @@ Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before 
 owns the no-model-turn rule, one wait per interval, and the durable-state recipe. A bounded wait is
 silent until terminal: emit only the one completion or expiry line and redirect any heartbeat to a log.
 
-Every wait names its bound: worker implementation waits are **900 s** minimum, draft-loop/review/CI waits **600 s**, subject to runtime and communication caps. Dispatch already printed this worker's own bound as a `wait-bound=` line — quote it. Follow shared wait-discipline for direct helpers, waiter exceptions, and native collection deadlines.
+Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; live tool/session caps govern calls. Dispatch already printed this worker's own bound as a `wait-bound=` line — quote it. Follow shared wait-discipline for collection, direct helpers, and waiter exceptions.
 
 After completion, inspect durable state (worktree `git status`/`log`, then
 `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):

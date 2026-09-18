@@ -29,11 +29,6 @@ assert_contains "$wait_text" 'Worker implementation wait' \
 worker_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline" | grep -oE '[0-9]+' | head -n1)
 assert_eq yes "$([[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] && printf yes || printf no)" \
     'the worker-wait row names a positive numeric bound'
-# shellcheck disable=SC2016  # Markdown backticks are literal assertion text.
-assert_contains "$wait_text" 'use the `yield-cap=` value from the environment contract' \
-    'native collection uses the measured or explicitly-labelled default cap'
-assert_contains "$wait_text" 'one call per cap' \
-    'native collection spends one request for each cap interval'
 assert_not_contains "$wait_text" 'requests_per_wait_minute' \
     'the model is no longer asked to calculate rollout metrics'
 assert_contains "$skill_text" 'Before the threshold elapses, do not call' 'stall checks are threshold-gated'
@@ -58,7 +53,8 @@ assert_eq yes "$([[ ${#waiter} -lt 6000 ]] && printf yes || printf no)" \
     'waiter template leaves room for filled paths under the approximate 2K-token prompt budget'
 setup=${prompts#*## PR-loop setup worker prompt}
 assert_not_contains "$setup" '--wait-ci --rounds 60' 'setup worker does not poll CI'
-assert_contains "$(<"$root/agentkit/skills/.shared/spawn-contract.md")" 'effective cap' 'spawn contract defers wait limits to runtime'
+assert_contains "$(<"$root/agentkit/skills/.shared/spawn-contract.md")" 'live schema and observed session' \
+    'spawn contract defers wait limits to runtime'
 review=$(<"$root/agentkit/skills/review-remote-pr/SKILL.md")
 assert_contains "$review" 'Guards run only in root' 'fresh waiter does not receive root shell guards'
 assert_contains "$review" 'Root runs this bounded helper directly' 'root owns the blocking CI call'
@@ -69,7 +65,6 @@ assert_contains "$wait_text" 'Root calls already-blocking bounded helpers direct
 assert_contains "$wait_text" 'genuinely unbounded or long-lived producer' 'waiter exception has a purpose'
 assert_not_contains "$wait_text" '3600000 ms' 'the runbook does not promise a runtime cap it did not measure'
 assert_contains "$wait_text" 'expiry does not terminate a worker' 'collection expiry is not worker termination'
-assert_contains "$wait_text" 'no narration between calls' 'silent empty returns remain required'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.
@@ -89,8 +84,9 @@ assert_contains "$compose_source" "printf '%s\\n' \"\$yield_cap_line\"" \
     'the composer emits the contract yield-cap beside each worker wait bound'
 assert_contains "$compose_source" "verify_command='agent-run.sh --cmd test --summary'" \
     'the composer defaults the verification runbook to the declared test command'
-assert_contains "$compose_source" 'verify= cmd="%s" yield_ms=%s' \
-    'the composer emits the scoped verification runbook instead of relying on recalled prose'
+assert_contains "$compose_source" \
+    'verify= cmd="%s" shell_yield_hint_ms=%s collect=%s' \
+    'the runbook separates a shell hint from collection selection'
 
 # The dispatch step in SKILL.md captures that line from the composer's stdout
 # and reprints it beside the same issue's prompt=/issue= digest line, so the
@@ -103,10 +99,9 @@ assert_contains "$skill_text" 'printf '\''%s\n'\'' "$wait_bound"' \
     'the dispatch step reprints the captured wait-bound line at composition time'
 
 # The polling-discipline prose points at that printed value instead of
-# relying only on the recalled rule, and the pinned class-default sentence
-# other suites assert on survives verbatim.
-assert_contains "$skill_text" '**900 s** minimum, draft-loop/review/CI waits **600 s**' \
-    'the pinned wait-class-default sentence is unchanged'
+# relying only on the recalled rule, and names each total observation window.
+assert_contains "$skill_text" 'Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**' \
+    'the skill distinguishes collection windows from per-call limits'
 # shellcheck disable=SC2016  # apostrophe-in-prose literal, not an unexpanded variable
 assert_contains "$skill_text" 'Dispatch already printed this worker'\''s own bound as a `wait-bound=`' \
     'polling discipline points at the printed dispatch-time value instead of only the recalled rule'
@@ -120,7 +115,7 @@ git -C "$ratchet_repo" -c user.name=test -c user.email=test@example.invalid comm
 git -C "$ratchet_repo" update-ref refs/remotes/origin/main HEAD
 assert_eq "$(git -C "$ratchet_repo" rev-parse HEAD)" "$(git -C "$ratchet_repo" rev-parse origin/main)" \
     'the stable ratchet is exercised when the moving base already equals HEAD'
-assert_eq yes "$([[ $(wc -l < "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md") -le 127 ]] && printf yes || printf no)" \
-    'wait-discipline policy stays at or below the stable post-reduction line ratchet'
+assert_eq yes "$([[ $(wc -l < "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md") -le 170 ]] && printf yes || printf no)" \
+    'shared wait policy stays within its explicit cross-harness line budget'
 
 finish
