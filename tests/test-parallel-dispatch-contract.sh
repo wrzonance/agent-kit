@@ -1124,8 +1124,8 @@ assert_contains "$normalized_root_publication" 'Environment-refusal fallback onl
 normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
 assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
     'the normal completion branch names the canonical PR body composer inline'
-assert_contains "$normal_completion_branch" 'gh-body.sh' \
-    'the normal completion branch names the verified PR creation transport inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
+    'the normal completion branch names the verified draft PR creation transport inline'
 assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
     'the normal completion branch preserves the complete PR identity record command'
 blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
