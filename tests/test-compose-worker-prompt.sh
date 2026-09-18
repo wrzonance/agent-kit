@@ -52,6 +52,11 @@ make_repo() {
     local dir=$1 contract=$2
     mkdir -p "$dir/.agent"
     git -C "$dir" init -q
+    git -C "$dir" config user.name test
+    git -C "$dir" config user.email test@example.invalid
+    printf 'seed\n' > "$dir/seed.txt"
+    git -C "$dir" add -- seed.txt
+    git -C "$dir" commit -qm seed
     printf '%s\n' \
         'AGENT_REPO_SLUG=example-org/example-repo' \
         'AGENT_BASE_BRANCH=develop' \
@@ -64,7 +69,12 @@ make_repo() {
         'AGENT_CMD_DEV=tools/dev' \
         'AGENT_CMD_TEST_SETUP=tools/test-setup' \
         'AGENT_CMD_TEST_FOCUS=tools/focused-test --only %s' \
+        'AGENT_VERIFY_TEST_MODE=local' \
+        'AGENT_VERIFY_TEST_TOOLCHAIN=bash' \
         > "$dir/.agent/config.env"
+    mkdir -p "$dir/tools"
+    printf '#!/bin/sh\nexit 0\n' > "$dir/tools/full-test"
+    chmod +x "$dir/tools/full-test"
     printf '%s\n' "$contract" > "$dir/.agent/env-contract.txt"
     if ! grep -q '^tools=' "$dir/.agent/env-contract.txt"; then
         printf "%s\n" "tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'" \
@@ -133,6 +143,21 @@ assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
     'issue-lead prompt requires the exact remaining step on a blocker'
+
+ineligible_repo="$tmp/verification-ineligible"
+make_repo "$ineligible_repo" "$contract"
+sed -i '/^AGENT_VERIFY_TEST_/d' "$ineligible_repo/.agent/config.env"
+ineligible_rc=0
+ineligible_prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$ineligible_repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1) || ineligible_rc=$?
+assert_eq 0 "$ineligible_rc" 'composer emits an actionable block for unavailable structured evidence'
+assert_contains "$ineligible_prompt" 'verification-capability=unavailable' \
+    'dispatch prompt identifies the unavailable required command capability'
+assert_contains "$ineligible_prompt" 'missing=AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN' \
+    'dispatch prompt names the missing declarations'
+assert_contains "$ineligible_prompt" 'authorize-native-evidence-handoff' \
+    'dispatch prompt names the explicit native-evidence operator choice'
 expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
 assert_contains "$prompt" "$expected_tools_line" \
     'issue-lead prompt carries the validated runtime-tool mapping verbatim'
@@ -1092,7 +1117,12 @@ make_widen_worktree() {
         'AGENT_REPO_SLUG=example-org/example-repo' \
         'AGENT_BASE_BRANCH=develop' \
         'AGENT_CMD_TEST=tools/full-test' \
+        'AGENT_VERIFY_TEST_MODE=local' \
+        'AGENT_VERIFY_TEST_TOOLCHAIN=bash' \
         > "$worktree/.agent/config.env"
+    mkdir -p "$worktree/tools"
+    printf '#!/bin/sh\nexit 0\n' > "$worktree/tools/full-test"
+    chmod +x "$worktree/tools/full-test"
     printf "skills= path=%s/agentkit/skills\n%s\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" "$root_path" "$sandbox_line" \
         > "$worktree/.agent/env-contract.txt"
     printf 'SPEC-BYTES\n' > "$worktree/.agent/fenced-spec.txt"
@@ -1268,11 +1298,21 @@ assert_eq 0 "$fix_batch_no_boundary_rc" \
 yolo_only_repo="$tmp/yolo-only-repo"
 mkdir -p "$yolo_only_repo/.agent"
 git -C "$yolo_only_repo" init -q
+git -C "$yolo_only_repo" config user.name test
+git -C "$yolo_only_repo" config user.email test@example.invalid
+printf 'seed\n' > "$yolo_only_repo/seed.txt"
+git -C "$yolo_only_repo" add -- seed.txt
+git -C "$yolo_only_repo" commit -qm seed
 printf '%s\n' \
     'AGENT_REPO_SLUG=example-org/example-repo' \
     'AGENT_BASE_BRANCH=develop' \
     'AGENT_CMD_TEST=tools/full-test' \
+    'AGENT_VERIFY_TEST_MODE=local' \
+    'AGENT_VERIFY_TEST_TOOLCHAIN=bash' \
     > "$yolo_only_repo/.agent/config.env"
+mkdir -p "$yolo_only_repo/tools"
+printf '#!/bin/sh\nexit 0\n' > "$yolo_only_repo/tools/full-test"
+chmod +x "$yolo_only_repo/tools/full-test"
 printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
     "$root" > "$yolo_only_repo/.agent/env-contract.txt"
 printf 'TRUSTED-SPEC-BYTES\n' > "$yolo_only_repo/.agent/spec.txt"
@@ -1429,11 +1469,21 @@ if [[ -x "$selector" && -x "$preparer" && -x "$stub_gh" && -f "$fixture" ]]; the
         local pipeline_worktree="$tmp/pipeline-$expected_mode"
         mkdir -p "$pipeline_worktree/.agent"
         git -C "$pipeline_worktree" init -q
+        git -C "$pipeline_worktree" config user.name test
+        git -C "$pipeline_worktree" config user.email test@example.invalid
+        printf 'seed\n' > "$pipeline_worktree/seed.txt"
+        git -C "$pipeline_worktree" add -- seed.txt
+        git -C "$pipeline_worktree" commit -qm seed
         printf '%s\n' \
             'AGENT_REPO_SLUG=example-org/example-repo' \
             'AGENT_BASE_BRANCH=develop' \
             'AGENT_CMD_TEST=tools/full-test' \
+            'AGENT_VERIFY_TEST_MODE=local' \
+            'AGENT_VERIFY_TEST_TOOLCHAIN=bash' \
             > "$pipeline_worktree/.agent/config.env"
+        mkdir -p "$pipeline_worktree/tools"
+        printf '#!/bin/sh\nexit 0\n' > "$pipeline_worktree/tools/full-test"
+        chmod +x "$pipeline_worktree/tools/full-test"
         printf "skills= path=%s/agentkit/skills\nharness= name=codex trailer=\"Codex <noreply@openai.com>\"\ntools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'\n" \
             "$root" > "$pipeline_worktree/.agent/env-contract.txt"
 

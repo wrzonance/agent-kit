@@ -33,9 +33,6 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
-    # #781 follow-up: a linked-project miss now resolves issue memberships.
-    # #778: validate runtime-tool metadata and print the exact repair command.
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
