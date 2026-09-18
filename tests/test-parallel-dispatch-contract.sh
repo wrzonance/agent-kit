@@ -242,16 +242,33 @@ repair_run() {
         worker_model=gpt-5.6-luna worker_effort=high REPAIR_CROSS_CALLS="$repair_cross_calls" \
         REPAIR_COMPOSE_CALLS="$repair_compose_calls" bash "$repair_recipe"
 }
-repair_run
+repair_first_output=$(repair_run)
 repair_snapshot="$repair_root/.agent/repair-42-pre-dispatch.snapshot"
+repair_started_at_file="$repair_root/.agent/repair-42-started-at"
 repair_snapshot_bytes=$(<"$repair_snapshot")
-repair_run
+repair_started_at=$(<"$repair_started_at_file")
+assert_contains "$repair_first_output" "repair_started_at=$repair_started_at" \
+    'review repair recipe prints the persisted interval start'
+repair_resume_output=$(repair_run)
 assert_eq 1 "$(wc -l <"$repair_cross_calls")" \
     'review repair resume preserves the original root snapshot'
 assert_eq "$repair_snapshot_bytes" "$(<"$repair_snapshot")" \
     'review repair resume never overwrites the root snapshot bytes'
+assert_eq "$repair_started_at" "$(<"$repair_started_at_file")" \
+    'review repair resume preserves the original interval start'
+assert_contains "$repair_resume_output" "repair_started_at=$repair_started_at" \
+    'review repair resume reports the original interval start'
 assert_eq 2 "$(wc -l <"$repair_compose_calls")" \
     'review repair resume composes a fresh leaf prompt'
+missing_started_at_root="$tmp/missing-started-at-root"
+mkdir -p "$missing_started_at_root/.agent"
+printf '%s\n' original >"$missing_started_at_root/.agent/repair-42-pre-dispatch.snapshot"
+missing_started_at_rc=0
+repair_run_dir="$missing_started_at_root/.agent" repair_run >/dev/null 2>&1 || missing_started_at_rc=$?
+assert_eq nonzero "$([[ $missing_started_at_rc != 0 ]] && printf nonzero || printf zero)" \
+    'review repair resume stops when its original interval start is absent'
+assert_eq 2 "$(wc -l <"$repair_compose_calls")" \
+    'missing interval start does not compose a leaf prompt'
 snapshot_failure_root="$tmp/snapshot-failure-root"
 mkdir -p "$snapshot_failure_root/.agent"
 snapshot_failure_rc=0
@@ -268,6 +285,20 @@ compose_failure_rc=0
 COMPOSE_FAIL=yes repair_run || compose_failure_rc=$?
 assert_eq nonzero "$([[ $compose_failure_rc != 0 ]] && printf nonzero || printf zero)" \
     'review repair recipe stops when prompt composition fails'
+unset_context_cross_calls=$(wc -l <"$repair_cross_calls")
+unset_context_compose_calls=$(wc -l <"$repair_compose_calls")
+unset_context_rc=0
+env -u RUN_DIR agentkit="$repair_agentkit" agentkit_provenance=ok REPO_ROOT="$repair_root" \
+    PR=42 repair_worktree="$repair_root" repair_branch=feat/repair repair_scope='src/**' \
+    accepted_findings="$tmp/accepted-findings.ndjson" repair_prompt="$tmp/repair-prompt" \
+    worker_model=gpt-5.6-luna worker_effort=high REPAIR_CROSS_CALLS="$repair_cross_calls" \
+    REPAIR_COMPOSE_CALLS="$repair_compose_calls" bash "$repair_recipe" >/dev/null 2>&1 || unset_context_rc=$?
+assert_eq nonzero "$([[ $unset_context_rc != 0 ]] && printf nonzero || printf zero)" \
+    'review repair recipe stops before constructing paths without its run directory'
+assert_eq "$unset_context_cross_calls" "$(wc -l <"$repair_cross_calls")" \
+    'unset run directory does not create a root snapshot'
+assert_eq "$unset_context_compose_calls" "$(wc -l <"$repair_compose_calls")" \
+    'unset run directory does not compose a leaf prompt'
 root_review_section=$(awk '
     $0 == "### Root review and draft PR after a worker push" { capture=1; next }
     capture && $0 == "### Polling discipline (applies to every wait in this skill)" { exit }

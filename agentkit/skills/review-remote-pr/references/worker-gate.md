@@ -26,15 +26,22 @@ baseline or discover `cross-write-check.sh`. Initial dispatches, follow-ups, and
 : "${repair_worktree:?set repair worktree}" "${repair_branch:?set repair branch}"
 : "${repair_scope:?set accepted findings scoped write set}" "${accepted_findings:?set findings ledger}"
 : "${repair_prompt:?set root-owned prompt output path}"
+: "${RUN_DIR:?}" "${PR:?}" "${REPO_ROOT:?}" "${worker_model:?}" "${worker_effort:?}"
+[[ $RUN_DIR == /* && -d $RUN_DIR ]] || exit 1
 repair_snapshot="$RUN_DIR/repair-$PR-pre-dispatch.snapshot"
+repair_start="$RUN_DIR/repair-$PR-started-at"
 if [[ -e $repair_snapshot || -L $repair_snapshot ]]; then
-    [[ -f $repair_snapshot && ! -L $repair_snapshot ]] || exit 1
+    [[ -f $repair_snapshot && ! -L $repair_snapshot && -f $repair_start && ! -L $repair_start ]] || exit 1
+    repair_started_at=$(<"$repair_start")
+    [[ -n $repair_started_at ]] || exit 1
 else
+    [[ ! -e $repair_start && ! -L $repair_start ]] || exit 1
     "$agentkit/parallel-issues/scripts/cross-write-check.sh" snapshot \
         --worktree "$REPO_ROOT" --output "$repair_snapshot" --write-set "$repair_scope" || exit 1
+    repair_started_at=$(date -u +%FT%TZ) || exit 1
+    printf '%s\n' "$repair_started_at" >"$repair_start" || exit 1
 fi
-repair_started_at=$(date -u +%FT%TZ)
-: "$repair_started_at"
+printf 'repair_started_at=%s\n' "$repair_started_at"
 "$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" --template pr-fix-batch \
     --worktree "$repair_worktree" --issue "$PR" --branch "$repair_branch" \
     --worker-model "$worker_model" --worker-effort "$worker_effort" \
