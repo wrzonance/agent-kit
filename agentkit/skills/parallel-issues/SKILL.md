@@ -404,22 +404,27 @@ and regenerates without touching implementation files.
 
 ### Root-checkout cross-write fence
 
-Snapshot root once before dispatch; Collect after completions and at handoff. `dispatch-fence` routes to Collect with `--worker-worktree`. Reuse its snapshot and identities; never replace them. Pass every `predictedWriteSet` glob unchanged. Timestamps use epoch seconds or ISO-8601 UTC:
+Snapshot per run; Collect after completions and handoff. Reuse its snapshot and identity. Pass write-set globs unchanged. Times accept epoch or ISO-8601 UTC:
 
 ```bash
 cross_write="$agentkit/parallel-issues/scripts/cross-write-check.sh"
 run_state="$agentkit/.shared/scripts/run-state.sh"
-cross_snapshot="$repository_root/.agent/cross-write-dispatch.snapshot"
-snapshot_args=(--root "$repository_root" --output "$cross_snapshot" --run-id "$RUN_ID")
-for write_set in "${all_dispatched_write_sets[@]}"; do
-    snapshot_args+=(--write-set "$write_set")
-done
-cross_snapshot_out=$("$cross_write" dispatch-fence "${snapshot_args[@]}") || exit 1
-printf '%s\n' "$cross_snapshot_out"
-cross_baseline_id=${cross_snapshot_out##*baseline-id=}
-"$run_state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id"
+cross_snapshot="$repository_root/.agent/cross-write-dispatch-$RUN_ID.snapshot"
+baseline_rc=0
+cross_baseline_id=$("$run_state" get --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id) || baseline_rc=$?
+case "$baseline_rc" in
+    0) ;;
+    11)
+        snapshot_args=(--root "$repository_root" --output "$cross_snapshot" --run-id "$RUN_ID")
+        for write_set in "${all_dispatched_write_sets[@]}"; do snapshot_args+=(--write-set "$write_set"); done
+        cross_snapshot_out=$("$cross_write" dispatch-fence "${snapshot_args[@]}") || exit 1
+        printf '%s\n' "$cross_snapshot_out"
+        cross_baseline_id=${cross_snapshot_out##*baseline-id=}
+        "$run_state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id"
+        ;;
+    *) exit 1 ;;
+esac
 collect_rc=0
-cross_baseline_id=$("$run_state" get --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id) || exit 1
 collect_args=(--root "$repository_root" --snapshot "$cross_snapshot" \
     --worker-worktree "$worktree" --issue "$issue_number" \
     --run-id "$RUN_ID" --baseline-id "$cross_baseline_id" \
