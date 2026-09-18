@@ -56,6 +56,8 @@ run_test() {
 
 out=$(run_test)
 assert_contains "$out" 'PASS: tools/run' 'the first run executes the declared command'
+assert_contains "$out" 'verification miss: no-record; executing fresh' \
+    'a missing reusable record promises fresh execution'
 assert_eq '1' "$(count "$counter")" 'the first run executes once'
 cache=$(cat -- "$repo/.agent/verification-cache")
 assert_contains "$cache" 'cmd=test log=' 'a green run records command and log evidence'
@@ -157,7 +159,8 @@ assert_eq '2' "$(count "$scope_counter")" 'the repeated execution directory does
 
 # --- state-producing command names are not cached ---------------------------
 build_repo=$(make_repo)
-printf 'AGENT_CMD_BUILD=tools/run\n' > "$build_repo/.agent/config.env"
+printf 'AGENT_CMD_BUILD=tools/run\nAGENT_VERIFY_BUILD_MODE=local\nAGENT_VERIFY_BUILD_TOOLCHAIN=sh,bash\n' \
+    > "$build_repo/.agent/config.env"
 git -C "$build_repo" add -- .agent/config.env
 git -C "$build_repo" commit -qm 'declare build command'
 build_counter="$tmp/build-count"
@@ -169,6 +172,8 @@ run_build() {
 
 out=$(run_build)
 assert_contains "$out" 'PASS: tools/run' 'a build command executes the first time'
+assert_contains "$out" 'verification reuse disabled: name-not-verification; executing fresh' \
+    'a local declared state-producing command names the command-name filter'
 assert_eq '1' "$(count "$build_counter")" 'the first build executes once'
 out=$(run_build)
 assert_contains "$out" 'PASS: tools/run' 'a build command executes again on unchanged bytes'
@@ -259,6 +264,8 @@ cp -- "$baseline_repo/tests/demo-test.sh" "$baseline_repo/tests/second-test.sh"
 chmod +x "$baseline_repo/tests/demo-test.sh"
 chmod +x "$baseline_repo/tests/second-test.sh"
 printf 'AGENT_CMD_TEST=tests/demo-test.sh\n' >"$baseline_repo/.agent/config.env"
+printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' \
+    >>"$baseline_repo/.agent/config.env"
 printf '.agent/*\n!.agent/config.env\n' >"$baseline_repo/.gitignore"
 git -C "$baseline_repo" add -A
 git -C "$baseline_repo" commit -qm base
@@ -272,6 +279,9 @@ baseline_log_output=$(cd "$baseline_repo" && "$real_run_sh" --cmd test \
 baseline_rc=$?
 assert_eq '0' "$baseline_rc" \
     'an unchanged test with an identical base failure is an auto-excluded worker outcome'
+assert_contains "$baseline_log_output" \
+    'verification reuse disabled: baseline-run; executing fresh' \
+    'a baseline comparison names why reusable evidence is disabled'
 assert_contains "$baseline_log_output" 'baseline-excluded test=demo-test' \
     'the worker output reports the baseline exclusion'
 assert_contains "$(<"$baseline_repo/.agent/baseline-exclusion.md")" "$baseline_sha" \
@@ -511,8 +521,28 @@ assert_eq yes "$([[ -f $success_log ]] && printf yes)" 'existing success line st
 printf 'AGENT_CMD_TEST=tools/run\n' > "$local_repo/.agent/config.env"
 out=$(local_run)
 out=$(local_run)
-assert_contains "$out" 'verification bypass: not-declared-local' 'external/default state bypasses reuse'
+assert_contains "$out" 'verification reuse disabled: mode-not-local; executing fresh' \
+    'external/default state names why reuse is disabled and promises fresh execution'
 assert_contains "$out" 'PASS:' 'default command is freshly executed'
+
+printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\n' > "$local_repo/.agent/config.env"
+out=$(local_run)
+assert_contains "$out" 'verification reuse disabled: no-toolchain; executing fresh' \
+    'a local command without a toolchain names the missing reuse declaration'
+
+runner_repo=$(make_repo)
+: > "$runner_repo/.agent/config.env"
+printf 'tools/runner\n' > "$runner_repo/.agent/runner"
+printf '%s\n' '#!/bin/sh' 'exec ./tools/run' > "$runner_repo/tools/runner"
+chmod +x "$runner_repo/tools/runner"
+git -C "$runner_repo" add -- .agent/config.env tools/runner
+git -C "$runner_repo" add -f -- .agent/runner
+git -C "$runner_repo" commit -qm 'delegate test command to repository runner'
+runner_counter="$tmp/runner-count"
+out=$(COUNT_FILE="$runner_counter" "$real_run_sh" --dir "$runner_repo" --cmd test 2>&1)
+assert_contains "$out" 'verification reuse disabled: not-declared; executing fresh' \
+    'a runner-resolved command names its undeclared cache status'
+assert_eq '1' "$(count "$runner_counter")" 'the delegated command executes freshly'
 
 # Scoped content plus an explicit ignored dependency receipt.
 printf 'AGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_INPUTS=tools,result,.agent/dependencies\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' >> "$local_repo/.agent/config.env"
@@ -526,7 +556,8 @@ out=$(local_run)
 assert_contains "$out" 'PASS:' 'ignored dependency freshness receipt invalidates evidence'
 printf 'AGENT_VERIFY_TEST_TOOLCHAIN=missing-issue731-tool\nAGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\n' > "$local_repo/.agent/config.env"
 out=$(local_run)
-assert_contains "$out" 'verification miss: inputs-unavailable' 'unavailable toolchain gives a named miss'
+assert_contains "$out" 'verification miss: inputs-unavailable; executing fresh' \
+    'unavailable toolchain gives a named miss and promises fresh execution'
 
 # A held lease returns its durable handle; an abandoned running record never passes.
 printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=sh,bash\n' > "$local_repo/.agent/config.env"
@@ -562,7 +593,10 @@ if [[ -f $record ]]; then
     completed_log=$(sed -n '2p' "$record")
     printf 'damaged\n' >> "$completed_log"
     out=$(local_run)
-    assert_contains "$out" 'verification miss: invalid-evidence' 'corrupt log cannot reuse success'
+    assert_contains "$out" 'verification miss: invalid-evidence handle=' \
+        'corrupt log cannot reuse success'
+    assert_contains "$out" '; executing fresh' \
+        'invalid completed evidence explicitly triggers fresh execution'
     assert_contains "$out" 'PASS:' 'invalid completed evidence triggers fresh execution'
 fi
 printf '%s\n' '#!/bin/sh' 'exit 130' > "$local_repo/tools/run"

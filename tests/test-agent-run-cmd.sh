@@ -740,7 +740,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1907 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1907 lines (#776 typed terminal summaries)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1920 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1920 lines (#809 reuse diagnostics)'
 
 finish

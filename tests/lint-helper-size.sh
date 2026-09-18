@@ -26,8 +26,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
-    # #731/#732/#776: verification records, typed failures, and terminal summaries.
-    [skills/.shared/scripts/agent-run.sh]="1907:20575:800"
+    # #731/#732/#776/#809: records, summaries, and truthful reuse diagnostics.
+    [skills/.shared/scripts/agent-run.sh]="1920:20761:800"
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
@@ -162,7 +162,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #780 PR #793 final review repair: curly-quote consent boundary; exact total.
 # #781 merge-down with PR #793: measured combined helper tree.
 # #781 review repair: private cache parent and per-issue membership selection.
-readonly MAX_TREE_TOKENS=464430
+# #809: cause-accurate verification reuse diagnostics and usage documentation.
+readonly MAX_TREE_TOKENS=464593
 
 violations=0
 checked=0
