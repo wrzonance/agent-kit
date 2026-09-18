@@ -84,10 +84,21 @@ assert_eq '1' "$LINT_RC" 'an allowlisted helper that grows in tokens alone fails
 assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 24666 tokens' \
     'the token ratchet names its ceiling'
 
-root=$tmp/stale
-write_script "$root" hooks/lib/guard-lib.sh 20 30
+root=$tmp/stale-lines
+write_script "$root" hooks/lib/guard-lib.sh 800 4
 run_lint "$root"
-assert_eq '1' "$LINT_RC" 'an allowlisted helper back under budget fails as a stale entry'
+assert_eq '1' "$LINT_RC" 'an allowlisted helper stale on lines alone fails'
+assert_contains "$LINT_OUT" \
+    'within budget (800/800 lines, ~804/10000 tokens; line margin 0, token margin 9196)' \
+    'a line-bound stale entry reports both budgets and margins'
+
+root=$tmp/stale-tokens
+write_script "$root" hooks/lib/guard-lib.sh 10 4442
+run_lint "$root"
+assert_eq '1' "$LINT_RC" 'an allowlisted helper stale on tokens alone fails'
+assert_contains "$LINT_OUT" \
+    'within budget (10/800 lines, ~9999/10000 tokens; line margin 790, token margin 1)' \
+    'a token-bound stale entry reports both budgets and margins'
 assert_contains "$LINT_OUT" 'remove the stale KNOWN_OVERSIZE entry' 'the stale entry is named'
 
 # A bad allowlist field must be named, never evaluated (see the same case in
@@ -112,7 +123,7 @@ with_entry() { # prints the path to a lint copy whose guard-lib entry is $1
 
 for bad in '2298:25215' 'foo:25215:800' '2298:08:800' '2298:1+1:800' '2298:25215:'; do
     label=$(printf '%s' "$bad" | tr -c 'a-zA-Z0-9' '-')
-    run_lint "$tmp/stale" "$(with_entry "$bad" "$label")"
+    run_lint "$tmp/stale-tokens" "$(with_entry "$bad" "$label")"
     assert_eq '1' "$LINT_RC" "a malformed allowlist entry ('$bad') fails"
     assert_contains "$LINT_OUT" 'malformed KNOWN_OVERSIZE entry' \
         "'$bad' is reported, not evaluated or crashed on"

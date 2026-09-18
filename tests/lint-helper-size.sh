@@ -181,6 +181,7 @@ count_lines() {
 check_allowlisted() {
     local file=$1 rel=$2 lines=$3 tokens=$4 over=$5
     local entry=${KNOWN_OVERSIZE[$rel]} line_ceiling token_ceiling target field
+    local line_margin token_margin
     IFS=: read -r line_ceiling token_ceiling target <<< "$entry"
     # Non-numeric fields abort arithmetic under `set -u`; `08` is an invalid
     # octal literal; `1+1` silently evaluates. Name the entry instead.
@@ -192,8 +193,10 @@ check_allowlisted() {
         fi
     done
     if ((over == 0)); then
+        line_margin=$((MAX_HELPER_LINES - lines))
+        token_margin=$((MAX_HELPER_TOKENS - tokens))
         report "$file" \
-            "allowlisted helper '$rel' is now within budget ($lines lines, ~$tokens tokens) -- remove the stale KNOWN_OVERSIZE entry (target <=$target lines)"
+            "allowlisted helper '$rel' is now within budget ($lines/$MAX_HELPER_LINES lines, ~$tokens/$MAX_HELPER_TOKENS tokens; line margin $line_margin, token margin $token_margin) -- remove the stale KNOWN_OVERSIZE entry"
         return 0
     fi
     if ((lines > line_ceiling)); then
