@@ -45,7 +45,8 @@ stdout for the single completion or expiry line.
 
 ### Post-dispatch root budget
 
-After the first worker dispatch and before the first reported completion, root work is a closed set: record each returned root turn with `"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --repo-root "$repository_root" --path root_turns --json true`, resume bounded collection, run the scheduled `stall-check.sh` sample only at its deadline, or send a `send_message`/`followup_task` that the worker's own message requested. Nothing else runs in that interval.
+After the authorized dispatch round and its bookkeeping are complete, discretionary root work while waiting for the first reported completion is a closed set: record each returned root turn with `"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --repo-root "$repository_root" --path root_turns --json true`, resume bounded collection, run the scheduled `stall-check.sh` sample only at its deadline, or send a `send_message`/`followup_task` that the worker's own message requested. Nothing else discretionary runs in that interval.
+Required orchestration remains permitted: finish remaining approved initial or refill dispatches, persist returned worker IDs, and handle user steering.
 The exclusions are explicit: no external fetches, primary-source verification, new analysis artifacts,
 condition-gated reference reads, or root reads of repository files the worker may be rewriting.
 Those belong to the issue lead or to the post-push review phase. When the first completion arrives,

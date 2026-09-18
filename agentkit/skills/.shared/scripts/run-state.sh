@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Validated, owner-private run bookkeeping for atomic writes and resumable reads.
 set -euo pipefail
 umask 077
 readonly PROGNAME=${0##*/}
@@ -7,7 +6,6 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pw
 readonly SCRIPT_DIR
 RUN_DIR_SH=${RUN_STATE_RUN_DIR_SH:-$SCRIPT_DIR/../../review-remote-pr/scripts/run-dir.sh}
 readonly PATH_RE='^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'
-# Distinguish an absent path from an explicit null value.
 # shellcheck disable=SC2016
 readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
     ({p: true, c: $d};
@@ -191,7 +189,6 @@ resolve_file() {
     FILE=$run_dir/run-state.json
 }
 
-# Slurp to require exactly one object in an owned, private, regular file.
 read_state() {
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ ! -e $FILE ]]; then STATE='{}'; return 0; fi
@@ -237,15 +234,20 @@ print_summary() {
         positive_ids("queued"; true) as $queued |
         positive_ids("receipt_prs"; true) as $receipts |
         positive_ids("skipped_prs"; true) as $skipped |
+        has("root_turns") as $has_root_turns |
+        has("first_completion") as $has_first_completion |
         .root_turns as $root_turns |
         .first_completion as $first_completion |
         if (($receipts - $prs) | length) > 0 then error("receipt_prs must be a subset of opened_prs")
         elif (($skipped - $prs) | length) > 0 then error("skipped_prs must be a subset of opened_prs")
         elif (($receipts + $skipped | length) != ($receipts + $skipped | unique | length))
             then error("receipt_prs and skipped_prs must be disjoint")
-        elif ($root_turns | type) != "array" or any($root_turns[]; . != true)
-            or $first_completion != true then error("invalid root-turn summary evidence")
-        else [($prs | length), ($receipts | length), ($skipped | length), ($queued | length), ($root_turns | length)] | @tsv end
+        elif $has_root_turns != $has_first_completion then error("incomplete root-turn summary evidence")
+        elif $has_root_turns and (($root_turns | type) != "array" or any($root_turns[]; . != true)
+            or ($first_completion | type) != "boolean") then error("invalid root-turn summary evidence")
+        else (if $has_root_turns | not then "unavailable"
+              elif $first_completion then ($root_turns | length | tostring) else "unlatched" end) as $telemetry |
+            [($prs | length), ($receipts | length), ($skipped | length), ($queued | length), $telemetry] | @tsv end
     ' <<<"$STATE" 2>/dev/null) ||
         die 'summary state requires valid opened_prs, queued, receipt_prs, and skipped_prs collections'
     [[ ! -L $LEDGER && -f $LEDGER && -r $LEDGER && -O $LEDGER ]] ||
@@ -310,7 +312,6 @@ main() {
         return
     fi
     resolve_file
-    # Lock a stable sibling inode because writes replace the JSON inode.
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||

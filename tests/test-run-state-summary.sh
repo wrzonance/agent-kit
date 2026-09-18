@@ -44,11 +44,26 @@ assert_eq "$expected" \
     'summary derives exact coverage and replays durable verification reports verbatim'
 
 "$script" set --run-id wave --repo-root "$repo" --path first_completion --json false
-unlatched_rc=0
-unlatched_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || unlatched_rc=$?
-assert_eq 1 "$unlatched_rc" 'summary refuses a root-turn count that has not reached first completion'
-assert_contains "$unlatched_err" 'summary state' 'unlatched turn evidence names the unavailable summary'
+unlatched_expected=${expected/root-turns-before-first-completion=7/root-turns-before-first-completion=unlatched}
+assert_eq "$unlatched_expected" \
+    "$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
+    'summary preserves coverage and reports initialized no-completion telemetry as unlatched'
 "$script" set --run-id wave --repo-root "$repo" --path first_completion --json true
+
+printf '%s\n' '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+legacy_expected=${expected/root-turns-before-first-completion=7/root-turns-before-first-completion=unavailable}
+assert_eq "$legacy_expected" \
+    "$("$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
+    'legacy summary state preserves coverage and reports unavailable root-turn telemetry'
+printf '%s\n' \
+    '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[],"root_turns":[true,true,true,true,true,true,true],"first_completion":true}' >"$state"
+
+"$script" set --run-id wave --repo-root "$repo" --path root_turns --json '[false]'
+malformed_turns_rc=0
+malformed_turns_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || malformed_turns_rc=$?
+assert_eq 1 "$malformed_turns_rc" 'summary still refuses malformed present root-turn telemetry'
+assert_contains "$malformed_turns_err" 'summary state' 'malformed telemetry names the unavailable summary'
+"$script" set --run-id wave --repo-root "$repo" --path root_turns --json '[true,true,true,true,true,true,true]'
 
 printf '%s\n' "$report" >"$reports/issue-104.report"
 chmod 600 -- "$reports/issue-104.report"

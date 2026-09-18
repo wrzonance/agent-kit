@@ -44,6 +44,16 @@ assert_contains "$wait_text" 'resume the same running session' \
     'shared wait discipline preserves the same helper session across runtime yields'
 assert_contains "$wait_text" 'closed set' \
     'shared wait discipline declares a closed post-dispatch root budget'
+assert_contains "$wait_text" 'authorized dispatch round' \
+    'the discretionary wait budget starts after the authorized dispatch round'
+assert_contains "$wait_text" 'remaining approved initial or refill dispatches' \
+    'the wait budget preserves required multi-issue dispatch work'
+assert_contains "$wait_text" 'returned worker IDs' \
+    'the wait budget preserves returned worker identity bookkeeping'
+assert_contains "$wait_text" 'user steering' \
+    'the wait budget preserves user steering while workers are active'
+assert_not_contains "$wait_text" 'After the first worker dispatch and before the first reported completion' \
+    'the wait budget does not begin before the approved dispatch round finishes'
 assert_contains "$wait_text" 'external fetches' \
     'post-dispatch root budget excludes external fetches'
 assert_contains "$wait_text" 'primary-source verification' \
