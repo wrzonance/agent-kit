@@ -163,7 +163,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #781 merge-down with PR #793: measured combined helper tree.
 # #781 review repair: private cache parent and per-issue membership selection.
 # #809: cause-accurate verification reuse diagnostics and usage documentation.
-readonly MAX_TREE_TOKENS=464593
+# #810: surface the newest completed verification in the existing stall sample.
+readonly MAX_TREE_TOKENS=464788
 
 violations=0
 checked=0
