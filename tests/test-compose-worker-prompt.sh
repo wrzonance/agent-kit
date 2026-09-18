@@ -127,7 +127,7 @@ assert_contains "$prompt" '--cmd format --fix' 'composed prompt teaches the pair
 assert_contains "$prompt" 'worker-result=ABSOLUTE_PATH' 'composed prompt offers an atomic structured handback'
 assert_contains "$prompt" 'root-review, root-ci and draft-pr' 'worker handback preserves root obligations'
 assert_contains "$prompt" \
-    'verify= cmd="agent-run.sh --cmd test --summary" shell_yield_hint_ms=27000 collect=shell:write_stdin,cell:functions.wait limits=live-tool-and-session read=once-at-marker' \
+    'verify= cmd_name="test" cmd="agent-run.sh --cmd test --summary" shell_yield_hint_ms=27000 collect=shell:write_stdin,cell:functions.wait limits=live-tool-and-session read=once-at-marker' \
     'the composed Codex runbook selects collection by returned handle'
 assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
     'issue-lead prompt requires a machine-readable blocker class'

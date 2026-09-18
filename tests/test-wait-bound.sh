@@ -85,7 +85,7 @@ assert_contains "$compose_source" "printf '%s\\n' \"\$yield_cap_line\"" \
 assert_contains "$compose_source" "verify_command='agent-run.sh --cmd test --summary'" \
     'the composer defaults the verification runbook to the declared test command'
 assert_contains "$compose_source" \
-    'verify= cmd="%s" shell_yield_hint_ms=%s collect=%s' \
+    'verify= cmd_name="%s" cmd="%s" shell_yield_hint_ms=%s collect=%s' \
     'the runbook separates a shell hint from collection selection'
 
 # The dispatch step in SKILL.md captures that line from the composer's stdout

@@ -3,7 +3,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 python3 - "$(dirname -- "$here")" <<'PY'
-import hashlib, json, os, re, subprocess, sys, tempfile
+import copy, hashlib, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 helper = Path(sys.argv[1]) / 'agentkit/skills/.shared/scripts/worker-result.sh'
 with tempfile.TemporaryDirectory() as temp:
@@ -58,6 +58,16 @@ with tempfile.TemporaryDirectory() as temp:
         assert proc.returncode == expected, (action,expected,proc.returncode,proc.stdout,proc.stderr)
         assert 'Traceback' not in proc.stderr, proc.stderr
         return json.loads(proc.stdout) if proc.stdout else proc.stderr
+    for help_args in (('--help',), ('write','--help')):
+        help_result=subprocess.run([str(helper),*help_args],capture_output=True,text=True)
+        assert help_result.returncode == 0, (help_args,help_result.stdout,help_result.stderr)
+        assert help_result.stdout.startswith('usage: worker-result.sh '), help_result.stdout
+        assert 'usage: - ' not in help_result.stdout, help_result.stdout
+    write_help=subprocess.check_output([str(helper),'write','--help'],text=True)
+    normalized_help=' '.join(write_help.split())
+    assert 'schemaVersion, runId, attempt, workerId, issue, worktree, branch, baseSha, headSha' in normalized_help
+    assert 'verification[].command' in normalized_help and '[a-z][a-z0-9-]*' in normalized_help
+    assert 'agent-run.sh --cmd' in normalized_help
     def save():
         write(source,result); invoke('write',0,'--input',source,'--output',artifact)
     def validate(expected=0, digest=None):
@@ -66,6 +76,44 @@ with tempfile.TemporaryDirectory() as temp:
                       '--worker-id','worker','--issue','729','--worktree',repo,'--base-sha',base,
                       '--required-check','test', *(['--log-sha256','test='+digest] if digest else []))
     save(); assert oct(artifact.stat().st_mode & 0o777) == '0o600'
+    def rejected(label, mutate, *fragments):
+        malformed=copy.deepcopy(result); mutate(malformed); write(source,malformed)
+        receipt=invoke('write',1,'--input',source,'--output',artifact)
+        reason=receipt['reason']
+        assert all(fragment in reason for fragment in fragments), (label,reason,fragments)
+        return reason
+    malformed_cases = [
+        ('missing field', lambda r:r.pop('findings'), 'result fields', 'missing', 'findings'),
+        ('extra field', lambda r:r.update(extra=True), 'result fields', 'extra'),
+        ('schema version', lambda r:r.update(schemaVersion=True), 'schemaVersion', 'integer 1'),
+        ('issue', lambda r:r.update(issue=0), 'issue', 'positive integer'),
+        ('worker id', lambda r:r.update(workerId=''), 'workerId', 'non-empty string without controls'),
+        ('attempt', lambda r:r.update(attempt='bad attempt'), 'attempt', 'stable identifier'),
+        ('worktree', lambda r:r.update(worktree='relative'), 'worktree', 'absolute path'),
+        ('base sha', lambda r:r.update(baseSha='abc'), 'baseSha', '40 lowercase hexadecimal'),
+        ('write set values', lambda r:r.update(writeSet=['src/**','src/**']), 'writeSet', 'unique non-empty strings'),
+        ('touched values', lambda r:r.update(touchedPaths=['']), 'touchedPaths', 'unique non-empty strings'),
+        ('write set required', lambda r:r.update(writeSet=[]), 'writeSet', 'non-empty'),
+        ('touched path', lambda r:r.update(touchedPaths=['../outside']), 'touchedPaths', 'safe repository-relative paths'),
+        ('obligations', lambda r:r.update(obligations=['root-review','root-ci','draft-pr','root-review']), 'obligations', 'unique non-empty strings'),
+        ('findings', lambda r:r.update(findings=['']), 'findings', 'unique non-empty strings'),
+        ('root obligations', lambda r:r.update(obligations=['root-review','root-ci']), 'obligations', 'root-review, root-ci, and draft-pr'),
+        ('push value', lambda r:r.update(push='maybe'), 'push', 'pushed, not-pushed, or unknown'),
+        ('root push', lambda r:r.update(obligations=['root-review','root-ci','draft-pr']), 'obligations', 'root-push'),
+        ('verification list', lambda r:r.update(verification=[]), 'verification', 'non-empty list'),
+        ('verification fields', lambda r:r.update(verification=[{'status':'pass'}]), 'verification[0] fields', 'expected command, status'),
+        ('verification command line', lambda r:r['verification'][0].update(command='agent-run.sh --cmd test --summary'),
+         'verification[0].command', "'agent-run.sh --cmd test --summary'", '[a-z][a-z0-9-]*', 'agent-run.sh --cmd'),
+        ('verification status', lambda r:r['verification'][0].update(status='green'), 'verification[0].status', 'pass, fail, skipped, unavailable, or unknown'),
+        ('verification value', lambda r:r['verification'][0].update(log=''), 'verification[0].log', 'non-empty string without controls'),
+        ('verification reason', lambda r:r['verification'][0].update(status='fail'), 'verification[0].reason', 'required for non-pass'),
+        ('duplicate command', lambda r:r.update(verification=[r['verification'][0],copy.deepcopy(r['verification'][0])]),
+         'verification[].command', 'unique'),
+        ('blocker', lambda r:r.update(blocker={'class':'other'}), 'blocker fields', 'expected class, remainingAction, evidence'),
+    ]
+    reasons=[rejected(*case) for case in malformed_cases]
+    assert len(reasons)==len(set(reasons)), reasons
+    save()
     assert validate(2)['claims']['implementation']=='valid', 'legacy cache alone cannot establish original log bytes'
     assert validate(digest=observed_digest)['status'] == 'accepted'  # Root passes the runner receipt.
     assert validate()['reused'] is True

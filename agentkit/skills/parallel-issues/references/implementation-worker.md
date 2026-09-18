@@ -205,6 +205,7 @@ __ACCEPTANCE_DECLARATIONS__
 When root supplies runId, attempt, and workerId, use the fields in
 `parallel-issues/references/worker-prompts.md#structured-result-contract` and run
 `.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with `worker-result=ABSOLUTE_PATH`.
+Set each `verification[].command` to the composed runbook's bare `cmd_name`, not its runnable `cmd` line.
 Do not invent IDs or verification fingerprints. Missing filesystem/native support uses a text handback with
 `evidence=unknown` and the precise remaining action.
 Report the final runner log path, but never read, hash, or copy its `.sha256` receipt into worker JSON; root reads that runner-produced receipt after completion. Its root-review, root-ci and draft-pr obligations remain unresolved.
