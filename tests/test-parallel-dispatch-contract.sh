@@ -510,6 +510,9 @@ assert_contains "$text" '--assert-count "$prospective_total" --agent-kind "$agen
 assert_contains "$normalized_text" \
     'A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free' \
     'overflow retry guidance cannot repeat the refused count unchanged'
+assert_contains "$normalized_text" \
+    'A cap-advertisement error stops spawning and is reported separately from a capacity refusal.' \
+    'an unavailable cap stops the fan-out without masquerading as capacity exhaustion'
 assert_contains "$normalized_triage_and_selection_text" \
     'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
     'thin-Ready vetting states its ceiling where it states the obligation'
@@ -1439,8 +1442,8 @@ printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 10' \
     > "$configured_home/.codex/config.toml"
 out=$("$cap_helper" --config "$configured_home/.codex/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
-    'dispatch advertises the configured runtime cap'
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'dispatch advertises the configured effective cap'
 assert_eq '0' "$status" 'an advertised cap exits zero'
 
 codex_home="$tmp/codex-home"
@@ -1448,7 +1451,7 @@ mkdir -p "$codex_home"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 7' \
     > "$codex_home/config.toml"
 out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
 
 # Issue #832: the cap is a property of every spawn, including an improvised
@@ -1460,6 +1463,9 @@ mkdir -p "$wide_home"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 20' \
     > "$wide_home/config.toml"
 overflow_err="$tmp/assessor-overflow.err"
+out=$("$cap_helper" --config "$wide_home/config.toml" 2>/dev/null)
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'a runtime above the skill maximum advertises the enforced cap'
 out=$("$cap_helper" --config "$wide_home/config.toml" \
     --assert-count 11 --agent-kind assessor 2>"$overflow_err")
 status=$?
@@ -1475,6 +1481,34 @@ status=$?
 assert_eq '1' "$status" 'a prospective total cannot wrap through shell integer arithmetic'
 assert_contains "$(<"$overflow_err")" "observed=$wrapped_count" \
     'an overflow-sized refusal preserves the original observed decimal'
+
+huge_runtime_home="$tmp/huge-runtime"
+mkdir -p "$huge_runtime_home"
+printf '%s\n' '[multi_agent_v2]' \
+    'max_concurrent_threads_per_session = 18446744073709551616' > "$huge_runtime_home/config.toml"
+out=$("$cap_helper" --config "$huge_runtime_home/config.toml" 2>/dev/null)
+status=$?
+assert_eq '0' "$status" 'an overflow-sized positive runtime cap clamps safely'
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'an overflow-sized runtime cap advertises the skill maximum'
+
+for missing_args in '--assert-count 2' '--agent-kind assessor'; do
+    read -r -a missing_argv <<< "$missing_args"
+    err=$("$cap_helper" --config "$configured_home/.codex/config.toml" \
+        "${missing_argv[@]}" 2>&1 >/dev/null)
+    status=$?
+    assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+        "a missing assertion partner is rejected: $missing_args"
+    assert_contains "$err" 'must be supplied together' \
+        "a missing assertion partner names the pair contract: $missing_args"
+done
+err=$("$cap_helper" --config "$configured_home/.codex/config.toml" \
+    --assert-count '' --agent-kind '' 2>&1 >/dev/null)
+status=$?
+assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+    'explicitly empty assertion values are rejected'
+assert_contains "$err" 'assertion values must be non-empty' \
+    'empty assertion values explain the value requirement'
 
 # --- issue #273: size facts never park an unattended run --------------------
 # The 2026-08-18 cable-tool incident: a worker finished (implemented,
@@ -1544,7 +1578,7 @@ printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 
     > "$v1_home/config.toml"
 out=$("$cap_helper" --config "$v1_home/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'the v1 [agents] section advertises the cap'
 assert_eq '0' "$status" 'a v1 [agents] cap exits zero'
 
@@ -1554,7 +1588,7 @@ printf '%s\n' '[features.multi_agent_v2]' 'enabled = true' \
     'max_concurrent_threads_per_session = 8' > "$v2_home/config.toml"
 out=$("$cap_helper" --config "$v2_home/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 8 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 8 total threads, including the root' \
     'the v2 [features.multi_agent_v2] section advertises the cap'
 assert_eq '0' "$status" 'a v2 [features.multi_agent_v2] cap exits zero'
 
@@ -1564,7 +1598,7 @@ printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' \
     '# [features.multi_agent_v2]' '# max_concurrent_threads_per_session = 99' \
     > "$commented_home/config.toml"
 out=$("$cap_helper" --config "$commented_home/config.toml" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'a commented-out v2 block does not shadow the live [agents] cap'
 
 missing_home="$tmp/missing"
@@ -1573,6 +1607,8 @@ err=$("$cap_helper" --config "$missing_home/config.toml" 2>&1 >/dev/null)
 status=$?
 assert_contains "$err" 'Unable to advertise concurrency' \
     'missing runtime config explains why the cap is unavailable'
+assert_not_contains "$err" 'spawn refused:' \
+    'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
 

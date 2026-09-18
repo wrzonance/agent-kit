@@ -352,7 +352,7 @@ Role separation: the root/orchestrator must not implement when a real worker can
 
 ### Spawn discipline (applies to every spawn in this skill)
 
-Before every fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role — set `prospective_total` to root + live + requested and `agent_kind` to its role. Read-only work is not exempt. Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`; pass `--assert-count "$prospective_total" --agent-kind "$agent_kind"` before spawning. A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free. Recompute before retrying; never repeat the same observed count.
+Before fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role (read-only included) — set `prospective_total` to root + live + requested and `agent_kind` to role. Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`; pass `--assert-count "$prospective_total" --agent-kind "$agent_kind"`. A cap-advertisement error stops spawning and is reported separately from a capacity refusal. A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free.
 
 ### Dispatch (one round, then refill slots)
 
