@@ -158,6 +158,15 @@ assert_contains "$ineligible_prompt" 'missing=AGENT_VERIFY_TEST_MODE=local,AGENT
     'dispatch prompt names the missing declarations'
 assert_contains "$ineligible_prompt" 'authorize-native-evidence-handoff' \
     'dispatch prompt names the explicit native-evidence operator choice'
+
+transient_repo="$tmp/verification-inputs-pending"
+make_repo "$transient_repo" "$contract"
+sed -i 's#^AGENT_CMD_TEST=.*#AGENT_CMD_TEST=.venv/bin/pytest#' "$transient_repo/.agent/config.env"
+transient_prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$transient_repo" --issue 137 --branch feat/issue-137 \
+    --worker-model gpt-5.6-luna --worker-effort high 2>&1)
+assert_not_contains "$transient_prompt" 'verification-capability=unavailable' \
+    'transient fingerprint inputs do not masquerade as unavailable capability'
 expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'"
 assert_contains "$prompt" "$expected_tools_line" \
     'issue-lead prompt carries the validated runtime-tool mapping verbatim'

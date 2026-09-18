@@ -138,6 +138,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert 'verification capability unavailable' not in absent['reason'],absent
     cache_path.write_bytes(saved_cache)
     assert validate(2)['claims']['implementation']=='valid', 'legacy cache alone cannot establish original log bytes'
+    os.environ['LC_ALL']='agentkit_missing_locale'
+    assert validate(digest=observed_digest)['status'] == 'accepted', 'harmless stderr must not corrupt the stdout fingerprint'
+    os.environ.pop('LC_ALL')
     assert validate(digest=observed_digest)['status'] == 'accepted'
     assert validate()['reused'] is True
     # Durable execution state cannot be replaced by the legacy green index.
