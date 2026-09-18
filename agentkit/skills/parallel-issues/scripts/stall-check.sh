@@ -6,6 +6,8 @@
 #   active   the newest mtime advanced since the previous check
 #   quiet    no change yet, but not past the threshold and streak
 #   stalled  no change for >= threshold minutes across two or more consecutive checks
+# The same line reports last-verification=<log basename> and last-rc=<N> for
+# the newest completed agent-run log, or none/none when no terminal marker exists.
 # Exit: 0 active or quiet, 3 stalled, 2 usage error or unreadable evidence.
 set -euo pipefail
 
@@ -68,6 +70,21 @@ newest=$(find "$worktree" -name .git -prune -o -name '.stall-check.*' -prune -o 
 newest=${newest%%.*}
 [[ -n $newest ]] || die 'no files found under the worktree; evidence unavailable'
 
+last_verification=none
+last_rc=none
+logs_dir="$worktree/.agent/logs"
+if [[ -d $logs_dir ]]; then
+    while IFS= read -r -d '' candidate; do
+        log=${candidate#* }
+        marker=$(tail -n 1 -- "$log" 2> /dev/null) || continue
+        if [[ $marker =~ ^===\ agent-run\ exited\ rc=([0-9]+)([[:space:]].*)?$ ]]; then
+            last_verification=${log##*/}
+            last_rc=${BASH_REMATCH[1]}
+            break
+        fi
+    done < <(find "$logs_dir" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\0' 2> /dev/null | LC_ALL=C sort -zrn)
+fi
+
 previous_newest=''
 quiet_streak=0
 if [[ -e $state_file ]]; then
@@ -102,7 +119,8 @@ state_tmp=$(mktemp "$state_dir/.stall-check.XXXXXXXXXX") || die 'could not write
 printf 'newest=%s\nquiet=%s\n' "$newest" "$quiet_streak" > "$state_tmp"
 mv -f -- "$state_tmp" "$state_file"
 
-printf 'stall= worktree=%s newest=%s quiet-checks=%s threshold-minutes=%s verdict=%s\n' \
-    "$worktree" "$newest" "$quiet_streak" "$threshold_minutes" "$verdict"
+printf 'stall= worktree=%s newest=%s quiet-checks=%s threshold-minutes=%s verdict=%s last-verification=%s last-rc=%s\n' \
+    "$worktree" "$newest" "$quiet_streak" "$threshold_minutes" "$verdict" \
+    "$last_verification" "$last_rc"
 [[ $verdict != stalled ]] || exit 3
 exit 0

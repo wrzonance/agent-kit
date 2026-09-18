@@ -506,7 +506,7 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
 `"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`
-At the deadline, sample once; schedule the next sample at least one threshold later. The newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
+At the deadline, sample once; schedule the next sample at least one threshold later. In the next user-visible update, name any non-zero `last-rc` and its `last-verification` log basename, even if the worker later fixes it without reporting it. The newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
 or process inspection. Two consecutive quiet checks with no filesystem change for the named
 threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: interrupt that
 worker, re-dispatch it once with the preserved worktree evidence and the exact remaining

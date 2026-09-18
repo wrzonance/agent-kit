@@ -1561,6 +1561,43 @@ assert_contains "$normalized_text" 'never `pgrep`' \
     'stall detection forbids process inspection'
 assert_contains "$normalized_text" 'newest file mtime is the liveness signal' \
     'stall detection is defined by worktree mtime'
+assert_contains "$normalized_text" 'In the next user-visible update, name any non-zero `last-rc` and its `last-verification` log basename' \
+    'the next root update preserves a failed verification outcome'
+
+# Issue #810: the liveness sample also carries the newest completed verification
+# outcome, so failed retries cannot disappear between worker handbacks.
+stall_helper="$root/agentkit/skills/parallel-issues/scripts/stall-check.sh"
+failed_wt="$tmp/stall-failed"
+mkdir -p "$failed_wt/.agent/logs" "$failed_wt/src"
+printf 'work\n' >"$failed_wt/src/a.txt"
+printf '=== agent-run exited rc=0 after 1s\n' >"$failed_wt/.agent/logs/20260918T030013Z-test.log"
+printf '=== agent-run exited rc=1 after 2s\n' >"$failed_wt/.agent/logs/20260918T031501Z-test.log"
+printf '=== agent-run test still-running\n' >"$failed_wt/.agent/logs/20260918T031902Z-test.log"
+touch -d '2026-09-18 03:00:13 UTC' "$failed_wt/.agent/logs/20260918T030013Z-test.log"
+touch -d '2026-09-18 03:15:01 UTC' "$failed_wt/.agent/logs/20260918T031501Z-test.log"
+touch -d '2026-09-18 03:19:02 UTC' "$failed_wt/.agent/logs/20260918T031902Z-test.log"
+out=$("$stall_helper" --worktree "$failed_wt" --state "$tmp/stall-failed-state")
+assert_eq 0 $? 'a failed last verification does not change the active exit code'
+assert_contains "$out" 'last-verification=20260918T031501Z-test.log last-rc=1' \
+    'the newest completed failure is reported while a newer run is in flight'
+
+passed_wt="$tmp/stall-passed"
+mkdir -p "$passed_wt/.agent/logs" "$passed_wt/src"
+printf 'work\n' >"$passed_wt/src/a.txt"
+printf '=== agent-run exited rc=1 after 1s\n' >"$passed_wt/.agent/logs/20260918T030013Z-test.log"
+printf '=== agent-run exited rc=0 after 2s\n' >"$passed_wt/.agent/logs/20260918T031501Z-test.log"
+touch -d '2026-09-18 03:00:13 UTC' "$passed_wt/.agent/logs/20260918T030013Z-test.log"
+touch -d '2026-09-18 03:15:01 UTC' "$passed_wt/.agent/logs/20260918T031501Z-test.log"
+out=$("$stall_helper" --worktree "$passed_wt" --state "$tmp/stall-passed-state")
+assert_contains "$out" 'last-verification=20260918T031501Z-test.log last-rc=0' \
+    'the newest completed passing verification is reported'
+
+empty_wt="$tmp/stall-empty"
+mkdir -p "$empty_wt/.agent/logs" "$empty_wt/src"
+printf 'work\n' >"$empty_wt/src/a.txt"
+out=$("$stall_helper" --worktree "$empty_wt" --state "$tmp/stall-empty-state")
+assert_contains "$out" 'last-verification=none last-rc=none' \
+    'an empty log directory reports the absence of verification evidence'
 
 # --- issue #224: materiality gate before the review spend (WS2b) --------------
 assert_contains "$text" 'materiality-check.sh' \
