@@ -1735,18 +1735,25 @@ assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
 assert_contains "$text" 'cross-write-check.sh' \
     'dispatch names the deterministic cross-write checker'
-cross_write_recipe="$tmp/cross-write-recipe.sh"
+cross_write_snapshot_recipe="$tmp/cross-write-snapshot-recipe.sh"
 awk '
     /^### Root-checkout cross-write fence$/ { section=1; next }
     section && /^```bash$/ { capture=1; next }
     capture && /^```$/ { exit }
     capture { print }
-' "$skill" >"$cross_write_recipe"
-assert_contains "$(<"$cross_write_recipe")" '--run-id "$RUN_ID"' \
-    'the canonical fence recipe binds snapshot and Collect to the run identity'
-assert_contains "$(<"$cross_write_recipe")" '--baseline-id "$cross_baseline_id"' \
+' "$skill" >"$cross_write_snapshot_recipe"
+cross_write_collect_recipe="$tmp/cross-write-collect-recipe.sh"
+awk '
+    /^### Root-checkout cross-write fence$/ { section=1; next }
+    section && /^```bash$/ { block++; next }
+    block == 2 && /^```$/ { exit }
+    block == 2 { print }
+' "$skill" >"$cross_write_collect_recipe"
+assert_contains "$(<"$cross_write_snapshot_recipe")" '--run-id "$RUN_ID"' \
+    'the pre-dispatch recipe binds the snapshot to the run identity'
+assert_contains "$(<"$cross_write_collect_recipe")" '--baseline-id "$cross_baseline_id"' \
     'the canonical fence recipe reuses the recorded baseline identity'
-assert_contains "$(<"$cross_write_recipe")" 'cross-write-dispatch-$RUN_ID.snapshot' \
+assert_contains "$(<"$cross_write_snapshot_recipe")" 'cross-write-dispatch-$RUN_ID.snapshot' \
     'the canonical fence recipe scopes immutable snapshots to the run identity'
 assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
     'handoff never misattributes run-window dirt to the human'
@@ -1783,21 +1790,32 @@ printf 'base\n' >"$recipe_root/src/data.txt"
 git -C "$recipe_root" add src/data.txt
 git -C "$recipe_root" -c user.name=t -c user.email=t@example.invalid commit -qm base
 git -C "$recipe_root" worktree add -q -b feat/recipe "$recipe_worker"
-recipe_out=''
-recipe_rc=0
-recipe_start=$(($(date +%s) + 5))
-run_cross_recipe() {
+run_cross_snapshot_recipe() {
     local recipe_run_id=$1
+    local recipe_agentkit=${2:-$root/agentkit/skills}
+    REAL_RUN_STATE="$root/agentkit/skills/.shared/scripts/run-state.sh" \
+        agentkit="$recipe_agentkit" repository_root="$recipe_root" RUN_ID="$recipe_run_id" \
+        bash -c 'all_dispatched_write_sets=("src/**"); source "$1"' \
+        _ "$cross_write_snapshot_recipe"
+}
+run_cross_collect_recipe() {
+    local recipe_run_id=$1 recipe_start=$2
     agentkit="$root/agentkit/skills" repository_root="$recipe_root" \
         RUN_ID="$recipe_run_id" worktree="$recipe_worker" issue_number=830 \
         worker_started_at="$recipe_start" worker_finished_at=2147483647 \
-        bash -c 'all_dispatched_write_sets=("src/**"); worker_write_sets=("src/**"); source "$1"' \
-        _ "$cross_write_recipe"
+        bash -c 'worker_write_sets=("src/**"); source "$1"' \
+        _ "$cross_write_collect_recipe"
 }
-recipe_out=$(run_cross_recipe recipe-830) || recipe_rc=$?
+snapshot_recipe_rc=0
+run_cross_snapshot_recipe recipe-830 >/dev/null || snapshot_recipe_rc=$?
+assert_eq 0 "$snapshot_recipe_rc" 'the canonical pre-dispatch recipe creates its baseline'
+recipe_start=$(date +%s)
+recipe_out=''
+recipe_rc=0
+recipe_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || recipe_rc=$?
 assert_eq 0 "$recipe_rc" 'the canonical cross-write recipe completes against real worktrees'
 assert_contains "$recipe_out" 'cross-write=none' \
-    'the canonical recipe produces valid clean dispatch evidence'
+    'a baseline captured before the worker produces valid clean dispatch evidence'
 recipe_baseline_id=$(
     "$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-830 \
         --repo-root "$recipe_root" --path cross_write.baseline_id
@@ -1807,14 +1825,16 @@ assert_eq yes "$([[ $recipe_baseline_id =~ ^[0-9a-f]{64}$ ]] && printf yes || pr
 recipe_snapshot="$recipe_root/.agent/cross-write-dispatch-recipe-830.snapshot"
 recipe_snapshot_hash=$(sha256sum "$recipe_snapshot" 2>/dev/null || true)
 resume_rc=0
-resume_out=$(run_cross_recipe recipe-830) || resume_rc=$?
+resume_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || resume_rc=$?
 assert_eq 0 "$resume_rc" 'same-run resume reuses the recorded dispatch baseline'
 assert_contains "$resume_out" 'cross-write=none' 'same-run resume retains clean dispatch evidence'
 assert_eq "$recipe_snapshot_hash" "$(sha256sum "$recipe_snapshot" 2>/dev/null || true)" \
     'same-run resume leaves the immutable snapshot byte-identical'
 
 second_rc=0
-second_out=$(run_cross_recipe recipe-831) || second_rc=$?
+run_cross_snapshot_recipe recipe-831 >/dev/null || second_rc=$?
+second_start=$(date +%s)
+second_out=$(run_cross_collect_recipe recipe-831 "$second_start") || second_rc=$?
 assert_eq 0 "$second_rc" 'a distinct run creates and uses an independent baseline'
 assert_contains "$second_out" 'cross-write=none' 'a distinct run can produce clean dispatch evidence'
 assert_eq yes "$([[ -f $recipe_root/.agent/cross-write-dispatch-recipe-831.snapshot ]] && printf yes || printf no)" \
@@ -1822,12 +1842,35 @@ assert_eq yes "$([[ -f $recipe_root/.agent/cross-write-dispatch-recipe-831.snaps
 
 printf 'unrecorded\n' >"$recipe_root/.agent/cross-write-dispatch-recipe-orphan.snapshot"
 orphan_rc=0
-run_cross_recipe recipe-orphan >/dev/null 2>&1 || orphan_rc=$?
+run_cross_snapshot_recipe recipe-orphan >/dev/null 2>&1 || orphan_rc=$?
 assert_eq 1 "$orphan_rc" 'the recipe refuses an unrecorded pre-existing snapshot'
 orphan_state_rc=0
 "$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-orphan \
     --repo-root "$recipe_root" --path cross_write.baseline_id >/dev/null 2>&1 || orphan_state_rc=$?
 assert_eq 11 "$orphan_state_rc" 'refusal never adopts the unrecorded snapshot identity'
+
+missing_rc=0
+run_cross_collect_recipe recipe-missing "$(date +%s)" >/dev/null 2>&1 || missing_rc=$?
+assert_eq 1 "$missing_rc" 'Collect refuses a run with no persisted baseline identity'
+assert_eq no "$([[ -e $recipe_root/.agent/cross-write-dispatch-recipe-missing.snapshot ]] && printf yes || printf no)" \
+    'Collect never creates a missing pre-dispatch baseline'
+
+failing_agentkit="$tmp/failing-agentkit"
+mkdir -p "$failing_agentkit/parallel-issues/scripts" "$failing_agentkit/.shared/scripts"
+ln -s "$cross_write" "$failing_agentkit/parallel-issues/scripts/cross-write-check.sh"
+cat >"$failing_agentkit/.shared/scripts/run-state.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ ${1-} != set ]] || exit 1
+exec "$REAL_RUN_STATE" "$@"
+EOF
+chmod +x "$failing_agentkit/.shared/scripts/run-state.sh"
+persist_rc=0
+run_cross_snapshot_recipe recipe-persist-fail "$failing_agentkit" >/dev/null 2>&1 || persist_rc=$?
+assert_eq 1 "$persist_rc" 'the pre-dispatch recipe fails immediately when baseline persistence fails'
+persist_state_rc=0
+"$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-persist-fail \
+    --repo-root "$recipe_root" --path cross_write.baseline_id >/dev/null 2>&1 || persist_state_rc=$?
+assert_eq 11 "$persist_state_rc" 'a persistence failure never records a baseline identity'
 
 snapshot="$cross_root/.agent/cross-write.snapshot"
 snapshot_out=$(
