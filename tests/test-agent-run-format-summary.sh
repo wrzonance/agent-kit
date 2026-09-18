@@ -116,15 +116,82 @@ summary_digest=${summary_digest%% receipt=*}
 summary_digest=${summary_digest% }
 summary_receipt=${terminal#* receipt=}
 assert_eq "$summary_log.sha256" "$summary_receipt" \
-    'summary names the runner-owned digest receipt beside the final log'
+    'summary names the runner-emitted integrity receipt beside the final log'
 assert_eq "$summary_digest" "$(<"$summary_receipt")" \
-    'summary digest comes from the completed runner receipt'
+    'summary and integrity receipt carry the same completed digest'
 assert_eq "$summary_digest" "$(sha256sum -- "$summary_log" | awk '{print $1}')" \
     'receipt digest covers the immutable final log bytes'
 assert_eq 600 "$(stat -c '%a' -- "$summary_receipt")" \
-    'digest receipt is owner-private'
+    'integrity receipt uses private mode'
 assert_not_contains "$out" 'tail it instead of waiting blind' \
     'summary mode does not invite intermediate log reads'
+
+# A digest receipt is auxiliary evidence: an unavailable receipt preserves the
+# command's status and cannot seed reusable verification state.
+date_bin="$tmp/date-bin"
+mkdir -p "$date_bin"
+cat > "$date_bin/date" <<'SH'
+#!/bin/sh
+if [ "$*" = '-u +%Y%m%dT%H%M%SZ' ]; then
+    printf '20000101T000000Z\n'
+else
+    exec /usr/bin/date "$@"
+fi
+SH
+chmod +x "$date_bin/date"
+receipt_log="$repo/.agent/logs/20000101T000000Z-test.log"
+mkdir -p "${receipt_log%/*}"
+printf 'occupied\n' > "$receipt_log.sha256"
+receipt_rc=0
+receipt_out=$(PATH="$date_bin:$PATH" "$run" --dir "$repo" --cmd test --summary 2>&1) || receipt_rc=$?
+assert_eq 0 "$receipt_rc" 'receipt failure preserves a successful command status'
+assert_contains "$(tail -n1 <<< "$receipt_out")" \
+    'agent-run-summary status=pass rc=0 duration_seconds=' \
+    'receipt failure summary preserves successful status'
+assert_contains "$(tail -n1 <<< "$receipt_out")" 'log-sha256=unavailable receipt=unavailable' \
+    'receipt failure is explicit without inventing digest evidence'
+assert_contains "$receipt_out" 'final log digest receipt unavailable' \
+    'receipt failure warns without replacing the command verdict'
+
+nonzero_log="$repo/.agent/logs/20000101T000000Z-nonzero.log"
+printf 'occupied\n' > "$nonzero_log.sha256"
+receipt_rc=0
+receipt_out=$(PATH="$date_bin:$PATH" "$run" --dir "$repo" --label nonzero --summary -- sh -c 'exit 3' 2>&1) || receipt_rc=$?
+assert_eq 3 "$receipt_rc" 'receipt failure preserves a nonzero command status'
+assert_contains "$(tail -n1 <<< "$receipt_out")" 'agent-run-summary status=fail rc=3 duration_seconds=' \
+    'receipt failure summary preserves the original nonzero status'
+
+cache_repo="$tmp/receipt-cache"
+git init -q "$cache_repo"
+git -C "$cache_repo" config user.name test
+git -C "$cache_repo" config user.email test@example.invalid
+mkdir -p "$cache_repo/.agent/logs"
+printf '.agent/logs/\n.agent/verification-cache*\n.agent/verification-records/\n' > "$cache_repo/.gitignore"
+cat > "$cache_repo/check" <<'SH'
+#!/bin/sh
+printf 'run\n' >> "$AGENT_RECEIPT_TEST_COUNT"
+SH
+chmod +x "$cache_repo/check"
+cat > "$cache_repo/.agent/config.env" <<'CFG'
+AGENT_CMD_TEST=./check
+AGENT_VERIFY_TEST_MODE=local
+AGENT_VERIFY_TEST_TOOLCHAIN=bash,sha256sum
+CFG
+git -C "$cache_repo" add .
+git -C "$cache_repo" commit -qm base
+printf 'occupied\n' > "$cache_repo/.agent/logs/20000101T000000Z-test.log.sha256"
+count_file="$tmp/receipt-count"
+first_cache_out=$(AGENT_RECEIPT_TEST_COUNT="$count_file" PATH="$date_bin:$PATH" \
+    "$run" --dir "$cache_repo" --cmd test 2>&1)
+assert_contains "$first_cache_out" 'verification miss: nonreusable-outcome-or-changed-inputs' \
+    'receipt failure cannot become reusable verification evidence'
+rm -f "$cache_repo/.agent/logs/20000101T000000Z-test.log.sha256"
+second_cache_out=$(AGENT_RECEIPT_TEST_COUNT="$count_file" PATH="$date_bin:$PATH" \
+    "$run" --dir "$cache_repo" --cmd test 2>&1)
+assert_not_contains "$second_cache_out" 'verification current:' \
+    'next unchanged command is not trapped behind receipt failure state'
+assert_eq 2 "$(wc -l < "$count_file" | tr -d ' ')" \
+    'command executes again after auxiliary receipt failure'
 
 printf 'AGENT_CMD_LINT=true\nAGENT_CMD_TEST=true\n' > "$repo/.agent/config.env"
 out=$("$run" --dir "$repo" --force --summary --cmd lint --cmd test 2>&1)

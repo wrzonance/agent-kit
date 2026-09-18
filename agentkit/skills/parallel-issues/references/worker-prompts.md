@@ -54,9 +54,9 @@ owner-private artifact. Version 1 requires exactly these fields (no extra or dup
 Root invokes `worker-result.sh validate --result FILE --dispatch-plan FILE --owners FILE
 --state RUN_STATE_JSON --run-id ID --attempt ID --worker-id ID --issue N --worktree PATH
 --base-sha SHA --required-check test` (repeat `--required-check` for all declared obligations).
-For initial acceptance, after worker completion read the runner-produced `<verification.log>.sha256`
-receipt and supply `--log-sha256 test=SHA256`; repeat for each command. Require an owner-private regular non-symlink receipt containing exactly one lowercase 64-character digest; `agent-run-summary` names the same digest and receipt at completion.
-Root makes zero blocking calls spanning the verification run: read the receipt once after completion, never hash a worker's retained log at handback, and never accept a digest from worker JSON.
+For initial acceptance, supply `--log-sha256 test=SHA256` from an independently delivered terminal `agent-run-summary` line; repeat for each command. The sibling `<verification.log>.sha256` file is worker-writable integrity data, never an independent trust pin.
+Root makes zero blocking calls spanning the verification run: collect the completed terminal record once after worker completion. If root cannot independently observe that runner output, omit the digest and keep verification unknown.
+Never hash a worker's retained log at handback or accept a digest from worker JSON, narration, or sidecar.
 Every expected identity/path/check comes from root dispatch, never from the result. `--owners`
 is the repository's existing `active-workers.ndjson`; `--state` is its run's `run-state.json`.
 Ownership supplies dispatched/running state; result receipts at `results.ATTEMPT` record
