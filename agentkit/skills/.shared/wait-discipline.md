@@ -43,6 +43,14 @@ stdout for the single completion or expiry line.
 - **Narrate only a state change or a decision.** Report completion, blockers, or review decisions; never narrate "still waiting" or "checking again".
 - **Never hand-poll CI.** `gh-pr-state.sh --wait-ci` already polls with bounded rounds (`--rounds`, `--interval`) and prints one progress line per round on stderr. Use it instead of a loop of `gh pr view` / `gh pr checks`.
 
+### Post-dispatch root budget
+
+After the first worker dispatch and before the first reported completion, root work is a closed set: record each returned root turn with `"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --repo-root "$repository_root" --path root_turns --json true`, resume bounded collection, run the scheduled `stall-check.sh` sample only at its deadline, or send a `send_message`/`followup_task` that the worker's own message requested. Nothing else runs in that interval.
+The exclusions are explicit: no external fetches, primary-source verification, new analysis artifacts,
+condition-gated reference reads, or root reads of repository files the worker may be rewriting.
+Those belong to the issue lead or to the post-push review phase. When the first completion arrives,
+run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path first_completion` before Collect and stop appending turns; the final handoff summary prints the frozen count.
+
 ### Idle notices are not quiescence proof
 
 An `idle_notification` is a point-in-time observation, not a terminal worker state. Before

@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# run-state.sh -- one validated, owner-private JSON object of run bookkeeping
-# (redrive attempts, parked PRs, per-PR loop status) so the root records a state
-# change with one call and a resumed session reads it back (issue #613). The
-# file is <run dir>/run-state.json (run-dir.sh --run-id) or an explicit --file.
+# Validated, owner-private run bookkeeping for atomic writes and resumable reads.
 set -euo pipefail
 umask 077
 readonly PROGNAME=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)
 readonly SCRIPT_DIR
-# Same shared->skill resolution shape as review-provider-config.sh:14.
 RUN_DIR_SH=${RUN_STATE_RUN_DIR_SH:-$SCRIPT_DIR/../../review-remote-pr/scripts/run-dir.sh}
 readonly PATH_RE='^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'
-# Presence is tracked by key membership (jq `has`), not by comparing the value
-# to null, so a key explicitly set to JSON null is present, not absent.
-# shellcheck disable=SC2016  # $p/$d/$seg are jq bindings, not shell ones.
+# Distinguish an absent path from an explicit null value.
+# shellcheck disable=SC2016
 readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
     ({p: true, c: $d};
         if .p and (.c | type) == "object" and (.c | has($seg)) then {p: true, c: .c[$seg]}
@@ -196,11 +191,7 @@ resolve_file() {
     FILE=$run_dir/run-state.json
 }
 
-# The file is trusted only as an owned, non-symlink regular file holding
-# exactly one JSON object. `jq` (without -s) validates each whitespace- or
-# newline-separated JSON value in the file independently, so a file holding
-# two objects would pass a per-value filter -- slurp (-s) into one array
-# first and require it hold exactly one object.
+# Slurp to require exactly one object in an owned, private, regular file.
 read_state() {
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ ! -e $FILE ]]; then STATE='{}'; return 0; fi
@@ -246,11 +237,15 @@ print_summary() {
         positive_ids("queued"; true) as $queued |
         positive_ids("receipt_prs"; true) as $receipts |
         positive_ids("skipped_prs"; true) as $skipped |
+        .root_turns as $root_turns |
+        .first_completion as $first_completion |
         if (($receipts - $prs) | length) > 0 then error("receipt_prs must be a subset of opened_prs")
         elif (($skipped - $prs) | length) > 0 then error("skipped_prs must be a subset of opened_prs")
         elif (($receipts + $skipped | length) != ($receipts + $skipped | unique | length))
             then error("receipt_prs and skipped_prs must be disjoint")
-        else [($prs | length), ($receipts | length), ($skipped | length), ($queued | length)] | @tsv end
+        elif ($root_turns | type) != "array" or any($root_turns[]; . != true)
+            or $first_completion != true then error("invalid root-turn summary evidence")
+        else [($prs | length), ($receipts | length), ($skipped | length), ($queued | length), ($root_turns | length)] | @tsv end
     ' <<<"$STATE" 2>/dev/null) ||
         die 'summary state requires valid opened_prs, queued, receipt_prs, and skipped_prs collections'
     [[ ! -L $LEDGER && -f $LEDGER && -r $LEDGER && -O $LEDGER ]] ||
@@ -272,10 +267,10 @@ print_summary() {
             then . else error("invalid handback evidence") end] | sort_by(.issue)
     ' "$LEDGER" 2>/dev/null) || die "unparseable active-workers evidence: $LEDGER"
     parked_count=$(jq 'length' <<<"$parked_rows")
-    local prs receipts skipped queued
-    IFS=$'\t' read -r prs receipts skipped queued <<<"$counts"
-    printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s\n' \
-        "$prs" "$receipts" "$skipped" "$parked_count" "$queued"
+    local prs receipts skipped queued root_turns
+    IFS=$'\t' read -r prs receipts skipped queued root_turns <<<"$counts"
+    printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s root-turns-before-first-completion=%s\n' \
+        "$prs" "$receipts" "$skipped" "$parked_count" "$queued" "$root_turns"
     jq -r '.[] | "blocked=\(.issue):\(.evidence)"' <<<"$parked_rows"
 
     [[ -n $REPORTS_DIR ]] || return 0
@@ -315,8 +310,7 @@ main() {
         return
     fi
     resolve_file
-    # Lock a stable inode, not the JSON inode replaced by write_state. Resolve
-    # parent aliases so independent writers cannot lose successful updates.
+    # Lock a stable sibling inode because writes replace the JSON inode.
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||
@@ -376,12 +370,17 @@ main() {
                     ((.[$name] | type) == "array" and all(.[$name][]; type == "number" and . > 0 and floor == .) and
                     ((.[$name] | length) == (.[$name] | unique | length)));
                 if valid_ids("opened_prs") and valid_ids("queued") and
-                   valid_ids("receipt_prs") and valid_ids("skipped_prs")
+                   valid_ids("receipt_prs") and valid_ids("skipped_prs") and
+                   ((has("root_turns") | not) or
+                    ((.root_turns | type) == "array" and all(.root_turns[]; . == true))) and
+                   ((has("first_completion") | not) or (.first_completion | type) == "boolean")
                 then .
                     | if has("opened_prs") then . else .opened_prs=[] end
                     | if has("queued") then . else .queued=[] end
                     | if has("receipt_prs") then . else .receipt_prs=[] end
                     | if has("skipped_prs") then . else .skipped_prs=[] end
+                    | if has("root_turns") then . else .root_turns=[] end
+                    | if has("first_completion") then . else .first_completion=false end
                     | if ((.receipt_prs - .opened_prs) | length) > 0 or ((.skipped_prs - .opened_prs) | length) > 0 or
                          ((.receipt_prs + .skipped_prs | length) != (.receipt_prs + .skipped_prs | unique | length))
                       then error("inconsistent summary collections") else . end

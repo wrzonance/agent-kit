@@ -21,7 +21,7 @@ git -C "$repo" config user.name test
 
 state="$repo/.agent/evidence/run-wave/run-state.json"
 printf '%s\n' \
-    '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+    '{"opened_prs":[],"queued":[103],"receipt_prs":[],"skipped_prs":[],"root_turns":[true,true,true,true,true,true,true],"first_completion":true}' >"$state"
 chmod 600 -- "$state"
 
 reports="$tmp/dispatch-plan.verification-reports"
@@ -38,10 +38,17 @@ printf '%s\n' \
     >"$ledger"
 chmod 600 -- "$ledger"
 
-expected=$'coverage= prs=0 receipts=0 skipped=0 parked=2 queued=1\nblocked=101:src/one.sh\nblocked=102:src/two.sh,tests/two.sh\nspec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
+expected=$'coverage= prs=0 receipts=0 skipped=0 parked=2 queued=1 root-turns-before-first-completion=7\nblocked=101:src/one.sh\nblocked=102:src/two.sh,tests/two.sh\nspec-verification= issue=103 steps=4 covered=1 uncovered=3 uncovered-steps=2,3,4 coverage=1/4 classification=majority-uncovered'
 assert_eq "$expected" \
     "$(cd -- "$tmp" && "$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports")" \
     'summary derives exact coverage and replays durable verification reports verbatim'
+
+"$script" set --run-id wave --repo-root "$repo" --path first_completion --json false
+unlatched_rc=0
+unlatched_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || unlatched_rc=$?
+assert_eq 1 "$unlatched_rc" 'summary refuses a root-turn count that has not reached first completion'
+assert_contains "$unlatched_err" 'summary state' 'unlatched turn evidence names the unavailable summary'
+"$script" set --run-id wave --repo-root "$repo" --path first_completion --json true
 
 printf '%s\n' "$report" >"$reports/issue-104.report"
 chmod 600 -- "$reports/issue-104.report"
@@ -69,7 +76,7 @@ assert_contains "$subdir_err" 'checkout root' 'repository-boundary refusal names
 printf '%s\n' \
     '{"version":2,"issue":101,"worktree":"/tmp/issue-101","branch":"feat/101","runId":"wave","attempt":"101-b","workerId":"worker-101b","state":"terminal","disposition":"completed","evidence":"result-101.json","heartbeatEpoch":4}' \
     >>"$ledger"
-assert_eq $'coverage= prs=0 receipts=0 skipped=0 parked=1 queued=1\nblocked=102:src/two.sh,tests/two.sh' \
+assert_eq $'coverage= prs=0 receipts=0 skipped=0 parked=1 queued=1 root-turns-before-first-completion=7\nblocked=102:src/two.sh,tests/two.sh' \
     "$("$script" summary --run-id wave --repo-root "$repo")" \
     'latest lifecycle per issue clears an older handback without duplicate parked coverage'
 
@@ -83,11 +90,11 @@ assert_contains "$missing_state_err" 'receipt_prs' 'missing collection refusal n
 # Initialization is explicit and idempotent: it creates only absent summary
 # arrays and never resets an existing producer record.
 "$script" init-summary --run-id wave --repo-root "$repo"
-assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":false}' \
     "$(jq -c . "$state")" \
     'summary initialization creates each missing collection without resetting existing state'
 "$script" init-summary --run-id wave --repo-root "$repo"
-assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]}' \
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":false}' \
     "$(jq -c . "$state")" \
     'resumed summary initialization preserves prior producer records'
 
@@ -102,9 +109,17 @@ assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]
 "$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
-assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204]}' \
+assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204],"root_turns":[],"first_completion":false}' \
     "$(jq -c . "$state")" \
     'producer recording and queue-to-dispatch removal are idempotent across resumed sweeps'
+
+"$script" append --run-id wave --repo-root "$repo" --path root_turns --json true
+"$script" append --run-id wave --repo-root "$repo" --path root_turns --json true
+assert_eq '[true,true]' "$("$script" get --run-id wave --repo-root "$repo" --path root_turns)" \
+    'root-turn recording increments the durable pre-completion count'
+"$script" set --run-id wave --repo-root "$repo" --path first_completion
+assert_eq true "$("$script" get --run-id wave --repo-root "$repo" --path first_completion)" \
+    'the first-completion latch is durable before the summary reads the frozen count'
 
 printf '%s\n' '{"opened_prs":[201],"queued":[],"receipt_prs":[201,201]}' >"$state"
 bad_state_rc=0
@@ -112,7 +127,7 @@ bad_state_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/n
 assert_eq 1 "$bad_state_rc" 'duplicate receipt PRs refuse instead of inflating coverage'
 assert_contains "$bad_state_err" 'receipt_prs' 'malformed collection refusal names the recovery field'
 
-printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":true}' >"$state"
 printf '%s\n' '{not-json' >>"$ledger"
 bad_ledger_rc=0
 bad_ledger_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || bad_ledger_rc=$?
@@ -121,7 +136,7 @@ assert_contains "$bad_ledger_err" 'active-workers' 'ledger refusal names the una
 
 # A large porcelain stream must be consumed completely. The former
 # git|sed|head selector closed the producer early under pipefail.
-printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[]}' >"$state"
+printf '%s\n' '{"opened_prs":[],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":true}' >"$state"
 sed -i '$d' "$ledger"
 fake_bin="$tmp/fake-bin"
 mkdir -- "$fake_bin"
