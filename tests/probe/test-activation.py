@@ -351,6 +351,52 @@ class Activation(unittest.TestCase):
         self.assertEqual(self.acknowledge().returncode, 0)
         self.assertEqual(saved.read_text(), '{"prs":[271,272],"reviews":"preserve"}')
 
+    def test_stale_leaf_receipt_hands_back_once_and_root_redelivers_to_same_worker(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        old = self.record()
+        saved = self.repo / ".agent/worker-edit.txt"
+        saved.write_text("unpublished worker change\n")
+        body = self.plugin / "skills/parallel-issues/SKILL.md"
+        body.write_text(body.read_text() + "\nSame-version recovery content.\n")
+
+        denied = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "continue"})
+        reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+        marker = "agentkit activation-blocked: "
+        self.assertEqual(reason.count(marker), 1)
+        handback = json.loads(reason.split(marker, 1)[1].splitlines()[0])
+        self.assertEqual(handback["schemaVersion"], 1)
+        self.assertEqual(handback["session"], "test-session")
+        self.assertEqual(handback["worktree"], str(self.repo))
+        self.assertEqual(handback["workflow"], "parallel-issues")
+        self.assertEqual(handback["installed"]["version"], handback["received"]["version"])
+        self.assertNotEqual(handback["installed"]["digest"], handback["received"]["digest"])
+        self.assertNotIn("nonce", json.dumps(handback).lower())
+
+        before_wrong_workflow = self.record()
+        wrong_workflow = self.invoke("redeliver", "--repo-root", handback["worktree"],
+                                     "--session", handback["session"],
+                                     "--skill", "pr-to-green")
+        self.assertNotEqual(wrong_workflow.returncode, 0)
+        self.assertEqual(self.record(), before_wrong_workflow)
+
+        delivery = self.invoke("redeliver", "--repo-root", handback["worktree"],
+                               "--session", handback["session"],
+                               "--skill", handback["workflow"])
+        self.assertEqual(delivery.returncode, 0, delivery.stderr)
+        self.assertIn("Same-version recovery content", delivery.stdout)
+        refreshed = self.record()
+        self.assertEqual(refreshed["deliverySource"], "root-redelivery")
+        self.assertEqual(refreshed["status"], "pending")
+        self.assertNotEqual(refreshed["nonce"], old["nonce"])
+        stale = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
+                            "--skill", "parallel-issues", "--nonce", old["nonce"])
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertEqual(self.acknowledge().returncode, 0)
+        resumed = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "continue"})
+        self.assertNotEqual(resumed.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+        self.assertEqual(saved.read_text(), "unpublished worker change\n")
+
     def test_advertised_invocations_deliver_fresh_challenges(self):
         cases = {
             "Resume HonkHonk’s saved parallel-issues run using Agent Kit 0.9.1 with --yolo": "parallel-issues",
