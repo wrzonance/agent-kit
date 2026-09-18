@@ -21,14 +21,12 @@ include secrets in declarations or freshness receipts. Symlinks escaping the rep
 unavailable toolchain executables cause a named miss. Resolved command/config, cwd, HEAD, file
 content, and toolchain executable paths/bytes all participate; HEAD alone is insufficient.
 
-Records survive resume under `.agent/verification-records/<fingerprint>`. Reused success prints
-`verification current` with an explicit reused-evidence label. Reused deterministic failure
-returns its original status and log plus an inspection command. Missing/corrupt completed evidence
-produces a named miss and fresh execution. An identical running command returns its existing
-handle with status 75. An interrupted/unknown record also returns 75: inspect the handle's `running`
-file and named log, then use `--force` if recovery is appropriate. `--force` never starts a duplicate
-while the lease is held. Compose collisions and existing permitted transient retries remain
-retryable. The legacy green index and PASS/FAIL completion-log markers retain their formats.
+Records survive under `.agent/verification-records/<fingerprint>`. `verification reuse disabled`
+names why reuse is ineligible; a pre-run `verification miss` names unavailable evidence. Both say
+fresh execution follows. Only `verification current` and `verification reused` avoid execution.
+Running or unknown records return their handle with status 75; inspect it, then use `--force` for
+appropriate recovery. `--force` never starts a duplicate while the lease is held. Compose
+collisions and permitted transient retries remain retryable. Legacy cache and log formats remain.
 
 During red/green iteration, run focused suites for changed files, then use `--force` for the required
 fresh full suite before commit. Reused evidence never satisfies a workflow's fresh-run requirement.

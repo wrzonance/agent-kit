@@ -89,6 +89,9 @@ Output:
   PASS: <cmd> (N lines suppressed -> LOG)
   BASELINE-EXCLUDED: <test/base/log> (exit 0, not green evidence)
   FAIL(rc=N): <cmd>  + context notes + up to 20 error lines + 'full log: LOG'
+  verification reuse disabled: cache ineligible; command executes freshly
+  verification miss: no reusable evidence; a following command executes freshly,
+                     or a completed result was not stored for later reuse
   verification current/reused: prior evidence, never a fresh PASS
   verification running/unknown: durable handle and exit 75; inspect before retry
 
@@ -1485,10 +1488,14 @@ report_failure() {
 # green evidence. State-producing commands must run again when their ignored
 # outputs disappear, even when the checkout bytes are unchanged.
 verification_cache_eligible() {
-    [[ $cmd_declared == yes && $verification_mode == local && -n $verification_tools && -z $baseline_ref ]] || return 1
+    verification_ineligible_reason=''
+    [[ $cmd_declared == yes ]] || { verification_ineligible_reason='not-declared'; return 1; }
+    [[ $verification_mode == local ]] || { verification_ineligible_reason='mode-not-local'; return 1; }
+    [[ -n $verification_tools ]] || { verification_ineligible_reason='no-toolchain'; return 1; }
+    [[ -z $baseline_ref ]] || { verification_ineligible_reason='baseline-run'; return 1; }
     case ${cmd_name:-} in
         test|lint|typecheck|coverage|verify|check|*-test|*-lint|*-typecheck|*-check) return 0 ;;
-        *) return 1 ;;
+        *) verification_ineligible_reason='name-not-verification'; return 1 ;;
     esac
 }
 
@@ -1627,7 +1634,10 @@ verification_cache_hit() {
 # sleeps, or stale-lock deletion. An abandoned running record needs --force.
 claim_verification() {
     local root=$git_top/.agent/verification-records
-    command -v flock >/dev/null || { printf 'agent-run: verification bypass: lock-unavailable\n'; return 1; }
+    command -v flock >/dev/null || {
+        printf 'agent-run: verification reuse disabled: lock-unavailable; executing fresh\n'
+        return 1
+    }
     [[ ! -L $git_top/.agent ]] || return 1
     assert_private_dir "$root"
     verification_handle=$root/$tree_hash
@@ -1651,9 +1661,11 @@ claim_verification() {
     fi
     verification_cache_hit || true
     if [[ -e $verification_handle/result ]] && ((force_cmd == 0)); then
-        printf 'agent-run: verification miss: invalid-evidence handle=%s\n' "$verification_handle"
+        printf 'agent-run: verification miss: invalid-evidence handle=%s; executing fresh\n' \
+            "$verification_handle"
     else
-        printf 'agent-run: verification miss: %s\n' "$([[ $force_cmd == 1 ]] && printf fresh-required || printf no-record)"
+        printf 'agent-run: verification miss: %s; executing fresh\n' \
+            "$([[ $force_cmd == 1 ]] && printf fresh-required || printf no-record)"
     fi
     rm -f -- "$verification_handle/result"
     printf 'claimed pid=%s\n' "$$" > "$verification_handle/running"
@@ -1751,10 +1763,11 @@ if verification_cache_eligible; then
     if [[ -n $tree_hash ]]; then
         claim_verification || { tree_hash=''; verification_handle=''; }
     else
-        printf 'agent-run: verification miss: inputs-unavailable\n'
+        printf 'agent-run: verification miss: inputs-unavailable; executing fresh\n'
     fi
 elif [[ -n $cmd_name ]]; then
-    printf 'agent-run: verification bypass: not-declared-local\n'
+    printf 'agent-run: verification reuse disabled: %s; executing fresh\n' \
+        "${verification_ineligible_reason:-unknown-reason}"
 fi
 
 select_caches
