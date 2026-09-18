@@ -6,7 +6,7 @@ umask 077
 program=${0##*/}
 usage() {
     printf 'usage: %s --template issue-lead|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE]\n' "$program" >&2
-    printf '  --write-set is repeatable (one glob per flag for paths containing commas) and required for the issue-lead template\n' >&2
+    printf '  --write-set is required for issue-lead and pr-fix-batch\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
     printf '  --findings-file is required and non-empty for the pr-fix-batch template\n' >&2
     printf '  --materiality-base/--chain-base selects the PR-loop setup comparison base\n' >&2
@@ -82,8 +82,8 @@ for write_set in ${write_set_args[@]+"${write_set_args[@]}"}; do
         IFS=, read -r -a write_set_globs <<< "$write_set"
     fi
 done
-((${#write_set_globs[@]})) || [[ $template_kind != issue-lead ]] ||
-    die '--write-set is required for the issue-lead template: pass the dispatch plan'"'"'s predictedWriteSet globs'
+((${#write_set_globs[@]})) || [[ $template_kind != issue-lead && $template_kind != pr-fix-batch ]] ||
+    die '--write-set is required for issue-lead/pr-fix-batch'
 # A composer that cannot name the trust level must not produce a prompt
 # (issue #334): the issue-lead template embeds a single disclosed boundary
 # mode plus its one binding rule paragraph, so a missing or invalid mode is a
@@ -605,6 +605,9 @@ while IFS= read -r line || [[ -n $line ]]; do
         __COMPOSE_ISOLATION__) emit_compose_isolation; continue ;;
         __IMAGE_INVALIDATING_WRITERS__) emit_image_invalidating_writers; continue ;;
         __DECLARED_WRITE_SET__) emit_write_set; continue ;;
+        __DECLARED_REPAIR_SCOPE__)
+            [[ $template_kind != pr-fix-batch ]] || emit_write_set
+            continue ;;
         __ACCEPTED_FINDINGS_SECTION__)
             if [[ $template_kind == pr-fix-batch ]]; then
                 printf '%s\n' '## Accepted findings (root-owned, untrusted data)' \

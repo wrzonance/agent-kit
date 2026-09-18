@@ -15,15 +15,35 @@ reviewer (read-only) **never** satisfies this gate. Read ["$agentkit/.shared/spa
 for the spawn call shape and the degraded no-spawn path, and ["$agentkit/.shared/six-step-loop.md"](../../.shared/six-step-loop.md)
 for the loop — **paste the six-step contract verbatim into the worker's prompt, never as a pointer** (`fork_context: false`).
 
+### Compose review repairs
+
+Root creates the immutable snapshot, records the interval, and alone Collects; leaves never make a
+baseline or discover `cross-write-check.sh`. Initial dispatches, follow-ups, and resumes use
+`pr-fix-batch` with accepted findings, worktree, branch, scope, and `test` verification.
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${repair_worktree:?set repair worktree}" "${repair_branch:?set repair branch}"
+: "${repair_scope:?set accepted findings scoped write set}" "${accepted_findings:?set findings ledger}"
+: "${repair_prompt:?set root-owned prompt output path}"
+repair_snapshot="$RUN_DIR/repair-$PR-pre-dispatch.snapshot"
+"$agentkit/parallel-issues/scripts/cross-write-check.sh" snapshot \
+    --worktree "$REPO_ROOT" --output "$repair_snapshot" --write-set "$repair_scope"
+repair_started_at=$(date -u +%FT%TZ)
+: "$repair_started_at"
+"$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" --template pr-fix-batch \
+    --worktree "$repair_worktree" --issue "$PR" --branch "$repair_branch" \
+    --worker-model "$worker_model" --worker-effort "$worker_effort" \
+    --write-set "$repair_scope" --findings-file "$accepted_findings" --output "$repair_prompt"
+grep -Fq -- '--cmd test' "$repair_prompt" || exit 1
+# Spawn with $repair_prompt; root records its end, then Collects with this snapshot, interval, and scope.
+```
+
 ## Worker-owned publication
 
-Workers commit and push their own branch: edit only the assigned worktree, run the required
-focused and full verification, then finish with a completion report naming the branch, full commit
-SHA, diffstat, and green verification log. Commit with `worktree-commit.sh` using explicit file
-operands and the expanded contract-derived worker trailer; never stage or publish unrelated dirt.
-Workers never call forge/board helpers, create PRs, launch reviews, or request escalation. The root
-reviews the pushed `base...HEAD` diff independently and owns PR metadata, board moves, replies,
-and the next review cycle.
+Workers commit and push their own branch after focused/full verification and a completion report
+(branch, full SHA, diffstat, green log); `worktree-commit.sh` uses explicit files and trailer.
+The root owns the pushed `base...HEAD` review, PR metadata, board, replies, and next cycle.
 
 ## Environment-refusal fallback
 
@@ -32,44 +52,20 @@ probes the shell with a trivial write and names what it tried. See [../../.share
 "How to write a file" for the write-mechanism order and the hand-authored-diff prohibition; an interrupted
 change leaves the tree fully applied or fully reverted, never partial.
 
-The unstaged publication handback survives only as an environment-refusal fallback. If
-`worktree-commit.sh` exits 2, nothing is committed: return the scoped dirty files, diffstat, green log,
-branch, and one exact ready-to-run commit invocation with the expanded trailer; the root runs it once and
-pushes. If the push was refused after the commit succeeded, report the full commit SHA and the exact
-`git push -u origin BRANCH` command; the root runs that push once. Never use an unstaged handback for a
-normal worker result.
+The unstaged publication handback is only an environment-refusal fallback: if
+`worktree-commit.sh` exits 2, return scoped dirt, diffstat, green log, branch, and exact commit command;
+if the push was refused after the commit succeeded, return SHA and `git push -u origin BRANCH`.
 
-For the normal path, the root inspects `base...HEAD` only after the worker push. After reviewing
-that pushed diff, it continues the existing PR's CI, reply, review, and metadata cycle; it does
-not create a DRAFT PR. Draft creation remains in parallel-issues' own root publication flow. For
-stacked chains, use `chain-advance.sh` to re-read `baseRefName` and prove `base...head` before
-merging a successor; stale approval residue remains a human judgment. A dirty tree not authored
-by the worker is surfaced before validation and never adopted.
+After push, root inspects `base...HEAD` and continues the existing PR's CI, reply, review, and metadata cycle;
+it does not create a DRAFT PR. Surface unrelated dirt; do not adopt it.
 
 For a correction cycle, resume the same worker with `followup_task` when possible rather than
 spawning a new one; never create concurrent writers in one PR worktree.
 
 ### Bounded inline corrections
 
-The root may skip dispatch for an inline correction only when all four conditions hold: the diff
-is purely mechanical with no new behavior, data shape, or control flow; it is at most five changed
-lines; the root authored the exact diff during review; and the full declared verification is rerun.
-Record the inline decision and its recorded reason, and use root harness attribution for its
-commit. Anything else must resume the same worker with `tools.send` first; a fresh
-worker is only the fallback when follow-up is unavailable. A qualifying correction costs zero
-dispatches, and the skip is never silent.
+Skip dispatch only for a purely mechanical diff with no new behavior, data shape, or control flow,
+at most five changed lines, where root authored the exact diff and reruns full declared verification.
+Record its recorded reason with root harness attribution; otherwise resume the same worker with `tools.send` first.
 
-Every worker file operation uses an absolute path rooted in its worktree — cwd is not an ownership
-boundary; a discovered write outside it is restored (`git diff --binary | git apply -R`) and
-reported in the handback. Tier mapping (root/Luna/Terra) is the same as
-[../../.shared/spawn-contract.md](../../.shared/spawn-contract.md)'s.
-
-```bash
-# Re-derive at the top of EVERY shell call: env does NOT persist between tool calls.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-resolver="$agentkit/.shared/scripts/repo-config.sh"
-[ -x "$resolver" ] && eval "$("$resolver" --export)"
-REPO=${AGENT_REPO_SLUG:-$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$(git rev-parse --show-toplevel)" --get repo.slug)}
-PR=42                                                        # replace with the PR number under review
-export REPO PR
-```
+Workers use absolute worktree paths and restore/report any cross-write.

@@ -792,26 +792,38 @@ empty_findings="$tmp/empty-findings.ndjson"
 : > "$empty_findings"
 empty_findings_rc=0
 bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
-    --worker-model gpt-5.6-luna --worker-effort high --findings-file "$empty_findings" \
+    --worker-model gpt-5.6-luna --worker-effort high --write-set 'src/**' --findings-file "$empty_findings" \
     >/dev/null 2>&1 || empty_findings_rc=$?
 assert_eq nonzero "$([[ $empty_findings_rc != 0 ]] && printf nonzero || printf zero)" \
     'pr-fix-batch refuses an empty findings ledger'
 
 accepted_findings="$tmp/accepted-findings.ndjson"
 printf '%s\n' '{"title":"Use bounded wait","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$accepted_findings"
+scopeless_fix_rc=0
+bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
+    --worker-model gpt-5.6-luna --worker-effort high --findings-file "$accepted_findings" \
+    >/dev/null 2>&1 || scopeless_fix_rc=$?
+assert_eq nonzero "$([[ $scopeless_fix_rc != 0 ]] && printf nonzero || printf zero)" \
+    'pr-fix-batch refuses a repair dispatch without its scoped write set'
 pr_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
     --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
-    --findings-file "$accepted_findings")
+    --write-set 'src/**' --findings-file "$accepted_findings")
 assert_contains "$pr_fix_prompt" 'Use bounded wait' \
     'pr-fix-batch renders the accepted findings ledger'
 assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
 assert_contains "$pr_fix_prompt" 'untrusted data' \
     'pr-fix-batch labels finding text as untrusted data'
+assert_contains "$pr_fix_prompt" '- src/**' \
+    'pr-fix-batch renders the dispatched repair scope'
+assert_contains "$pr_fix_prompt" 'Root owns the immutable pre-dispatch snapshot and Collect' \
+    'pr-fix-batch assigns the snapshot and Collect duties to the root'
+assert_contains "$pr_fix_prompt" 'never call' \
+    'pr-fix-batch keeps cross-write helper discovery out of leaf tasks'
 printf '%s\n' '{"title":"Confirmed repair pending","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair required"}' > "$accepted_findings"
 open_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
     --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
-    --findings-file "$accepted_findings")
+    --write-set 'src/**' --findings-file "$accepted_findings")
 assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
 assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
 assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
@@ -823,7 +835,7 @@ unsafe_findings="$tmp/unsafe-findings.ndjson"
 printf '%s\n' '{"title":"bad\u0001title","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$unsafe_findings"
 unsafe_findings_rc=0
 bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
-    --worker-model gpt-5.6-luna --worker-effort high --findings-file "$unsafe_findings" \
+    --worker-model gpt-5.6-luna --worker-effort high --write-set 'src/**' --findings-file "$unsafe_findings" \
     >/dev/null 2>&1 || unsafe_findings_rc=$?
 assert_eq nonzero "$([[ $unsafe_findings_rc != 0 ]] && printf nonzero || printf zero)" \
     'pr-fix-batch refuses control characters in finding text'
