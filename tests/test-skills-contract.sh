@@ -229,6 +229,10 @@ assert_contains "$spawn_contract_text" 'using built-in default' \
     'spawn contract explains invalid or empty config fallback'
 assert_contains "$spawn_contract_text" '--get "$key") && [[ -n $value ]]; then' \
     'spawn contract treats empty resolver output as absent'
+assert_contains "$spawn_contract_text" 'release its ownership before reserving' \
+    'replacement releases the prior worker ownership before reserving'
+assert_contains "$spawn_contract_text" 'completed state and the exact remaining step' \
+    'replacement inherits completed work and the exact continuation point'
 # 2026-09-07 size wave one: the dispatcher-side contract is a mandatory read
 # for both dispatching skills; hold its byte size at the ratcheted ceiling.
 # 2026-09-09 issue #606 round 3: resolve_worker_slot now captures --get's

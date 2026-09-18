@@ -397,6 +397,30 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(resumed.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
         self.assertEqual(saved.read_text(), "unpublished worker change\n")
 
+    def test_redelivery_rejects_missing_or_symlinked_workflow_without_rewriting_receipt(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        skill = self.plugin / "skills/parallel-issues/SKILL.md"
+        original = skill.read_text()
+        target = self.root / "symlink-target.md"
+        target.write_text("untrusted workflow bytes\n")
+
+        for invalid in ("missing", "symlink"):
+            with self.subTest(invalid=invalid):
+                skill.unlink()
+                if invalid == "symlink":
+                    skill.symlink_to(target)
+                before = self.record()
+                try:
+                    result = self.invoke("redeliver", "--repo-root", str(self.repo),
+                                         "--session", "test-session", "--skill", "parallel-issues")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("workflow-unavailable: parallel-issues", result.stderr)
+                    self.assertEqual(self.record(), before)
+                finally:
+                    skill.unlink(missing_ok=True)
+                    skill.write_text(original)
+
     def test_advertised_invocations_deliver_fresh_challenges(self):
         cases = {
             "Resume HonkHonk’s saved parallel-issues run using Agent Kit 0.9.1 with --yolo": "parallel-issues",

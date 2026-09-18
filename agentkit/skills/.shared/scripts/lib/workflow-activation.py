@@ -231,7 +231,10 @@ def ack_command(args, record):
 
 
 def deliver(args, evidence, workflow, source, capabilities, recovery=False):
-    body = (Path(args.skills) / workflow / "SKILL.md").read_bytes()
+    skill = Path(args.skills) / workflow / "SKILL.md"
+    if not skill.is_file() or skill.is_symlink():
+        fail("workflow-unavailable: " + workflow)
+    body = skill.read_bytes()
     record = {"schemaVersion": 1, "session": evidence.session, "repoRoot": str(evidence.root),
               "workflow": workflow, "skillsRoot": args.skills, "version": identity(args),
               "installedDigest": args.digest, "deliveredDigest": hashlib.sha256(body).hexdigest(),
