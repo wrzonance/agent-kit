@@ -500,6 +500,26 @@ assert_contains "$concurrency_help" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
+assert_contains "$text" '### Spawn discipline (applies to every spawn in this skill)' \
+    'spawn discipline is cross-cutting instead of dispatch-phase scoped'
+assert_contains "$normalized_text" \
+    'issue leads, waiters, assessors, reviewers, draft loops, and any improvised role' \
+    'the universal gate names lead and non-lead fan-outs'
+assert_contains "$text" '--assert-count "$prospective_total" --agent-kind "$agent_kind"' \
+    'every fan-out passes its prospective total and kind to the cap helper'
+assert_contains "$normalized_text" \
+    'A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free' \
+    'overflow retry guidance cannot repeat the refused count unchanged'
+assert_contains "$normalized_triage_and_selection_text" \
+    'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
+    'thin-Ready vetting states its ceiling where it states the obligation'
+assert_contains "$normalized_text" \
+    'A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap.' \
+    'empty-Ready fallback guidance carries the universal assessor ceiling'
+assert_contains "$text" 'Maximum 10 concurrent agents of every kind (root counted)' \
+    'the Limits maximum covers every concurrent role'
+assert_not_contains "$text" 'Maximum 10 per wave' \
+    'the Limits maximum is no longer dispatch-wave scoped'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
@@ -1430,6 +1450,31 @@ printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 7' \
 out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
 assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
+
+# Issue #832: the cap is a property of every spawn, including an improvised
+# non-lead fan-out. The effective skill maximum remains 10 even when the
+# runtime offers more threads, and the refusal carries enough state to retry
+# with a smaller batch instead of repeating the same request.
+wide_home="$tmp/wide-runtime"
+mkdir -p "$wide_home"
+printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 20' \
+    > "$wide_home/config.toml"
+overflow_err="$tmp/assessor-overflow.err"
+out=$("$cap_helper" --config "$wide_home/config.toml" \
+    --assert-count 11 --agent-kind assessor 2>"$overflow_err")
+status=$?
+assert_eq '1' "$status" 'an assessor fan-out above the effective cap is refused'
+assert_eq '' "$out" 'a refused assessor fan-out prints no success evidence'
+assert_contains "$(<"$overflow_err")" \
+    'spawn refused: cap=10 observed=11 agent-kind=assessor helper=concurrency-cap.sh' \
+    'the refusal names the cap, observed total, non-lead kind, and cap helper'
+wrapped_count=18446744073709551616
+out=$("$cap_helper" --config "$wide_home/config.toml" \
+    --assert-count "$wrapped_count" --agent-kind assessor 2>"$overflow_err")
+status=$?
+assert_eq '1' "$status" 'a prospective total cannot wrap through shell integer arithmetic'
+assert_contains "$(<"$overflow_err")" "observed=$wrapped_count" \
+    'an overflow-sized refusal preserves the original observed decimal'
 
 # --- issue #273: size facts never park an unattended run --------------------
 # The 2026-08-18 cable-tool incident: a worker finished (implemented,
