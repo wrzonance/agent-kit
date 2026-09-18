@@ -29,18 +29,6 @@ assert_contains "$wait_text" 'Worker implementation wait' \
 worker_wait_bound_seconds=$(grep -m1 'Worker implementation wait' "$wait_discipline" | grep -oE '[0-9]+' | head -n1)
 assert_eq yes "$([[ $worker_wait_bound_seconds =~ ^[1-9][0-9]*$ ]] && printf yes || printf no)" \
     'the worker-wait row names a positive numeric bound'
-assert_contains "$wait_text" '| Codex native child |' \
-    'native child collection has an operation-specific route'
-assert_contains "$wait_text" '| Codex shell session |' \
-    'shell collection remains tied to a returned session handle'
-assert_contains "$wait_text" '| Codex running exec cell |' \
-    'cell collection remains tied to a returned cell handle'
-assert_contains "$wait_text" '| Claude background agent or shell |' \
-    'Claude background completion has a notification route'
-assert_contains "$wait_text" 'remaining original collection window' \
-    'native collection preserves its original deadline'
-assert_contains "$wait_text" 'legacy shell-yield' \
-    'the legacy yield record is not promoted to a native-agent limit'
 assert_not_contains "$wait_text" 'requests_per_wait_minute' \
     'the model is no longer asked to calculate rollout metrics'
 assert_contains "$skill_text" 'Before the threshold elapses, do not call' 'stall checks are threshold-gated'
@@ -77,8 +65,6 @@ assert_contains "$wait_text" 'Root calls already-blocking bounded helpers direct
 assert_contains "$wait_text" 'genuinely unbounded or long-lived producer' 'waiter exception has a purpose'
 assert_not_contains "$wait_text" '3600000 ms' 'the runbook does not promise a runtime cap it did not measure'
 assert_contains "$wait_text" 'expiry does not terminate a worker' 'collection expiry is not worker termination'
-assert_contains "$wait_text" 'Empty capped yields resume the same operation' \
-    'silent empty returns continue the same operation'
 
 # wait-discipline.md documents itself as the single source the composer
 # reads -- never a second hand-maintained copy of the number.

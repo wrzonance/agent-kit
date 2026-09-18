@@ -35,8 +35,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
     # #781 follow-up: a linked-project miss now resolves issue memberships.
     # #778: validate runtime-tool metadata and print the exact repair command.
-    # #805: harness-specific verification collection routing.
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="785:10143:800"
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="777:10071:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
@@ -119,7 +118,6 @@ readonly MAX_HELPER_TOKENS=10000
 # #783: filename-bound report identity.
 # #784 review: cached requirements and work-shape enforcement atop the final parent.
 # #785 bot repair: reject duplicate run IDs across trusted state roots.
-# #805: harness-specific collection routing and the legacy-yield scope comment.
 # #777 review: command-specific attached reader options and fail-fast ledger help.
 # Combined #777 review repairs + #778: 1,794,180 helper bytes / 4 = 448,545 tokens.
 # #784 review plus final #792 parent: cached verdicts and reader fixes.
@@ -164,7 +162,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #780 PR #793 final review repair: curly-quote consent boundary; exact total.
 # #781 merge-down with PR #793: measured combined helper tree.
 # #781 review repair: private cache parent and per-issue membership selection.
-readonly MAX_TREE_TOKENS=464538
+readonly MAX_TREE_TOKENS=464430
 
 violations=0
 checked=0
