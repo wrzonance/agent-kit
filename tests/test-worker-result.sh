@@ -24,13 +24,23 @@ with tempfile.TemporaryDirectory() as temp:
     os.environ['PATH']=str(root)+os.pathsep+os.environ['PATH']
     local_declaration='AGENT_CMD_TEST=true\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TEST_TOOLCHAIN=bash,true,worker-tool\n'
     (repo / '.agent/config.env').write_text(local_declaration)
-    # Consume real declared-command evidence, not a fixture mirroring the hash.
-    run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test')
+    # Root trust comes from independently delivered runner output, not the
+    # worker-writable integrity sidecar.
+    runner_output = run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--summary')
+    summary = runner_output.splitlines()[-1]
+    summary_match = re.search(r' log-sha256=([0-9a-f]{64}) receipt=', summary)
+    assert summary_match, summary
     cache = (repo / '.agent/verification-cache').read_text()
     match = re.fullmatch(r'([0-9a-f]{64}) cmd=test log=(.+) at=\S+ focus=\n', cache)
     assert match, cache
     key, log = match.group(1), Path(match.group(2))
-    observed_digest = hashlib.sha256(log.read_bytes()).hexdigest()
+    digest_receipt = Path(str(log) + '.sha256')
+    receipt_text = digest_receipt.read_text()
+    assert re.fullmatch(r'[0-9a-f]{64}\n', receipt_text), receipt_text
+    observed_digest = summary_match.group(1)
+    assert not digest_receipt.is_symlink() and digest_receipt.stat().st_uid == os.getuid()
+    assert oct(digest_receipt.stat().st_mode & 0o777) == '0o600'
+    assert observed_digest == hashlib.sha256(log.read_bytes()).hexdigest()
     plan = root / 'plan.json'; owners = root / 'owners.ndjson'; state = root / 'run-state.json'
     def write(path, value):
         path.write_text(json.dumps(value) + '\n'); path.chmod(0o600)
@@ -114,17 +124,20 @@ with tempfile.TemporaryDirectory() as temp:
     assert unknown['claims']['verification'] == 'unknown'
     assert unknown['status'] == 'unknown'
     assert json.loads(state.read_text())['results']['attempt']['status'] == 'unknown'
-    validate(2,digest=hashlib.sha256(log.read_bytes()).hexdigest())
+    validate(2,digest=hashlib.sha256(log.read_bytes()).hexdigest())  # Worker-derived replacement cannot clear the pin.
     pins=json.loads(state.read_text())['results']['attempt']['trustedLogs']
     assert any(pin['sha256']==observed_digest for pin in pins.values()), 'failed validation preserves original pins'
     log.write_bytes(original_log); validate(2)  # Restoring the same execution cannot clear invalidation.
     def fresh_execution():
-        run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--force')
+        output=run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--force', '--summary')
+        terminal=output.splitlines()[-1]
+        terminal_digest=re.search(r' log-sha256=([0-9a-f]{64}) receipt=',terminal)
+        assert terminal_digest, terminal
         line=(repo/'.agent/verification-cache').read_text().splitlines()[-1]
         observed=re.fullmatch(r'([0-9a-f]{64}) cmd=test log=(.+) at=\S+ focus=',line)
         assert observed, line
         path=Path(observed.group(2))
-        return observed.group(1), path, hashlib.sha256(path.read_bytes()).hexdigest()
+        return observed.group(1), path, terminal_digest.group(1)
     key,log,observed_digest=fresh_execution()
     result['verification'][0].update(fingerprint=key,log=str(log)); save()
     validate(2); validate(digest=observed_digest)

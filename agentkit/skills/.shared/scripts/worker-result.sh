@@ -283,7 +283,7 @@ def main():
         v.add_argument('--'+name,required=True)
     v.add_argument('--issue',type=int,required=True)
     v.add_argument('--required-check',action='append',required=True)
-    v.add_argument('--log-sha256',action='append',default=[],help='root-observed original COMMAND=SHA256; never worker JSON')
+    v.add_argument('--log-sha256',action='append',default=[],help='root-observed original COMMAND=SHA256; never worker JSON or sidecar')
     a=p.parse_args(sys.argv[2:]); claims={k:'unknown' for k in ('ownership','implementation','push','verification')}
     try:
         if a.action=='validate':
