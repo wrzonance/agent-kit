@@ -80,31 +80,36 @@ validate_section() {
         die "$label is empty or whitespace-only: $path"
 }
 
+validate_prose_section() {
+    local label=$1 path=$2 heading first_assignment
+    validate_section "$label" "$path"
+    if heading=$(LC_ALL=C grep -m1 -E '^##[[:space:]]' -- "$path"); then
+        die "$label contains duplicated heading '$heading' in $path; remove the heading line; compose-pr-body.sh emits it"
+    fi
+    first_assignment=$(LC_ALL=C awk '
+        /^[[:space:]]*$/ { if (count >= 2 && !prose) { print first; found=1; exit }; count=prose=0; next }
+        /^[A-Za-z_][A-Za-z0-9_.]*=/ { if (!count) first=$0; count++; next }
+        { prose=1 }
+        END { if (!found && count >= 2 && !prose) print first }
+    ' "$path")
+    [[ -z $first_assignment ]] ||
+        die "$label contains an unlabelled key=value block beginning '$first_assignment' in $path; replace the key=value block with prose or add a prose label"
+}
+
 readonly TESTING_CHECKBOX_RE='^-[[:space:]]\[[xX[:space:]]\][[:space:]].+'
 readonly TESTING_BULLET_RE='^-[[:space:]]+(.+)$'
-# A malformed checkbox *attempt* is narrowly "- [<one char>]" where that char
-# is not space/x/X (those already matched TESTING_CHECKBOX_RE above), followed
-# by whitespace or end of line -- e.g. "- [z] weird". A plain bullet whose text
-# happens to start with a markdown link, "- [CI run](url)", has more than one
-# character between the brackets and must fall through to TESTING_BULLET_RE
-# like any other plain bullet, not trip this guard (#554 F3).
+# Only a one-character bracket is a malformed checkbox attempt; markdown links
+# remain plain bullets (#554 F3).
 readonly TESTING_MALFORMED_CHECKBOX_RE='^-[[:space:]]+\[[^]xX[:space:]]\]([[:space:]]|$)'
 
-# Prints TESTING_FILE's content with every plain "- item" bullet rewritten to
-# an unchecked "- [ ] item" checkbox; an existing checkbox line and blank
-# lines pass through unchanged. Dies (naming the offending file) on a line
-# that is neither form -- normalization only widens accepted *input*, it
-# never silently drops or waves through a genuinely invalid line.
+# Normalize plain bullets to unchecked boxes; preserve boxes and blank lines.
+# Refuse every other line rather than silently dropping invalid input.
 normalize_testing_file() {
     local label=$1 path=$2 line
     while IFS= read -r line || [[ -n $line ]]; do
         if [[ -z $line || $line =~ $TESTING_CHECKBOX_RE ]]; then
             printf '%s\n' "$line"
         elif [[ $line =~ $TESTING_MALFORMED_CHECKBOX_RE ]]; then
-            # A single-char bracket that failed the strict checkbox regex
-            # above is a malformed checkbox attempt, not a plain bullet --
-            # normalizing it would silently double-bracket it into something
-            # like "- [ ] [z] weird" instead of naming the actual mistake.
             die "$label must contain only markdown checkbox lines"
         elif [[ $line =~ $TESTING_BULLET_RE ]]; then
             printf -- '- [ ] %s\n' "${BASH_REMATCH[1]}"
@@ -154,9 +159,9 @@ validate_args() {
     [[ $ISSUE =~ $UINT_RE ]] || die '--issue must be a positive integer'
     [[ -n $AGENT && $AGENT != *$'\n'* && $AGENT != *$'\r'* ]] ||
         die '--agent must be a non-empty single-line identity'
-    validate_section '--why-file' "$WHY_FILE"
-    validate_section '--what-file' "$WHAT_FILE"
-    validate_section '--decisions-file' "$DECISIONS_FILE"
+    validate_prose_section '--why-file' "$WHY_FILE"
+    validate_prose_section '--what-file' "$WHAT_FILE"
+    validate_prose_section '--decisions-file' "$DECISIONS_FILE"
     validate_section '--testing-file' "$TESTING_FILE"
     normalize_testing_file '--testing-file' "$TESTING_FILE" >/dev/null
     [[ -z $BASELINE_FILE ]] || validate_section '--baseline-file' "$BASELINE_FILE"
