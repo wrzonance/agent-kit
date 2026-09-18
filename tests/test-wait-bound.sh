@@ -42,6 +42,34 @@ assert_contains "$wait_text" 'Use the largest permitted yield' \
     'shared wait discipline tells every bounded helper to use the largest yield'
 assert_contains "$wait_text" 'resume the same running session' \
     'shared wait discipline preserves the same helper session across runtime yields'
+assert_contains "$wait_text" 'closed set' \
+    'shared wait discipline declares a closed post-dispatch root budget'
+assert_contains "$wait_text" 'authorized dispatch round' \
+    'the discretionary wait budget starts after the authorized dispatch round'
+assert_contains "$wait_text" 'remaining approved initial or refill dispatches' \
+    'the wait budget preserves required multi-issue dispatch work'
+assert_contains "$wait_text" 'returned worker IDs' \
+    'the wait budget preserves returned worker identity bookkeeping'
+assert_contains "$wait_text" 'user steering' \
+    'the wait budget preserves user steering while workers are active'
+assert_not_contains "$wait_text" 'After the first worker dispatch and before the first reported completion' \
+    'the wait budget does not begin before the approved dispatch round finishes'
+assert_contains "$wait_text" 'external fetches' \
+    'post-dispatch root budget excludes external fetches'
+assert_contains "$wait_text" 'primary-source verification' \
+    'post-dispatch root budget excludes primary-source verification'
+assert_contains "$wait_text" 'new analysis artifacts' \
+    'post-dispatch root budget excludes authoring analysis artifacts'
+assert_contains "$wait_text" 'repository files the worker may be rewriting' \
+    'post-dispatch root budget excludes stale root-checkout reads'
+assert_contains "$wait_text" '--path root_turns --json true' \
+    'shared wait discipline records each root turn before first completion'
+assert_contains "$wait_text" '--path first_completion' \
+    'shared wait discipline freezes the counter at first completion'
+assert_contains "$skill_text" 'Primary-source verification and design research are Steps 1–5 work owned by the issue lead' \
+    'parallel skill assigns source and design research to the issue lead'
+assert_contains "$skill_text" 'instruction belongs in the composed worker prompt' \
+    'parallel skill routes required source research through the worker prompt'
 assert_not_contains "$implementation" 'read the NAMED LOG when the summary is insufficient' \
     'implementation template defers log-read mechanics to the composed verify line'
 combined_worker_lines=$(printf '%s\n%s\n' "$prompts" "$implementation" | wc -l | tr -d ' ')
