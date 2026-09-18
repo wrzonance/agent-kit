@@ -137,7 +137,7 @@ expected_tools_line="tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v
 assert_contains "$prompt" "$expected_tools_line" \
     'issue-lead prompt carries the validated runtime-tool mapping verbatim'
 
-for matrix_case in codex:present:27000 codex:absent:30000 \
+for matrix_case in codex:present:27000 codex:absent:60000 \
     claude:present:27000 claude:absent:60000 \
     opencode:present:27000 opencode:absent:30000 \
     unknown:present:27000 unknown:absent:30000; do

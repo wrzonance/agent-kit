@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Legacy shell-yield hint. This record has no tool identity and must not be
 # treated as proof of a native-agent or later session-collection timeout limit.
+# A measured value is operator-supplied through AGENT_YIELD_CAP_MS.
 yield_cap_default_ms() {
-    [[ ${1:-unknown} == claude ]] && printf '60000\n' || printf '30000\n'
+    case ${1:-unknown} in
+        codex|claude) printf '60000\n' ;;
+        *) printf '30000\n' ;;
+    esac
 }
 yield_cap_line() {
     local harness=${1:-unknown} milliseconds source=default

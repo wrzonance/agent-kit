@@ -30,6 +30,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 # under whichever CLI actually runs it.
 current_harness_line="harness= $("$harness_id_script" 2> /dev/null)"
 current_harness_name=$("$harness_id_script" --name 2> /dev/null)
+current_harness_default_cap=30000
+[[ $current_harness_name != codex && $current_harness_name != claude ]] || current_harness_default_cap=60000
 clean_harness_env=(env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CODEX_HOME \
     -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_PERMISSION_PROFILE -u OPENCODE -u OPENCODE_PID \
     -u AGENT_YIELD_CAP_MS)
@@ -63,8 +65,8 @@ fi
 codex_repo=$(new_repo)
 codex_out=$("${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
     "$script" --worktree "$codex_repo" 2> /dev/null)
-assert_contains "$codex_out" 'yield-cap= ms=30000 source=default harness=codex' \
-    'an explicit Codex signal advertises the conservative Codex default'
+assert_contains "$codex_out" 'yield-cap= ms=60000 source=default harness=codex' \
+    'an explicit Codex signal advertises the observed 60-second Codex default'
 assert_contains "$codex_out" \
     "tools= spawn=multi_agent_v1__spawn_agent wait=multi_agent_v1__wait_agent send=multi_agent_v1__send_input list='ALL_TOOLS.filter(t=>/multi_agent_v1__/.test(t.name)).map(t=>t.name)'" \
     'a Codex contract names its native sub-agent tools without a registry dump'
@@ -72,7 +74,7 @@ assert_contains "$codex_out" \
 ambient_cap_repo=$(new_repo)
 ambient_cap_out=$(AGENT_YIELD_CAP_MS=99000 "${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
     "$script" --worktree "$ambient_cap_repo" 2> /dev/null)
-assert_contains "$ambient_cap_out" 'yield-cap= ms=30000 source=default harness=codex' \
+assert_contains "$ambient_cap_out" 'yield-cap= ms=60000 source=default harness=codex' \
     'default-cap fixtures clear an ambient measured-cap override'
 
 claude_repo=$(new_repo)
@@ -1264,8 +1266,8 @@ noguard_out=$("$noguard_script" --worktree "$noguard_repo" --inherit-session "$n
 assert_eq 'sandbox= active=yes profile=strict network=disabled home-writable=no measured-by=agent-shell note="escalate git writes and forge calls; only the workspace is writable"' \
     "$(grep '^sandbox=' <<< "$noguard_out")" \
     'an unavailable comparator fails CLOSED -- the recorded line is kept, never silently treated as "not widened"'
-assert_contains "$noguard_out" "yield-cap= ms=30000 source=default harness=$current_harness_name" \
-    'a missing yield-cap library degrades to a labelled conservative default'
+assert_contains "$noguard_out" "yield-cap= ms=$current_harness_default_cap source=default harness=$current_harness_name" \
+    'a missing yield-cap library degrades to the labelled harness default'
 
 # The same revalidate-not-discard behaviour for caches= (issue #372), using
 # caches_widened -- HOME writability is directly controllable, which gives a
