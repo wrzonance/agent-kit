@@ -328,7 +328,7 @@ must_survive=(
     'worker_attribution=$('
     '**Filesystem scope:**'
     '**Ownership boundary:**'
-    'verify= cmd='
+    'verify= cmd_name='
     'Before generating any patch, re-read the target file'
 )
 for rule in "${must_survive[@]}"; do
