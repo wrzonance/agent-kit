@@ -1191,7 +1191,7 @@ probe_runtime_pin() {
 }
 
 probe_harness() {
-    local line harness
+    local line harness cap=30000
     line=$("$SCRIPT_DIR/harness-id.sh" 2>/dev/null || true)
     [[ -n $line ]] || line='name=unknown trailer="Agent <noreply@example.invalid>" other=none'
     HARNESS_OTHER=${line##*other=}
@@ -1206,13 +1206,11 @@ probe_harness() {
     if declare -F yield_cap_line > /dev/null; then
         emit "$(yield_cap_line "$harness")"
     else
-        emit "yield-cap= ms=30000 source=default harness=$harness"
+        [[ $harness =~ ^(codex|claude)$ ]] && cap=60000; emit "yield-cap= ms=$cap source=default harness=$harness"
     fi
 }
 
-# The peer CLI, for a cross-harness adversarial review. Named from the harness
-# probe rather than assumed: on a Claude session the peer is Codex, and a message
-# that says otherwise sends the reviewer to the CLI it is already running in.
+# Derive the adversarial-review peer from the harness so it never selects itself.
 #
 # $1 is one or more comma-separated candidate names, tried in order (Claude
 # and Codex each pass a single name, unchanged; OpenCode has no fixed 1:1
