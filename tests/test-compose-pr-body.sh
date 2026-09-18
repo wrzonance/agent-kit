@@ -226,6 +226,29 @@ assert_rc 0 'a composed Testing action is tickable through gh-body.sh' -- env \
 assert_contains "$(<"$normalized_output")" '- [x] Focused checks pass' \
     'the sanctioned body editor ticks a composer-normalized action'
 
+# Words used in result claims can also occur inside future-completable actions.
+# These lines must remain valid unless the surrounding phrase is a result or
+# standing caveat.
+accepted_phrase_testing="$tmp/accepted-phrase-testing.md"
+printf '%s\n' \
+    '- [ ] Confirm output remains byte-identical on rerun' \
+    '- Verify the lock remains held across retries' \
+    '- [ ] Check that arguments passed to the hook are quoted' \
+    >"$accepted_phrase_testing"
+accepted_phrase_text=$(bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$decisions" --testing-file "$accepted_phrase_testing" \
+    --agent 'Codex gpt-5.6-luna' 2>&1)
+accepted_phrase_rc=$?
+assert_eq '0' "$accepted_phrase_rc" \
+    'composer accepts actions containing remains or passed'
+assert_contains "$accepted_phrase_text" '- [ ] Confirm output remains byte-identical on rerun' \
+    'an output invariant containing remains stays actionable'
+assert_contains "$accepted_phrase_text" '- [ ] Verify the lock remains held across retries' \
+    'a plain lock-invariant bullet containing remains normalizes'
+assert_contains "$accepted_phrase_text" '- [ ] Check that arguments passed to the hook are quoted' \
+    'an argument-flow action containing passed stays actionable'
+
 # Testing records future-completable actions. Completion claims and caveats
 # belong in prose sections, because converting them into unchecked boxes makes
 # the body contradict itself or creates a checkbox this run cannot complete.

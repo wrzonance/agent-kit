@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# PR body composer.
 set -euo pipefail
 
 readonly PROGNAME=${0##*/}
@@ -101,10 +100,12 @@ readonly TESTING_BULLET_RE='^-[[:space:]]+(.+)$'
 readonly TESTING_MALFORMED_CHECKBOX_RE='^-[[:space:]]+\[[^]xX[:space:]]\]([[:space:]]|$)'
 
 validate_testing_action() {
-    local label=$1 lower
+    local lower
     lower=$(printf '%s\n' "$2" | LC_ALL=C tr '[:upper:]' '[:lower:]')
-    if [[ $lower =~ (^|[^[:alnum:]_])(passed|was[[:space:]]+not[[:space:]]+run|remains)([^[:alnum:]_]|$) ]]; then
-        die "$label must contain completable verification actions; use ## Decisions for caveats or ## Operator action required when needed"
+    if [[ $lower =~ (^|[^[:alnum:]_])(was[[:space:]]+not[[:space:]]+run|remains[[:space:]]+(required|pending|unverified|untested|to[[:space:]]+be))([^[:alnum:]_]|$) ||
+        $lower =~ (^|[^[:alnum:]_])(tests?|suites?|checks?)[[:space:]]+passed([^[:alnum:]_]|$) ||
+        $lower =~ (^|[^[:alnum:]_])passed[[:punct:][:space:]]*$ ]]; then
+        die "$1 requires completable verification actions; caveats: ## Decisions; operator work: ## Operator action required"
     fi
 }
 
@@ -213,9 +214,6 @@ emit_body() {
         printf '\n%s' "$(<"$BASELINE_EXCLUSION_FILE")"
     fi
     printf '\n\n'
-    # verification-baseline.sh's evidence block already opens with its own
-    # "## Baseline verification evidence" heading, so it is appended as-is
-    # rather than wrapped in a second heading here.
     [[ -z $BASELINE_FILE ]] || printf '%s\n\n' "$(<"$BASELINE_FILE")"
     printf '🤖 Co-authored by %s.\n\nCloses #%s\n' "$AGENT" "$ISSUE"
 }
