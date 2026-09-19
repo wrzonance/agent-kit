@@ -1494,7 +1494,6 @@ report_failure() {
 }
 
 # ---------------------------------------------------------------- verification cache ---
-# State-producing commands are never eligible for reusable green evidence.
 verification_cache_eligible() {
     verification_ineligible_reason=''
     [[ $cmd_declared == yes ]] || { verification_ineligible_reason='not-declared'; return 1; }
@@ -1576,7 +1575,6 @@ hash_verification_toolchain() {
     done
 }
 
-# HEAD, scoped bytes, command/config, cwd, and tool bytes form the identity.
 compute_tree_hash() {
     local hash_input digest
     [[ -n ${git_top:-} ]] || return 1
@@ -1738,25 +1736,28 @@ fi
 finalise_label
 refresh_cmd_str
 
-# Resolve the directory before verification identity is computed. This keeps
-# --dir, repository-declared rundirs, and package-root adjustments scoped to
-# the exact directory where the command will execute.
 maybe_use_package_dir
 canonicalise_work_dir
 resolve_literal_executable
 
 if ((verification_key)); then
-    verification_cache_eligible && [[ $command_kind == generic && $work_dir == "$git_top" &&
-        ${#verification_paths[@]} == 1 && ${verification_paths[0]} == . ]] ||
-        die '--verification-key requires local generic full-checkout verification.'
+    choice=declare-local-verification-or-authorize-native-evidence-handoff
+    if ! verification_cache_eligible; then
+        upper=${cmd_name^^}; upper=${upper//-/_}; missing=none
+        [[ $verification_ineligible_reason != not-declared ]] || missing="AGENT_CMD_$upper"
+        [[ $verification_ineligible_reason != mode-not-local ]] || { missing="AGENT_VERIFY_${upper}_MODE=local"; [[ -n $verification_tools ]] || missing+=",AGENT_VERIFY_${upper}_TOOLCHAIN"; }
+        [[ $verification_ineligible_reason != no-toolchain ]] || missing="AGENT_VERIFY_${upper}_TOOLCHAIN"
+        die "verification capability unavailable: reason=$verification_ineligible_reason missing=$missing choices=$choice"
+    fi
+    [[ $command_kind == generic && $work_dir == "$git_top" && ${#verification_paths[@]} == 1 && ${verification_paths[0]} == . ]] ||
+        die "verification capability unavailable: reason=scope-not-full-checkout missing=none choices=$choice"
     tree_hash=$(compute_tree_hash 2>/dev/null) && [[ $tree_hash =~ ^[0-9a-f]{64}$ ]] ||
         die '--verification-key inputs unavailable.'
     printf '%s\n' "$tree_hash"
     exit 0
 fi
 
-# Configure the per-worktree Compose namespace only for a named command, before
-# either delegation or execution so every declared command sees it.
+# Isolate Compose.
 configure_compose_project
 
 tree_hash=''
