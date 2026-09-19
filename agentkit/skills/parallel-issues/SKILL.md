@@ -231,8 +231,7 @@ exactly once after the final conflict and slot-cap decisions and before dispatch
 empty sets report requested/eligible/dispatched plus one reason per exclusion.
 An empty selection is an answer only with evidence. If `pick-issues.sh` is missing, non-executable, or fails,
 report `Selection funnel: degraded=yes; eligible=unknown`, its exact path and failure reason.
-Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0`
-or an empty Ready column; preserve partial evidence as degraded.
+Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap. Preserve partial evidence as degraded.
 
 ### Step 3: Conflict analysis (file-level)
 
@@ -349,20 +348,16 @@ Role separation: the root/orchestrator must not implement when a real worker can
 ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
 ["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md).
 
+### Spawn discipline (applies to every spawn in this skill)
+
+Before fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role (read-only included) — set `prospective_total` to root + live + requested and `agent_kind` to role. Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`; pass `--assert-count "$prospective_total" --agent-kind "$agent_kind"`. A cap-advertisement error stops spawning and is reported separately from a capacity refusal. A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free.
+
 ### Dispatch (one round, then refill slots)
 
-Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap. As each lead is dispatched (or, on the degraded path, each issue is started), the root also moves that issue's board item — a no-op when the issue is not on a board:
-
-Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`, then `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help`, and follow their dispatch-cap and selected-issue move recipes.
+As each lead is dispatched (or each degraded-path issue is started), the root moves that issue's board item. Run `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help` and follow its selected-issue recipe.
 Immediately before each initial/refill dispatch, run `"$agentkit/.shared/scripts/run-state.sh" dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"`; absence succeeds.
 
-**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
-per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
-leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase —
-never follow it with a verification query or a second invocation. It needs Projects access (fleet
-App: `Projects: write`).
-
-When the runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
+**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line per issue and board; every shape returns exit 0 (a board move never fails real work), so only a leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase — never follow it with a verification query or a second invocation. It needs Projects access (fleet App: `Projects: write`).
 
 **Chained issues defer on the commit, not the publication.** A successor's worktree is created and its lead
 dispatched as soon as the predecessor's worker has committed and pushed its branch — for a join, this means every predecessor pushed AND the merged join base itself pushed — using the full 40-character
@@ -746,6 +741,6 @@ owner once PRs exist, e.g. `resume=/pr-to-green <PRs> --auto-merge`, preserving 
 later phase.
 ## Limits
 
-- Maximum 10 per wave (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill toward the same limit.
+- Maximum 10 concurrent agents of every kind (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`: depth limits the number of links in flight, not chain membership; deeper tails queue/refill toward the same limit.
 - Invocation opts into issue leads; only root spawns. Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, the shipped helpers, and a `main` or `master` branch.
 - Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
