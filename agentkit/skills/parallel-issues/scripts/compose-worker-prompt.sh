@@ -229,17 +229,8 @@ emit_acceptance_declarations() {
 }
 
 if [[ $template_kind == issue-lead ]]; then
-    # Must agree, filename-for-filename, with prepare-issue-artifacts.sh's
-    # own per-mode publish targets (issue #334): only public-fenced actually
-    # fences the bytes, so only public-fenced keeps the fenced-* name;
-    # private-trusted and yolo-trusted publish under the mode-neutral
-    # spec.txt / prior-art.txt names instead, so a filename never asserts a
-    # fence that does not exist. fix-batch never renders issue text and
-    # carries no --boundary, so it must never resolve or require either
-    # artifact -- for a private-trusted/yolo-trusted issue,
-    # prepare-issue-artifacts.sh publishes only the mode-neutral pair, and a
-    # fix-batch composition that still demanded fenced-spec.txt would die on
-    # an artifact that was never produced (issue #359 adversarial review).
+    # Mirror prepare-issue-artifacts.sh: public delivery uses fenced names;
+    # trusted modes use neutral names. Fix batches skip both artifacts.
     case $boundary_mode in
         public-fenced)
             spec=$worktree/.agent/fenced-spec.txt
