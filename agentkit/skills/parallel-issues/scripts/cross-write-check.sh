@@ -28,10 +28,11 @@ Usage:
       Routes to snapshot (no --worker-worktree) or collect (--worker-worktree
       given) so the dispatch skill's fence recipe names one entry point.
 
---worker-start/--worker-end each accept a Unix epoch integer (e.g. 1735689600,
-what "$(date -u +%s)" prints) or an ISO-8601 UTC timestamp (e.g.
-2026-08-30T05:12:34Z, what "$(date -u +%FT%TZ)" prints). Either form may be used
-for either flag; both are normalised to epoch seconds before comparison.
+--worker-start/--worker-end each accept a Unix epoch integer (e.g. 1735689600)
+or an ISO-8601 UTC timestamp (e.g. 2026-08-30T05:12:34.123456789Z, what
+"$(date -u +%FT%T.%NZ)" prints). Dispatch audits require fractional precision
+when capture and worker start fall in the same second; standalone comparisons
+retain epoch-second compatibility.
 EOF
     exit 2
 }
@@ -282,6 +283,13 @@ parse_epoch_timestamp() {
     return 1
 }
 
+parse_epoch_nanoseconds() {
+    local value=$1
+    [[ $value =~ ^[0-9]+$ ]] && { printf '%s000000000\n' "$value"; return; }
+    [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]] || return 1
+    date -u -d "$value" +%s%N 2>/dev/null
+}
+
 normalise_epoch_timestamp() {
     local flag=$1 value=$2
     parse_epoch_timestamp "$value" ||
@@ -424,7 +432,7 @@ snapshot_cmd() {
     [[ -d $output_parent ]] || die "snapshot parent is not a directory: $output_parent"
     temp=$(mktemp "$output.tmp.XXXXXXXXXX") || die "could not create snapshot temporary file"
     status_path=$(mktemp "$output.status.XXXXXXXXXX") || die "could not create status temporary file"
-    captured=$(date +%s)
+    [[ $DISPATCH_AUDIT == yes ]] && captured=$(date -u +%FT%T.%NZ) || captured=$(date +%s)
     mapfile -t worktree_excluded < <(list_worktree_branches "$root")
     exclude_set=$(branch_name_set "${worktree_excluded[@]}")
     {
@@ -473,7 +481,8 @@ collect_cmd() {
     local root='' snapshot='' worker='' issue='' run_id='' expected_baseline_id='' worker_start='' worker_end='' dispose=no
     local arg write_set path status mtime hash issue_attr attribute branch_match disposition
     local baseline_value baseline_hash baseline_changed root_file worker_file
-    local current_status current_raw captured now baseline_id recorded_run
+    local current_status current_raw captured captured_ns now baseline_id recorded_run
+    local worker_start_value worker_start_ns
     local baseline_head_ref baseline_head_sha baseline_head_reflog_count baseline_head_reflog_usable
     local current_head_ref current_head_sha current_head_reflog_usable
     local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
@@ -531,15 +540,24 @@ collect_cmd() {
     now=$(date +%s)
     [[ -n $worker_end ]] || worker_end=$now
     if [[ $DISPATCH_AUDIT == yes ]]; then
-        [[ $captured =~ ^[0-9]+$ ]] || audit_unavailable captured-at-valid create-new-run-snapshot
-        worker_start=$(parse_epoch_timestamp "$worker_start") ||
+        captured_ns=$(parse_epoch_nanoseconds "$captured") ||
+            audit_unavailable captured-at-valid create-new-run-snapshot
+        worker_start_value=$worker_start
+        worker_start=$(parse_epoch_timestamp "$worker_start_value") ||
+            audit_unavailable worker-start-valid record-valid-dispatch-start
+        worker_start_ns=$(parse_epoch_nanoseconds "$worker_start_value") ||
             audit_unavailable worker-start-valid record-valid-dispatch-start
         worker_end=$(parse_epoch_timestamp "$worker_end") ||
             audit_unavailable worker-end-valid record-valid-worker-end
-        ((captured <= worker_start)) ||
+        if [[ ${captured_ns:0:-9} == "${worker_start_ns:0:-9}" &&
+            ( $captured != *.* || $worker_start_value != *.* ) ]]; then
+            audit_unavailable capture-before-dispatch create-new-run-snapshot
+        fi
+        ((captured_ns <= worker_start_ns)) ||
             audit_unavailable capture-before-dispatch create-new-run-snapshot
         ((worker_start <= worker_end)) ||
             audit_unavailable ordered-worker-interval record-worker-end-after-start
+        captured=${captured_ns:0:-9}
     else
         [[ $captured =~ ^[0-9]+$ ]] || die 'snapshot captured-at is invalid'
         [[ -n $worker_start ]] || worker_start=$captured

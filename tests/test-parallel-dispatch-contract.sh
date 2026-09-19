@@ -1757,6 +1757,10 @@ assert_contains "$(<"$cross_write_snapshot_recipe")" 'cross-write-dispatch-$RUN_
     'the canonical fence recipe scopes immutable snapshots to the run identity'
 assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
     'handoff never misattributes run-window dirt to the human'
+assert_contains "$normalized_text" 'date -u +%FT%T.%NZ' \
+    'dispatch records worker boundaries with subsecond precision'
+assert_contains "$normalized_text" 'dispatch audit rejects it as ambiguous' \
+    'dispatch documents fail-closed coarse same-second chronology'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
 assert_contains "$worker_prompts_text" '__BLOCKER_CONTRACT__' \
@@ -1809,7 +1813,7 @@ run_cross_collect_recipe() {
 snapshot_recipe_rc=0
 run_cross_snapshot_recipe recipe-830 >/dev/null || snapshot_recipe_rc=$?
 assert_eq 0 "$snapshot_recipe_rc" 'the canonical pre-dispatch recipe creates its baseline'
-recipe_start=$(date +%s)
+recipe_start=$(date -u +%FT%T.%NZ)
 recipe_out=''
 recipe_rc=0
 recipe_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || recipe_rc=$?
@@ -1833,7 +1837,7 @@ assert_eq "$recipe_snapshot_hash" "$(sha256sum "$recipe_snapshot" 2>/dev/null ||
 
 second_rc=0
 run_cross_snapshot_recipe recipe-831 >/dev/null || second_rc=$?
-second_start=$(date +%s)
+second_start=$(date -u +%FT%T.%NZ)
 second_out=$(run_cross_collect_recipe recipe-831 "$second_start") || second_rc=$?
 assert_eq 0 "$second_rc" 'a distinct run creates and uses an independent baseline'
 assert_contains "$second_out" 'cross-write=none' 'a distinct run can produce clean dispatch evidence'
@@ -1893,7 +1897,7 @@ assert_contains "$fence_snapshot_out" 'snapshot=' \
 fence_baseline_id=${fence_snapshot_out##*baseline-id=}
 printf 'fence worker bytes\n' > "$cross_worker/src/fence.txt"
 printf 'fence worker bytes\n' > "$cross_root/src/fence.txt"
-fence_start=$(date +%s)
+fence_start=$(date -u +%FT%T.%NZ)
 fence_collect_out=$(
     "$cross_write" dispatch-fence --root "$cross_root" --snapshot "$fence_snapshot" \
         --worker-worktree "$cross_worker" --issue 698 --run-id run-698 \

@@ -415,7 +415,10 @@ cross_baseline_id=${output##*baseline-id=}
 "$state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id" || exit 1
 ```
 
-After completions and at handoff, Collect requires it. Times accept epoch or ISO-8601 UTC:
+After completions and at handoff, Collect requires it. Record `worker_started_at` and
+`worker_finished_at` at their actual boundaries with `date -u +%FT%T.%NZ`. Times accept
+epoch or ISO-8601 UTC, but an epoch or second-only ISO value cannot prove the order when
+capture and worker start share that second, so the dispatch audit rejects it as ambiguous:
 
 ```bash
 fence="$agentkit/parallel-issues/scripts/cross-write-check.sh" state="$agentkit/.shared/scripts/run-state.sh"
