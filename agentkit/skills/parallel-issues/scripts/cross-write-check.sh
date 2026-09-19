@@ -270,26 +270,16 @@ reflog_activity() {
 }
 
 parse_epoch_timestamp() {
-    local value=$1 epoch
+    local value=$1 format=${2:-%s} suffix=''
+    [[ $format == %s%N ]] && suffix=000000000
     if [[ $value =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$value"
+        printf '%s%s\n' "$value" "$suffix"
         return 0
     fi
-    if [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]]; then
-        epoch=$(date -u -d "$value" +%s 2>/dev/null) || return 1
-        printf '%s\n' "$epoch"
-        return 0
-    fi
-    return 1
+    [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]] || return 1
+    [[ $format == %s || ${#BASH_REMATCH[1]} -le 10 ]] || return 1
+    date -u -d "$value" +"$format" 2>/dev/null
 }
-
-parse_epoch_nanoseconds() {
-    local value=$1
-    [[ $value =~ ^[0-9]+$ ]] && { printf '%s000000000\n' "$value"; return; }
-    [[ $value =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:?[0-9]{2})$ ]] || return 1
-    date -u -d "$value" +%s%N 2>/dev/null
-}
-
 normalise_epoch_timestamp() {
     local flag=$1 value=$2
     parse_epoch_timestamp "$value" ||
@@ -481,8 +471,7 @@ collect_cmd() {
     local root='' snapshot='' worker='' issue='' run_id='' expected_baseline_id='' worker_start='' worker_end='' dispose=no
     local arg write_set path status mtime hash issue_attr attribute branch_match disposition
     local baseline_value baseline_hash baseline_changed root_file worker_file
-    local current_status current_raw captured captured_ns now baseline_id recorded_run
-    local worker_start_value worker_start_ns
+    local current_status current_raw captured captured_ns now baseline_id recorded_run worker_start_value worker_start_ns
     local baseline_head_ref baseline_head_sha baseline_head_reflog_count baseline_head_reflog_usable
     local current_head_ref current_head_sha current_head_reflog_usable
     local ref_activity ref_summary ref_window branch_name branch_sha branch_reflog_count _
@@ -540,21 +529,17 @@ collect_cmd() {
     now=$(date +%s)
     [[ -n $worker_end ]] || worker_end=$now
     if [[ $DISPATCH_AUDIT == yes ]]; then
-        captured_ns=$(parse_epoch_nanoseconds "$captured") ||
+        captured_ns=$(parse_epoch_timestamp "$captured" %s%N) ||
             audit_unavailable captured-at-valid create-new-run-snapshot
         worker_start_value=$worker_start
-        worker_start=$(parse_epoch_timestamp "$worker_start_value") ||
+        worker_start_ns=$(parse_epoch_timestamp "$worker_start_value" %s%N) ||
             audit_unavailable worker-start-valid record-valid-dispatch-start
-        worker_start_ns=$(parse_epoch_nanoseconds "$worker_start_value") ||
-            audit_unavailable worker-start-valid record-valid-dispatch-start
+        worker_start=${worker_start_ns:0:-9}
         worker_end=$(parse_epoch_timestamp "$worker_end") ||
             audit_unavailable worker-end-valid record-valid-worker-end
-        if [[ ${captured_ns:0:-9} == "${worker_start_ns:0:-9}" &&
-            ( $captured != *.* || $worker_start_value != *.* ) ]]; then
-            audit_unavailable capture-before-dispatch create-new-run-snapshot
-        fi
-        ((captured_ns <= worker_start_ns)) ||
-            audit_unavailable capture-before-dispatch create-new-run-snapshot
+        [[ ${captured_ns:0:-9} == "${worker_start_ns:0:-9}" &&
+            ( $captured != *.* || $worker_start_value != *.* ) ]] && audit_unavailable capture-before-dispatch create-new-run-snapshot
+        ((captured_ns <= worker_start_ns)) || audit_unavailable capture-before-dispatch create-new-run-snapshot
         ((worker_start <= worker_end)) ||
             audit_unavailable ordered-worker-interval record-worker-end-after-start
         captured=${captured_ns:0:-9}
