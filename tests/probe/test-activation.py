@@ -52,10 +52,21 @@ class Activation(unittest.TestCase):
         return self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
                            "--skill", "parallel-issues", "--nonce", self.record()["nonce"])
 
+    def linked_worktree(self):
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.invalid"], check=True)
+        (self.repo / "seed").write_text("seed\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "seed"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "seed"], check=True)
+        target = self.root / "linked-worktree"
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "linked", str(target)], check=True)
+        return target
+
     def test_unknown_is_not_active(self):
         result = self.check()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("activation-unavailable", result.stderr)
+        self.assertIn("no receipt at activation origin", result.stderr)
+        self.assertIn("invoke parallel-issues in that checkout", result.stderr)
 
     def test_failed_activation_helper_does_not_block_ordinary_prompt(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
@@ -156,9 +167,41 @@ class Activation(unittest.TestCase):
         result = self.invoke("ack", "--repo-root", str(self.repo), "--session", "other",
                              "--skill", "parallel-issues", "--nonce", self.record()["nonce"])
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no receipt at activation origin", result.stderr)
+        self.assertIn("invoke parallel-issues in that checkout", result.stderr)
         result = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
                              "--skill", "parallel-issues", "--nonce", "bad")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_origin_receipt_authorizes_only_linked_target(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        target = self.linked_worktree()
+        for checked_target in (self.repo, target, target):
+            with self.subTest(target=checked_target):
+                result = self.check("--target-root", str(checked_target))
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+        unrelated = self.root / "unrelated"
+        subprocess.run(["git", "init", "-q", str(unrelated)], check=True)
+        result = self.check("--target-root", str(unrelated))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("activation-target-mismatch", result.stderr)
+        self.assertIn("create or resume a linked worktree", result.stderr)
+
+    def test_preflight_reads_origin_receipt_and_measures_linked_target(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        target = self.linked_worktree()
+        result = subprocess.run([str(self.helper.parent / "agent-preflight.sh"),
+                                 "--worktree", str(target), "--ensure",
+                                 "--activation-origin", str(self.repo),
+                                 "--activation-session", "test-session",
+                                 "--workflow", "parallel-issues"],
+                                text=True, capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("worktree=" + str(target), result.stdout)
+        self.assertNotIn("worktree=" + str(self.repo) + "\n", result.stdout)
 
     def test_installed_loaded_mismatch_names_both_versions(self):
         self.prompt()
@@ -307,6 +350,106 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(stale.returncode, 0)
         self.assertEqual(self.acknowledge().returncode, 0)
         self.assertEqual(saved.read_text(), '{"prs":[271,272],"reviews":"preserve"}')
+
+    def test_stale_leaf_receipt_hands_back_once_and_root_redelivers_to_same_worker(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        old = self.record()
+        saved = self.repo / ".agent/worker-edit.txt"
+        saved.write_text("unpublished worker change\n")
+        body = self.plugin / "skills/parallel-issues/SKILL.md"
+        body.write_text(body.read_text() + "\nSame-version recovery content.\n")
+
+        denied = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "continue"})
+        reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+        marker = "agentkit activation-blocked: "
+        self.assertEqual(reason.count(marker), 1)
+        handback = json.loads(reason.split(marker, 1)[1].splitlines()[0])
+        self.assertEqual(handback["schemaVersion"], 1)
+        self.assertEqual(handback["session"], "test-session")
+        self.assertEqual(handback["worktree"], str(self.repo))
+        self.assertEqual(handback["workflow"], "parallel-issues")
+        self.assertEqual(handback["installed"]["version"], handback["received"]["version"])
+        self.assertNotEqual(handback["installed"]["digest"], handback["received"]["digest"])
+        self.assertNotIn("nonce", json.dumps(handback).lower())
+
+        before_wrong_workflow = self.record()
+        wrong_workflow = self.invoke("redeliver", "--repo-root", handback["worktree"],
+                                     "--session", handback["session"],
+                                     "--skill", "pr-to-green")
+        self.assertNotEqual(wrong_workflow.returncode, 0)
+        self.assertEqual(self.record(), before_wrong_workflow)
+
+        delivery = self.invoke("redeliver", "--repo-root", handback["worktree"],
+                               "--session", handback["session"],
+                               "--skill", handback["workflow"])
+        self.assertEqual(delivery.returncode, 0, delivery.stderr)
+        self.assertIn("Same-version recovery content", delivery.stdout)
+        refreshed = self.record()
+        self.assertEqual(refreshed["deliverySource"], "root-redelivery")
+        self.assertEqual(refreshed["status"], "pending")
+        self.assertNotEqual(refreshed["nonce"], old["nonce"])
+        stale = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
+                            "--skill", "parallel-issues", "--nonce", old["nonce"])
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertEqual(self.acknowledge().returncode, 0)
+        resumed = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "continue"})
+        self.assertNotEqual(resumed.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+        self.assertEqual(saved.read_text(), "unpublished worker change\n")
+
+    def test_pending_recovery_cannot_redeliver_or_rotate_original_challenge(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        saved = self.repo / ".agent/worker-edit.txt"
+        saved.write_text("preserve pending worker state\n")
+        body = self.plugin / "skills/parallel-issues/SKILL.md"
+        body.write_text(body.read_text() + "\nRecovery content.\n")
+
+        first = self.invoke("redeliver", "--repo-root", str(self.repo),
+                            "--session", "test-session", "--skill", "parallel-issues")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        receipt = next((self.repo / ".agent/activation").glob("*.json"))
+        before = receipt.read_bytes()
+        nonce = self.record()["nonce"]
+
+        duplicate = self.invoke("redeliver", "--repo-root", str(self.repo),
+                                "--session", "test-session", "--skill", "parallel-issues")
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("pending", duplicate.stderr)
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(self.record()["nonce"], nonce)
+        self.assertEqual(saved.read_text(), "preserve pending worker state\n")
+
+        acknowledged = self.invoke("ack", "--repo-root", str(self.repo),
+                                   "--session", "test-session", "--skill", "parallel-issues",
+                                   "--nonce", nonce)
+        self.assertEqual(acknowledged.returncode, 0, acknowledged.stderr)
+        self.assertEqual(self.record()["status"], "active")
+        self.assertEqual(saved.read_text(), "preserve pending worker state\n")
+
+    def test_redelivery_rejects_missing_or_symlinked_workflow_without_rewriting_receipt(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        skill = self.plugin / "skills/parallel-issues/SKILL.md"
+        original = skill.read_text()
+        target = self.root / "symlink-target.md"
+        target.write_text("untrusted workflow bytes\n")
+
+        for invalid in ("missing", "symlink"):
+            with self.subTest(invalid=invalid):
+                skill.unlink()
+                if invalid == "symlink":
+                    skill.symlink_to(target)
+                before = self.record()
+                try:
+                    result = self.invoke("redeliver", "--repo-root", str(self.repo),
+                                         "--session", "test-session", "--skill", "parallel-issues")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("workflow-unavailable: parallel-issues", result.stderr)
+                    self.assertEqual(self.record(), before)
+                finally:
+                    skill.unlink(missing_ok=True)
+                    skill.write_text(original)
 
     def test_advertised_invocations_deliver_fresh_challenges(self):
         cases = {

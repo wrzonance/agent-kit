@@ -607,6 +607,29 @@ assert_contains "$concurrency_help" '[ -d "${agentkit:-}/.shared/scripts" ]' \
     'concurrency dispatch carries the resolver directory guard'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
+assert_contains "$text" '### Spawn discipline (applies to every spawn in this skill)' \
+    'spawn discipline is cross-cutting instead of dispatch-phase scoped'
+assert_contains "$normalized_text" \
+    'issue leads, waiters, assessors, reviewers, draft loops, and any improvised role' \
+    'the universal gate names lead and non-lead fan-outs'
+assert_contains "$text" '--assert-count "$prospective_total" --agent-kind "$agent_kind"' \
+    'every fan-out passes its prospective total and kind to the cap helper'
+assert_contains "$normalized_text" \
+    'A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free' \
+    'overflow retry guidance cannot repeat the refused count unchanged'
+assert_contains "$normalized_text" \
+    'A cap-advertisement error stops spawning and is reported separately from a capacity refusal.' \
+    'an unavailable cap stops the fan-out without masquerading as capacity exhaustion'
+assert_contains "$normalized_triage_and_selection_text" \
+    'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
+    'thin-Ready vetting states its ceiling where it states the obligation'
+assert_contains "$normalized_text" \
+    'A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap.' \
+    'empty-Ready fallback guidance carries the universal assessor ceiling'
+assert_contains "$text" 'Maximum 10 concurrent agents of every kind (root counted)' \
+    'the Limits maximum covers every concurrent role'
+assert_not_contains "$text" 'Maximum 10 per wave' \
+    'the Limits maximum is no longer dispatch-wave scoped'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
 assert_contains "$text" 'pr_loop_dispatch_cap' \
@@ -1228,6 +1251,16 @@ assert_contains "$normalized_root_publication" 'Invoke returned argv once, then 
     'root fallback pushes only after executing the validated handback'
 assert_contains "$normalized_root_publication" 'Environment-refusal fallback only' \
     'the root push step lives inside the environment-refusal fallback'
+normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
+assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
+    'the normal completion branch names the canonical PR body composer inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
+    'the normal completion branch names the verified draft PR creation transport inline'
+assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
+    'the normal completion branch preserves the complete PR identity record command'
+blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
+assert_contains "$blocked_completion_branch" 'compose-pr-body.sh' \
+    'the BLOCKED completion branch names the same canonical PR body composer'
 assert_contains "$text" 'compose_args+=(--write-set "$glob")' \
     'the dispatch recipe passes each write-set glob as its own repeated flag'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
@@ -1526,8 +1559,8 @@ printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 10' \
     > "$configured_home/.codex/config.toml"
 out=$("$cap_helper" --config "$configured_home/.codex/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
-    'dispatch advertises the configured runtime cap'
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'dispatch advertises the configured effective cap'
 assert_eq '0' "$status" 'an advertised cap exits zero'
 
 codex_home="$tmp/codex-home"
@@ -1535,8 +1568,64 @@ mkdir -p "$codex_home"
 printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 7' \
     > "$codex_home/config.toml"
 out=$("$cap_helper" --config "$codex_home/config.toml" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 7 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 7 total threads, including the root' \
     'a CODEX_HOME override is honored over $HOME/.codex'
+
+# Issue #832: the cap is a property of every spawn, including an improvised
+# non-lead fan-out. The effective skill maximum remains 10 even when the
+# runtime offers more threads, and the refusal carries enough state to retry
+# with a smaller batch instead of repeating the same request.
+wide_home="$tmp/wide-runtime"
+mkdir -p "$wide_home"
+printf '%s\n' '[multi_agent_v2]' 'max_concurrent_threads_per_session = 20' \
+    > "$wide_home/config.toml"
+overflow_err="$tmp/assessor-overflow.err"
+out=$("$cap_helper" --config "$wide_home/config.toml" 2>/dev/null)
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'a runtime above the skill maximum advertises the enforced cap'
+out=$("$cap_helper" --config "$wide_home/config.toml" \
+    --assert-count 11 --agent-kind assessor 2>"$overflow_err")
+status=$?
+assert_eq '1' "$status" 'an assessor fan-out above the effective cap is refused'
+assert_eq '' "$out" 'a refused assessor fan-out prints no success evidence'
+assert_contains "$(<"$overflow_err")" \
+    'spawn refused: cap=10 observed=11 agent-kind=assessor helper=concurrency-cap.sh' \
+    'the refusal names the cap, observed total, non-lead kind, and cap helper'
+wrapped_count=18446744073709551616
+out=$("$cap_helper" --config "$wide_home/config.toml" \
+    --assert-count "$wrapped_count" --agent-kind assessor 2>"$overflow_err")
+status=$?
+assert_eq '1' "$status" 'a prospective total cannot wrap through shell integer arithmetic'
+assert_contains "$(<"$overflow_err")" "observed=$wrapped_count" \
+    'an overflow-sized refusal preserves the original observed decimal'
+
+huge_runtime_home="$tmp/huge-runtime"
+mkdir -p "$huge_runtime_home"
+printf '%s\n' '[multi_agent_v2]' \
+    'max_concurrent_threads_per_session = 18446744073709551616' > "$huge_runtime_home/config.toml"
+out=$("$cap_helper" --config "$huge_runtime_home/config.toml" 2>/dev/null)
+status=$?
+assert_eq '0' "$status" 'an overflow-sized positive runtime cap clamps safely'
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
+    'an overflow-sized runtime cap advertises the skill maximum'
+
+for missing_args in '--assert-count 2' '--agent-kind assessor'; do
+    read -r -a missing_argv <<< "$missing_args"
+    err=$("$cap_helper" --config "$configured_home/.codex/config.toml" \
+        "${missing_argv[@]}" 2>&1 >/dev/null)
+    status=$?
+    assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+        "a missing assertion partner is rejected: $missing_args"
+    assert_contains "$err" 'must be supplied together' \
+        "a missing assertion partner names the pair contract: $missing_args"
+done
+err=$("$cap_helper" --config "$configured_home/.codex/config.toml" \
+    --assert-count '' --agent-kind '' 2>&1 >/dev/null)
+status=$?
+assert_eq 'nonzero' "$( ((status != 0)) && printf nonzero || printf zero )" \
+    'explicitly empty assertion values are rejected'
+assert_contains "$err" 'assertion values must be non-empty' \
+    'empty assertion values explain the value requirement'
 
 # --- issue #273: size facts never park an unattended run --------------------
 # The 2026-08-18 cable-tool incident: a worker finished (implemented,
@@ -1559,6 +1648,8 @@ assert_contains "$worker_prompts_text" '### Diff-size disclosure' \
     'worker-prompts.md carries the diff-size disclosure subsection'
 assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"' \
     'the disclosure recipe runs diff-facts.sh against the worktree'
+assert_contains "$worker_prompts_text" "'Diff-size disclosure:' >> \"\$pr_decisions_file\"" \
+    'the disclosure recipe labels machine-readable facts as Decisions prose'
 assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
     'the disclosure recipe pins the chain base for a chained issue'
 assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \
@@ -1606,7 +1697,7 @@ printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' 'max_depth = 
     > "$v1_home/config.toml"
 out=$("$cap_helper" --config "$v1_home/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'the v1 [agents] section advertises the cap'
 assert_eq '0' "$status" 'a v1 [agents] cap exits zero'
 
@@ -1616,7 +1707,7 @@ printf '%s\n' '[features.multi_agent_v2]' 'enabled = true' \
     'max_concurrent_threads_per_session = 8' > "$v2_home/config.toml"
 out=$("$cap_helper" --config "$v2_home/config.toml" 2>/dev/null)
 status=$?
-assert_contains "$out" 'runtime concurrency cap: 8 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 8 total threads, including the root' \
     'the v2 [features.multi_agent_v2] section advertises the cap'
 assert_eq '0' "$status" 'a v2 [features.multi_agent_v2] cap exits zero'
 
@@ -1626,7 +1717,7 @@ printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' \
     '# [features.multi_agent_v2]' '# max_concurrent_threads_per_session = 99' \
     > "$commented_home/config.toml"
 out=$("$cap_helper" --config "$commented_home/config.toml" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'a commented-out v2 block does not shadow the live [agents] cap'
 
 missing_home="$tmp/missing"
@@ -1635,6 +1726,8 @@ err=$("$cap_helper" --config "$missing_home/config.toml" 2>&1 >/dev/null)
 status=$?
 assert_contains "$err" 'Unable to advertise concurrency' \
     'missing runtime config explains why the cap is unavailable'
+assert_not_contains "$err" 'spawn refused:' \
+    'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
 
@@ -1817,6 +1910,12 @@ assert_contains "$implementation_worker_text" '## Issue-lead prompt' \
     'the dedicated implementation-worker reference owns the issue-lead template'
 assert_contains "$implementation_worker_text" '### Root completion classification' \
     'the dedicated implementation-worker reference owns root completion classification'
+assert_contains "$normalized_text" 'validate dispatch, ownership, Git and logs before accepting' \
+    'Collect validates a worker result before accepting it'
+assert_contains "$normalized_text" 'Keep root CI/review obligations' \
+    'Collect preserves root CI and review duties across resume'
+assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
+    'Collect reuses only receipts already accepted by root'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
@@ -1842,8 +1941,32 @@ assert_contains "$text" 'Root-checkout cross-write fence' \
     'dispatch documents the root dirt snapshot boundary'
 assert_contains "$text" 'cross-write-check.sh' \
     'dispatch names the deterministic cross-write checker'
+cross_write_snapshot_recipe="$tmp/cross-write-snapshot-recipe.sh"
+awk '
+    /^### Root-checkout cross-write fence$/ { section=1; next }
+    section && /^```bash$/ { capture=1; next }
+    capture && /^```$/ { exit }
+    capture { print }
+' "$skill" >"$cross_write_snapshot_recipe"
+cross_write_collect_recipe="$tmp/cross-write-collect-recipe.sh"
+awk '
+    /^### Root-checkout cross-write fence$/ { section=1; next }
+    section && /^```bash$/ { block++; next }
+    block == 2 && /^```$/ { exit }
+    block == 2 { print }
+' "$skill" >"$cross_write_collect_recipe"
+assert_contains "$(<"$cross_write_snapshot_recipe")" '--run-id "$RUN_ID"' \
+    'the pre-dispatch recipe binds the snapshot to the run identity'
+assert_contains "$(<"$cross_write_collect_recipe")" '--baseline-id "$cross_baseline_id"' \
+    'the canonical fence recipe reuses the recorded baseline identity'
+assert_contains "$(<"$cross_write_snapshot_recipe")" 'cross-write-dispatch-$RUN_ID.snapshot' \
+    'the canonical fence recipe scopes immutable snapshots to the run identity'
 assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
     'handoff never misattributes run-window dirt to the human'
+assert_contains "$normalized_text" 'date -u +%FT%T.%NZ' \
+    'dispatch records worker boundaries with subsecond precision'
+assert_contains "$normalized_text" 'dispatch audit rejects it as ambiguous' \
+    'dispatch documents fail-closed coarse same-second chronology'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
 assert_contains "$worker_prompts_text" '__BLOCKER_CONTRACT__' \
@@ -1869,6 +1992,96 @@ git -C "$cross_root" -c user.name=t -c user.email=t@example.invalid \
 git -C "$cross_root" worktree add -q -b feat/worker "$cross_worker"
 printf 'worker bytes\n' > "$cross_worker/src/data.txt"
 
+recipe_root="$tmp/cross-recipe-root"
+recipe_worker="$tmp/cross-recipe-worker"
+mkdir -p "$recipe_root/.agent" "$recipe_root/src"
+git -C "$recipe_root" init -q -b main
+printf 'base\n' >"$recipe_root/src/data.txt"
+git -C "$recipe_root" add src/data.txt
+git -C "$recipe_root" -c user.name=t -c user.email=t@example.invalid commit -qm base
+git -C "$recipe_root" worktree add -q -b feat/recipe "$recipe_worker"
+run_cross_snapshot_recipe() {
+    local recipe_run_id=$1
+    local recipe_agentkit=${2:-$root/agentkit/skills}
+    REAL_RUN_STATE="$root/agentkit/skills/.shared/scripts/run-state.sh" \
+        agentkit="$recipe_agentkit" repository_root="$recipe_root" RUN_ID="$recipe_run_id" \
+        bash -c 'all_dispatched_write_sets=("src/**"); source "$1"' \
+        _ "$cross_write_snapshot_recipe"
+}
+run_cross_collect_recipe() {
+    local recipe_run_id=$1 recipe_start=$2
+    agentkit="$root/agentkit/skills" repository_root="$recipe_root" \
+        RUN_ID="$recipe_run_id" worktree="$recipe_worker" issue_number=830 \
+        worker_started_at="$recipe_start" worker_finished_at=2147483647 \
+        bash -c 'worker_write_sets=("src/**"); source "$1"' \
+        _ "$cross_write_collect_recipe"
+}
+snapshot_recipe_rc=0
+run_cross_snapshot_recipe recipe-830 >/dev/null || snapshot_recipe_rc=$?
+assert_eq 0 "$snapshot_recipe_rc" 'the canonical pre-dispatch recipe creates its baseline'
+recipe_start=$(date -u +%FT%T.%NZ)
+recipe_out=''
+recipe_rc=0
+recipe_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || recipe_rc=$?
+assert_eq 0 "$recipe_rc" 'the canonical cross-write recipe completes against real worktrees'
+assert_contains "$recipe_out" 'cross-write=none' \
+    'a baseline captured before the worker produces valid clean dispatch evidence'
+recipe_baseline_id=$(
+    "$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-830 \
+        --repo-root "$recipe_root" --path cross_write.baseline_id
+)
+assert_eq yes "$([[ $recipe_baseline_id =~ ^[0-9a-f]{64}$ ]] && printf yes || printf no)" \
+    'the canonical recipe durably records the original baseline identity'
+recipe_snapshot="$recipe_root/.agent/cross-write-dispatch-recipe-830.snapshot"
+recipe_snapshot_hash=$(sha256sum "$recipe_snapshot" 2>/dev/null || true)
+resume_rc=0
+resume_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || resume_rc=$?
+assert_eq 0 "$resume_rc" 'same-run resume reuses the recorded dispatch baseline'
+assert_contains "$resume_out" 'cross-write=none' 'same-run resume retains clean dispatch evidence'
+assert_eq "$recipe_snapshot_hash" "$(sha256sum "$recipe_snapshot" 2>/dev/null || true)" \
+    'same-run resume leaves the immutable snapshot byte-identical'
+
+second_rc=0
+run_cross_snapshot_recipe recipe-831 >/dev/null || second_rc=$?
+second_start=$(date -u +%FT%T.%NZ)
+second_out=$(run_cross_collect_recipe recipe-831 "$second_start") || second_rc=$?
+assert_eq 0 "$second_rc" 'a distinct run creates and uses an independent baseline'
+assert_contains "$second_out" 'cross-write=none' 'a distinct run can produce clean dispatch evidence'
+assert_eq yes "$([[ -f $recipe_root/.agent/cross-write-dispatch-recipe-831.snapshot ]] && printf yes || printf no)" \
+    'distinct run identities use distinct snapshot paths'
+
+printf 'unrecorded\n' >"$recipe_root/.agent/cross-write-dispatch-recipe-orphan.snapshot"
+orphan_rc=0
+run_cross_snapshot_recipe recipe-orphan >/dev/null 2>&1 || orphan_rc=$?
+assert_eq 1 "$orphan_rc" 'the recipe refuses an unrecorded pre-existing snapshot'
+orphan_state_rc=0
+"$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-orphan \
+    --repo-root "$recipe_root" --path cross_write.baseline_id >/dev/null 2>&1 || orphan_state_rc=$?
+assert_eq 11 "$orphan_state_rc" 'refusal never adopts the unrecorded snapshot identity'
+
+missing_rc=0
+run_cross_collect_recipe recipe-missing "$(date +%s)" >/dev/null 2>&1 || missing_rc=$?
+assert_eq 1 "$missing_rc" 'Collect refuses a run with no persisted baseline identity'
+assert_eq no "$([[ -e $recipe_root/.agent/cross-write-dispatch-recipe-missing.snapshot ]] && printf yes || printf no)" \
+    'Collect never creates a missing pre-dispatch baseline'
+
+failing_agentkit="$tmp/failing-agentkit"
+mkdir -p "$failing_agentkit/parallel-issues/scripts" "$failing_agentkit/.shared/scripts"
+ln -s "$cross_write" "$failing_agentkit/parallel-issues/scripts/cross-write-check.sh"
+cat >"$failing_agentkit/.shared/scripts/run-state.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ ${1-} != set ]] || exit 1
+exec "$REAL_RUN_STATE" "$@"
+EOF
+chmod +x "$failing_agentkit/.shared/scripts/run-state.sh"
+persist_rc=0
+run_cross_snapshot_recipe recipe-persist-fail "$failing_agentkit" >/dev/null 2>&1 || persist_rc=$?
+assert_eq 1 "$persist_rc" 'the pre-dispatch recipe fails immediately when baseline persistence fails'
+persist_state_rc=0
+"$root/agentkit/skills/.shared/scripts/run-state.sh" get --run-id recipe-persist-fail \
+    --repo-root "$recipe_root" --path cross_write.baseline_id >/dev/null 2>&1 || persist_state_rc=$?
+assert_eq 11 "$persist_state_rc" 'a persistence failure never records a baseline identity'
+
 snapshot="$cross_root/.agent/cross-write.snapshot"
 snapshot_out=$(
     "$cross_write" snapshot --root "$cross_root" --output "$snapshot" \
@@ -1883,16 +2096,19 @@ assert_contains "$snapshot_out" 'snapshot=' \
 fence_snapshot="$cross_root/.agent/cross-write-fence.snapshot"
 fence_snapshot_out=$(
     "$cross_write" dispatch-fence --root "$cross_root" --output "$fence_snapshot" \
-        --write-set 'src/**'
+        --run-id run-698 --write-set 'src/**'
 )
 assert_contains "$fence_snapshot_out" 'snapshot=' \
     'dispatch-fence with no --worker-worktree snapshots like the snapshot subcommand'
+fence_baseline_id=${fence_snapshot_out##*baseline-id=}
 printf 'fence worker bytes\n' > "$cross_worker/src/fence.txt"
 printf 'fence worker bytes\n' > "$cross_root/src/fence.txt"
+fence_start=$(date -u +%FT%T.%NZ)
 fence_collect_out=$(
     "$cross_write" dispatch-fence --root "$cross_root" --snapshot "$fence_snapshot" \
-        --worker-worktree "$cross_worker" --issue 698 \
-        --worker-start 1 --worker-end 2147483647 --write-set 'src/**' || true
+        --worker-worktree "$cross_worker" --issue 698 --run-id run-698 \
+        --baseline-id "$fence_baseline_id" \
+        --worker-start "$fence_start" --worker-end 2147483647 --write-set 'src/**' || true
 )
 assert_contains "$fence_collect_out" 'src/fence.txt' \
     'dispatch-fence with --worker-worktree collects like the collect subcommand'

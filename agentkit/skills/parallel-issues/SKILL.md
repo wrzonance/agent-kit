@@ -231,8 +231,7 @@ exactly once after the final conflict and slot-cap decisions and before dispatch
 empty sets report requested/eligible/dispatched plus one reason per exclusion.
 An empty selection is an answer only with evidence. If `pick-issues.sh` is missing, non-executable, or fails,
 report `Selection funnel: degraded=yes; eligible=unknown`, its exact path and failure reason.
-Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0`
-or an empty Ready column; preserve partial evidence as degraded.
+Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap. Preserve partial evidence as degraded.
 
 ### Step 3: Conflict analysis (file-level)
 
@@ -311,27 +310,25 @@ No design docs created. Step 5 proceeds directly. See [references/implementation
 
 ### Step 5: Create worktrees
 
-Before this block, resolve the documented locked bootstrap command from the contract's resolved `instructions=` files (never `unresolved=`) into `dependency_bootstrap`; use an empty array when absent. Never infer a package manager or install command. An unresolved router with no bootstrap for a detected component is a real gap: record it on that issue's dispatch entry before dispatch.
+Resolve `dependency_bootstrap` from the contract's resolved `instructions=` files; use an empty array when absent and never infer a package manager. Record an unresolved router with no component bootstrap on that issue's dispatch entry.
 
 ```bash
 set -euo pipefail
 
 issue_number=123 # Replace with the approved issue number.
+activation_session=SESSION_ID # Replace with Step 0's acknowledged session ID.
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 repository_root=$contract_root
 base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1
-# For a chained issue, chain_base_sha is the predecessor's pushed commit --
-# the worker's completion report carries it (worktree-commit.sh printed it);
-# empty means an independent issue starting from trunk.
+# A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
-# The helper expands this to the historical start-point contract:
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
-setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base")
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns branch/exclude, config, preflight, and setup; prints `resumable: yes|no untracked=N modified=M`. An existing branch/path refuses duplicate creation; `--resume` is the remedy, re-running those steps and refreshing `.agent/env-contract.txt`. Its `worktree=` line identifies checkout; the printed preflight output is the contract to paste, not Step 0's.
+The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -351,20 +348,16 @@ Role separation: the root/orchestrator must not implement when a real worker can
 ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
 ["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md).
 
+### Spawn discipline (applies to every spawn in this skill)
+
+Before fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role (read-only included) — set `prospective_total` to root + live + requested and `agent_kind` to role. Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`; pass `--assert-count "$prospective_total" --agent-kind "$agent_kind"`. A cap-advertisement error stops spawning and is reported separately from a capacity refusal. A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free.
+
 ### Dispatch (one round, then refill slots)
 
-Read the runtime-advertised concurrency cap before dispatching. It is not safe to infer the cap from prose because the session setting can differ. The helper reads `max_concurrent_threads_per_session`, discriminates an unreadable config, a missing parser, a misplaced key, and a malformed value; the no-spawn runtime path is serial and needs no cap. As each lead is dispatched (or, on the degraded path, each issue is started), the root also moves that issue's board item — a no-op when the issue is not on a board:
-
-Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`, then `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help`, and follow their dispatch-cap and selected-issue move recipes.
+As each lead is dispatched (or each degraded-path issue is started), the root moves that issue's board item. Run `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help` and follow its selected-issue recipe.
 Immediately before each initial/refill dispatch, run `"$agentkit/.shared/scripts/run-state.sh" dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"`; absence succeeds.
 
-**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line
-per issue and board; every shape returns exit 0 (a board move never fails real work), so only a
-leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase —
-never follow it with a verification query or a second invocation. It needs Projects access (fleet
-App: `Projects: write`).
-
-When the runtime advertises a cap, include root, queue overflow, and refill freed slots. Chain-depth overflow uses the same queue: depth limits the number of links in flight, not chain membership. If no cap, stop; do not serialize independent work when capacity permits.
+**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line per issue and board; every shape returns exit 0 (a board move never fails real work), so only a leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase — never follow it with a verification query or a second invocation. It needs Projects access (fleet App: `Projects: write`).
 
 **Chained issues defer on the commit, not the publication.** A successor's worktree is created and its lead
 dispatched as soon as the predecessor's worker has committed and pushed its branch — for a join, this means every predecessor pushed AND the merged join base itself pushed — using the full 40-character
@@ -404,44 +397,46 @@ and regenerates without touching implementation files.
 
 ### Root-checkout cross-write fence
 
-The root checkout gets one dirt snapshot immediately before dispatch, then one Collect check after
-each completion and at handoff — `dispatch-fence` below is the single entry point for both: no
-`--worker-worktree` snapshots, `--worker-worktree` given collects. The snapshot is the
-baseline for every Collect check; it is not a worker worktree artifact and it is never replaced
-after a worker starts. Pass every selected issue's `predictedWriteSet` as a separate `--write-set`
-argument, preserving globs byte-for-byte; `worker_started_at`/`worker_finished_at` are
-`$(date -u +%s)` (ISO-8601 UTC also accepted):
+Before dispatching any worker, persist the run baseline. Pass write-set globs unchanged:
 
 ```bash
-cross_write="$agentkit/parallel-issues/scripts/cross-write-check.sh"
-cross_snapshot="$repository_root/.agent/cross-write-dispatch.snapshot"
-snapshot_args=(--root "$repository_root" --output "$cross_snapshot")
-for write_set in "${all_dispatched_write_sets[@]}"; do
-    snapshot_args+=(--write-set "$write_set")
-done
-"$cross_write" dispatch-fence "${snapshot_args[@]}"
+fence="$agentkit/parallel-issues/scripts/cross-write-check.sh" state="$agentkit/.shared/scripts/run-state.sh"
+snapshot="$repository_root/.agent/cross-write-dispatch-$RUN_ID.snapshot"
+args=(--root "$repository_root" --output "$snapshot" --run-id "$RUN_ID")
+for write_set in "${all_dispatched_write_sets[@]}"; do args+=(--write-set "$write_set"); done
+output=$("$fence" dispatch-fence "${args[@]}") || exit 1
+printf '%s\n' "$output"
+cross_baseline_id=${output##*baseline-id=}
+"$state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id" || exit 1
+```
 
+After completions and at handoff, Collect requires it. Record `worker_started_at` and
+`worker_finished_at` at their actual boundaries with `date -u +%FT%T.%NZ`. Times accept
+epoch or ISO-8601 UTC, but an epoch or second-only ISO value cannot prove the order when
+capture and worker start share that second, so the dispatch audit rejects it as ambiguous:
+
+```bash
+fence="$agentkit/parallel-issues/scripts/cross-write-check.sh" state="$agentkit/.shared/scripts/run-state.sh"
+snapshot="$repository_root/.agent/cross-write-dispatch-$RUN_ID.snapshot"
+cross_baseline_id=$("$state" get --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id) || exit 1
 collect_rc=0
-collect_args=(--root "$repository_root" --snapshot "$cross_snapshot" \
+collect_args=(--root "$repository_root" --snapshot "$snapshot" \
     --worker-worktree "$worktree" --issue "$issue_number" \
+    --run-id "$RUN_ID" --baseline-id "$cross_baseline_id" \
     --worker-start "$worker_started_at" --worker-end "$worker_finished_at" \
     --dispose-duplicates)
 for write_set in "${worker_write_sets[@]}"; do
     collect_args+=(--write-set "$write_set")
 done
-"$cross_write" dispatch-fence "${collect_args[@]}" || collect_rc=$?
+"$fence" dispatch-fence "${collect_args[@]}" || collect_rc=$?
 case "$collect_rc" in
-    0) : ;; # cross-write=none
-    10) : ;; # named incident output is the evidence; handle divergent paths explicitly
+    0) : ;; # clean
+    10) : ;; # handle named incidents
     *) exit 1 ;;
 esac
 ```
 
-Preserve named `cross-write=`/`cross-ref=` incidents; `cross-write=none` is clean and
-`--dispose-duplicates` handles only exact in-window duplicates. Never fold dirt first observed
-inside a dispatch window into "unrelated local changes"; divergent/outside-window dirt needs
-explicit disposition. Divergence blocks clean handoff pending root disposition; root dirt is never
-the human's.
+Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-window copies. Never fold dirt first observed inside a dispatch window into unrelated changes; divergent or outside-window dirt blocks clean handoff pending disposition.
 
 ### Compose the issue-lead prompt
 
@@ -490,9 +485,8 @@ Composer publishes once; root installs and verifies its hashed `uncoveredVerific
 
 ### Collect (per-completion — never wait for the slowest issue)
 
-Act on each lead result as soon as it arrives:
-
-Structured `worker-result=PATH` handbacks follow the [result contract](references/worker-prompts.md#structured-result-contract): validate against root dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence cannot be green. Resume unchanged accepted receipts without rerunning implementation or review. Text fallbacks remain unknown until independently checked.
+`worker-result=PATH` uses the [result contract](references/worker-prompts.md#structured-result-contract): validate dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence is never green; unchanged accepted receipts resume without repeated work. Text fallbacks stay unknown.
+`agentkit activation-blocked: {...}` keeps ownership. Validate worker, worktree and workflow, then follow `.shared/spawn-contract.md` once to redeliver current bytes to the same context. The leaf acknowledges and resumes; unavailable or repeated delivery parks with work preserved.
 
 - **Cross-write check first** → run the root-checkout Collect check against the immutable
   dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
@@ -500,8 +494,8 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → review the pushed diff, open the draft PR, record its numeric identity with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, move the issue to `In review`, and start Phase 3. Diff size is never a reason to withhold this PR — see Diff-size facts.
-- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves HEAD exists on its freshly queried configured remote branch but does not attribute the retained log to that tree: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; the NUL-delimited file preserves each protected path exactly, and the body's `## Operator action required` section discloses both the paths and verification limitation. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
+- **Completion report (branch + pushed SHA)** → review pushed diff; run `$agentkit/parallel-issues/scripts/compose-pr-body.sh`, then `"$agentkit/.shared/scripts/gh-body.sh" pr create --draft`; record with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`; move issue to `In review`; start Phase 3. Diff size is never a reason to withhold this; see Diff-size facts.
+- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves the queried remote HEAD, not log attribution: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; its `## Operator action required` section preserves blocker paths and discloses limited verification. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
@@ -562,7 +556,7 @@ BASH_RECIPE
 )" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
-Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full before opening a draft PR: composer recipe and stacked retarget/linkage proof are dispatch-*output* content.
+Before opening a draft PR, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
 
 The worker commits and pushes its own branch and returns a completion report; root reviews the pushed diff and opens the DRAFT PR;
 root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication.
@@ -749,6 +743,6 @@ owner once PRs exist, e.g. `resume=/pr-to-green <PRs> --auto-merge`, preserving 
 later phase.
 ## Limits
 
-- Maximum 10 per wave (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`; deeper tails queue/refill toward the same limit.
+- Maximum 10 concurrent agents of every kind (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`: depth limits the number of links in flight, not chain membership; deeper tails queue/refill toward the same limit.
 - Invocation opts into issue leads; only root spawns. Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, the shipped helpers, and a `main` or `master` branch.
 - Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
