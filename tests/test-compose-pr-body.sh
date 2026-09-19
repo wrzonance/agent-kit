@@ -397,8 +397,8 @@ chmod +x -- "$fake_gh"
 assert_rc 0 'a normal composed PR body is tickable through gh-body' -- \
     env GH_BODY_GH="$fake_gh" GH_STORED_BODY="$stored_body" \
     bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr edit 41 \
-    --repo owner/repo --body-file "$normalized_output" --tick 'plain bullet one'
-assert_contains "$(<"$normalized_output")" '- [x] plain bullet one' \
+    --repo owner/repo --body-file "$normalized_output" --tick 'Full suite passes'
+assert_contains "$(<"$normalized_output")" '- [x] Full suite passes' \
     'the sanctioned transport ticks a composed Testing checkbox'
 
 finish
