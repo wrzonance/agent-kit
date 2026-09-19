@@ -52,10 +52,21 @@ class Activation(unittest.TestCase):
         return self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
                            "--skill", "parallel-issues", "--nonce", self.record()["nonce"])
 
+    def linked_worktree(self):
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.invalid"], check=True)
+        (self.repo / "seed").write_text("seed\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "seed"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "seed"], check=True)
+        target = self.root / "linked-worktree"
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "linked", str(target)], check=True)
+        return target
+
     def test_unknown_is_not_active(self):
         result = self.check()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("activation-unavailable", result.stderr)
+        self.assertIn("no receipt at activation origin", result.stderr)
+        self.assertIn("invoke parallel-issues in that checkout", result.stderr)
 
     def test_failed_activation_helper_does_not_block_ordinary_prompt(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
@@ -156,9 +167,41 @@ class Activation(unittest.TestCase):
         result = self.invoke("ack", "--repo-root", str(self.repo), "--session", "other",
                              "--skill", "parallel-issues", "--nonce", self.record()["nonce"])
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no receipt at activation origin", result.stderr)
+        self.assertIn("invoke parallel-issues in that checkout", result.stderr)
         result = self.invoke("ack", "--repo-root", str(self.repo), "--session", "test-session",
                              "--skill", "parallel-issues", "--nonce", "bad")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_origin_receipt_authorizes_only_linked_target(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        target = self.linked_worktree()
+        for checked_target in (self.repo, target, target):
+            with self.subTest(target=checked_target):
+                result = self.check("--target-root", str(checked_target))
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+        unrelated = self.root / "unrelated"
+        subprocess.run(["git", "init", "-q", str(unrelated)], check=True)
+        result = self.check("--target-root", str(unrelated))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("activation-target-mismatch", result.stderr)
+        self.assertIn("create or resume a linked worktree", result.stderr)
+
+    def test_preflight_reads_origin_receipt_and_measures_linked_target(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        target = self.linked_worktree()
+        result = subprocess.run([str(self.helper.parent / "agent-preflight.sh"),
+                                 "--worktree", str(target), "--ensure",
+                                 "--activation-origin", str(self.repo),
+                                 "--activation-session", "test-session",
+                                 "--workflow", "parallel-issues"],
+                                text=True, capture_output=True, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("worktree=" + str(target), result.stdout)
+        self.assertNotIn("worktree=" + str(self.repo) + "\n", result.stdout)
 
     def test_installed_loaded_mismatch_names_both_versions(self):
         self.prompt()

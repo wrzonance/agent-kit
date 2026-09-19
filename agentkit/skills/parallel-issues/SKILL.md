@@ -311,27 +311,25 @@ No design docs created. Step 5 proceeds directly. See [references/implementation
 
 ### Step 5: Create worktrees
 
-Before this block, resolve the documented locked bootstrap command from the contract's resolved `instructions=` files (never `unresolved=`) into `dependency_bootstrap`; use an empty array when absent. Never infer a package manager or install command. An unresolved router with no bootstrap for a detected component is a real gap: record it on that issue's dispatch entry before dispatch.
+Resolve `dependency_bootstrap` from the contract's resolved `instructions=` files; use an empty array when absent and never infer a package manager. Record an unresolved router with no component bootstrap on that issue's dispatch entry.
 
 ```bash
 set -euo pipefail
 
 issue_number=123 # Replace with the approved issue number.
+activation_session=SESSION_ID # Replace with Step 0's acknowledged session ID.
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 repository_root=$contract_root
 base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1
-# For a chained issue, chain_base_sha is the predecessor's pushed commit --
-# the worker's completion report carries it (worktree-commit.sh printed it);
-# empty means an independent issue starting from trunk.
+# A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
-# The helper expands this to the historical start-point contract:
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
-setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base")
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
 "$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
 ```
 
-The helper owns branch/exclude, config, preflight, and setup; prints `resumable: yes|no untracked=N modified=M`. An existing branch/path refuses duplicate creation; `--resume` is the remedy, re-running those steps and refreshing `.agent/env-contract.txt`. Its `worktree=` line identifies checkout; the printed preflight output is the contract to paste, not Step 0's.
+The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -500,8 +498,8 @@ Structured `worker-result=PATH` handbacks follow the [result contract](reference
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → review the pushed diff, open the draft PR, record its numeric identity with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, move the issue to `In review`, and start Phase 3. Diff size is never a reason to withhold this PR — see Diff-size facts.
-- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves HEAD exists on its freshly queried configured remote branch but does not attribute the retained log to that tree: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; the NUL-delimited file preserves each protected path exactly, and the body's `## Operator action required` section discloses both the paths and verification limitation. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
+- **Completion report (branch + pushed SHA)** → review pushed diff; run `$agentkit/parallel-issues/scripts/compose-pr-body.sh`, then `"$agentkit/.shared/scripts/gh-body.sh" pr create --draft`; record with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`; move issue to `In review`; start Phase 3. Diff size is never a reason to withhold this; see Diff-size facts.
+- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves the queried remote HEAD, not log attribution: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; its `## Operator action required` section preserves blocker paths and discloses limited verification. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
@@ -562,7 +560,7 @@ BASH_RECIPE
 )" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
-Read [references/worker-prompts.md](references/worker-prompts.md#draft-pr-body-template) in full before opening a draft PR: composer recipe and stacked retarget/linkage proof are dispatch-*output* content.
+Before opening a draft PR, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
 
 The worker commits and pushes its own branch and returns a completion report; root reviews the pushed diff and opens the DRAFT PR;
 root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication.

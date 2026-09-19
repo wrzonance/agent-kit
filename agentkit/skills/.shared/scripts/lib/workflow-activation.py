@@ -130,6 +130,30 @@ class Evidence:
                 os.unlink(name)
 
 
+def validate_target(origin, target):
+    """Bind a receipt origin to the checkout being prepared."""
+    try:
+        target = Path(target).resolve(strict=True)
+    except OSError:
+        fail("activation-target-unavailable: target checkout is missing; create or resume the linked worktree, then retry")
+    result = subprocess.run(["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode or not result.stdout.strip():
+        fail("activation-target-unavailable: target is not a repository checkout; create or resume the linked worktree, then retry")
+    target = Path(result.stdout.strip()).resolve(strict=True)
+
+    def common_directory(root):
+        common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+                                capture_output=True, text=True, check=False)
+        if common.returncode or not common.stdout.strip():
+            fail("activation-unavailable: could not identify receipt origin repository")
+        path = Path(common.stdout.strip())
+        return (path if path.is_absolute() else root / path).resolve(strict=True)
+
+    if common_directory(origin) != common_directory(target):
+        fail("activation-target-mismatch: target belongs to a different repository; create or resume a linked worktree from the activation origin")
+
+
 def identity(args):
     manifest = Path(args.skills).parent / ".claude-plugin/plugin.json"
     version = json.loads(manifest.read_text())["version"]
@@ -330,6 +354,7 @@ def main():
     parser.add_argument("--digest", required=True)
     parser.add_argument("action", choices=("hook", "ack", "check", "identity", "classify"))
     parser.add_argument("--repo-root")
+    parser.add_argument("--target-root")
     parser.add_argument("--session")
     parser.add_argument("--skill", choices=sorted(WORKFLOWS))
     parser.add_argument("--nonce")
@@ -353,8 +378,12 @@ def main():
             return 0
         if not args.repo_root or not args.session or not args.skill:
             fail("activation-unavailable: --repo-root, --session and --skill are required")
-        evidence = Evidence(args.repo_root, args.session)
-        record = evidence.read()
+        try:
+            evidence = Evidence(args.repo_root, args.session)
+            record = evidence.read()
+        except FileNotFoundError:
+            fail("activation-unavailable: no receipt at activation origin for session; invoke "
+                 + args.skill + " in that checkout and acknowledge the fresh challenge")
         if args.action == "ack":
             if not args.nonce or not secrets.compare_digest(args.nonce, record.get("nonce", "")):
                 fail("activation-unavailable: session receipt challenge mismatch")
@@ -369,6 +398,8 @@ def main():
             print(f"agentkit: skill={args.skill} version={identity(args)} hash={args.digest[:12]}")
         else:
             validate(args, record, args.skill, args.require)
+            if args.target_root:
+                validate_target(evidence.root, args.target_root)
             print(json.dumps(record, sort_keys=True))
         return 0
     except (Unavailable, OSError, ValueError, KeyError, TypeError) as error:
