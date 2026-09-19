@@ -23,12 +23,12 @@ quality="$review/code-quality-state.sh"
 config="$tmp/config.toml"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$config"
 out=$(CODEX_HOME="$tmp" "$cap" --config "$config" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'concurrency helper reads the accepted agents section'
 mkdir -p "$tmp/codex-home"
 cp -- "$config" "$tmp/codex-home/config.toml"
 out=$(CODEX_HOME="$tmp/codex-home" "$cap" 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     'concurrency helper resolves CODEX_HOME like the runtime'
 assert_rc 0 'no-spawn degradation does not require a runtime cap' -- \
     "$cap" --config "$tmp/missing.toml" --no-spawn
@@ -41,7 +41,7 @@ out=$("$cap" --config "$tmp/missing.toml" --multi-agent false 2>&1)
 assert_contains "$out" 'worker=self (spawn unavailable)' \
     '--multi-agent false degrades exactly like --no-spawn'
 out=$("$cap" --config "$config" --multi-agent true 2>/dev/null)
-assert_contains "$out" 'runtime concurrency cap: 10 total threads, including the root' \
+assert_contains "$out" 'effective concurrency cap: 10 total threads, including the root' \
     '--multi-agent true reads the cap exactly like --spawn-capable'
 printf '%s\n' '[other]' 'max_concurrent_threads_per_session = 4' >"$config"
 err=$("$cap" --config "$config" 2>&1 >/dev/null)

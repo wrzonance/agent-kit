@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
-# Read the runtime's advertised child-thread cap without embedding an awk
-# parser in the dispatch skill.  A runtime that cannot spawn agents degrades to
-# one serial worker and therefore has no cap to advertise.
 set -uo pipefail
 
 readonly PROGRAM=${0##*/}
+readonly MAX=10
 if [[ -n ${CODEX_HOME:-} ]]; then
     config_file=$CODEX_HOME/config.toml
 else
     config_file=${HOME:-}/.codex/config.toml
 fi
 spawn_mode=auto
+count=''
+kind=''
+count_set=no
+kind_set=no
 
 usage() {
     cat <<'EOF'
-Usage: concurrency-cap.sh [--config FILE] [--spawn-capable|--no-spawn|--multi-agent VALUE]
+Usage: concurrency-cap.sh [--config FILE] [--spawn-capable|--no-spawn|--multi-agent VALUE] [--assert-count TOTAL --agent-kind KIND]
 
-Prints the runtime concurrency cap for a spawning session.  When spawning is
-unavailable, prints the serial worker path and exits successfully without
-requiring a runtime config file.  --multi-agent VALUE is the dispatch
-capability probe's own spelling of the same choice: false picks --no-spawn,
-anything else picks --spawn-capable.
+Print the effective cap, or refuse a prospective total above it. The total
+includes the root. No-spawn mode is serial.
 
 Recipe: read the dispatch cap
   [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
@@ -44,6 +43,8 @@ while (($#)); do
             ;;
         --spawn-capable) spawn_mode=yes; shift ;;
         --no-spawn) spawn_mode=no; shift ;;
+        --assert-count) (($# >= 2)) || die 'missing count'; count=$2; count_set=yes; shift 2 ;;
+        --agent-kind) (($# >= 2)) || die 'missing kind'; kind=$2; kind_set=yes; shift 2 ;;
         --multi-agent)
             (($# >= 2)) || die '--multi-agent requires a value'
             [[ ${2,,} != false ]] && spawn_mode=yes || spawn_mode=no
@@ -54,9 +55,13 @@ while (($#)); do
     esac
 done
 
-# The runtime integration can explicitly report capability through either
-# spelling used by the two supported dispatch adapters. Explicit CLI flags
-# always win, and an unset variable remains the normal spawning path.
+[[ $count_set == "$kind_set" ]] || die '--assert-count and --agent-kind must be supplied together'
+if [[ $count_set == yes ]]; then
+    [[ -n $count && -n $kind ]] || die 'assertion values must be non-empty'
+    [[ $count =~ ^[1-9][0-9]*$ ]] || die 'invalid count'
+    [[ $kind =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die 'invalid kind'
+fi
+
 if [[ $spawn_mode == auto ]]; then
     capability=${MULTI_AGENT:-${multi_agent:-${AGENT_MULTI_AGENT:-${SPAWN_CAPABILITY:-${spawn_capability:-}}}}}
     case ${capability,,} in
@@ -120,7 +125,10 @@ case $probe in
         cap=${probe#allowed=}
         [[ $cap =~ ^[1-9][0-9]*$ ]] ||
             die "Unable to advertise concurrency: runtime concurrency value is non-numeric or non-positive: $cap"
-        printf 'runtime concurrency cap: %s total threads, including the root\n' "$cap"
+        if ((${#cap} == 1)); then limit=$cap; else limit=$MAX; fi
+        [[ -z $count ]] || { ((${#count} <= 2)) && ((10#$count <= limit)); } ||
+            die "spawn refused: cap=$limit observed=$count agent-kind=$kind helper=$PROGRAM"
+        printf 'effective concurrency cap: %s total threads, including the root\n' "$limit"
         ;;
     outside=*)
         die 'Unable to advertise concurrency: max_concurrent_threads_per_session is outside the accepted sections ([agents], [features.multi_agent_v2], or [multi_agent_v2])'

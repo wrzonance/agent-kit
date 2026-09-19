@@ -319,11 +319,9 @@ per-batch degradation, not a permanent downgrade: whenever a spawn IS possible, 
 
 ## Correction cycles
 
-For a follow-up correction on work already dispatched, resume the same worker with
-`tools.send` when it remains available, rather than spawning a fresh one;
-never create two concurrent writers in one worktree. When `tools.send` is unavailable,
-confirm the prior writer stopped or handed back and release its ownership before reserving
-for a fresh worker carrying the completed state and the exact remaining step.
+Resume with `tools.send`. Without it, confirm the prior writer stopped or handed back and release its ownership before reserving for a fresh worker carrying the completed state and the exact remaining step.
+`agentkit activation-blocked: {...}` keeps ownership. Match schema, worker, worktree, workflow and full identities; ignore nonce. Drift needs fresh delivery; pending uses its ack; unchanged active needs none.
+Send `"$agentkit/.shared/scripts/workflow-activation.sh" redeliver --repo-root "$worktree" --session "$session" --skill "$workflow"` stdout to that worker/context. The leaf acknowledges and resumes without workflow authority; unavailable or repeated delivery parks with work preserved.
 
 ## Bounded inline corrections
 

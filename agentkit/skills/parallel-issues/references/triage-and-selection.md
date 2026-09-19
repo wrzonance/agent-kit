@@ -556,13 +556,13 @@ would have reported `#11` as ready to start.
 Then apply, in order:
 
 1. **Ready before Backlog, promoted to fill a thin cap — for `--fast-mode` or an attended
-   automatic invocation with no issue numbers.** For a numbered invocation carrying a thematic
-   promotion instruction, skip this Ready sweep entirely: the candidate set is only the given
-   numbers plus Backlog issues matching the named theme (title/label token overlap), never an
-   unrelated Ready issue picked up along the way. Otherwise, exhaust vetted Ready work first; a
+   automatic invocation with no issue numbers.** For a numbered invocation with a thematic
+   promotion instruction, skip Ready: use only the given numbers plus Backlog matching the theme
+   by title/label tokens, never unrelated Ready work. Otherwise, exhaust vetted Ready first; a
    thin Ready column (fewer eligible issues than the slot cap) is normal, not a reason to stop.
-   Rank Backlog candidates by native blocked-by edges (an issue blocking or blocked by an
-   already-selected issue ranks higher) and shared-area interrelation (touches the same
+   Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.
+   Rank Backlog candidates by native blocked-by edges (edges to selected issues rank higher)
+   and shared-area interrelation (touches the same
    files/modules/labels as an already-selected issue), then take top-ranked candidates until the
    cap is filled or Backlog is exhausted.
 2. **Run Step 3's conflict analysis over the eligible set**, and drop the later issue from
