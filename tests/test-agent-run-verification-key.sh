@@ -31,6 +31,15 @@ with tempfile.TemporaryDirectory() as temp:
         if expected==0: assert re.fullmatch(r'[0-9a-f]{64}\n',p.stdout),p.stdout
         else: assert not p.stdout, p.stdout
         return p.stdout.strip()
+    def unavailable(declaration,*fragments):
+        config.write_text(declaration)
+        before=snapshot()
+        p=subprocess.run([str(helper),'--dir',str(repo),'--cmd','test','--verification-key'],
+                         capture_output=True,text=True)
+        assert p.returncode==1,(p.returncode,p.stdout,p.stderr)
+        assert snapshot()==before, 'capability query created or changed repository evidence'
+        assert not counter.exists(), 'capability query executed the declared command'
+        assert all(fragment in p.stderr for fragment in fragments),(p.stderr,fragments)
     first=query(); assert query()==first
     assert list(agent.iterdir())==[config], 'query created durable directories'
     (repo/'input').write_text('two\n'); assert query()!=first
@@ -41,6 +50,11 @@ with tempfile.TemporaryDirectory() as temp:
     for suffix in ('AGENT_VERIFY_TEST_MODE=external\n','AGENT_VERIFY_TEST_TOOLCHAIN=missing-query-tool\n',
                    'AGENT_VERIFY_TEST_INPUTS=input\n','AGENT_CMD_TEST_KIND=format\n'):
         config.write_text('\n'.join(line for line in declaration.splitlines() if not line.startswith(suffix.split('=')[0]+'='))+'\n'+suffix); query(expected=1)
+    unavailable('AGENT_CMD_TEST=true\n','reason=mode-not-local',
+                'missing=AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN',
+                'choices=declare-local-verification-or-authorize-native-evidence-handoff')
+    unavailable('AGENT_CMD_TEST=true\nAGENT_VERIFY_TEST_MODE=local\n','reason=no-toolchain',
+                'missing=AGENT_VERIFY_TEST_TOOLCHAIN')
     config.write_text(declaration)
     for flags in (('--force',),('--only','unit'),('--cmd','lint'),('--if-declared',),('--resolve','test'),('--fix',),('--','true'),
                   ('--baseline-ref','HEAD','--baseline-path','input','--baseline-id','query')):

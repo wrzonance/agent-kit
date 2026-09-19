@@ -128,25 +128,38 @@ def command(argv):
     if p.returncode: raise Unknown(f'evidence command failed: {argv[0]} (exit {p.returncode})')
     return p.stdout
 
+def verification_capability(root, name):
+    argv=[str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,'--verification-key']
+    try: p=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+    except (OSError,subprocess.TimeoutExpired) as e: raise Unknown(f'verification capability query unavailable: {name}') from e
+    fingerprint=p.stdout.decode(errors='replace').strip()
+    error=p.stderr.decode(errors='replace').strip()
+    if p.returncode and 'verification capability unavailable:' in error:
+        raise Unknown(f'verification capability unavailable: {error or name}')
+    if p.returncode or not re.fullmatch('[0-9a-f]{64}',fingerprint):
+        raise Unknown(f'verification capability query failed: {name} (exit {p.returncode})')
+    return fingerprint
+
 def matches(path, glob):
     # * never crosses a slash; **/ also matches zero directory components.
     regex=re.escape(glob).replace(r'\*\*/','(?:.*/)?').replace(r'\*\*','.*').replace(r'\*','[^/]*').replace(r'\?','[^/]')
     return re.fullmatch(regex,path) is not None
 
 def verify(root, r, git, a):
-    """Current local full-checkout evidence; unsupported handles stay unknown."""
-    cache=read(root/'.agent/verification-cache').decode()
-    observed=[]
+    """Validate current full-checkout evidence."""
+    observed=[]; fingerprints={}
     for v in r['verification']:
         if v['status']=='fail': raise Rejected(f"verification failed: {v['command']}")
         if v['status']!='pass': raise Unknown(f"verification {v['command']} is {v['status']}: {v['reason']}")
         name=v['command']
         if name not in ('test','lint','typecheck','coverage','verify','check'):
             raise Unknown(f'unsupported verification command: {name}')
-        # The producer owns input/config/toolchain identity. This query cannot
-        # execute commands or create records; unsupported scopes fail closed.
-        fingerprint=command([str(HELPERS/'agent-run.sh'),'--dir',str(root),
-                             '--cmd',name,'--verification-key']).decode().strip()
+        fingerprints[name]=verification_capability(root,name)
+    cache=read(root/'.agent/verification-cache').decode()
+    for v in r['verification']:
+        name=v['command']
+        # Match the tested state.
+        fingerprint=fingerprints[name]
         if not re.fullmatch('[0-9a-f]{64}',fingerprint):
             raise Unknown(f'invalid current verification fingerprint: {name}')
         if v.get('fingerprint')!=fingerprint: raise Unknown(f'stale or unsupported tested-state fingerprint: {name}')

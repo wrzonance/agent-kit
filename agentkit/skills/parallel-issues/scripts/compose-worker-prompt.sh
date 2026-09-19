@@ -156,8 +156,8 @@ done
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
 template_file=$script_dir/../references/worker-prompts.md
 [[ $template_kind != issue-lead ]] || template_file=$script_dir/../references/implementation-worker.md
-repo_config=$script_dir/../../.shared/scripts/repo-config.sh
-contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
+repo_config=$script_dir/../../.shared/scripts/repo-config.sh contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
+agent_run=$script_dir/../../.shared/scripts/agent-run.sh
 sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.sh
 harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
 contract_cache_lib=$script_dir/../../.shared/scripts/lib/contract-cache.sh
@@ -166,6 +166,7 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
 [[ -x $contract_reader ]] || die "missing contract-read.sh: $contract_reader"
+[[ -x $agent_run ]] || die "missing agent-run.sh: $agent_run"
 [[ -r $sandbox_comparator_lib ]] || die "missing sandbox-comparator.sh: $sandbox_comparator_lib"
 [[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
 [[ -r $contract_cache_lib ]] || die "missing contract-cache.sh: $contract_cache_lib"
@@ -187,6 +188,7 @@ source "$contract_cache_lib"
 contract=$(contract_cache_contract_file "$worktree")
 spec=
 prior_art=
+verification_capability_diagnostic=
 emit_acceptance_declarations() {
     emit_acceptance_declarations_body() {
         if ((${#acceptance_commands[@]} == 0)); then
@@ -227,17 +229,8 @@ emit_acceptance_declarations() {
 }
 
 if [[ $template_kind == issue-lead ]]; then
-    # Must agree, filename-for-filename, with prepare-issue-artifacts.sh's
-    # own per-mode publish targets (issue #334): only public-fenced actually
-    # fences the bytes, so only public-fenced keeps the fenced-* name;
-    # private-trusted and yolo-trusted publish under the mode-neutral
-    # spec.txt / prior-art.txt names instead, so a filename never asserts a
-    # fence that does not exist. fix-batch never renders issue text and
-    # carries no --boundary, so it must never resolve or require either
-    # artifact -- for a private-trusted/yolo-trusted issue,
-    # prepare-issue-artifacts.sh publishes only the mode-neutral pair, and a
-    # fix-batch composition that still demanded fenced-spec.txt would die on
-    # an artifact that was never produced (issue #359 adversarial review).
+    # Mirror prepare-issue-artifacts.sh: public delivery uses fenced names;
+    # trusted modes use neutral names. Fix batches skip both artifacts.
     case $boundary_mode in
         public-fenced)
             spec=$worktree/.agent/fenced-spec.txt
@@ -288,6 +281,7 @@ yield_cap_ms=${yield_cap_ms%% *}
 emit_verify_runbook() {
     local collect read=once-at-marker
     [[ -n $verify_command ]] || { printf 'verify= unavailable reason=no-scoped-command\n'; return; }
+    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=block-structured-acceptance-or-authorize-native-evidence-handoff\n' "$verification_capability_diagnostic"
     case $harness_name in
         codex) collect='shell:write_stdin,cell:functions.wait' ;;
         claude) collect=completion-notification; read=returned-output-file ;;
@@ -384,13 +378,6 @@ while IFS='=' read -r key value; do
     command_keys+=("$key")
 done <<< "$command_list"
 
-# Keep repo-wide commands and commands whose declared `AGENT_RUNDIR` overlaps
-# the write set. This avoids offering an out-of-scope component check without
-# guessing from its name or command line. `glob_literal_prefix` returns the
-# complete leading path before a glob metacharacter: `frontend/src/**` becomes
-# `frontend/src`, while `front*/**` becomes empty because its first component
-# can match any top-level directory and supports no safe scoping claim. A
-# command without a declared run directory remains a repo-wide verification gate.
 glob_literal_prefix() {
     local glob=$1 literal
     glob=${glob#./}
@@ -402,11 +389,7 @@ glob_literal_prefix() {
     printf '%s' "$literal"
 }
 
-# 0 when a glob can name a file inside RUNDIR. Deliberately conservative in
-# both directions: an empty literal prefix (a glob that could match anywhere)
-# and a rundir at the repository root both intersect everything, so an
-# ambiguous case keeps the command rather than dropping a suite the worker
-# needed.
+# Return 0 when a glob can name a file inside RUNDIR; ambiguity stays in scope.
 write_set_reaches_rundir() {
     local rundir=$1 glob literal
     rundir=${rundir#./}
@@ -432,7 +415,6 @@ scope_commands() {
         name=${command_names[$index]}
         rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
         rundir=${declared_rundirs[$rundir_key]:-}
-        # No declared rundir means no declared location: a repo-wide gate.
         if [[ -z $rundir ]] || ((${#write_set_globs[@]} == 0)) ||
             write_set_reaches_rundir "$rundir"; then
             scoped_command_names+=("$name")
@@ -441,13 +423,8 @@ scope_commands() {
         fi
         dropped_commands+=("$name (rundir $rundir)")
     done
-    # Filtering away EVERY command would hand a worker a prompt with no way to
-    # verify anything, so this fails open: a write set that intersects no
-    # declared component (a docs-only dispatch in a fully-componentised
-    # monorepo) keeps the full list, exactly as before the filter existed.
-    # Refusing here would convert a legitimate dispatch into a blocker.
+    # Keep all commands when component filtering would leave no verification.
     if ((${#scoped_command_names[@]} == 0 && ${#command_names[@]} > 0)); then
-        # A lone scoped-out test has no safe substitute; leave it unavailable.
         ((${#command_names[@]} != 1)) || [[ ${command_keys[0]} != AGENT_CMD_TEST ]] || return 0
         scoped_command_names=("${command_names[@]}")
         scoped_command_keys=("${command_keys[@]}")
@@ -511,7 +488,12 @@ if ((runbook_test_runnable == 0)); then
         verify_command=''
     fi
 fi
-
+if [[ $template_kind == issue-lead && -n $verify_command_name ]] &&
+    ! capability=$("$agent_run" --dir "$worktree" --cmd "$verify_command_name" --verification-key 2>&1) &&
+    [[ $capability == *'verification capability unavailable: '* ]]; then
+    capability=${capability#*verification capability unavailable: }
+    verification_capability_diagnostic=${capability%%$'\n'*}
+fi
 temporary=$(mktemp "${TMPDIR:-/tmp}/compose-worker-prompt.XXXXXXXXXX") || die 'could not allocate a composition buffer'
 cleanup() { rm -f -- "$temporary"; }
 trap cleanup EXIT HUP INT TERM

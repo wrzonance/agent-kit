@@ -118,7 +118,29 @@ with tempfile.TemporaryDirectory() as temp:
     reasons=[rejected(*case) for case in malformed_cases]
     assert len(reasons)==len(set(reasons)), reasons
     save()
+    # A successful fresh native run cannot create cache evidence when the
+    # repository has not declared local verification capability. Acceptance
+    # diagnoses the configuration gap before requesting an impossible rerun.
+    (repo/'.agent/config.env').write_text('AGENT_CMD_TEST=true\n')
+    native_output=run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--force', '--summary')
+    assert 'PASS:' in native_output,native_output
+    unavailable=validate(2)
+    assert unavailable['status']=='unknown',unavailable
+    assert 'verification capability unavailable' in unavailable['reason'],unavailable
+    assert 'AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN' in unavailable['reason'],unavailable
+    assert 'authorize-native-evidence-handoff' in unavailable['reason'],unavailable
+    assert 'evidence unavailable' not in unavailable['reason'],unavailable
+    (repo/'.agent/config.env').write_text(local_declaration)
+    cache_path=repo/'.agent/verification-cache'
+    saved_cache=cache_path.read_bytes(); cache_path.unlink()
+    absent=validate(2)
+    assert 'evidence unavailable' in absent['reason'] and 'verification-cache' in absent['reason'],absent
+    assert 'verification capability unavailable' not in absent['reason'],absent
+    cache_path.write_bytes(saved_cache)
     assert validate(2)['claims']['implementation']=='valid', 'legacy cache alone cannot establish original log bytes'
+    os.environ['LC_ALL']='agentkit_missing_locale'
+    assert validate(digest=observed_digest)['status'] == 'accepted', 'harmless stderr must not corrupt the stdout fingerprint'
+    os.environ.pop('LC_ALL')
     assert validate(digest=observed_digest)['status'] == 'accepted'
     assert validate()['reused'] is True
     # Durable execution state cannot be replaced by the legacy green index.
@@ -171,6 +193,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert unknown['claims']['implementation'] == 'valid'
     assert unknown['claims']['verification'] == 'unknown'
     assert unknown['status'] == 'unknown'
+    assert 'retained log bytes changed' in unknown['reason'],unknown
     assert json.loads(state.read_text())['results']['attempt']['status'] == 'unknown'
     validate(2,digest=hashlib.sha256(log.read_bytes()).hexdigest())  # Worker-derived replacement cannot clear the pin.
     pins=json.loads(state.read_text())['results']['attempt']['trustedLogs']
@@ -206,7 +229,9 @@ with tempfile.TemporaryDirectory() as temp:
     replacement=dict(owner,attempt='new',workerId='new')
     owners.write_text(json.dumps(owner)+'\n'+json.dumps(replacement)+'\n'); validate(1)
     write(owners,owner)
-    result['verification'][0]['fingerprint']='0'*64; save(); validate(2)
+    result['verification'][0]['fingerprint']='0'*64; save()
+    stale=validate(2)
+    assert 'stale or unsupported tested-state fingerprint' in stale['reason'],stale
     result['verification'][0]['fingerprint']=key
     for status in ('skipped','unavailable','unknown','fail'):
         result['verification'][0]['status']=status; result['verification'][0]['reason']='not green'
