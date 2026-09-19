@@ -340,14 +340,14 @@ there is nothing to fix.
 
 ## Draft PR body template
 
-After a worker's completion report lands and the root's post-push review of `base...HEAD` clears it
-(SKILL.md's "Root review and draft PR after a worker push"), the root opens the DRAFT PR with this recipe.
-`compose-pr-body.sh` composes the body from four root-approved section files in the fixed order —
-agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line, and a
-separate closing-keyword line — normalizing plain `- item` Testing bullets to `- [ ] item`.
-Every composed body starts with the literal line `This was written agentically; verify its assertions:`.
-Never pass a multiline PR body through inline `--body`; the composer writes a private file for
-the byte-verifying transport.
+After the root's post-push review clears `base...HEAD`, it opens the DRAFT PR with this recipe.
+`compose-pr-body.sh` composes four root-approved files as `Why`, `What`, `Decisions`, and `Testing`,
+between the agentic disclosure and canonical footer. Testing lines are completable verification
+actions: `Unit tests pass`, not `Unit tests passed`; plain bullets normalize to unchecked boxes.
+Put scope decisions, standing limitations, and unrelated failures in `## Decisions`, or in
+`## Operator action required` when they require operator work.
+The body starts with `This was written agentically; verify its assertions:`.
+Never pass a multiline PR body through inline `--body`; the composer writes a private file for verified transport.
 
 For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
 of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved Why or Decisions
