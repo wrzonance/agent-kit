@@ -1121,6 +1121,16 @@ assert_contains "$normalized_root_publication" 'Invoke returned argv once, then 
     'root fallback pushes only after executing the validated handback'
 assert_contains "$normalized_root_publication" 'Environment-refusal fallback only' \
     'the root push step lives inside the environment-refusal fallback'
+normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
+assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
+    'the normal completion branch names the canonical PR body composer inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
+    'the normal completion branch names the verified draft PR creation transport inline'
+assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
+    'the normal completion branch preserves the complete PR identity record command'
+blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
+assert_contains "$blocked_completion_branch" 'compose-pr-body.sh' \
+    'the BLOCKED completion branch names the same canonical PR body composer'
 assert_contains "$text" 'compose_args+=(--write-set "$glob")' \
     'the dispatch recipe passes each write-set glob as its own repeated flag'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
@@ -1452,6 +1462,8 @@ assert_contains "$worker_prompts_text" '### Diff-size disclosure' \
     'worker-prompts.md carries the diff-size disclosure subsection'
 assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"' \
     'the disclosure recipe runs diff-facts.sh against the worktree'
+assert_contains "$worker_prompts_text" "'Diff-size disclosure:' >> \"\$pr_decisions_file\"" \
+    'the disclosure recipe labels machine-readable facts as Decisions prose'
 assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
     'the disclosure recipe pins the chain base for a chained issue'
 assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \
