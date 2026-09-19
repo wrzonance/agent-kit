@@ -201,6 +201,8 @@ __ACCEPTANCE_DECLARATIONS__
 <PASTE the complete output selected by the boundary mode for the Step 2 prior-art verdicts; say "none" when empty>
 
 ### Completion handoff
+On a denial with `agentkit activation-blocked: {...}`, return that nonce-free line to root once and stop probes; never invoke the workflow, dispatch, or abandon the worktree.
+When root delivers current bytes to this context, run only its exact fresh acknowledgement and resume the same branch, edits, evidence and identity. If delivery is unsupported, report that once and preserve work.
 
 When root supplies runId, attempt, and workerId, use the fields in
 `parallel-issues/references/worker-prompts.md#structured-result-contract` and run

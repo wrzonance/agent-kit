@@ -61,11 +61,22 @@ def select_workflow(prompt):
     return match[1] if match else None
 
 
-def mismatch(record, reason):
+def mismatch(args, record, reason):
     workflow = record.get("workflow")
     selector = "$agentkit:" + (workflow if workflow in WORKFLOWS else "parallel-issues")
+    version = identity(args)
+    handback = {"schemaVersion": 1, "kind": "activation-blocked",
+                "session": record.get("session"), "worktree": record.get("repoRoot"),
+                "workflow": workflow,
+                "installed": {"version": version, "digest": args.digest},
+                "received": {"version": record.get("version"),
+                             "digest": record.get("installedDigest")}}
     raise ContentMismatch("agentkit: activation-mismatch: " + reason
-                          + "; submit " + selector + " in this conversation, then acknowledge the fresh challenge. "
+                          + "\nagentkit activation-blocked: " + json.dumps(handback, sort_keys=True)
+                          + "\nLeaf: return that handback once to the owning root and stop probing; do not invoke "
+                          + "an orchestration workflow. Root: validate it against the dispatch, then redeliver "
+                          + "current bytes to the same worker context. Otherwise submit " + selector
+                          + " in this conversation, then acknowledge the fresh challenge. "
                           + "Restarting the client and resuming this conversation retains its receipt; "
                           + "a new session needs its own invocation and acknowledgement. Saved work is preserved. "
                           + "Diagnosis: cat /absolute/file; rg --no-config -n -- pattern /absolute/file "
@@ -165,16 +176,16 @@ def identity(args):
 def validate_content(args, record):
     version = identity(args)
     if record.get("installedDigest") != args.digest or record.get("version") != version:
-        mismatch(record, f"installed {version} ({args.digest[:12]}) but this session received "
+        mismatch(args, record, f"installed {version} ({args.digest[:12]}) but this session received "
                  f"{record.get('version', 'unknown')} ({str(record.get('installedDigest', 'unknown'))[:12]})")
     if record.get("skillsRoot") != args.skills:
-        mismatch(record, "installed skill path changed")
+        mismatch(args, record, "installed skill path changed")
     workflow = record.get("workflow")
     if workflow not in WORKFLOWS:
         fail("activation-unavailable: unknown workflow identity")
     body = (Path(args.skills) / workflow / "SKILL.md").read_bytes()
     if record.get("deliveredDigest") != hashlib.sha256(body).hexdigest():
-        mismatch(record, "delivered workflow bytes differ from installed workflow")
+        mismatch(args, record, "delivered workflow bytes differ from installed workflow")
 
 
 def delegated_skills(args, record):
@@ -217,6 +228,31 @@ def ack_command(args, record):
     return shlex.join([str(Path(args.skills) / ".shared/scripts/workflow-activation.sh"), "ack",
                        "--repo-root", record["repoRoot"], "--session", record["session"],
                        "--skill", record["workflow"], "--nonce", record["nonce"]])
+
+
+def deliver(args, evidence, workflow, source, capabilities, recovery=False):
+    skill = Path(args.skills) / workflow / "SKILL.md"
+    if not skill.is_file() or skill.is_symlink():
+        fail("workflow-unavailable: " + workflow)
+    body = skill.read_bytes()
+    record = {"schemaVersion": 1, "session": evidence.session, "repoRoot": str(evidence.root),
+              "workflow": workflow, "skillsRoot": args.skills, "version": identity(args),
+              "installedDigest": args.digest, "deliveredDigest": hashlib.sha256(body).hexdigest(),
+              "deliverySource": source, "receiptSource": "unknown", "status": "pending",
+              "nonce": secrets.token_hex(24), "capabilities": capabilities}
+    evidence.write(record)
+    if recovery:
+        lead = ("agentkit root-mediated activation recovery: current workflow bytes are delivered "
+                "only to refresh this receipt. Do not run or dispatch the orchestration workflow; "
+                "run this exact receipt command, then resume the assigned work in the same worktree:\n")
+    else:
+        lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
+                "Before any dispatch, edits, or other workflow, run this exact receipt command. "
+                "You may inspect the installed helper first; its first receipt stdout line is the workflow identity:\n")
+    context = (lead + ack_command(args, record)
+               + "\nMissing capability remains unknown. Do not substitute another workflow.\n"
+               + "Installed skills root: " + args.skills + "\n\n" + body.decode())
+    return record, context
 
 
 def inspection(args, root, tool, tool_input):
@@ -277,7 +313,6 @@ def hook(args):
         skill = Path(args.skills) / workflow / "SKILL.md"
         if workflow not in WORKFLOWS or not skill.is_file() or skill.is_symlink():
             fail("workflow-unavailable: " + workflow + "; install/register the current plugin and invoke it again")
-        body = skill.read_bytes()
         evidence = Evidence(root, session, create=True)
         try:
             previous = evidence.read()
@@ -293,19 +328,8 @@ def hook(args):
                     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
                             "agentkit activation unchanged: acknowledged workflow=" + workflow
                             + "; reuse durable session receipt; do not repeat discovery."}}
-        record = {"schemaVersion": 1, "session": session, "repoRoot": str(evidence.root),
-                  "workflow": workflow, "skillsRoot": args.skills, "version": identity(args),
-                  "installedDigest": args.digest, "deliveredDigest": hashlib.sha256(body).hexdigest(),
-                  "deliverySource": "UserPromptSubmit.additionalContext", "receiptSource": "unknown",
-                  "status": "pending", "nonce": secrets.token_hex(24),
-                  "capabilities": {"user-prompt-submit": "observed", "pre-tool-use": "unknown"}}
-        evidence.write(record)
-        context = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
-                   "Before any dispatch, edits, or other workflow, run this exact receipt command. "
-                   "You may inspect the installed helper first; its first receipt stdout line is the workflow identity:\n"
-                   + ack_command(args, record)
-                   + "\nMissing capability remains unknown. Do not substitute another workflow.\n"
-                   + "Installed skills root: " + args.skills + "\n\n" + body.decode())
+        _, context = deliver(args, evidence, workflow, "UserPromptSubmit.additionalContext",
+                             {"user-prompt-submit": "observed", "pre-tool-use": "unknown"})
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     try:
         evidence = Evidence(root, session)
@@ -352,7 +376,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills", required=True)
     parser.add_argument("--digest", required=True)
-    parser.add_argument("action", choices=("hook", "ack", "check", "identity", "classify"))
+    parser.add_argument("action", choices=("hook", "ack", "check", "identity", "classify", "redeliver"))
     parser.add_argument("--repo-root")
     parser.add_argument("--target-root")
     parser.add_argument("--session")
@@ -384,6 +408,22 @@ def main():
         except FileNotFoundError:
             fail("activation-unavailable: no receipt at activation origin for session; invoke "
                  + args.skill + " in that checkout and acknowledge the fresh challenge")
+        if args.action == "redeliver":
+            if record.get("workflow") != args.skill:
+                fail("activation-unavailable: recovery workflow does not match the affected receipt")
+            if record.get("status") != "active":
+                fail("activation-unavailable: recovery receipt is pending session acknowledgement")
+            try:
+                validate_content(args, record)
+            except ContentMismatch:
+                pass
+            else:
+                fail("activation-unavailable: recovery is not needed for an unchanged active receipt")
+            capabilities = dict(record.get("capabilities", {}))
+            capabilities["pre-tool-use"] = "unknown"
+            _, context = deliver(args, evidence, args.skill, "root-redelivery", capabilities, recovery=True)
+            print(context)
+            return 0
         if args.action == "ack":
             if not args.nonce or not secrets.compare_digest(args.nonce, record.get("nonce", "")):
                 fail("activation-unavailable: session receipt challenge mismatch")

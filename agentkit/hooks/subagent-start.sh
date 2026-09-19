@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 # SubagentStart -> role-specific context, without root helper interfaces.
-# Only the dispatcher knows a worker's worktree; facts travel in its prompt.
-#
-# The payload's cwd is used only to find the repository's onboarding gate.
-# NEVER exits non-zero.
 set -uo pipefail
 
 emit_empty() { printf '{}\n'; exit 0; }
@@ -22,12 +18,11 @@ role=$(jq -r '.agent_type // empty' <<< "$input" 2> /dev/null || true)
 root=$(git -C "$cwd" rev-parse --show-toplevel 2> /dev/null || printf '%s' "$cwd")
 context=''
 
-# The event's explicit role selects context, never model/cwd/tool availability.
 if [[ -r $root/.agent/config.env ]]; then
     curriculum=$(guard_subagent_curriculum "$self_dir/../skills" "$role" 2> /dev/null || true)
     if [[ -n $curriculum ]]; then
-        [[ -z $context ]] || context+=$'\n\n'
         context+=$curriculum
+        context+=$'\nOn activation-mismatch, return the one `agentkit activation-blocked: {...}` line to root and stop probes. Do not invoke an orchestration workflow or child. Run only the root-delivered fresh acknowledgement, then resume this worker and worktree.'
     fi
 fi
 
