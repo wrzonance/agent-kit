@@ -111,6 +111,69 @@ assert_rc 1 'composer rejects an empty agent identity' -- bash "$compose" \
     --decisions-file "$decisions" --testing-file "$testing" \
     --agent '' --output "$output"
 
+# The composer owns the level-two headings. Each prose input must reject a
+# caller-supplied heading wherever it appears, and the diagnostic must make the
+# one-step repair unambiguous.
+for prose_section in why what decisions; do
+    heading_file="$tmp/$prose_section-with-heading.md"
+    heading="## ${prose_section^}"
+    printf '%s\n' 'Valid prose before the mistake.' "$heading" >"$heading_file"
+    heading_why=$why
+    heading_what=$what
+    heading_decisions=$decisions
+    printf -v "heading_$prose_section" '%s' "$heading_file"
+
+    heading_err=$(bash "$compose" \
+        --issue 137 --why-file "$heading_why" --what-file "$heading_what" \
+        --decisions-file "$heading_decisions" --testing-file "$testing" \
+        --agent 'Codex gpt-5.6-luna' --output "$output" 2>&1)
+    heading_rc=$?
+    assert_eq '1' "$heading_rc" \
+        "composer rejects a caller-supplied heading in $prose_section prose"
+    assert_contains "$heading_err" "$heading_file" \
+        "the $prose_section heading refusal names the offending file"
+    assert_contains "$heading_err" "$heading" \
+        "the $prose_section heading refusal names the duplicated heading"
+    assert_contains "$heading_err" 'remove the heading line; compose-pr-body.sh emits it' \
+        "the $prose_section heading refusal explains the corrective action"
+done
+
+# A paragraph made only of consecutive key=value receipts is machine output,
+# even when an earlier paragraph contains valid prose. A prose label in the
+# same paragraph remains valid context, avoiding false positives for prose
+# that intentionally discusses assignment-shaped values.
+for prose_section in why what decisions; do
+    metrics_file="$tmp/$prose_section-with-metrics.md"
+    printf '%s\n' 'Valid prose before the machine block.' '' \
+        'base=origin/main' 'files=3' 'total.insertions=135' >"$metrics_file"
+    metrics_why=$why
+    metrics_what=$what
+    metrics_decisions=$decisions
+    printf -v "metrics_$prose_section" '%s' "$metrics_file"
+
+    metrics_err=$(bash "$compose" \
+        --issue 137 --why-file "$metrics_why" --what-file "$metrics_what" \
+        --decisions-file "$metrics_decisions" --testing-file "$testing" \
+        --agent 'Codex gpt-5.6-luna' --output "$output" 2>&1)
+    metrics_rc=$?
+    assert_eq '1' "$metrics_rc" \
+        "composer rejects an unlabelled metrics block in $prose_section prose"
+    assert_contains "$metrics_err" "$metrics_file" \
+        "the $prose_section metrics refusal names the offending file"
+    assert_contains "$metrics_err" 'base=origin/main' \
+        "the $prose_section metrics refusal names the first offending line"
+    assert_contains "$metrics_err" 'replace the key=value block with prose or add a prose label' \
+        "the $prose_section metrics refusal explains the corrective action"
+done
+
+labelled_diff_disclosure="$tmp/labelled-diff-disclosure.md"
+printf '%s\n' 'A root-approved decision.' '' 'Diff-size disclosure:' \
+    'base=origin/main' 'files=3' >"$labelled_diff_disclosure"
+assert_rc 0 'composer accepts the canonical labelled diff-size disclosure' -- bash "$compose" \
+    --issue 137 --why-file "$why" --what-file "$what" \
+    --decisions-file "$labelled_diff_disclosure" --testing-file "$testing" \
+    --agent 'Codex gpt-5.6-luna' --output "$output"
+
 # --- plain "- item" Testing bullets normalize to unchecked checkboxes ------
 plain_testing="$tmp/plain-testing.md"
 printf '%s\n' '- [x] already a checkbox' '- plain bullet one' '' '- plain bullet two' \
