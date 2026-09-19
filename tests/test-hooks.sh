@@ -399,6 +399,8 @@ assert_eq '0' "$rc" 'SubagentStart exits 0'
 assert_hook_output "$out" subagent-start 'SubagentStart emits schema-valid JSON'
 assert_contains "$out" 'agent-run.sh' 'and injects the leaf tooling curriculum into the worker'
 assert_contains "$out" '.agent/env-contract.txt' 'and teaches the guarded contract resolver'
+assert_contains "$out" 'activation-blocked' 'and teaches one bounded stale-receipt handback'
+assert_contains "$out" 'Do not invoke an orchestration workflow' 'without widening the leaf role during recovery'
 assert_not_contains "$out" 'example-org/example-repo' 'without injecting the repository contract'
 assert_not_contains "$out" 'branch=feat/x' 'or its worktree-specific branch'
 

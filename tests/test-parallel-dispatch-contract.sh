@@ -1722,6 +1722,12 @@ assert_contains "$implementation_worker_text" '## Issue-lead prompt' \
     'the dedicated implementation-worker reference owns the issue-lead template'
 assert_contains "$implementation_worker_text" '### Root completion classification' \
     'the dedicated implementation-worker reference owns root completion classification'
+assert_contains "$normalized_text" 'validate dispatch, ownership, Git and logs before accepting' \
+    'Collect validates a worker result before accepting it'
+assert_contains "$normalized_text" 'Keep root CI/review obligations' \
+    'Collect preserves root CI and review duties across resume'
+assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
+    'Collect reuses only receipts already accepted by root'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
