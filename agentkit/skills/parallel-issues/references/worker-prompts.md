@@ -340,14 +340,14 @@ there is nothing to fix.
 
 ## Draft PR body template
 
-After a worker's completion report lands and the root's post-push review of `base...HEAD` clears it
-(SKILL.md's "Root review and draft PR after a worker push"), the root opens the DRAFT PR with this recipe.
-`compose-pr-body.sh` composes the body from four root-approved section files in the fixed order —
-agentic disclosure, `Why`, `What`, `Decisions`, checkbox-formatted `Testing`, a signature line, and a
-separate closing-keyword line — normalizing plain `- item` Testing bullets to `- [ ] item`.
-Every composed body starts with the literal line `This was written agentically; verify its assertions:`.
-Never pass a multiline PR body through inline `--body`; the composer writes a private file for
-the byte-verifying transport.
+After the root's post-push review clears `base...HEAD`, it opens the DRAFT PR with this recipe.
+`compose-pr-body.sh` composes four root-approved files as `Why`, `What`, `Decisions`, and `Testing`,
+between the agentic disclosure and canonical footer. Testing lines are completable verification
+actions: `Unit tests pass`, not `Unit tests passed`; plain bullets normalize to unchecked boxes.
+Put scope decisions, standing limitations, and unrelated failures in `## Decisions`, or in
+`## Operator action required` when they require operator work.
+The body starts with `This was written agentically; verify its assertions:`.
+Never pass a multiline PR body through inline `--body`; the composer writes a private file for verified transport.
 
 For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
 of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved Why or Decisions
@@ -356,10 +356,9 @@ merges, use `chain-advance.sh --retarget` and require its linkage proof before m
 
 ### Diff-size disclosure
 
-Before composing the Decisions section, fold `diff-facts.sh`'s full output for the pushed
-branch's base (the chain base for a chained issue) into the Decisions file verbatim — the
-call is folded into the composition recipe below, immediately after `pr_decisions_file` and
-the resolver are established, so it never runs ahead of the variables it reads.
+Before composing Decisions, append a labelled paragraph containing `diff-facts.sh`'s full
+output for the pushed branch's base (the chain base for a chained issue). The call stays after
+`pr_decisions_file` and the resolver are established, so its inputs are available.
 
 This is disclosure, not a gate: a packet whose `operational.lines` exceeds any guideline
 still gets the same draft PR a small one gets. Re-cutting or trimming a finished, review-clear
@@ -384,6 +383,7 @@ default_branch=${default_branch:?set the repository default branch}
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
 trap 'rm -f -- "$pr_body_file"' EXIT
+printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
 "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
     --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
 # A baseline-red declared-verification outcome (review-remote-pr Step 2) writes
