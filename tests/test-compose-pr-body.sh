@@ -224,4 +224,36 @@ else
         "Testing line=$testing_idx exclusion line=$box_idx"
 fi
 
+# The normal publication path composes first, then edits the same file through
+# gh-body's checkbox transport as verification progresses. Exercise that real
+# boundary so a composed body cannot become untickable without this suite
+# failing at the public helper.
+fake_gh="$tmp/gh"
+stored_body="$tmp/stored-body.md"
+cat >"$fake_gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1-} == pr && ${2-} == edit ]]; then
+    while (($#)); do
+        if [[ $1 == --body-file ]]; then
+            cp -- "$2" "$GH_STORED_BODY"
+            exit 0
+        fi
+        shift
+    done
+fi
+if [[ ${1-} == api ]]; then
+    jq -Rs '{body: .}' <"$GH_STORED_BODY"
+    exit 0
+fi
+exit 22
+EOF
+chmod +x -- "$fake_gh"
+assert_rc 0 'a normal composed PR body is tickable through gh-body' -- \
+    env GH_BODY_GH="$fake_gh" GH_STORED_BODY="$stored_body" \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr edit 41 \
+    --repo owner/repo --body-file "$normalized_output" --tick 'plain bullet one'
+assert_contains "$(<"$normalized_output")" '- [x] plain bullet one' \
+    'the sanctioned transport ticks a composed Testing checkbox'
+
 finish
