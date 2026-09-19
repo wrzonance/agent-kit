@@ -397,6 +397,36 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(resumed.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
         self.assertEqual(saved.read_text(), "unpublished worker change\n")
 
+    def test_pending_recovery_cannot_redeliver_or_rotate_original_challenge(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        saved = self.repo / ".agent/worker-edit.txt"
+        saved.write_text("preserve pending worker state\n")
+        body = self.plugin / "skills/parallel-issues/SKILL.md"
+        body.write_text(body.read_text() + "\nRecovery content.\n")
+
+        first = self.invoke("redeliver", "--repo-root", str(self.repo),
+                            "--session", "test-session", "--skill", "parallel-issues")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        receipt = next((self.repo / ".agent/activation").glob("*.json"))
+        before = receipt.read_bytes()
+        nonce = self.record()["nonce"]
+
+        duplicate = self.invoke("redeliver", "--repo-root", str(self.repo),
+                                "--session", "test-session", "--skill", "parallel-issues")
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("pending", duplicate.stderr)
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(self.record()["nonce"], nonce)
+        self.assertEqual(saved.read_text(), "preserve pending worker state\n")
+
+        acknowledged = self.invoke("ack", "--repo-root", str(self.repo),
+                                   "--session", "test-session", "--skill", "parallel-issues",
+                                   "--nonce", nonce)
+        self.assertEqual(acknowledged.returncode, 0, acknowledged.stderr)
+        self.assertEqual(self.record()["status"], "active")
+        self.assertEqual(saved.read_text(), "preserve pending worker state\n")
+
     def test_redelivery_rejects_missing_or_symlinked_workflow_without_rewriting_receipt(self):
         self.prompt()
         self.assertEqual(self.acknowledge().returncode, 0)

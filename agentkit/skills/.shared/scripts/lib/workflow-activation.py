@@ -411,13 +411,14 @@ def main():
         if args.action == "redeliver":
             if record.get("workflow") != args.skill:
                 fail("activation-unavailable: recovery workflow does not match the affected receipt")
-            if record.get("status") == "active":
-                try:
-                    validate_content(args, record)
-                except ContentMismatch:
-                    pass
-                else:
-                    fail("activation-unavailable: recovery is not needed for an unchanged active receipt")
+            if record.get("status") != "active":
+                fail("activation-unavailable: recovery receipt is pending session acknowledgement")
+            try:
+                validate_content(args, record)
+            except ContentMismatch:
+                pass
+            else:
+                fail("activation-unavailable: recovery is not needed for an unchanged active receipt")
             capabilities = dict(record.get("capabilities", {}))
             capabilities["pre-tool-use"] = "unknown"
             _, context = deliver(args, evidence, args.skill, "root-redelivery", capabilities, recovery=True)
