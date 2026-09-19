@@ -483,9 +483,8 @@ Composer publishes once; root installs and verifies its hashed `uncoveredVerific
 
 ### Collect (per-completion — never wait for the slowest issue)
 
-Act on each lead result as soon as it arrives:
-
-Structured `worker-result=PATH` handbacks follow the [result contract](references/worker-prompts.md#structured-result-contract): validate against root dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence cannot be green. Resume unchanged accepted receipts without rerunning implementation or review. Text fallbacks remain unknown until independently checked.
+`worker-result=PATH` uses the [result contract](references/worker-prompts.md#structured-result-contract): validate dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence is never green; unchanged accepted receipts resume without repeated work. Text fallbacks stay unknown.
+`agentkit activation-blocked: {...}` keeps ownership. Validate worker, worktree and workflow, then follow `.shared/spawn-contract.md` once to redeliver current bytes to the same context. The leaf acknowledges and resumes; unavailable or repeated delivery parks with work preserved.
 
 - **Cross-write check first** → run the root-checkout Collect check against the immutable
   dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
