@@ -78,11 +78,32 @@ assert_contains "$(cat "$tmp/gh.args")" 'issue view 203' 'the requested issue nu
 # Issue #846: the prediction order must be the helper's, not the caller's.
 # Under a punctuation-ignoring collation an unpinned `sort` moved
 # `docs/new-guide.md` ahead of `.editorconfig`, so the same tree and body
-# produced different bytes on a developer's shell than on CI. Where the
-# alternate locale is not installed, setlocale falls back to C and both runs
-# agree trivially -- the assertion can never fail spuriously.
-c_order=$(LC_ALL=C "$script" --issue 202 --repo-root "$repo" --body-file "$body")
-utf8_order=$(LC_ALL=en_US.UTF-8 "$script" --issue 202 --repo-root "$repo" --body-file "$body")
-assert_eq "$c_order" "$utf8_order" 'prediction order does not follow the caller locale'
+# produced different bytes on a developer's shell than on CI. Resolve a locale
+# that actually collates differently from C; with none installed the comparison
+# would be vacuous, so say that rather than bank a pass it did not earn.
+# Not any other locale: one that demonstrably orders differently from C. Most
+# UTF-8 locales collate bytewise like C, and picking one of those would bank a
+# pass that proves nothing. The probe reverses only where punctuation is
+# ignored, which is the collation that produced the bug.
+c_probe=$(printf '.z\nay\n' | LC_ALL=C sort)
+alt_locale=''
+while IFS= read -r candidate; do
+    case $candidate in
+        C | C.* | POSIX) continue ;;
+        *.UTF-8 | *.utf8) ;;
+        *) continue ;;
+    esac
+    if [[ $(printf '.z\nay\n' | LC_ALL="$candidate" sort) != "$c_probe" ]]; then
+        alt_locale=$candidate
+        break
+    fi
+done < <(locale -a 2> /dev/null || true)
+if [[ -n $alt_locale ]]; then
+    c_order=$(LC_ALL=C "$script" --issue 202 --repo-root "$repo" --body-file "$body")
+    alt_order=$(LC_ALL="$alt_locale" "$script" --issue 202 --repo-root "$repo" --body-file "$body")
+    assert_eq "$c_order" "$alt_order" "prediction order does not follow the caller locale ($alt_locale)"
+else
+    printf '  skip no non-C UTF-8 locale installed; collation independence unverified here\n'
+fi
 
 finish

@@ -489,7 +489,7 @@ adr_candidates() {
             [[ $haystack == *"$word"* ]] && score=$((score + 1))
         done
         ((score >= 2)) && scored+=("$score	${file#"$repo_root"/}")
-    done < <(find "$repo_root/$adr_dir" -maxdepth 2 -type f -name '*.md' 2> /dev/null | sort)
+    done < <(find "$repo_root/$adr_dir" -maxdepth 2 -type f -name '*.md' 2> /dev/null | LC_ALL=C sort)
 
     ((${#scored[@]})) || {
         printf -- '-'

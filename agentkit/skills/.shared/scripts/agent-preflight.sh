@@ -563,7 +563,7 @@ probe_instructions() {
         contains "$resolved" "${files[@]+"${files[@]}"}" || subdir_files+=("$resolved")
     done < <(find "$WORKTREE" -maxdepth 4 \
         \( -name node_modules -o -name vendor -o -path "$WORKTREE/.*" \) -prune \
-        -o -type f \( -name AGENTS.md -o -name CLAUDE.md \) -print 2>/dev/null | sort)
+        -o -type f \( -name AGENTS.md -o -name CLAUDE.md \) -print 2>/dev/null | LC_ALL=C sort)
     files+=("${subdir_files[@]+"${subdir_files[@]}"}")
 
     if (( ${#roots[@]} == 0 )); then root_list="none"; else root_list="$(join_by , "${roots[@]}")"; fi
@@ -1065,7 +1065,7 @@ node_roots() {
         roots+=("$(relative_to_top "${found%/package.json}")")
     done < <(find "$WORKTREE" -maxdepth 4 \
         \( -name node_modules -o -path "$WORKTREE/.*" \) -prune \
-        -o -type f -name package.json -print 2>/dev/null | sort)
+        -o -type f -name package.json -print 2>/dev/null | LC_ALL=C sort)
     if (( ${#roots[@]} == 0 )); then
         printf 'node-roots=none'
         return 0
@@ -1114,7 +1114,7 @@ py_roots() {
         pkg="${init%/*}"
         rel="$(relative_to_top "${pkg%/*}")"
         if ! contains "$rel" "${roots[@]+"${roots[@]}"}"; then roots+=("$rel"); fi
-    done < <(find "$WORKTREE" -mindepth 2 -maxdepth 3 -type f -name __init__.py -print 2>/dev/null | sort)
+    done < <(find "$WORKTREE" -mindepth 2 -maxdepth 3 -type f -name __init__.py -print 2>/dev/null | LC_ALL=C sort)
     if [[ -d "$WORKTREE/src" ]] && ! contains "src" "${roots[@]+"${roots[@]}"}" && declares_src_layout; then
         roots+=("src")
     fi

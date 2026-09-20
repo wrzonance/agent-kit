@@ -199,7 +199,7 @@ collect_all() {
     while IFS= read -r f; do
         d=$(componentdir_of_marker "$f")
         [[ -n ${DOTNET_MARKER[$d]:-} ]] || DOTNET_MARKER[$d]=$(basename -- "$f")
-    done < <(find_files_by_names '*.csproj' '*.sln' | sort)
+    done < <(find_files_by_names '*.csproj' '*.sln' | LC_ALL=C sort)
 
     while IFS= read -r f; do
         d=$(componentdir_of_marker "$f")
@@ -214,7 +214,7 @@ collect_all() {
     # markdown -- conservative on purpose: a config file is definitive; absent
     # that, only an on-PATH linter plus >5 tracked docs earns the suggestion.
     local -a mdcfg
-    mapfile -t mdcfg < <(find "$repo_root" -maxdepth 1 -type f -name '.markdownlint*' 2> /dev/null | sort)
+    mapfile -t mdcfg < <(find "$repo_root" -maxdepth 1 -type f -name '.markdownlint*' 2> /dev/null | LC_ALL=C sort)
     if ((${#mdcfg[@]})); then
         MD_MARKER[.]=$(basename -- "${mdcfg[0]}")
     elif command -v markdownlint-cli2 > /dev/null 2>&1 &&

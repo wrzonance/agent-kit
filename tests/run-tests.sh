@@ -5,10 +5,27 @@ set -euo pipefail
 # Pin the locale (issue #846). Collation decides sort order and the byte
 # grammar decides how multibyte quotes are matched, so an unpinned run is a
 # different gate on every developer's shell: `C` fails the curly-quote consent
-# suite, a UTF-8 locale fails the path-prediction suite, and only C.UTF-8 --
-# what CI happens to use -- passes both. Pin it so the local gate is the CI
-# gate, rather than red on a clean tree for reasons nothing names.
-export LC_ALL=C.UTF-8
+# suite, a UTF-8 locale fails the path-prediction suite, and only a C-collating
+# UTF-8 locale -- what CI happens to use -- passes both. Pin it so the local
+# gate is the CI gate, rather than red on a clean tree for reasons nothing
+# names.
+#
+# POSIX guarantees only `C` and `POSIX`, and macOS ships no `C.UTF-8`, so
+# resolve against what this host actually has instead of asserting a name.
+pin_locale() {
+    local candidate available
+    available=$(locale -a 2> /dev/null || true)
+    for candidate in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+        if printf '%s\n' "$available" | grep -Fxq -- "$candidate"; then
+            export LC_ALL="$candidate"
+            return 0
+        fi
+    done
+    export LC_ALL=C
+    printf 'run-tests: no C-collating UTF-8 locale found; using LC_ALL=C.\n' >&2
+    printf '  Suites asserting multibyte text may fail; install locale C.UTF-8 to match CI.\n' >&2
+}
+pin_locale
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
