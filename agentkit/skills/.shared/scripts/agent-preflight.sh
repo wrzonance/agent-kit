@@ -511,7 +511,7 @@ router_references() {
     mapfile -t refs < <(
         head -c "$byte_cap" -- "$file" 2> /dev/null |
             grep -oE '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.md' 2> /dev/null |
-            sort -u | head -n "$((ref_cap + 1))"
+            LC_ALL=C sort -u | head -n "$((ref_cap + 1))"
     )
     if ((${#refs[@]} > ref_cap)); then
         refs=("${refs[@]:0:ref_cap}")

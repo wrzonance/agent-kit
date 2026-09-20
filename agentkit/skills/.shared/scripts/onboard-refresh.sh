@@ -304,11 +304,11 @@ print_inventory() {
     local record key rundir_key
     for record in "${!current_components[@]}"; do
         printf '%s\n' "# proposal-component|$record"
-    done | sort
+    done | LC_ALL=C sort
     for key in "${!current_binary[@]}"; do
         rundir_key="AGENT_RUNDIR_${key#AGENT_CMD_}"
         printf '%s\n' "# proposal-command|$key|${current_binary[$key]}|${current_state[$key]}|${current_rundir[$rundir_key]:-}"
-    done | sort
+    done | LC_ALL=C sort
 }
 
 summary=''

@@ -676,7 +676,7 @@ collect_cmd() {
     done < <(capture_branch_shas "$root" "$exclude_set")
 
     mapfile -t sorted_branch_names < <(
-        printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | sort -u
+        printf '%s\n' "${!baseline_branches[@]}" "${!current_branches[@]}" | LC_ALL=C sort -u
     )
     for branch_name in "${sorted_branch_names[@]}"; do
         if [[ -z ${baseline_branches[$branch_name]+present} ]]; then

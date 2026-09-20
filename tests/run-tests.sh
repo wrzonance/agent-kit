@@ -2,6 +2,14 @@
 # Canonical local verification for the skill tree. Run from anywhere.
 set -euo pipefail
 
+# Pin the locale (issue #846). Collation decides sort order and the byte
+# grammar decides how multibyte quotes are matched, so an unpinned run is a
+# different gate on every developer's shell: `C` fails the curly-quote consent
+# suite, a UTF-8 locale fails the path-prediction suite, and only C.UTF-8 --
+# what CI happens to use -- passes both. Pin it so the local gate is the CI
+# gate, rather than red on a clean tree for reasons nothing names.
+export LC_ALL=C.UTF-8
+
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 # The plugin root holds both the skills and the hook dispatchers. The hooks are
@@ -156,6 +164,9 @@ step 'helper/reference paths'
 
 step 'reference manifest'
 "$here/lint-reference-manifest.sh" "$skills" || rc=1
+
+step 'collation pinning'
+"$here/lint-collation.sh" "$plugin" || rc=1
 
 step 'versioned plugin paths'
 # Scans the whole plugin root, not just $skills: the hooks tree ships the

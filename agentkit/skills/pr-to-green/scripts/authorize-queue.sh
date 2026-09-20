@@ -378,13 +378,13 @@ verify_lineage() {
             clean_merge_tree "$commit"
             printf '%s\n' "$commit" >>"$work_dir/default-merges"
         done < <(jq -r '.defaultAdvance.prs[]' "$proof")
-        git -C "$repo_root" rev-list --first-parent --max-count=17 "$main_from..$main_to" | sort >"$work_dir/default-actual"
+        git -C "$repo_root" rev-list --first-parent --max-count=17 "$main_from..$main_to" | LC_ALL=C sort >"$work_dir/default-actual"
         (( $(wc -l <"$work_dir/default-actual") <= 16 )) || die 'default advance exceeds 16 commits'
-        sort -u "$work_dir/default-merges" >"$work_dir/default-expected"
+        LC_ALL=C sort -u "$work_dir/default-merges" >"$work_dir/default-expected"
         while IFS= read -r commit; do
             grep -Fxq "$commit" "$work_dir/default-expected" || generated_commit "$commit"
         done <"$work_dir/default-actual"
-        comm -23 "$work_dir/default-expected" "$work_dir/default-actual" >"$work_dir/off-history" || die 'default comparison unavailable'
+        LC_ALL=C comm -23 "$work_dir/default-expected" "$work_dir/default-actual" >"$work_dir/off-history" || die 'default comparison unavailable'
         [[ ! -s $work_dir/off-history ]] || die 'default proof names off-history merges'
         old_base=$main_from
         old_ref=$(jq -r --argjson pr "$pr" '.queue[]|select(.pr==$pr)|.base' "$confirmed_queue_file")
@@ -439,8 +439,8 @@ verify_lineage() {
     for parent in "${imported[@]}"; do
         git -C "$repo_root" rev-list "$old..$parent" >>"$work_dir/accounted" || die 'imported parent history unreadable'
     done
-    sort -u "$work_dir/accounted" >"$work_dir/accounted-sorted"
-    sort "$work_dir/all-commits" >"$work_dir/all-sorted"
+    LC_ALL=C sort -u "$work_dir/accounted" >"$work_dir/accounted-sorted"
+    LC_ALL=C sort "$work_dir/all-commits" >"$work_dir/all-sorted"
     cmp -s "$work_dir/accounted-sorted" "$work_dir/all-sorted" || die 'lineage has unaccounted imported commits'
     jq -r '.commits[].sha,(.resolutions // [])[].sha' "$proof" >"$work_dir/commits"
 }
@@ -564,7 +564,7 @@ if ((no_providers == 0)); then
     done < <(jq -r '.[] | [.name, .action] | @tsv' "$work_dir/providers.json")
 fi
 authorized_display=$(jq -r '.[] | [.name, .action] | join(":")' "$work_dir/providers.json" |
-    sort | paste -sd, -)
+    LC_ALL=C sort | paste -sd, -)
 triggerable_display=''
 for plan_provider in "${plan_providers[@]}"; do
     [[ ${plan_modes[$plan_provider]} == triggerable ]] || continue

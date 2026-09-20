@@ -75,4 +75,14 @@ out=$(PATH="$tmp/bin:$PATH" "$script" --issue 203 --repo-root "$repo")
 assert_eq 'create tools/from-gh.sh' "$out" 'the public --issue interface fetches the body'
 assert_contains "$(cat "$tmp/gh.args")" 'issue view 203' 'the requested issue number reaches gh as data'
 
+# Issue #846: the prediction order must be the helper's, not the caller's.
+# Under a punctuation-ignoring collation an unpinned `sort` moved
+# `docs/new-guide.md` ahead of `.editorconfig`, so the same tree and body
+# produced different bytes on a developer's shell than on CI. Where the
+# alternate locale is not installed, setlocale falls back to C and both runs
+# agree trivially -- the assertion can never fail spuriously.
+c_order=$(LC_ALL=C "$script" --issue 202 --repo-root "$repo" --body-file "$body")
+utf8_order=$(LC_ALL=en_US.UTF-8 "$script" --issue 202 --repo-root "$repo" --body-file "$body")
+assert_eq "$c_order" "$utf8_order" 'prediction order does not follow the caller locale'
+
 finish

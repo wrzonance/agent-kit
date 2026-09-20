@@ -495,7 +495,7 @@ adr_candidates() {
         printf -- '-'
         return 0
     }
-    printf '%s\n' "${scored[@]}" | sort -rn | head -n 2 | cut -f2 | paste -sd, -
+    printf '%s\n' "${scored[@]}" | LC_ALL=C sort -rn | head -n 2 | cut -f2 | paste -sd, -
 }
 
 # ------------------------------------------------------------- item cache ----
