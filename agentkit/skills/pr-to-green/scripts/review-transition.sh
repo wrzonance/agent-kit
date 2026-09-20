@@ -337,7 +337,7 @@ jq -e --arg repo "$repo" --argjson pr "$pr" '
 ' "$authorization_file" >/dev/null 2>&1 ||
     die 'authorization does not confirm this repository, runnable PR, and ready transition'
 
-mapfile -t authorized_providers < <(jq -r '.providers[].name' "$authorization_file" | sort -u)
+mapfile -t authorized_providers < <(jq -r '.providers[].name' "$authorization_file" | LC_ALL=C sort -u)
 while IFS=$'\t' read -r auth_name auth_action auth_source; do
     provider_action[$auth_name]=$auth_action
     provider_source[$auth_name]=$auth_source
@@ -346,9 +346,9 @@ triggerable=()
 for provider in "${providers[@]}"; do
     [[ ${modes[$provider]} != triggerable ]] || triggerable+=("$provider")
 done
-mapfile -t triggerable < <(printf '%s\n' "${triggerable[@]}" | sed '/^$/d' | sort -u)
+mapfile -t triggerable < <(printf '%s\n' "${triggerable[@]}" | sed '/^$/d' | LC_ALL=C sort -u)
 authorized_display=$(jq -r '.providers[] | [.name, .action] | join(":")' "$authorization_file" |
-    sort | paste -sd, -)
+    LC_ALL=C sort | paste -sd, -)
 triggerable_display=$(printf '%s\n' "${triggerable[@]}" | sed '/^$/d' | paste -sd, -)
 authorization_mismatch=0
 for provider in "${providers[@]}"; do

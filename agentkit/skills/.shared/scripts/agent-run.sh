@@ -707,7 +707,7 @@ configure_compose_project() {
         printf 'agent-run: WARNING: repository hardcodes a Compose project name: %s\n' \
             "$finding" >&2
         [[ $finding == argv\[* ]] && argv_findings+=("$finding")
-    done < <(compose_project_hardcodes | sort -u)
+    done < <(compose_project_hardcodes | LC_ALL=C sort -u)
 
     ((${#argv_findings[@]})) || return 0
     if [[ ${AGENT_COMPOSE_SERIALIZED:-} == 1 ]]; then
@@ -1195,7 +1195,7 @@ format_failure_paths() {
             return 1
         }
     done <"$file"
-    sort -u -- "$paths_tmp"
+    LC_ALL=C sort -u -- "$paths_tmp"
     rc=$?
     rm -f -- "$paths_tmp"
     return "$rc"

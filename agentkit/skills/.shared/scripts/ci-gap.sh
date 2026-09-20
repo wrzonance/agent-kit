@@ -52,7 +52,7 @@ self_dir=${BASH_SOURCE[0]%/*}
 # on, which is the same as reporting nothing.
 mapfile -t workflows < <(
     find "$repo_root/.github/workflows" -maxdepth 1 \
-        \( -name '*.yml' -o -name '*.yaml' \) 2> /dev/null | sort |
+        \( -name '*.yml' -o -name '*.yaml' \) 2> /dev/null | LC_ALL=C sort |
         while IFS= read -r wf; do
             # The trigger block ends at the first top-level key after `on:`.
             sed -n '/^on:/,/^[a-zA-Z]/p' "$wf" 2> /dev/null |
@@ -133,7 +133,7 @@ mapfile -t steps < <(
     grep -hoE '^[[:space:]]+- name:[[:space:]]+.+$' "${workflows[@]}" 2> /dev/null |
         sed -E 's/^[[:space:]]+- name:[[:space:]]+//; s/["'"'"']//g' |
         grep -viE '^(setup|install|checkout|check out|cache|configure|login|upload|download|set up|restore)\b' |
-        sort -u
+        LC_ALL=C sort -u
 )
 ((${#steps[@]})) || {
     printf '%s: no named steps found in the workflows\n' "$PROGRAM" >&2

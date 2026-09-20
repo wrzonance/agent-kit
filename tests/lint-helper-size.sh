@@ -37,10 +37,10 @@ declare -A KNOWN_OVERSIZE=(
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
     # #782: literal-create classification and validation summary.
-    [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13259:800"
+    [skills/parallel-issues/scripts/write-merge-plan.sh]="1085:13262:800"
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16463:800"
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16476:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"

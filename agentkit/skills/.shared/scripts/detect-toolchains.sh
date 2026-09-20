@@ -158,7 +158,7 @@ collect_all() {
     local -a sorted_dirs
     mapfile -t sorted_dirs < <(
         for d in "${!NODE_MARKER[@]}"; do printf '%s\t%s\n' "$(depth_of "$d")" "$d"; done |
-            sort -n -k1,1 -k2,2 | cut -f2-
+            LC_ALL=C sort -n -k1,1 -k2,2 | cut -f2-
     )
     for d in "${sorted_dirs[@]}"; do
         runner=''
@@ -199,7 +199,7 @@ collect_all() {
     while IFS= read -r f; do
         d=$(componentdir_of_marker "$f")
         [[ -n ${DOTNET_MARKER[$d]:-} ]] || DOTNET_MARKER[$d]=$(basename -- "$f")
-    done < <(find_files_by_names '*.csproj' '*.sln' | sort)
+    done < <(find_files_by_names '*.csproj' '*.sln' | LC_ALL=C sort)
 
     while IFS= read -r f; do
         d=$(componentdir_of_marker "$f")
@@ -214,7 +214,7 @@ collect_all() {
     # markdown -- conservative on purpose: a config file is definitive; absent
     # that, only an on-PATH linter plus >5 tracked docs earns the suggestion.
     local -a mdcfg
-    mapfile -t mdcfg < <(find "$repo_root" -maxdepth 1 -type f -name '.markdownlint*' 2> /dev/null | sort)
+    mapfile -t mdcfg < <(find "$repo_root" -maxdepth 1 -type f -name '.markdownlint*' 2> /dev/null | LC_ALL=C sort)
     if ((${#mdcfg[@]})); then
         MD_MARKER[.]=$(basename -- "${mdcfg[0]}")
     elif command -v markdownlint-cli2 > /dev/null 2>&1 &&
@@ -244,7 +244,7 @@ collect_all() {
             local -a shell_candidates
             mapfile -t shell_candidates < <(
                 for d in "${!cand[@]}"; do printf '%s\t%s\n' "$(depth_of "$d")" "$d"; done |
-                    sort -rn -k1,1 -k2,2 | cut -f2-
+                    LC_ALL=C sort -rn -k1,1 -k2,2 | cut -f2-
             )
             local -a remaining owned new_remaining
             local fdir fpath
@@ -294,7 +294,7 @@ collect_all() {
 
 print_components() {
     ((${#COMPONENT_LINES[@]})) || return 0
-    printf '%s\n' "${COMPONENT_LINES[@]}" | sort -t $'\t' -k1,1 -k2,2 |
+    printf '%s\n' "${COMPONENT_LINES[@]}" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 |
         while IFS=$'\t' read -r path lang marker runner; do
             printf 'component= path=%s lang=%s marker=%s runner=%s\n' "$path" "$lang" "$marker" "$runner"
         done
@@ -529,7 +529,7 @@ print_suggestions() {
         ((any)) && suggestion_footer
         return 0
     fi
-    sorted=$(printf '%s\n' "${COMPONENT_LINES[@]}" | sort -t $'\t' -k1,1 -k2,2)
+    sorted=$(printf '%s\n' "${COMPONENT_LINES[@]}" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2)
     while IFS=$'\t' read -r path lang marker runner; do
         [[ -n $path ]] || continue
         local -a tasks=()

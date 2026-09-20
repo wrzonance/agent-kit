@@ -124,7 +124,7 @@ diff_touched_paths_from_range() {
     for p in "${out[@]}"; do
         [[ $p != *$'\n'* ]] || return 1
     done
-    printf '%s\n' "${out[@]}" | sort -u
+    printf '%s\n' "${out[@]}" | LC_ALL=C sort -u
 }
 
 # diff_touched_paths FILE -- sorted, unique, repository-relative paths a
@@ -158,5 +158,5 @@ diff_touched_paths() {
     fi
     grep -E '^(---|\+\+\+) (a|b)/' -- "$file" 2>/dev/null |
         sed -E 's#^(---|\+\+\+) (a|b)/##' |
-        sort -u
+        LC_ALL=C sort -u
 }

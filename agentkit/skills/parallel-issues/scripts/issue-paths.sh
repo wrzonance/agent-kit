@@ -121,4 +121,4 @@ done < <(jq -Rrs -r '
    + [scan("/?[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]*[A-Za-z0-9_@+-])+") | ["unquoted", .]]
    + [scan("[A-Za-z0-9_@+-]+(?:\\.[A-Za-z0-9_@+-]+)+") | ["unquoted", .]])[]
   | @tsv
-' <<<"$body") | sort -u
+' <<<"$body") | LC_ALL=C sort -u

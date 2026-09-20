@@ -173,7 +173,7 @@ if [[ $action != classify ]]; then
         canonical=$(realpath -m -- "$old_path") || die 'invalid worktree path'
         rows=$(jq -c --arg old "$old_path" --arg new "$canonical" \
             'map(if .worktree == $old then .worktree = $new else . end)' <<<"$rows")
-    done < <(jq -r '.[].worktree | select(type == "string" and startswith("/"))' <<<"$rows" | sort -u)
+    done < <(jq -r '.[].worktree | select(type == "string" and startswith("/"))' <<<"$rows" | LC_ALL=C sort -u)
     latest=$(jq -c 'group_by(.worktree) | map(last)' <<<"$rows")
     if [[ $action == inventory ]]; then
         jq -c --argjson latest "$latest" '$latest + [.[] |

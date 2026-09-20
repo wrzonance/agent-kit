@@ -921,7 +921,7 @@ if ((validate_only)); then
     fi
     create_summary=none
     ((${#create_entries[@]} == 0)) ||
-        create_summary=$(printf '%s\n' "${create_entries[@]}" | sort -u | paste -sd, -)
+        create_summary=$(printf '%s\n' "${create_entries[@]}" | LC_ALL=C sort -u | paste -sd, -)
     printf 'dispatch-plan=%s schemaVersion=1 valid create=%s\n' \
         "$dispatch_plan" "$create_summary"
     exit 0
