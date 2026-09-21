@@ -81,12 +81,13 @@ usage() {
 agent-preflight.sh -- declare the agent's sandbox environment once, up front.
 
 Usage:
-  agent-preflight.sh [--worktree PATH] [--repo OWNER/REPO] [--write FILE | --no-write]
+  agent-preflight.sh [--worktree PATH | --repo-root PATH] [--repo OWNER/REPO] [--write FILE | --no-write]
                      [--ensure] [--inherit-session FILE]
                      [--measured-from agent-shell|hook|escalated] [-h|--help]
 
 Options:
-  --worktree PATH    Worktree to describe (default: git toplevel of the cwd, else the cwd).
+  --worktree PATH, --repo-root PATH
+                     Worktree to describe (default: git toplevel of the cwd, else the cwd).
   --repo OWNER/REPO  Use this slug instead of parsing one from the origin remote.
   --write FILE       Write the block here (default: <worktree>/.agent/env-contract.txt).
   --no-write         Print the block only; write no file.
@@ -256,7 +257,7 @@ parse_args() {
     while (( $# > 0 )); do
         case "$1" in
             -h|--help)  usage; exit 0 ;;
-            --worktree) need_value "$@"; ARG_WORKTREE="$2"; shift 2 ;;
+            --worktree|--repo-root) need_value "$@"; ARG_WORKTREE="$2"; shift 2 ;;
             --activation-session) need_value "$@"; ARG_ACTIVATION_SESSION="$2"; shift 2 ;;
             --activation-origin) need_value "$@"; ARG_ACTIVATION_ORIGIN="$2"; shift 2 ;;
             --workflow) need_value "$@"; ARG_WORKFLOW="$2"; shift 2 ;;
@@ -264,10 +265,7 @@ parse_args() {
                 need_value "$@"
                 ARG_MEASURED_FROM_SET=1
                 case "$2" in
-                    # "agent" was the pre-#332 public value (main's --measured-from
-                    # agent|hook); a caller outside this tree may still pass it.
-                    # Accept it as an alias rather than a hard failure that leaves
-                    # a contract-producing script with no contract to produce.
+                    # Preserve the pre-#332 "agent" alias for existing callers.
                     agent) ARG_MEASURED_FROM=agent-shell ;;
                     agent-shell|hook|escalated) ARG_MEASURED_FROM="$2" ;;
                     *) die "--measured-from takes agent-shell (or its alias 'agent'), hook, or escalated, got: $2" ;;

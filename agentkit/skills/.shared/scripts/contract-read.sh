@@ -108,7 +108,7 @@ case $mode in
 esac
 
 if [[ ! -e $contract && ! -L $contract ]]; then
-    die 3 "no environment contract: $contract"
+    die 3 "no environment contract: $contract; create it with: $(printf '%q --repo-root %q --ensure' "$self_dir/agent-preflight.sh" "$repo_root")"
 fi
 
 # Keep this expression in lockstep with guard_contract_is_ours. The helper is
