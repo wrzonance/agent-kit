@@ -9,35 +9,62 @@ usage() {
 }
 
 tree_content_hash() {
-    local tree=$1 path relative executable size
+    local tree=$1 path relative executable size link_target entries digest
     [[ -d $tree ]] || {
         printf 'release content check failed: shipped tree is missing: %s\n' "$tree" >&2
         return 1
     }
 
-    (
-        cd -- "$tree"
-        while IFS= read -r -d '' path; do
-            relative=${path#./}
-            if [[ -L $path ]]; then
-                printf 'link\0%s\0%s\0' "$relative" "$(readlink -- "$path")"
-            elif [[ -d $path ]]; then
-                printf 'dir\0%s\0' "$relative"
-            elif [[ -f $path ]]; then
-                executable=no
-                [[ -x $path ]] && executable=yes
-                size=$(wc -c < "$path")
-                size=${size//[[:space:]]/}
-                printf 'file\0%s\0%s\0%s\0' "$relative" "$executable" "$size"
-                command cat -- "$path"
-                printf '\0'
-            else
-                printf 'release content check failed: unsupported entry: %s\n' \
-                    "$tree/$relative" >&2
-                exit 1
-            fi
-        done < <(find . -mindepth 1 -print0 | LC_ALL=C sort -z)
-    ) | sha256sum | awk '{print $1}'
+    if ! entries=$(mktemp); then
+        printf 'release content check failed: could not create tree enumeration file\n' >&2
+        return 1
+    fi
+    if ! (
+        cd -- "$tree" || exit 1
+        find . -mindepth 1 -print0 | LC_ALL=C sort -z
+    ) > "$entries"; then
+        rm -f -- "$entries" || true
+        printf 'release content check failed: could not enumerate shipped tree: %s\n' \
+            "$tree" >&2
+        return 1
+    fi
+
+    if ! digest=$(
+        (
+            cd -- "$tree" || exit 1
+            while IFS= read -r -d '' path; do
+                relative=${path#./}
+                if [[ -L $path ]]; then
+                    link_target=$(readlink -- "$path") || exit 1
+                    printf 'link\0%s\0%s\0' "$relative" "$link_target" || exit 1
+                elif [[ -d $path ]]; then
+                    printf 'dir\0%s\0' "$relative" || exit 1
+                elif [[ -f $path ]]; then
+                    executable=no
+                    [[ -x $path ]] && executable=yes
+                    size=$(wc -c < "$path") || exit 1
+                    size=${size//[[:space:]]/}
+                    printf 'file\0%s\0%s\0%s\0' \
+                        "$relative" "$executable" "$size" || exit 1
+                    command cat -- "$path" || exit 1
+                    printf '\0' || exit 1
+                else
+                    printf 'release content check failed: unsupported entry: %s\n' \
+                        "$tree/$relative" >&2
+                    exit 1
+                fi
+            done < "$entries"
+        ) | sha256sum | awk '{print $1}'
+    ); then
+        rm -f -- "$entries" || true
+        printf 'release content check failed: could not hash shipped tree: %s\n' "$tree" >&2
+        return 1
+    fi
+    if ! rm -f -- "$entries"; then
+        printf 'release content check failed: could not remove tree enumeration file\n' >&2
+        return 1
+    fi
+    printf '%s\n' "$digest"
 }
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)

@@ -81,6 +81,56 @@ tagged_content_hash=$(sed -n 's/.*content hash \([0-9a-f]\{64\}\).*/\1/p' "$out"
 assert_eq '64' "${#tagged_content_hash}" \
     'the passing gate reports the reproducible SHA-256 content hash'
 
+find_failure_bin="$tmp/find-failure-bin"
+mkdir -p "$find_failure_bin"
+cat > "$find_failure_bin/find" <<'EOF'
+#!/usr/bin/env bash
+printf './agentkit/.claude-plugin/plugin.json\0'
+exit 9
+EOF
+chmod +x "$find_failure_bin/find"
+out="$tmp/find-enumeration-failure.out"
+find_failure_rc=0
+PATH="$find_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    find_failure_rc=$?
+assert_eq '1' "$find_failure_rc" \
+    'an entry finder that emits partial output and then fails stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not enumerate shipped tree' \
+    'a partial finder failure identifies unavailable tree enumeration'
+
+sort_failure_bin="$tmp/sort-failure-bin"
+mkdir -p "$sort_failure_bin"
+cat > "$sort_failure_bin/sort" <<'EOF'
+#!/usr/bin/env bash
+command cat > /dev/null
+exit 8
+EOF
+chmod +x "$sort_failure_bin/sort"
+out="$tmp/sort-enumeration-failure.out"
+sort_failure_rc=0
+PATH="$sort_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    sort_failure_rc=$?
+assert_eq '1' "$sort_failure_rc" 'an entry sort failure stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not enumerate shipped tree' \
+    'a sort failure identifies unavailable tree enumeration'
+
+cat_failure_bin="$tmp/cat-failure-bin"
+mkdir -p "$cat_failure_bin"
+cat > "$cat_failure_bin/cat" <<'EOF'
+#!/usr/bin/env bash
+printf 'partial file bytes'
+exit 7
+EOF
+chmod +x "$cat_failure_bin/cat"
+out="$tmp/entry-read-failure.out"
+cat_failure_rc=0
+PATH="$cat_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    cat_failure_rc=$?
+assert_eq '1' "$cat_failure_rc" \
+    'an entry reader that emits partial bytes and then fails stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not hash shipped tree' \
+    'a partial entry read identifies unavailable tree hashing'
+
 fixture_link="$tmp/tree-link"
 ln -s -- "$fixture" "$fixture_link"
 out="$tmp/symlink-root.out"
