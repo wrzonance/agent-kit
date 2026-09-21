@@ -235,8 +235,8 @@ assert_eq '' "$sourced_err" \
 assert_eq absent "$sourced_reason" \
     'sourced use still records the reason for a caller that wants it, without printing'
 
-# Issue #709 adds three lines for the shell-quoted refresh remedy.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh") -le 430 ]] && printf yes || printf no)" \
-    'lib/contract-cache.sh stays at or under 430 lines'
+# Issue #845 adds the single canonical copied-recipe recovery block.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh") -le 460 ]] && printf yes || printf no)" \
+    'lib/contract-cache.sh stays at or under 460 lines'
 
 finish

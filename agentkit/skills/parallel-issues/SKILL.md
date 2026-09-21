@@ -27,6 +27,19 @@ Fresh acknowledgement preserves saved work. Client restart/conversation resume r
 the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
 
+### Cold-start contract
+
+No current-session activation receipt means no parallel-issues run exists. For
+ordinary ad-hoc work, do not search for or reconstruct a ledger, backlog snapshot,
+proof, fingerprint, or environment contract merely because this repository contains
+state from an older run. The workflow begins only from a current invocation and its
+acknowledged receipt.
+
+Human grants still fail closed: a confirmed queue, recorded approval, or review consent
+must exist before the action it authorizes. Malformed, symlinked, foreign-owned, or
+active-run state still fails closed. The cold path applies only when kit-owned
+bookkeeping for the current workflow was never created.
+
 Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 
 Coordinate independent issues through Project validation, conflict analysis, user brainstorm (unless `--no-brainstorm`), isolated worktrees, one issue lead per worktree, and parallel draft-phase CI/conflict/review loops. PRs remain drafts until the user marks them ready. Never trigger provider review or post `@coderabbitai review`/`full review`.

@@ -8,6 +8,10 @@ set -euo pipefail
 # All three published copies of the issue text are chmod'd 0600 (fetched-issue.json
 # explicitly; the spec/prior-art pair here, since plain redirection lands 0644).
 umask 077
+prepare_source=${BASH_SOURCE[0]}
+[[ $prepare_source == */* ]] || prepare_source=./$prepare_source
+prepare_dir=$(cd -P -- "${prepare_source%/*}" && pwd -P)
+contract_cache_helper="$prepare_dir/../../.shared/scripts/lib/contract-cache.sh"
 
 usage() {
     printf 'Usage: %s --worktree PATH --issue N --boundary MODE [--prior-art FILE] [--body-cache FILE] [--resume]\n' "${0##*/}"
@@ -58,8 +62,9 @@ Re-running the script for an existing complete set is churn; delete the
 affected generated file deliberately before re-fencing, or use --resume.
 
 Recipe: publish canonical issue artifacts
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+EOF
+    "$contract_cache_helper" --print-session-recovery || exit 1
+    cat <<'EOF'
   script="$agentkit/parallel-issues/scripts/prepare-issue-artifacts.sh"
   prior_art_file=''
   if [[ -n ${prior_art_contents:-} ]]; then

@@ -34,7 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     # #783 + #785: atomic summary producers with durable sweep rehydration.
     # #784 final parent integration extends the durable dispatch recipe.
     # #810: require roots to preserve failed verification outcomes during collection.
-    [parallel-issues]="752:15831:500"
+    # #845: state the cold-start boundary at workflow activation.
+    [parallel-issues]="761:15951:500"
 )
 
 readonly MAX_BODY_LINES=500

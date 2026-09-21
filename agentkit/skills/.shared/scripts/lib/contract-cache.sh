@@ -394,15 +394,49 @@ contract_cache_refresh_session_context() {
     contract_cache_write_session_context "$repo_root" "$digest" "skills.path=$skills_path"
 }
 
+# Print a self-contained Bash block for later workflow recipe shells. The
+# literal skills path is derived from this shipped helper, shell-quoted, and
+# then checked against the contract-backed cache before provenance=ok is ever
+# accepted. Missing or stale cache state gets one bounded preflight refresh.
+contract_cache_print_session_recovery() {
+    local source=${BASH_SOURCE[0]} lib_dir skills_path
+    [[ $source == */* ]] || source=./$source
+    lib_dir=$(cd -P -- "${source%/*}" && pwd -P) || return 1
+    skills_path=$(cd -P -- "$lib_dir/../../.." && pwd -P) || return 1
+
+    printf '%s\n' '  # BEGIN session-context recovery'
+    # shellcheck disable=SC2016 # emitted Bash expands these in the caller.
+    printf '  agentkit=%q; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$shared/lib/contract-cache.sh"\n' \
+        "$skills_path"
+    cat <<'EOF'
+  [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
+  contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1
+  session_context=''
+  if ! session_context=$("$cache_reader" --read-session-context --repo-root "$contract_root" 2>/dev/null); then
+      "$shared/agent-preflight.sh" --worktree "$contract_root" --ensure >/dev/null || exit 1
+      live_agentkit=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
+      [[ $live_agentkit == "$expected_agentkit" ]] || exit 1
+      session_context=$("$cache_reader" --read-session-context --repo-root "$contract_root") || exit 1
+  fi
+  IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ <<<"$session_context"
+  [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
+  # END session-context recovery
+EOF
+}
+
 # CLI entry (issue #587): a failed read prints exactly one machine-readable
 # stderr line naming the failure class, mapped from the reason the read
 # function recorded. Stdout and exit codes are unchanged from before this
 # fix; sourced (non-CLI) use of the library never reaches this block, so it
 # stays byte-silent.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    if [[ ${1:-} == --print-session-recovery && $# == 1 ]]; then
+        contract_cache_print_session_recovery
+        exit $?
+    fi
     if [[ ${1:-} != --read-session-context || ${2:-} != --repo-root || -z ${3:-} ||
         ($# != 3 && ($# != 5 || ${4:-} != --get || -z ${5:-})) ]]; then
-        printf 'usage: %s --read-session-context --repo-root DIR [--get KEY]\n' "$(basename -- "$0")" >&2
+        printf 'usage: %s --read-session-context --repo-root DIR [--get KEY] | --print-session-recovery\n' "$(basename -- "$0")" >&2
         exit 2
     fi
     contract_cache_cli_repo_root=$3

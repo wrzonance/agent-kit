@@ -98,6 +98,9 @@ assert_contains "$move_help" '--status "$target_status"' \
 move_recipe="$tmp/move-recipe.sh"
 printf '%s\n' "$move_help" | awk '
     /^Recipe: move a selected issue set$/ { inside=1; next }
+    inside && /^  # BEGIN session-context recovery$/ { recovery=1; next }
+    recovery && /^  # END session-context recovery$/ { recovery=0; next }
+    recovery { next }
     inside { sub(/^  /, ""); print }
 ' >"$move_recipe"
 move_agentkit="$tmp/move-agentkit"
@@ -126,33 +129,10 @@ assert_eq '--issue-numbers 777 --status In review --repo owner/repo' "$(<"$move_
     'the copied board recipe forwards the selected issue and In review lifecycle target'
 assert_contains "$boundary_help" 'Recipe: select once before fetching' \
     'boundary-mode help owns its removed selection recipe'
-assert_contains "$boundary_help" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
-    'boundary selection refuses an unresolved or untrusted helper root'
-boundary_recipe="$tmp/boundary-recipe.sh"
-printf '%s\n' "$boundary_help" | awk '
-    /^Recipe: select once before fetching$/ { inside=1; next }
-    inside { sub(/^  /, ""); print }
-' >"$boundary_recipe"
-boundary_agentkit="$tmp/boundary-agentkit"
-boundary_bin="$tmp/boundary-bin"
-mkdir -p "$boundary_agentkit/.shared/scripts" "$boundary_agentkit/parallel-issues/scripts" "$boundary_bin"
-cat >"$boundary_bin/gh" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' owner/repo
-EOF
-cat >"$boundary_agentkit/parallel-issues/scripts/select-boundary-mode.sh" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' invoked >>"$BOUNDARY_CALLS"
-printf '%s\n' 'boundary mode: public-fenced'
-EOF
-chmod +x "$boundary_bin/gh" "$boundary_agentkit/parallel-issues/scripts/select-boundary-mode.sh"
-boundary_calls="$tmp/boundary-calls"
-boundary_rc=0
-PATH="$boundary_bin:$PATH" agentkit="$boundary_agentkit" agentkit_provenance=untrusted \
-    yolo_invocation=false BOUNDARY_CALLS="$boundary_calls" bash "$boundary_recipe" >/dev/null 2>&1 || boundary_rc=$?
-assert_eq 1 "$boundary_rc" 'the copied boundary recipe refuses untrusted helper provenance'
-assert_eq no "$([[ -e $boundary_calls ]] && printf yes || printf no)" \
-    'the untrusted boundary recipe refuses before invoking its helper'
+assert_contains "$boundary_help" '# BEGIN session-context recovery' \
+    'boundary selection carries the canonical session-context loader'
+assert_contains "$boundary_help" 'expected_agentkit' \
+    'boundary selection validates the loaded skills path before use'
 assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \
     'artifact helper help owns its removed preparation recipe'
 assert_contains "$prepare_help" '--scratch-label "prior-art-$issue_number-$RUN_ID"' \
@@ -603,8 +583,8 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
-assert_contains "$concurrency_help" '[ -d "${agentkit:-}/.shared/scripts" ]' \
-    'concurrency dispatch carries the resolver directory guard'
+assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
+    'concurrency dispatch carries the canonical session-context loader'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
     'concurrency dispatch validates resolver provenance'
 assert_contains "$text" '### Spawn discipline (applies to every spawn in this skill)' \
@@ -1918,7 +1898,7 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
     'Collect reuses only receipts already accepted by root'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2210 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2217 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

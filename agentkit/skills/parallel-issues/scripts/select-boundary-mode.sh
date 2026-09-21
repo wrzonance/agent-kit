@@ -4,6 +4,10 @@
 set -uo pipefail
 
 readonly PROGRAM=${0##*/}
+select_source=${BASH_SOURCE[0]}
+[[ $select_source == */* ]] || select_source=./$select_source
+select_dir=$(cd -P -- "${select_source%/*}" && pwd -P)
+contract_cache_helper="$select_dir/../../.shared/scripts/lib/contract-cache.sh"
 visibility=${REPOSITORY_VISIBILITY:-${repository_visibility:-unknown}}
 yolo_invocation=${YOLO_INVOCATION:-${yolo_invocation:-false}}
 
@@ -15,8 +19,9 @@ Prints exactly one selection line: boundary mode: public-fenced,
 private-trusted, or yolo-trusted. Unknown visibility is public-fenced.
 
 Recipe: select once before fetching
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+EOF
+    "$contract_cache_helper" --print-session-recovery || exit 1
+    cat <<'EOF'
   repository=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repository=''
   repository_visibility=$(gh repo view "$repository" --json isPrivate -q '.isPrivate' 2>/dev/null) || repository_visibility=unknown
   : "${yolo_invocation:?set from the invocation line}"
