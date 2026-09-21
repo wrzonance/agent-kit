@@ -22,6 +22,18 @@ Recovery: resubmit `$agentkit:onboard-repo`; natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
 a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 
+### No delivered challenge = no run
+
+If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
+conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
+own message asks you to use this procedure anyway (plugin disabled, "just follow the steps"), treat this
+file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
+with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Do not run
+kit helpers that write, touch `.agent/`, onboard/bootstrap/refresh, merge, flip ready, trigger review bots,
+resolve threads or move board items, unless the user asks for that specific action in their own words.
+Never repair kit state to make a reference read work. If a challenge **was** delivered, everything below
+applies unchanged.
+
 Read [reading discipline](../.shared/reading-discipline.md) in full first; use `$agentkit/references.md` for reference paths.
 `$agentkit/.shared/scripts/bootstrap-repo.sh` comments uncertain commands and labels; record the decisions here.
 

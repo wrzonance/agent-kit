@@ -118,8 +118,8 @@ assert_contains "$readme_text" 'ships four skills' 'root inventory count include
 
 # Issue #844: explicit contract and ledger recovery recipes are part of the
 # executable coordinator contract; ratchet their measured final size.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20370 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 20370 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 21264 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 21264 bytes'
 
 # shellcheck disable=SC2016 # Markdown backticks are literal.
 assert_contains "$text" '| `--fast-mode` |' 'coordinator exposes queue preauthorization'

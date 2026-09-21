@@ -147,7 +147,7 @@ Recipe: resolve, rehydrate, and run once
       agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
   fi
   if [[ -z $agentkit ]]; then
-      printf 'agentkit: no skills path in %s (keyed candidate: %s); run onboard-repo first\n' "$contract" "$keyed_contract" >&2
+      printf 'agentkit: no skills path in %s (keyed candidate: %s); for onboarding or an active run only, run onboard-repo first\n' "$contract" "$keyed_contract" >&2
       exit 1
   fi
   [[ $agentkit == /* ]] || { printf '%s\n' "agentkit: skills path must be absolute: $agentkit" >&2; exit 1; }

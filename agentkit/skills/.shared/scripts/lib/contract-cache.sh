@@ -452,8 +452,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
                 "$contract_cache_cli_contract" "$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/${BASH_SOURCE[0]##*/}" \
                 "$contract_cache_cli_repo_root" "$contract_cache_cli_contract" \
                 "$(sed -n 's/^skills= path=//p' "$contract_cache_cli_contract" | sed -n '1p')" >&2
-        else
-            printf 'contract-cache: session-context %s\n' "$contract_cache_cli_reason" >&2
+        elif [[ $contract_cache_cli_reason == stale ]]; then printf '%s\n' 'contract-cache: session-context stale; remedy applies only to onboarding or an active run' >&2
+        else printf 'contract-cache: session-context %s\n' "$contract_cache_cli_reason" >&2
         fi
     fi
     exit "$contract_cache_cli_rc"

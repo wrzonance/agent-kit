@@ -407,7 +407,9 @@ def main():
             record = evidence.read()
         except FileNotFoundError:
             fail("activation-unavailable: no receipt at activation origin for session; invoke "
-                 + args.skill + " in that checkout and acknowledge the fresh challenge")
+                 + args.skill + " in that checkout and acknowledge the fresh challenge"
+                 + "\nagentkit: no challenge was delivered in this session, so no workflow run exists; "
+                 + "reference use needs no activation")
         if args.action == "redeliver":
             if record.get("workflow") != args.skill:
                 fail("activation-unavailable: recovery workflow does not match the affected receipt")

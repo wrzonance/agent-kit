@@ -67,6 +67,7 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no receipt at activation origin", result.stderr)
         self.assertIn("invoke parallel-issues in that checkout", result.stderr)
+        self.assertIn("no challenge was delivered in this session, so no workflow run exists", result.stderr)
 
     def test_failed_activation_helper_does_not_block_ordinary_prompt(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
@@ -577,12 +578,13 @@ class Activation(unittest.TestCase):
                 self.assertIn("invocation boundary", json.dumps(output))
                 self.assertIn("--skill " + workflow, json.dumps(output))
 
-    def test_reports_quotes_and_negation_do_not_activate(self):
+    def test_quoted_negated_and_question_prompts_do_not_activate(self):
         for prompt in ('"run these issues in parallel"', 'Do not resume parallel-issues',
                        'Explain how to resume parallel-issues',
                        'Reported: Resume parallel-issues', '```\n/parallel-issues\n```',
                        'Resume the report about "parallel-issues"',
                        'Resume the report about parallel-issues',
+                       'Resume parallel-issues?',
                        'Resume parallel-issues? No, do not run it.'):
             with self.subTest(prompt=prompt):
                 self.payload["prompt"] = prompt
