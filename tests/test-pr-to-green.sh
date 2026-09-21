@@ -31,6 +31,8 @@ assert_contains "$text" 'thread-action.sh' \
     'coordinator delegates reply settlement state'
 assert_contains "$text" 'chain-advance.sh' \
     'coordinator delegates verified successor retargeting'
+assert_contains "$text" 'session-ledger.sh" quarantine --ledger' \
+    'corrupt ledger recovery invokes the supported quarantine helper'
 assert_contains "$flat" 'provider plan, verified dependency graph, and exact serial queue' \
     'confirmation presents every authorization input before mutation'
 assert_contains "$flat" 'remediation pushes, ready transitions, and trigger-capable requests' \
@@ -108,8 +110,10 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20386 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 20386 bytes'
+# Issue #844: the explicit corrupt-ledger recovery recipe is part of the
+# executable coordinator contract; ratchet its measured final size.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20369 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 20369 bytes'
 
 # shellcheck disable=SC2016 # Markdown backticks are literal.
 assert_contains "$text" '| `--fast-mode` |' 'coordinator exposes queue preauthorization'

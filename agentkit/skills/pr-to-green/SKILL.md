@@ -200,10 +200,11 @@ failures on unchanged paths outside this diff as `baseline-red`. Publish them wi
 SKIPPED. Continue commit, push, review and receipt; ready-flip and merge remain blocked.
 Do not reformat unrelated paths. Code regressions are `change-caused-red`: fix them.
 Stale contracts/corrupt kit ledgers are `kit-state-red`: preserve evidence,
-confirm the recovery helper exists and its interface, then repair and continue once.
-Never invent helpers, erase review history, or bypass trust/consent gates. Failed/unavailable
-repair becomes `BLOCKED` with evidence and next action; human/dependency blockers stay distinct.
-Repair is not green proof.
+run
+`"$agentkit/.shared/scripts/session-ledger.sh" quarantine --ledger "$LEDGER"`,
+preserve output, and continue only after the requested run reads cleanly. Never
+invent helpers or bypass trust/consent gates. Failed repair is `BLOCKED`;
+human/dependency blockers stay distinct. Repair is not green proof.
 
 After a fix push, retain the receipt and invoke
 `authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.

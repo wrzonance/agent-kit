@@ -24,7 +24,8 @@ assert_not_contains "$reading_text" '800' 'reading policy has no circular size t
 assert_contains "$(<"$skills/pr-to-green/SKILL.md")" '../.shared/reading-discipline.md' 'pr-to-green reaches reading discipline'
 assert_contains "$(<"$skills/references.md")" '$agentkit/.shared/reading-discipline.md' 'manifest routes every workflow to reading discipline'
 assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'kit-state-red' 'queue separates repairable kit state from code failures'
-assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'confirm the recovery helper exists' 'queue forbids invented recovery tools'
+assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'session-ledger.sh" quarantine --ledger' \
+    'queue names the shipped recovery helper instead of inventing one'
 help_out=$("$skills/review-remote-pr/scripts/adversarial-run.sh" --help)
 for term in '--reviewer' '--override-authorization' '--provenance' 'required together' 'claude-*' 'gpt-6-*' '--list-adversarial-efforts'; do
     assert_contains "$help_out" "$term" "review help exposes $term"
