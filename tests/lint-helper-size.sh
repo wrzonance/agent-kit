@@ -45,7 +45,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/authorize-queue.sh]="1189:17748:800"
     # #852: reject same-head analyses created before the latest retarget.
     # #834: carry a truthful corrective action for every blocked reason.
-    [skills/pr-to-green/scripts/merge-gate.sh]="897:11749:800"
+    # #834 review repair: retain human-only decisions in four corrective actions.
+    [skills/pr-to-green/scripts/merge-gate.sh]="897:11797:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -178,7 +179,8 @@ readonly MAX_HELPER_TOKENS=10000
 # add measured recovery code to the shipped helper tree.
 # #845 repair merge: exact combined helper tree measurement.
 # #834 + repaired #845 parent: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=472552
+# #834 review repair: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=472600
 
 violations=0
 checked=0

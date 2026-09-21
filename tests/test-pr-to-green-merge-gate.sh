@@ -647,6 +647,23 @@ set -e
 assert_eq '1' "$rc" 'a pending requested reviewer blocks the merge'
 assert_contains "$out" 'blocked reason=a requested reviewer is still pending' \
     'the pending-reviewer block is named'
+assert_contains "$out" 'only a human may withdraw the request' \
+    'the pending-reviewer action preserves the human-only withdrawal boundary'
+assert_not_contains "$out" 'or clear the request' \
+    'the pending-reviewer action never invites automation to withdraw a review request'
+
+good_digest
+set +e
+out=$(PR_STATE=closed run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a closed pull request blocks the merge'
+assert_contains "$out" 'remove the pull request from the merge queue' \
+    'the closed-pull-request action removes an ineligible queue item'
+assert_contains "$out" 'only a human may decide to reopen an eligible closed pull request' \
+    'the closed-pull-request action preserves the human-only reopening decision'
+assert_not_contains "$out" 'reopen the pull request or remove it' \
+    'the action never directs automation to reopen a closed pull request'
 
 good_digest
 set +e
@@ -710,6 +727,10 @@ assert_eq '1' "$rc" \
     'no analysis recorded for the current head anywhere (PR ref or base ref) blocks the merge (absence of evidence is never evidence of completion)'
 assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
     'the no-analysis block is named, and distinct from the unreadable-status block'
+assert_contains "$out" 'human action required: inspect the CodeQL workflow and dispatch it or update its path filter' \
+    'the missing-analysis action keeps dispatch and path-filter changes human-only'
+assert_contains "$out" 'the agent must not dispatch it to satisfy this gate' \
+    'the missing-analysis action forbids manufactured gate evidence'
 
 # --- issue #390: the analyses endpoint is authoritative; the check-run app
 # slug is at most a secondary "still running" signal.
@@ -1092,6 +1113,10 @@ set -e
 assert_eq '1' "$rc" 'a configured repository with an open alert keeps blocking, unaffected by the corroboration'
 assert_contains "$out" 'blocked reason=an open code-scanning alert is attributable to this PR' \
     'the open-alert block is unchanged'
+assert_contains "$out" 'repair the attributable alert (dismissal is a human security decision)' \
+    'the open-alert action reserves dismissal for an explicit human security decision'
+assert_not_contains "$out" 'repair or explicitly dismiss' \
+    'the open-alert action never authorizes automated dismissal'
 
 good_digest
 out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)

@@ -242,7 +242,7 @@ live_base=$(jq -r '.base.ref' "$work_dir/pr.json")
 live_mergeable=$(jq -r '.mergeable' "$work_dir/pr.json")
 
 [[ $live_state == open ]] || block 'pull request is not open' \
-    'reopen the pull request or remove it from the merge queue'
+    'remove the pull request from the merge queue; only a human may decide to reopen an eligible closed pull request'
 [[ $live_draft == false ]] || block 'pull request is still a draft' \
     'have the operator mark the pull request ready for review, then re-run merge-gate.sh'
 [[ $live_sha == "$head_sha" ]] || block 'pull request head changed since evidence was captured' \
@@ -254,7 +254,7 @@ live_mergeable=$(jq -r '.mergeable' "$work_dir/pr.json")
 
 if [[ $(jq -r '(.requested_reviewers | length) + (.requested_teams | length)' "$work_dir/pr.json") != 0 ]]; then
     block 'a requested reviewer is still pending' \
-        'obtain the requested review or clear the request, then refresh review evidence'
+        'wait for the requested reviewer to submit a review (only a human may withdraw the request), then refresh review evidence'
 fi
 
 # --- Human review decisions: latest actionable review per human reviewer ---
@@ -772,7 +772,7 @@ case $cs_status in
     absent)
         printf 'scan-missing: codeql (human action: inspect the CodeQL workflow and dispatch it or update its path filter)\n'
         block 'no code-scanning analysis is recorded for the current head' \
-            'inspect the CodeQL workflow and dispatch it or update its path filter, then refresh evidence'
+            'human action required: inspect the CodeQL workflow and dispatch it or update its path filter; the agent must not dispatch it to satisfy this gate; then refresh evidence'
         ;;
     *) block 'code-scanning analysis status is unreadable for the current head' \
         'restore readable code-scanning API evidence, refresh the digest, then re-run merge-gate.sh' ;;
@@ -796,7 +796,7 @@ cs_completion_exempt=no
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
         block 'an open code-scanning alert is attributable to this PR' \
-            'repair or explicitly dismiss the attributable alert, refresh evidence, then re-run merge-gate.sh'
+            'repair the attributable alert (dismissal is a human security decision), refresh evidence, then re-run merge-gate.sh'
 elif [[ $cs_completion_exempt != yes ]]; then
     block 'code-scanning evidence is unreadable (n/a is never treated as zero findings)' \
         'regenerate the digest with readable code-scanning alerts, then re-run merge-gate.sh'
