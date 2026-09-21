@@ -193,11 +193,92 @@ assert_rc 2 'append rejects a secret-shaped multiline quote' -- "$script" append
     --quote $'line one\ntoken=ghp_exampleabc123\nline three'
 assert_eq '5' "$(wc -l < "$ledger" | tr -d ' ')" 'secret-shaped input is never persisted'
 
-# Existing state is validated fail-closed and symlinks cannot redirect writes.
-printf '%s\n' '{"quote":"forged"}' > "$tmp/invalid.ndjson"
-chmod 600 -- "$tmp/invalid.ndjson"
-assert_rc 1 'read rejects malformed existing state' -- "$script" read \
-    --ledger "$tmp/invalid.ndjson" --run-id x
+# Appending under the ledger lock establishes a physical NDJSON boundary even
+# when an earlier writer omitted the trailing newline. Preserve a valid prior
+# grant and make both records readable and coverable.
+unterminated_valid="$state/unterminated-valid.ndjson"
+valid_prior=$(jq -cn --arg skills "$skills_real" \
+    '{timestamp:"2026-09-20T00:00:00Z",run_id:"prior-run",skills_path:$skills,
+      procedure_set:"parallel-issues",decision:"prior grant",scope:"prior scope",quote:"approved prior"}')
+printf '%s' "$valid_prior" > "$unterminated_valid"
+chmod 600 -- "$unterminated_valid"
+assert_rc 0 'append starts a new physical line after an unterminated valid row' -- \
+    "$script" append --ledger "$unterminated_valid" --run-id new-run \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision 'new grant' --scope 'new scope' --quote 'approved new'
+assert_eq '2' "$(wc -l < "$unterminated_valid" | tr -d ' ')" \
+    'valid prior and appended grants occupy separate terminated physical lines'
+assert_eq '1' "$("$script" read --ledger "$unterminated_valid" --run-id prior-run | jq -s length)" \
+    'the unterminated valid prior grant remains readable after append'
+assert_rc 0 'the unterminated valid prior grant remains coverable after append' -- \
+    "$script" covers --ledger "$unterminated_valid" --run-id prior-run \
+    --decision 'prior grant' --scope 'prior scope'
+assert_eq '1' "$("$script" read --ledger "$unterminated_valid" --run-id new-run | jq -s length)" \
+    'the appended grant is readable after a valid unterminated row'
+assert_rc 0 'the appended grant is coverable after a valid unterminated row' -- \
+    "$script" covers --ledger "$unterminated_valid" --run-id new-run \
+    --decision 'new grant' --scope 'new scope'
+
+# An unattributed malformed final row is preserved as its own physical row;
+# it cannot swallow the valid grant appended for a different run.
+unterminated_bad="$state/unterminated-malformed.ndjson"
+printf '%s' 'not-json' > "$unterminated_bad"
+chmod 600 -- "$unterminated_bad"
+assert_rc 0 'append starts a new physical line after an unterminated malformed row' -- \
+    "$script" append --ledger "$unterminated_bad" --run-id recovered-run \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision 'recovered grant' --scope 'recovered scope' --quote 'approved recovery'
+assert_eq '2' "$(wc -l < "$unterminated_bad" | tr -d ' ')" \
+    'malformed prior and appended grants occupy separate terminated physical lines'
+assert_eq 'not-json' "$(sed -n '1p' "$unterminated_bad")" \
+    'the malformed unterminated row is preserved byte-for-byte'
+assert_eq '1' "$("$script" read --ledger "$unterminated_bad" --run-id recovered-run | jq -s length)" \
+    'the appended grant is readable after a malformed unterminated row'
+assert_rc 0 'the appended grant is coverable after a malformed unterminated row' -- \
+    "$script" covers --ledger "$unterminated_bad" --run-id recovered-run \
+    --decision 'recovered grant' --scope 'recovered scope'
+
+# Existing state is validated for the requested run only. An unrelated broken
+# row must not veto a new grant, while a malformed row that names the requested
+# run still fails closed.
+scoped_ledger="$state/scoped-ledger.ndjson"
+printf '%s\n' 'not-json' '{"run_id":"run-a","detail":"forged"}' > "$scoped_ledger"
+chmod 600 -- "$scoped_ledger"
+assert_rc 0 'an unparseable row and malformed run A do not block append for run B' -- \
+    "$script" append --ledger "$scoped_ledger" --run-id run-b \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision grant --scope scope-b --quote 'approved B'
+assert_eq '1' "$("$script" read --ledger "$scoped_ledger" --run-id run-b | jq -s 'length')" \
+    'run B reads its valid row without replaying unrelated malformed state'
+assert_rc 1 'read still rejects a malformed row attributed to the requested run' -- \
+    "$script" read --ledger "$scoped_ledger" --run-id run-a
+
+# Recovery owns the destructive rewrite: invalid physical rows move to an
+# owner-private audit sidecar and every valid row remains in the ledger.
+quarantine_out=$("$script" quarantine --ledger "$scoped_ledger")
+quarantine_file="$state/ledger-quarantine.ndjson"
+assert_contains "$quarantine_out" 'quarantined=2' \
+    'quarantine reports the number of rejected physical rows'
+assert_contains "$quarantine_out" "sidecar=$quarantine_file" \
+    'quarantine reports the durable audit sidecar'
+assert_eq '600' "$(stat -c '%a' -- "$quarantine_file")" \
+    'the quarantine sidecar is owner-private'
+assert_eq '2' "$(jq -s 'length' "$quarantine_file")" \
+    'every rejected row has one audit record'
+assert_rc 0 'the quarantine audit records raw rows, line numbers, and reasons' -- \
+    jq -s -e '
+      (.[0] | .line == 1 and .reason == "invalid JSON" and .raw == "not-json")
+      and (.[1] | .line == 2 and .reason == "invalid ledger record"
+        and (.raw | fromjson | .run_id == "run-a"))
+    ' "$quarantine_file"
+assert_eq '1' "$(jq -s 'length' "$scoped_ledger")" \
+    'quarantine leaves every valid ledger row in place'
+assert_rc 0 'the repaired ledger accepts a grant for the formerly blocked run' -- \
+    "$script" append --ledger "$scoped_ledger" --run-id run-a \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision grant --scope scope-a --quote 'approved A'
+
+# Ledger and quarantine symlinks cannot redirect helper writes.
 target="$tmp/target.ndjson"
 printf '%s\n' 'do not overwrite' > "$target"
 chmod 600 -- "$target"
@@ -207,6 +288,16 @@ assert_rc 1 'append rejects a symlinked ledger' -- "$script" append \
     --skills-path "$skills_path" --procedure-set parallel-issues \
     --scope scope --quote quote
 assert_eq 'do not overwrite' "$(<"$target")" 'symlink target remains untouched'
+quarantine_symlink_parent="$tmp/quarantine-symlink/.agent"
+mkdir -p -- "$quarantine_symlink_parent"
+chmod 700 -- "$quarantine_symlink_parent"
+printf '%s\n' 'bad-row' > "$quarantine_symlink_parent/session-ledger.ndjson"
+chmod 600 -- "$quarantine_symlink_parent/session-ledger.ndjson"
+ln -s -- "$target" "$quarantine_symlink_parent/ledger-quarantine.ndjson"
+assert_rc 1 'quarantine refuses a symlinked audit sidecar' -- "$script" quarantine \
+    --ledger "$quarantine_symlink_parent/session-ledger.ndjson"
+assert_eq 'do not overwrite' "$(<"$target")" \
+    'the quarantine symlink target remains untouched'
 
 # Concurrent human receipts serialize without losing decisions.
 for id in alpha bravo charlie; do

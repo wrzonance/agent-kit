@@ -168,7 +168,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
 # #849: cause-specific owned-path diagnostics shared by workflow helpers.
 # #850/#843: bounded landing replay and compatible receipt lineage.
-readonly MAX_TREE_TOKENS=467365
+# #844: scoped ledger validation, quarantine, and direct-write guards.
+# #845 prerequisite join: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=469256
 
 violations=0
 checked=0

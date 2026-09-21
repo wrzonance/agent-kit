@@ -49,24 +49,28 @@ session=$(jq -r '.session_id // empty' <<< "$input" 2> /dev/null || true)
 tool_call_id=$(jq -r '.tool_use_id // .tool_call_id // .id // empty' <<< "$input" 2> /dev/null || true)
 ADVISORY_CONTEXT=''
 
-# An explicit invocation arms a durable receipt gate outside the skill body.
-# Never turn a helper failure into allow while that gate exists.
-activation_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
-if [[ -e $activation_root/.agent/activation || -L $activation_root/.agent/activation ]]; then
-    activation_output=$("$self_dir/../skills/.shared/scripts/workflow-activation.sh" hook <<< "$input") ||
-        deny 'agentkit: activation-unavailable: cannot validate the invocation boundary'
-    if [[ $(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$activation_output") == deny ]]; then
-        printf '%s\n' "$activation_output"
-        exit 0
-    fi
+# Only a current session receipt arms the activation gate.
+aroot=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true); agent_dir="$aroot/.agent"; adir="$agent_dir/activation"
+r='' gate=yes; if [[ -n $aroot && -n $session && -d $agent_dir && ! -L $agent_dir && -O $agent_dir && -d $adir && ! -L $adir && -O $adir ]] && amode=$(stat -c %a -- "$agent_dir" 2>/dev/null) && dmode=$(stat -c %a -- "$adir" 2>/dev/null) && (( (8#$amode & 8#022) == 0 && (8#$dmode & 8#022) == 0 )); then
+    if command -v sha256sum > /dev/null 2>&1; then r=$(printf '%s' "$session" | sha256sum) || r=''
+    elif command -v shasum > /dev/null 2>&1; then
+        r=$(printf '%s' "$session" | shasum -a 256) || r=''; fi
+    r=${r%% *}
+    [[ $r =~ ^[[:xdigit:]]{64}$ && ! -e $adir/$r.json && ! -L $adir/$r.json ]] && gate=no
 fi
-
+if [[ -n $aroot && (-e $adir || -L $adir) && $gate == yes ]]; then
+    activation_output=$("$self_dir/../skills/.shared/scripts/workflow-activation.sh" hook <<< "$input") || deny 'agentkit: activation-unavailable: cannot validate the invocation boundary'
+    if [[ $(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$activation_output") == deny ]]; then printf '%s\n' "$activation_output"; exit 0; fi
+fi
 # Files that decide whether other checks run. This hook used to see shell
 # commands only, so an agent could edit a CI workflow -- or the hook config
 # itself -- entirely unobserved.
 guard_resolve_roots "$cwd" "$command_line"
 guard_resolve_scope_roots "$cwd"
 protect_root=$(guard_state_root)
+if ledger_reason=$(guard_session_ledger_python_write_reason "$command_line"); then
+    deny "$ledger_reason"
+fi
 # Both channels: the paths an edit tool declares, and the paths a shell command
 # is about to write. The second exists because a redirect or `sed -i` arrives as
 # a Bash call, so the edit-tool guard cannot see it -- the gap that let a CI
@@ -99,6 +103,10 @@ for target in "${write_targets[@]}"; do
     [[ -n $target_root ]] || target_root=$protect_root
     policy_root=$protect_root
     [[ $target_classification == workspace && -n $policy_root ]] || policy_root=$target_root
+    if ledger_reason=$(guard_session_ledger_write_reason \
+        "$target" "$cwd" "$command_line" "${target_root:-$protect_root}"); then
+        deny "$ledger_reason"
+    fi
     matched=$(guard_protected_match "$target" "${policy_root:-$protect_root}") || continue
     if guard_should_deny "$protect_root" "$session" "protected-path"; then
         reason="Refused once -- $target is under $matched (classification: $target_classification;

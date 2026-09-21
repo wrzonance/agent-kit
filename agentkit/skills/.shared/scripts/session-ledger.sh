@@ -28,6 +28,7 @@ QUOTE_FILE=''
 QUOTE_STDIN=0
 TIMESTAMP=''
 LOCK_FD=''
+TEMP_FILES=()
 
 usage() {
     cat <<'EOF'
@@ -36,14 +37,14 @@ Usage:
     --decision TEXT --scope TEXT (--quote TEXT | --quote-file PATH | --quote-stdin) [--timestamp UTC]
   session-ledger.sh read --ledger FILE --run-id ID
   session-ledger.sh covers --ledger FILE --run-id ID --decision TEXT --scope TEXT
+  session-ledger.sh quarantine --ledger FILE
   session-ledger.sh run-id --procedure-set NAME --scope CSV [--flags CSV] --repo SLUG --base BRANCH
 
-append writes one validated, owner-private NDJSON decision record. read validates
-the complete ledger and emits only records for the requested run ID. covers exits 0
-when a validated record for the run carries the exact decision AND the exact
-scope -- the once-per-run authorization check -- and exits 1 when nothing does,
-so a caller stops instead of silently proceeding. Both are mandatory: a
-decision token alone must never satisfy a narrower recorded grant.
+append writes one validated, owner-private NDJSON decision record. read and
+covers validate only records attributed to the requested run, so unrelated
+malformed rows cannot block it. quarantine moves every invalid physical row to
+an owner-private audit sidecar and leaves a fully valid ledger. covers exits 0
+only when a validated record carries the exact decision AND exact scope.
 
 The run-id command canonicalizes scope and flag CSVs before hashing the full
 procedure/scope/flags/repository/base tuple. CSV order and duplicates do not
@@ -232,7 +233,7 @@ parse_options() {
 
 require_commands() {
     local command
-    for command in date dirname flock jq readlink sha256sum stat; do
+    for command in date dirname flock jq mktemp mv readlink sha256sum stat tail; do
         command -v "$command" >/dev/null 2>&1 ||
             die_evidence "$command is not installed; session ledger unavailable"
     done
@@ -405,7 +406,15 @@ release_lock() {
     LOCK_FD=''
 }
 
-trap release_lock EXIT
+cleanup() {
+    local file
+    release_lock
+    for file in "${TEMP_FILES[@]}"; do
+        [[ -z $file ]] || rm -f -- "$file"
+    done
+}
+
+trap cleanup EXIT
 
 ensure_ledger() {
     prepare_parent
@@ -420,7 +429,7 @@ ensure_ledger() {
     validate_ledger_file
 }
 
-validate_existing_records() {
+validate_record_stream() {
     jq -s -e --arg secret_re "$SECRET_RE" '
       def safe_text:
         if type != "string" then false
@@ -440,7 +449,7 @@ validate_existing_records() {
         type == "string" and test("^/") and (test("[\\r\\n]") | not) and (test($secret_re; "i") | not);
       def valid_record:
         if type != "object" then false
-        else (keys - ["timestamp", "run_id", "skills_path", "procedure_set", "decision", "scope", "quote"] | length == 0)
+        else (keys | sort) == ["decision", "procedure_set", "quote", "run_id", "scope", "skills_path", "timestamp"]
           and (.timestamp | safe_timestamp)
           and (.run_id | safe_text)
           and (.skills_path | safe_path)
@@ -450,21 +459,45 @@ validate_existing_records() {
           and (.quote | safe_quote)
         end;
       all(.[]; valid_record)
-    ' "$LEDGER" >/dev/null 2>&1 ||
-        die_evidence "ledger contains invalid or secret-like records: $LEDGER"
+    ' "$@" >/dev/null 2>&1
+}
+
+records_for_run() {
+    jq -Rrc --arg run_id "$RUN_ID" '
+      fromjson? | select(type == "object" and .run_id? == $run_id)
+    ' "$LEDGER"
+}
+
+validated_records_for_run() {
+    local records
+    records=$(records_for_run) ||
+        die_evidence "could not inspect ledger records for run $RUN_ID: $LEDGER"
+    if ! printf '%s' "$records" | validate_record_stream; then
+        die_evidence "ledger contains invalid or secret-like records for run $RUN_ID: $LEDGER"
+    fi
+    [[ -z $records ]] || printf '%s\n' "$records"
+}
+
+ensure_append_boundary() {
+    local last_byte
+    [[ -s $LEDGER ]] || return 0
+    last_byte=$(tail -c 1 -- "$LEDGER" && printf x) ||
+        die_evidence "could not inspect ledger append boundary: $LEDGER"
+    [[ $last_byte == $'\nx' ]] || printf '\n' >> "$LEDGER" ||
+        die_evidence "could not terminate the prior ledger row: $LEDGER"
 }
 
 append_record() {
-    local entry existing
+    local entry existing records
     validate_append_inputs
     prepare_parent
     acquire_lock
     ensure_ledger
-    validate_existing_records
+    records=$(validated_records_for_run)
     existing=$(jq -sc --arg run_id "$RUN_ID" --arg decision "$DECISION" \
         --arg scope "$SCOPE" --arg quote "$QUOTE" \
         'first(.[] | select(.run_id == $run_id and .decision == $decision and .scope == $scope and .quote == $quote)) // empty' \
-        "$LEDGER") || die_evidence 'could not inspect ledger for a duplicate record'
+        <<< "$records") || die_evidence 'could not inspect ledger for a duplicate record'
     if [[ -n $existing ]]; then
         printf '%s\n' "$existing"
         release_lock
@@ -475,6 +508,7 @@ append_record() {
         --arg decision "$DECISION" --arg scope "$SCOPE" --arg quote "$QUOTE" \
         '{timestamp:$timestamp,run_id:$run_id,skills_path:$skills_path,procedure_set:$procedure_set,decision:$decision,scope:$scope,quote:$quote}') ||
         die_evidence 'could not encode ledger record'
+    ensure_append_boundary
     printf '%s\n' "$entry" >>"$LEDGER" ||
         die_evidence "could not append to ledger: $LEDGER"
     chmod 600 -- "$LEDGER" || die_evidence "could not secure ledger: $LEDGER"
@@ -495,8 +529,81 @@ read_records() {
         return 0
     fi
     validate_ledger_file
-    validate_existing_records
-    jq -c --arg run_id "$RUN_ID" 'select(.run_id == $run_id)' "$LEDGER"
+    validated_records_for_run
+    release_lock
+}
+
+ensure_quarantine_file() {
+    local file=$1 mode
+    [[ ! -L $file ]] || die_evidence "refusing a quarantine symlink: $file"
+    if [[ ! -e $file ]]; then
+        if ! (set -o noclobber; : > "$file"); then
+            die_evidence "could not create quarantine sidecar without following a symlink: $file"
+        fi
+        chmod 600 -- "$file" || die_evidence "could not secure quarantine sidecar: $file"
+    fi
+    [[ -f $file && -O $file && -r $file && -w $file ]] ||
+        die_evidence "quarantine sidecar is not an owned readable regular file: $file"
+    mode=$(stat -c %a -- "$file" 2>/dev/null) ||
+        die_evidence "could not inspect quarantine sidecar permissions: $file"
+    [[ $mode == 600 ]] || die_evidence "quarantine sidecar must have mode 0600: $file"
+}
+
+quarantine_records() {
+    local parent sidecar kept audit line reason record timestamp source_ledger
+    local line_number=0 quarantined=0 remaining=0
+    [[ -n $LEDGER ]] || die_usage '--ledger is required'
+    parent=$(ledger_parent)
+    [[ ! -L $parent ]] || die_evidence "ledger parent is a symlink: $parent"
+    [[ -e $parent ]] || {
+        printf 'quarantined=0 remaining=0 sidecar=%s/ledger-quarantine.ndjson\n' "$parent"
+        return 0
+    }
+    validate_parent "$parent"
+    acquire_lock
+    if [[ ! -e $LEDGER && ! -L $LEDGER ]]; then
+        printf 'quarantined=0 remaining=0 sidecar=%s/ledger-quarantine.ndjson\n' "$parent"
+        release_lock
+        return 0
+    fi
+    validate_ledger_file
+    kept=$(mktemp -- "$parent/.session-ledger.repair.XXXXXX") ||
+        die_evidence "could not create ledger repair file in $parent"
+    audit=$(mktemp -- "$parent/.ledger-quarantine.audit.XXXXXX") ||
+        die_evidence "could not create quarantine audit file in $parent"
+    TEMP_FILES+=("$kept" "$audit")
+    chmod 600 -- "$kept" "$audit" || die_evidence 'could not secure quarantine temporary files'
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || die_evidence 'could not produce a UTC timestamp'
+    source_ledger=$LEDGER
+    while IFS= read -r line || [[ -n $line ]]; do
+        line_number=$((line_number + 1))
+        if printf '%s\n' "$line" | validate_record_stream; then
+            printf '%s\n' "$line" >> "$kept" || die_evidence 'could not stage a valid ledger row'
+            remaining=$((remaining + 1))
+            continue
+        fi
+        if jq -e . >/dev/null 2>&1 <<< "$line"; then
+            reason='invalid ledger record'
+        else
+            reason='invalid JSON'
+        fi
+        record=$(jq -cn --arg timestamp "$timestamp" --arg source "$source_ledger" \
+            --argjson line "$line_number" --arg reason "$reason" --arg raw "$line" \
+            '{timestamp:$timestamp,source:$source,line:$line,reason:$reason,raw:$raw}') ||
+            die_evidence 'could not encode quarantine audit record'
+        printf '%s\n' "$record" >> "$audit" || die_evidence 'could not stage quarantine audit record'
+        quarantined=$((quarantined + 1))
+    done < "$LEDGER"
+    validate_record_stream "$kept" || die_evidence 'ledger repair left invalid records'
+    sidecar="$parent/ledger-quarantine.ndjson"
+    if ((quarantined > 0)); then
+        ensure_quarantine_file "$sidecar"
+        cat -- "$audit" >> "$sidecar" || die_evidence "could not append quarantine audit: $sidecar"
+        chmod 600 -- "$sidecar" || die_evidence "could not secure quarantine sidecar: $sidecar"
+        mv -- "$kept" "$LEDGER" || die_evidence "could not install repaired ledger: $LEDGER"
+        chmod 600 -- "$LEDGER" || die_evidence "could not secure repaired ledger: $LEDGER"
+    fi
+    printf 'quarantined=%s remaining=%s sidecar=%s\n' "$quarantined" "$remaining" "$sidecar"
     release_lock
 }
 
@@ -521,7 +628,7 @@ covers_records() {
 main() {
     require_commands
     case ${1:-} in
-        append|read|covers|run-id)
+        append|read|covers|quarantine|run-id)
             COMMAND=$1
             parse_options "$@"
             ;;
@@ -530,7 +637,7 @@ main() {
             exit 0
             ;;
         '')
-            die_usage 'a subcommand is required: append, read, covers, or run-id'
+            die_usage 'a subcommand is required: append, read, covers, quarantine, or run-id'
             ;;
         *)
             die_usage "unknown subcommand: ${1:-}"
@@ -541,6 +648,7 @@ main() {
         append) append_record ;;
         read) read_records ;;
         covers) covers_records ;;
+        quarantine) quarantine_records ;;
         run-id) print_run_id ;;
     esac
 }

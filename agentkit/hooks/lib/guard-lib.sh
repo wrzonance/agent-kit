@@ -962,6 +962,44 @@ guard_observer_write_reason() {
         "$workspace_root" "$workspace_root"
 }
 
+# The session ledger is an authorization record, so only session-ledger.sh may
+# write it. The helper itself does not expose a shell write target; redirects,
+# in-place editors, and file-edit tools do, and are refused every time.
+guard_session_ledger_refusal() {
+    printf 'Refused -- %s is the human authorization ledger. Write it only through session-ledger.sh append; use session-ledger.sh quarantine --ledger FILE to repair malformed rows.' "$1"
+}
+
+guard_session_ledger_write_reason() {
+    local target=$1 cwd=$2 command_line=${3:-} root=${4:-}
+    local base candidate expected actual expected_actual
+    [[ -n $root ]] || return 1
+    base=$(guard_command_target_dir "$cwd" "$command_line" "$target") || base=$cwd
+    case $target in
+        /*) candidate=$target;;
+        *) candidate="$base/$target";;
+    esac
+    candidate=$(guard_scope_canonical "$candidate") || return 1
+    expected=$(guard_scope_canonical "$root/.agent/session-ledger.ndjson") || return 1
+    if [[ $candidate != "$expected" ]]; then
+        actual=$(guard_target_realpath "$candidate" 2> /dev/null) || return 1
+        expected_actual=$(guard_target_realpath "$expected" 2> /dev/null) || return 1
+        [[ $actual == "$expected_actual" ]] || return 1
+    fi
+    guard_session_ledger_refusal "$target"
+}
+
+# Heredoc bodies are normally data and therefore absent from extracted shell
+# write targets. Recognize the incident's narrow executable shape: Python opens
+# the exact ledger in a mutating mode. Reads and backup filenames stay allowed.
+guard_session_ledger_python_write_reason() {
+    local command_line=$1 python_re target_write_re
+    [[ -n $command_line ]] || return 1
+    python_re='(^|[[:space:];|&])python([0-9.]+)?([[:space:]]|$)'
+    target_write_re="Path\\([[:space:]]*['\"][^'\"]*\\.agent/session-ledger\\.ndjson['\"][[:space:]]*\\)[[:space:]]*\\.[[:space:]]*(open\\([[:space:]]*['\"][^'\"]*([awx]|\\+)[^'\"]*['\"]|write_(text|bytes)\\()"
+    [[ $command_line =~ $python_re && $command_line =~ $target_write_re ]] || return 1
+    guard_session_ledger_refusal '.agent/session-ledger.ndjson'
+}
+
 # Persist one JSONL record for each content-bearing tool call that exposes a
 # write target.  The raw command is retained for Bash calls because a target
 # alone cannot distinguish a redirect, sed -i, tee, or an edit payload during
