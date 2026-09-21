@@ -225,6 +225,30 @@ class Activation(unittest.TestCase):
         (self.plugin / "skills/parallel-issues/SKILL.md").unlink()
         self.assertIn("workflow-unavailable", self.prompt()["reason"])
 
+    def test_pre_tool_skips_activation_helper_without_current_session_receipt(self):
+        self.payload["session_id"] = "previous-session"
+        self.prompt()
+        self.payload["session_id"] = "ordinary-session"
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+
+        output = self.public_event("PreToolUse", tool_name="Bash",
+                                   tool_input={"command": "true"})
+
+        self.assertEqual(output, {})
+
+    def test_pre_tool_does_not_skip_symlinked_activation_directory(self):
+        (self.repo / ".agent").mkdir()
+        target = self.root / "activation-target"
+        target.mkdir()
+        (self.repo / ".agent/activation").symlink_to(target, target_is_directory=True)
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+
+        output = self.public_event("PreToolUse", tool_name="Bash",
+                                   tool_input={"command": "true"})
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("activation-unavailable", output["hookSpecificOutput"]["permissionDecisionReason"])
+
     def test_competing_route_and_pending_dispatch_are_denied(self):
         self.prompt()
         payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Agent",
