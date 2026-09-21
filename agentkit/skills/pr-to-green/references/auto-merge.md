@@ -99,9 +99,10 @@ Own work needs `fix:ID` ledger coverage and records in
 first-parent diff; scope checks cover resolutions. Other own commits stay in scope.
 
 `defaultAdvance:{from,to,prs:[15]}` anchors bounded default first-parent history.
-A merged PR's authorized head and live `merge_commit_sha` prove merge, squash or a
-single-commit rebase. Other commits need generated-only proof; multi-commit rebase
-fails because metadata names only its last commit. For stacked bases,
+Each live `merge_commit_sha` must cleanly replay its authorized head; merges require
+that second parent, while squash/single-rebase trees must match.
+Other commits need generated-only proof; multi-commit rebase metadata names only its
+last commit, so it fails. For stacked bases,
 `oldBase:{pr,sha}` must name an authorized parent, its live PR branch must match
 the saved base, and contain the historical SHA. An earlier imported default is
 allowed only when its remaining verified tail is entirely generated-only.

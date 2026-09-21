@@ -39,9 +39,9 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1087:13310:800"
-    # #711/#765: receipt fences and bounded exact-parent proof composition.
+    # #711/#765/#850: receipt fences and bounded authorized-landing replay.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="1100:16497:800"
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1121:16721:800"
     # #852: reject same-head analyses created before the latest retarget.
     [skills/pr-to-green/scripts/merge-gate.sh]="840:10292:800"
     # Issue #706: preserve selected invalid model provenance through the result.
@@ -167,7 +167,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
 # #849: cause-specific owned-path diagnostics shared by workflow helpers.
-readonly MAX_TREE_TOKENS=466113
+# #850: bounded content replay for merge, squash and single-rebase landings.
+readonly MAX_TREE_TOKENS=466338
 
 violations=0
 checked=0
