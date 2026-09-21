@@ -39,12 +39,16 @@ rc=0
 step() { printf '\n== %s\n' "$1"; }
 
 usage() {
-    printf 'Usage: %s [--only NAME[,NAME...]]\n' "${0##*/}" >&2
+    printf 'Usage: %s [--only NAME[,NAME...] | --shard I/N | --gates-only]\n' "${0##*/}" >&2
     printf '  --only NAME[,NAME...]  run only the named test suites\n' >&2
+    printf '  --shard I/N             run suite shard I of N (one-based)\n' >&2
+    printf '  --gates-only            run static gates without unit suites\n' >&2
     exit "${1:-2}"
 }
 
 only=''
+shard=''
+gates_only=no
 while (($#)); do
     case $1 in
         --only)
@@ -57,6 +61,15 @@ while (($#)); do
             }
             shift 2
             ;;
+        --shard)
+            (($# >= 2)) || { printf 'run-tests: --shard requires a value\n' >&2; usage; }
+            shard=$2
+            shift 2
+            ;;
+        --gates-only)
+            gates_only=yes
+            shift
+            ;;
         -h|--help)
             usage 0
             ;;
@@ -66,6 +79,33 @@ while (($#)); do
             ;;
     esac
 done
+
+mode_count=0
+[[ -z $only ]] || mode_count=$((mode_count + 1))
+[[ -z $shard ]] || mode_count=$((mode_count + 1))
+[[ $gates_only == no ]] || mode_count=$((mode_count + 1))
+if ((mode_count > 1)); then
+    printf 'run-tests: --only, --shard, and --gates-only are mutually exclusive\n' >&2
+    usage
+fi
+
+shard_index=''
+shard_count=''
+if [[ -n $shard ]]; then
+    if [[ $shard =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]; then
+        shard_index=${BASH_REMATCH[1]}
+        shard_count=${BASH_REMATCH[2]}
+    fi
+    if [[ -z $shard_index || $shard_index -gt $shard_count ]]; then
+        printf 'run-tests: invalid --shard value: %s (expected I/N with 1 <= I <= N)\n' "$shard" >&2
+        usage
+    fi
+fi
+
+run_gates=yes
+run_suites=yes
+[[ -z $shard ]] || run_gates=no
+[[ $gates_only == no ]] || run_suites=no
 
 jobs=${AGENT_TEST_JOBS:-}
 if [[ -z $jobs ]]; then
@@ -88,7 +128,9 @@ done
 
 selected=()
 selected_names=()
-if [[ -n $only ]]; then
+if [[ $run_suites == no ]]; then
+    :
+elif [[ -n $only ]]; then
     IFS=, read -r -a requested <<< "$only"
     for name in "${requested[@]}"; do
         valid=no
@@ -112,11 +154,73 @@ if [[ -n $only ]]; then
             fi
         done
     done
+elif [[ -n $shard ]]; then
+    weights_file=$here/suite-weights.tsv
+    [[ -r $weights_file ]] || {
+        printf 'run-tests: missing suite weights: %s\n' "$weights_file" >&2
+        exit 2
+    }
+
+    declare -A suite_exists=() suite_weight=() suite_assignment=()
+    for name in "${suite_names[@]}"; do
+        suite_exists[$name]=yes
+    done
+
+    while IFS=$'\t' read -r name weight extra; do
+        [[ -n $name && $name != \#* ]] || continue
+        if [[ -n $extra || ! $weight =~ ^[1-9][0-9]*$ ]]; then
+            printf 'run-tests: invalid suite weight record: %s\t%s%s\n' \
+                "$name" "$weight" "${extra:+\t$extra}" >&2
+            exit 2
+        fi
+        [[ ${suite_exists[$name]:-} == yes ]] || {
+            printf 'run-tests: suite weight names an unknown suite: %s\n' "$name" >&2
+            exit 2
+        }
+        [[ -z ${suite_weight[$name]:-} ]] || {
+            printf 'run-tests: duplicate suite weight: %s\n' "$name" >&2
+            exit 2
+        }
+        suite_weight[$name]=$weight
+    done <"$weights_file"
+
+    declare -a shard_totals=()
+    for ((i = 0; i < shard_count; i++)); do
+        shard_totals[i]=0
+    done
+
+    while IFS=$'\t' read -r weight name; do
+        best=0
+        for ((i = 1; i < shard_count; i++)); do
+            ((shard_totals[i] < shard_totals[best])) && best=$i
+        done
+        suite_assignment[$name]=$best
+        shard_totals[best]=$((shard_totals[best] + weight))
+    done < <(
+        for name in "${!suite_weight[@]}"; do
+            printf '%s\t%s\n' "${suite_weight[$name]}" "$name"
+        done | sort -t $'\t' -k1,1nr -k2,2
+    )
+
+    for name in "${suite_names[@]}"; do
+        [[ -z ${suite_assignment[$name]:-} ]] || continue
+        read -r checksum _ < <(printf '%s' "$name" | cksum)
+        suite_assignment[$name]=$((checksum % shard_count))
+    done
+
+    target=$((shard_index - 1))
+    for i in "${!suites[@]}"; do
+        if [[ ${suite_assignment[${suite_names[i]}]} -eq $target ]]; then
+            selected+=("${suites[i]}")
+            selected_names+=("${suite_names[i]}")
+        fi
+    done
 else
     selected=("${suites[@]}")
     selected_names=("${suite_names[@]}")
 fi
 
+if [[ $run_gates == yes ]]; then
 step 'shellcheck (shipped scripts)'
 mapfile -t scripts < <(find "$plugin" -name '*.sh' | sort)
 printf '  %d scripts\n' "${#scripts[@]}"
@@ -124,7 +228,8 @@ printf '  %d scripts\n' "${#scripts[@]}"
 # part of each caller; -P SCRIPTDIR resolves those paths against each script's
 # own directory rather than the one this gate is invoked from.
 if ((${#scripts[@]})); then
-    shellcheck -x -P SCRIPTDIR -S style "${scripts[@]}" || rc=1
+    printf '%s\0' "${scripts[@]}" |
+        xargs -0 -n 1 -P "$jobs" shellcheck -x -P SCRIPTDIR -S style || rc=1
 else
     printf '  ok (none)\n'
 fi
@@ -162,7 +267,8 @@ printf '  %d test scripts\n' "${#tscripts[@]}"
 # is visible and does not read as a dead variable. -P SCRIPTDIR resolves those
 # relative paths against each script's own directory rather than the caller's
 # cwd, which is what this gate is run from.
-shellcheck -x -P SCRIPTDIR -S style -e SC1091 "${tscripts[@]}" "$here/stub/gh" || rc=1
+printf '%s\0' "${tscripts[@]}" "$here/stub/gh" |
+    xargs -0 -n 1 -P "$jobs" shellcheck -x -P SCRIPTDIR -S style -e SC1091 || rc=1
 
 step 'markdown code blocks'
 "$here/lint-markdown-blocks.sh" "$skills" || rc=1
@@ -347,10 +453,14 @@ fi
 # failed CI round and a merge conflict each -- for a number nobody reads, when
 # the run prints its real totals a few lines later. The README no longer states
 # a count, which is the honest version of the same claim.
+fi
 
+if [[ $run_suites == yes ]]; then
 step 'unit suites'
-printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" \
-    "$([[ -n $only ]] && printf ', focus=%s' "$only")"
+selection_note=''
+[[ -z $only ]] || selection_note=", focus=$only"
+[[ -z $shard ]] || selection_note=", shard=$shard"
+printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" "$selection_note"
 
 suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-test-suites.XXXXXX")
 trap 'rm -rf -- "$suite_tmp"' EXIT
@@ -397,6 +507,7 @@ for i in "${!selected[@]}"; do
     cat -- "${suite_output[i]}"
     [[ ${suite_status[i]:-0} -eq 0 ]] || rc=1
 done
+fi
 
 printf '\n%s\n' "$([[ $rc -eq 0 ]] && echo 'ALL GREEN' || echo 'FAILURES ABOVE')"
 exit "$rc"

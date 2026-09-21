@@ -1,0 +1,9 @@
+# Suite weights are elapsed deciseconds from the issue #866 local profile.
+# run-tests.sh assigns recorded suites longest-first to the lightest shard.
+agent-preflight	1047
+hooks	776
+probe-contract	595
+compose-worker-prompt	430
+adversarial-run	428
+environment-neutrality	425
+helper-size	413
