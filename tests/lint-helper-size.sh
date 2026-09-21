@@ -22,7 +22,7 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 # same PR, so every raise is a reviewed line in the diff, never a drift.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [hooks/lib/guard-lib.sh]="2262:24666:800"
+    [hooks/lib/guard-lib.sh]="2288:24898:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
@@ -33,7 +33,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
-    [skills/parallel-issues/scripts/chain-advance.sh]="1076:12998:800"
+    [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
@@ -42,8 +42,8 @@ declare -A KNOWN_OVERSIZE=(
     # #711/#765/#850: receipt fences and bounded authorized-landing replay.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1121:16721:800"
-    # #852: reject same-head analyses created before the latest retarget.
-    [skills/pr-to-green/scripts/merge-gate.sh]="840:10292:800"
+    # #852 + PR #858 merge-down: retain retarget checks and owned-path diagnostics.
+    [skills/pr-to-green/scripts/merge-gate.sh]="842:10302:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -165,10 +165,13 @@ readonly MAX_HELPER_TOKENS=10000
 # #809: cause-accurate verification reuse diagnostics and usage documentation.
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
+# Issue #844: exact-row quarantine plus payload-scoped Python ledger guarding
+# add measured recovery code to the shipped helper tree.
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
 # #849: cause-specific owned-path diagnostics shared by workflow helpers.
 # #850: bounded content replay for merge, squash and single-rebase landings.
-readonly MAX_TREE_TOKENS=466338
+# PR #860 merge-down with current main: 1,878,600 bytes / 4 = 469,650 tokens.
+readonly MAX_TREE_TOKENS=469650
 
 violations=0
 checked=0
