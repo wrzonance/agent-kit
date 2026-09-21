@@ -24,6 +24,7 @@ readonly BRANCH_RE='^[A-Za-z0-9._/-]+$'
 readonly EXIT_DEPENDENTS_REFUSED=3
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 CHAIN_ADVANCE_HELPER=${MERGE_PR_CHAIN_ADVANCE:-$SCRIPT_DIR/../../parallel-issues/scripts/chain-advance.sh}
 
 repo=''
@@ -250,8 +251,7 @@ cleanup() { rm -rf -- "$work_dir"; }
 trap cleanup EXIT HUP INT TERM
 
 # --- Authorization: this exact merge, for this exact confirmed queue item ---
-[[ -f $authorization_file && ! -L $authorization_file && -O $authorization_file ]] ||
-    die 'authorization file must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$authorization_file" file 'authorization file' authorize-queue.sh) || die "$path_error"
 reject_writable_by_others "$authorization_file" 'authorization file'
 delete_branch_json=false
 ((delete_branch == 0)) || delete_branch_json=true
@@ -279,12 +279,11 @@ if ((delete_branch)); then
 fi
 
 # --- Gate: a fresh merge-gate.sh PASS bound to this same PR and head ---
-[[ -f $gate_result_file && ! -L $gate_result_file && -O $gate_result_file ]] ||
-    die 'gate-result file must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$gate_result_file" file 'gate-result file' merge-gate.sh) || die "$path_error"
 reject_writable_by_others "$gate_result_file" 'gate-result file'
 if ((admin)); then
-    [[ -f $admin_authorization && ! -L $admin_authorization && -O $admin_authorization ]] ||
-        die 'admin authorization must be an owned regular file, not a symlink'
+    path_error=$(owned_path_diagnostic "$admin_authorization" file 'admin authorization' \
+        'the admin authorization stage') || die "$path_error"
     reject_writable_by_others "$admin_authorization" 'admin authorization'
     jq -e --arg repo "$repo" --argjson pr "$pr" --arg sha "$head_sha" --arg base "$base" --arg method "$method" '
       .version == 1 and .kind == "admin-merge" and .operatorAuthorized == true and

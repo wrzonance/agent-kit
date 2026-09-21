@@ -11,6 +11,7 @@ readonly LOGIN_RE='^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}(\[bot\])?$'
 
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 COMMENT_HELPER=${COMPOSE_REVIEW_COMMENT:-$SCRIPT_DIR/gh-comment.sh}
 # shellcheck source=../../.shared/scripts/lib/review-provider-catalog.sh
 source "$SCRIPT_DIR/../../.shared/scripts/lib/review-provider-catalog.sh"
@@ -63,8 +64,8 @@ done
 [[ $repo =~ $SLUG_RE ]] || die '--repo must have the form OWNER/REPO'
 [[ $sha =~ $SHA_RE ]] || die '--sha must be 7-64 hexadecimal characters'
 case $disposition in fixed|dismissed|deferred) ;; *) die 'unsupported disposition' ;; esac
-[[ -f $reasoning_file && ! -L $reasoning_file && -O $reasoning_file ]] ||
-    die '--reasoning-file must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$reasoning_file" file '--reasoning-file' \
+    'the remediation reasoning stage') || die "$path_error"
 [[ -s $reasoning_file ]] || die '--reasoning-file must not be empty'
 [[ -n $agent_identity && $agent_identity != *$'\n'* && $agent_identity != *$'\r'* ]] ||
     die '--agent-identity must be one non-empty line'
