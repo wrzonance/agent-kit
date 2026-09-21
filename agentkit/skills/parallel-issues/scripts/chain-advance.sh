@@ -760,7 +760,7 @@ sanitize_label() {
 # A base edit does not reliably emit a pull_request workflow event. Refresh
 # a code-scanning workflow: rerun a known head-associated run, or dispatch its
 # workflow when the API accepts that capability. Missing rollup evidence is
-# harmless only when default setup is not configured or cannot be inspected.
+# harmless only when default setup is explicitly not configured.
 refresh_code_scanning() {
     local pr_json=$1 head_sha=$2 head_ref=$3 names runs run_id run_name workflows workflow_id
     local default_setup_state safe_run_name safe_name
@@ -771,11 +771,22 @@ refresh_code_scanning() {
          | (.name // .context)] | unique | join("\n")
     ' <<<"$pr_json") || die 'could not identify code-scanning checks; refresh evidence unavailable'
     if [[ -z $names ]]; then
-        default_setup_state=$("$GH_BIN" api "repos/$REPO/code-scanning/default-setup" 2>/dev/null) || return 0
-        default_setup_state=$(jq -r '.state // empty' <<<"$default_setup_state" 2>/dev/null) || return 0
-        [[ $default_setup_state == configured ]] || return 0
-        printf 'cannot-trigger: CodeQL default setup has no dispatch; human action: push a new commit or run CodeQL for %s\n' \
-            "$(sanitize_label "$head_ref")" >&2
+        default_setup_state=$("$GH_BIN" api "repos/$REPO/code-scanning/default-setup" 2>/dev/null) ||
+            default_setup_state=''
+        default_setup_state=$(jq -er \
+            'select(type == "object") | .state | select(type == "string" and length > 0)' \
+            <<<"$default_setup_state" 2>/dev/null) || default_setup_state=''
+        case $default_setup_state in
+            not-configured) return 0 ;;
+            configured)
+                printf 'cannot-trigger: CodeQL default setup has no dispatch; human action: push a new commit or run CodeQL for %s\n' \
+                    "$(sanitize_label "$head_ref")" >&2
+                ;;
+            *)
+                printf 'cannot-trigger: code-scanning default setup state is unreadable; human action: inspect CodeQL default setup for %s\n' \
+                    "$(sanitize_label "$head_ref")" >&2
+                ;;
+        esac
         return 1
     fi
     runs=$("$GH_BIN" api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" 2>/dev/null) ||

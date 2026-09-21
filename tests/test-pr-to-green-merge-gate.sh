@@ -819,6 +819,17 @@ out=$(CS_TIMELINE_JSON='[{"event":"automatic_base_change_succeeded","base_ref":"
 assert_contains "$out" 'gate=PASS pr=9' \
     'an analysis created after an automatic base change satisfies the retarget boundary'
 
+good_digest
+set +e
+out=$(CS_TIMELINE_JSON=$'[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-18T00:00:00Z"}]\n[{"event":"base_ref_changed","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]' \
+    CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$HEAD_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-18T12:00:00Z\"}]" \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'all paginated timeline arrays contribute to the latest retarget boundary'
+assert_contains "$out" 'blocked reason=code-scanning analysis predates the latest base retarget' \
+    'the latest retarget event across pages makes an intervening analysis stale'
+
 # macOS/BSD date has no GNU -d parser. A valid forge timestamp must use jq's
 # existing ISO-8601 conversion and remain current even when date rejects -d.
 mkdir -p "$tmp/bsd-bin"
