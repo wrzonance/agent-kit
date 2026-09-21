@@ -7,9 +7,12 @@
 # through an input descriptor are recovered and recursively re-segmented
 # (issues #364 and #756).
 # mode=drop: every body is dropped (guard_gh_command_segments, issue #661).
+# mode=drop-nul: drop bodies and preserve embedded newlines with NUL records.
 # mode=helper: recover bodies, but emit NUL records, join line continuations,
 # and discard shell comments so inert text cannot create diagnostic boundaries.
 # mode=writes: recover executable bodies, preserving >| and >& operators.
+# mode=heredoc-payloads: emit NUL-delimited OWNER, BODY pairs from the existing
+# descriptor queue and no ordinary command segments.
 # shellcheck disable=SC2059  # record_format is one of two fixed literals, never input.
 guard_mark_reachable_heredocs() {
     local -n __gmrh_effects=$1 __gmrh_descriptors=$2
@@ -69,7 +72,7 @@ guard_destructive_command_segments() {
     local -a substitution_outer_quotes=() substitution_shell_consumers=()
     local -A descriptor_heredocs=()
     local record_format='%s\n' record_delimiter=$'\n' continued=0 word_start=1
-    [[ $mode != helper ]] || { record_format='%s\0'; record_delimiter=''; }
+    [[ $mode != helper && $mode != drop-nul ]] || { record_format='%s\0'; record_delimiter=''; }
 
     while IFS= read -r line || [[ -n $line ]]; do
         if [[ -n $heredoc ]]; then
@@ -78,7 +81,9 @@ guard_destructive_command_segments() {
                 terminator_line=${terminator_line#"${terminator_line%%[!$'\t']*}"}
             fi
             if [[ $terminator_line == "$heredoc" ]]; then
-                if [[ $mode == drop ]]; then
+                if [[ $mode == heredoc-payloads ]]; then
+                    ((heredoc_effective)) && printf '%s\0%s\0' "$owner" "$body"
+                elif [[ $mode == drop || $mode == drop-nul ]]; then
                     body=''
                 elif ((heredoc_effective)) && guard_heredoc_consumer_is_shell "$owner"; then
                     while IFS= read -r -d "$record_delimiter" recovered; do
@@ -120,6 +125,7 @@ guard_destructive_command_segments() {
                 # segment now, or the next command merges into it and the
                 # one-segment-per-command contract breaks.
                 if [[ -n $segment ]]; then
+                    [[ $mode == heredoc-payloads ]] || \
                     printf "$record_format" "${segment%$'\n'}"
                     segment=''
                     word_start=1
@@ -271,7 +277,7 @@ guard_destructive_command_segments() {
                     ((i++))
                     ;;
                 ';'|'|'|'&')
-                    printf "$record_format" "$segment"
+                    [[ $mode == heredoc-payloads ]] || printf "$record_format" "$segment"
                     segment=''
                     word_start=1
                     guard_mark_reachable_heredocs heredoc_effectives descriptor_heredocs \
@@ -415,7 +421,7 @@ guard_destructive_command_segments() {
             body=''
         fi
         if [[ -z $heredoc && -z $quote ]] && ((substitution_depth == 0)); then
-            printf "$record_format" "$segment"
+            [[ $mode == heredoc-payloads ]] || printf "$record_format" "$segment"
             segment=''
             word_start=1
             scope_command_starts[0]=${#heredoc_delimiters[@]}
@@ -425,6 +431,9 @@ guard_destructive_command_segments() {
             segment+=$'\n'
         fi
     done <<< "$input"
+    if [[ $mode == heredoc-payloads && -n $heredoc ]] && ((heredoc_effective)); then
+        printf '%s\0%s\0' "$owner" "$body"
+    fi
     # A final continuation can leave a complete command pending at EOF.
     # Keep unfinished quotes/heredocs and the legacy modes' output unchanged.
     if [[ $mode == helper && -n $segment && -z $quote && -z $heredoc ]] &&

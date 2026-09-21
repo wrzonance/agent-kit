@@ -199,11 +199,11 @@ failures on unchanged paths outside this diff as `baseline-red`. Publish them wi
 `$agentkit/parallel-issues/scripts/compose-pr-body.sh --baseline-file`, marking skipped checks
 SKIPPED. Continue commit, push, review and receipt; ready-flip and merge remain blocked.
 Do not reformat unrelated paths. Code regressions are `change-caused-red`: fix them.
-Stale contracts/corrupt kit ledgers are `kit-state-red`: preserve evidence,
-confirm the recovery helper exists and its interface, then repair and continue once.
-Never invent helpers, erase review history, or bypass trust/consent gates. Failed/unavailable
-repair becomes `BLOCKED` with evidence and next action; human/dependency blockers stay distinct.
-Repair is not green proof.
+`kit-state-red`: keep evidence. Phase A stale `$stale_contract_path`:
+`"$agentkit/.shared/scripts/agent-preflight.sh" --worktree "$repository_root" --write "$stale_contract_path"`; corrupt:
+`"$agentkit/.shared/scripts/session-ledger.sh" quarantine --ledger "$LEDGER"`.
+Retry the failed Phase A check once; else `BLOCKED`.
+Never erase review history or bypass trust/consent gates.
 
 After a fix push, retain the receipt and invoke
 `authorize-queue.sh --self-authored-proof PR:FILE` with the same run ID/write set.

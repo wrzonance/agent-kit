@@ -68,6 +68,9 @@ fi
 guard_resolve_roots "$cwd" "$command_line"
 guard_resolve_scope_roots "$cwd"
 protect_root=$(guard_state_root)
+if ledger_reason=$(guard_session_ledger_python_write_reason "$command_line"); then
+    deny "$ledger_reason"
+fi
 # Both channels: the paths an edit tool declares, and the paths a shell command
 # is about to write. The second exists because a redirect or `sed -i` arrives as
 # a Bash call, so the edit-tool guard cannot see it -- the gap that let a CI
@@ -100,6 +103,10 @@ for target in "${write_targets[@]}"; do
     [[ -n $target_root ]] || target_root=$protect_root
     policy_root=$protect_root
     [[ $target_classification == workspace && -n $policy_root ]] || policy_root=$target_root
+    if ledger_reason=$(guard_session_ledger_write_reason \
+        "$target" "$cwd" "$command_line" "${target_root:-$protect_root}"); then
+        deny "$ledger_reason"
+    fi
     matched=$(guard_protected_match "$target" "${policy_root:-$protect_root}") || continue
     if guard_should_deny "$protect_root" "$session" "protected-path"; then
         reason="Refused once -- $target is under $matched (classification: $target_classification;
