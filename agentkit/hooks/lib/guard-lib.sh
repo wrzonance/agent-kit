@@ -988,16 +988,117 @@ guard_session_ledger_write_reason() {
     guard_session_ledger_refusal "$target"
 }
 
-# Heredoc bodies are normally data and therefore absent from extracted shell
-# write targets. Recognize the incident's narrow executable shape: Python opens
-# the exact ledger in a mutating mode. Reads and backup filenames stay allowed.
+# Parse a selected Python payload without executing it. Only a direct
+# Path(<ledger>).open(mutating), write_text, or write_bytes call counts; the
+# same spelling inside a string or comment is documentation.
+guard_python_payload_writes_session_ledger() {
+    /usr/bin/python3 -I -c '
+import ast
+import sys
+
+source = sys.stdin.read()
+try:
+    tree = ast.parse(source)
+except SyntaxError:
+    raise SystemExit(1)
+
+def ledger_path(call):
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        return False
+    if call.func.id != "Path" or not call.args:
+        return False
+    value = call.args[0]
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return False
+    path = value.value.replace("\\\\", "/")
+    return path == ".agent/session-ledger.ndjson" or path.endswith("/.agent/session-ledger.ndjson")
+
+def mutating_open(call):
+    mode = "r"
+    if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        mode = call.args[0].value
+    for keyword in call.keywords:
+        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            mode = keyword.value.value
+    return any(flag in mode for flag in "awx+")
+
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        continue
+    if not ledger_path(node.func.value):
+        continue
+    if node.func.attr in {"write_text", "write_bytes"}:
+        raise SystemExit(0)
+    if node.func.attr == "open" and mutating_open(node):
+        raise SystemExit(0)
+raise SystemExit(1)
+' <<< "$1" >/dev/null 2>&1
+}
+
+guard_python_command_index() {
+    local -n words_ref=$1
+    local index command
+    index=$(guard_skip_command_prefix "$1" 0)
+    command=${words_ref[index]-}
+    command=${command##*/}
+    [[ $command =~ ^python([0-9]+([.][0-9]+)*)?$ ]] || return 1
+    printf '%s' "$index"
+}
+
+guard_python_execution_selector() {
+    local -n selector_words=$1
+    local i=$(( $2 + 1 )) word
+    GUARD_PYTHON_SELECTOR=stdin
+    GUARD_PYTHON_PAYLOAD=''
+    while ((i < ${#selector_words[@]})); do
+        word=${selector_words[i]}
+        case $word in
+            -c)
+                GUARD_PYTHON_SELECTOR=c; GUARD_PYTHON_PAYLOAD=${selector_words[i + 1]-}; return 0 ;;
+            -m) GUARD_PYTHON_SELECTOR=module; return 0 ;;
+            -) GUARD_PYTHON_SELECTOR=stdin; return 0 ;;
+            --)
+                ((i + 1 >= ${#selector_words[@]})) || GUARD_PYTHON_SELECTOR=script
+                return 0 ;;
+            -W|-X) ((i += 2)); continue ;;
+            -W?*|-X?*|-*|[0-9]*'<<'*|'<<'*) ((i++)); continue ;;
+            *) GUARD_PYTHON_SELECTOR=script; return 0 ;;
+        esac
+    done
+}
+
+# Inspect only payloads owned by an executable Python command. Existing shell
+# segmentation removes inert heredoc bodies, while tokenization keeps a -c
+# program together as one argument. Heredoc bodies are paired with their
+# actual owner and delimiter before the AST check.
 guard_session_ledger_python_write_reason() {
-    local command_line=$1 python_re target_write_re
+    local command_line=$1 segment index payload owner
+    local -a words=()
     [[ -n $command_line ]] || return 1
-    python_re='(^|[[:space:];|&])python([0-9.]+)?([[:space:]]|$)'
-    target_write_re="Path\\([[:space:]]*['\"][^'\"]*\\.agent/session-ledger\\.ndjson['\"][[:space:]]*\\)[[:space:]]*\\.[[:space:]]*(open\\([[:space:]]*['\"][^'\"]*([awx]|\\+)[^'\"]*['\"]|write_(text|bytes)\\()"
-    [[ $command_line =~ $python_re && $command_line =~ $target_write_re ]] || return 1
-    guard_session_ledger_refusal '.agent/session-ledger.ndjson'
+    [[ $command_line == *session-ledger.ndjson* && $command_line == *python* ]] || return 1
+
+    while IFS= read -r -d '' segment; do
+        mapfile -d '' -t words < <(guard_tokenize_words "$segment" nul)
+        index=$(guard_python_command_index words) || continue
+        guard_python_execution_selector words "$index"
+        [[ $GUARD_PYTHON_SELECTOR == c ]] || continue
+        if guard_python_payload_writes_session_ledger "$GUARD_PYTHON_PAYLOAD"; then
+            guard_session_ledger_refusal '.agent/session-ledger.ndjson'
+            return 0
+        fi
+    done < <(guard_destructive_command_segments "$command_line" drop-nul)
+
+    while IFS= read -r -d '' owner && IFS= read -r -d '' payload; do
+        mapfile -d '' -t words < <(guard_tokenize_words "$owner" nul)
+        index=$(guard_python_command_index words) || continue
+        guard_python_execution_selector words "$index"
+        [[ $GUARD_PYTHON_SELECTOR == stdin ]] || continue
+        if guard_python_payload_writes_session_ledger "$payload"; then
+            guard_session_ledger_refusal '.agent/session-ledger.ndjson'
+            return 0
+        fi
+    done < <(guard_destructive_command_segments "$command_line" heredoc-payloads)
+    return 1
 }
 
 # Persist one JSONL record for each content-bearing tool call that exposes a
@@ -1837,7 +1938,8 @@ guard_gh_command_segments() {
     guard_destructive_command_segments "$1" drop
 }
 
-# Tokenize quoted/escaped words, one per line (issue #335).
+# Tokenize quoted/escaped words, one per line (issue #335), or as NUL records
+# when mode=nul so embedded newlines remain inside one quoted argument.
 guard_tokenize_words() {
     local segment=$1 word='' quote='' escaped=0 char i length
     # Opt-in operators retain their identity through quote removal.
@@ -1894,7 +1996,11 @@ guard_tokenize_words() {
             "'" | '"') quote=$char; present=1; quoted=1 ;;
             [[:space:]])
                 if [[ -n $word ]] || { [[ $typed == writes ]] && ((present)); }; then
-                    printf '%s%s\n' "$prefix" "$word"
+                    if [[ $typed == nul ]]; then
+                        printf '%s\0' "$word"
+                    else
+                        printf '%s%s\n' "$prefix" "$word"
+                    fi
                     word=''
                 fi
                 present=0; quoted=0
@@ -1903,7 +2009,11 @@ guard_tokenize_words() {
         esac
     done
     if [[ -n $word ]] || { [[ $typed == writes ]] && ((present)); }; then
-        printf '%s%s\n' "$prefix" "$word"
+        if [[ $typed == nul ]]; then
+            printf '%s\0' "$word"
+        else
+            printf '%s%s\n' "$prefix" "$word"
+        fi
     fi
 }
 
