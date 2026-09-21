@@ -278,6 +278,42 @@ assert_rc 0 'the repaired ledger accepts a grant for the formerly blocked run' -
     --skills-path "$skills_path" --procedure-set parallel-issues \
     --decision grant --scope scope-a --quote 'approved A'
 
+# Quarantine and replay share the same physical-row contract: exactly one JSON
+# object per line. A pre-upgrade append could concatenate two otherwise-valid
+# records, which replay cannot read and recovery must therefore quarantine.
+multi_parent="$state/multi-object"
+mkdir -p -- "$multi_parent"
+chmod 700 -- "$multi_parent"
+multi_ledger="$multi_parent/session-ledger.ndjson"
+multi_a=$(jq -cn --arg skills "$skills_real" \
+    '{timestamp:"2026-09-20T00:00:00Z",run_id:"multi-a",skills_path:$skills,
+      procedure_set:"parallel-issues",decision:"grant-a",scope:"scope-a",quote:"approved A"}')
+multi_b=$(jq -cn --arg skills "$skills_real" \
+    '{timestamp:"2026-09-20T00:00:01Z",run_id:"multi-b",skills_path:$skills,
+      procedure_set:"parallel-issues",decision:"grant-b",scope:"scope-b",quote:"approved B"}')
+multi_c=$(jq -cn --arg skills "$skills_real" \
+    '{timestamp:"2026-09-20T00:00:02Z",run_id:"multi-c",skills_path:$skills,
+      procedure_set:"parallel-issues",decision:"grant-c",scope:"scope-c",quote:"approved C"}')
+printf '%s%s\n%s\n' "$multi_a" "$multi_b" "$multi_c" > "$multi_ledger"
+chmod 600 -- "$multi_ledger"
+assert_eq '0' "$("$script" read --ledger "$multi_ledger" --run-id multi-a | jq -s length)" \
+    'replay rejects a physical row containing multiple JSON objects'
+multi_out=$("$script" quarantine --ledger "$multi_ledger")
+assert_contains "$multi_out" 'quarantined=1 remaining=1' \
+    'quarantine rejects the same unreadable multi-object physical row'
+assert_eq '1' "$(jq -s length "$multi_ledger")" \
+    'quarantine retains only the independently readable row'
+assert_rc 0 'the retained row remains readable after multi-object quarantine' -- \
+    "$script" covers --ledger "$multi_ledger" --run-id multi-c \
+    --decision grant-c --scope scope-c
+multi_quarantine="$multi_parent/ledger-quarantine.ndjson"
+assert_eq '600' "$(stat -c '%a' -- "$multi_quarantine")" \
+    'the multi-object audit sidecar remains owner-private'
+assert_rc 0 'the multi-object row is preserved byte-for-byte in the audit sidecar' -- \
+    jq -e --arg raw "$multi_a$multi_b" \
+    '.line == 1 and .reason == "invalid ledger record" and .raw == $raw' \
+    "$multi_quarantine"
+
 # Ledger and quarantine symlinks cannot redirect helper writes.
 target="$tmp/target.ndjson"
 printf '%s\n' 'do not overwrite' > "$target"
