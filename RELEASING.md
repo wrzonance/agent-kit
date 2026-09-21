@@ -6,19 +6,29 @@
 `plugin/agentkit/.claude-plugin/plugin.json`, and `plugin/agentkit/.codex-plugin/plugin.json`
 must all declare the same version; `opencode/package.json` and `plugin/opencode/package.json`
 are checked too, whenever an `opencode/` tree is present. A published
-GitHub Release's tag must match it too. `tests/check-release-version.sh` gates both; CI runs it
-on every push, tag, and release (`.github/workflows/ci.yml`).
+GitHub Release's tag must match it too. When `v<VERSION>` already exists, the gate rebuilds that
+tag with its recorded `tests/build-plugin.sh` and compares a canonical SHA-256 hash of the built
+tree with the current `plugin/` tree. Paths, entry types, executable bits, symlink targets, and
+file bytes all participate in the hash. One published version therefore cannot name two shipped
+trees. `tests/check-release-version.sh` gates these invariants; CI runs it on every push, tag, and
+release (`.github/workflows/ci.yml`).
+
+If the matching tag is absent locally, the gate asks the existing `origin` for that exact tag and
+fetches it when present. A transport or authentication failure stops the check instead of treating
+missing local history as proof that the version is new. A repository with no `origin`, or an
+`origin` that authoritatively reports no matching tag, may establish a new version.
 
 ```bash
 tests/build-plugin.sh
-tests/check-release-version.sh                    # local: agreement only
+tests/check-release-version.sh                    # agreement + existing-version content gate
 tests/check-release-version.sh --tag "v$VERSION"   # what CI runs on a tag/release push
 ```
 
 Bump the version in all four plugin manifests together, and in `opencode/package.json` and
 `plugin/opencode/package.json` too, before tagging -- every manifest the gate above checks.
-Nothing here requires the version to *increase* for a given change -- see below for what that
-implies.
+Any change to shipped bytes requires a new version. A checkout whose version has no matching local
+or authoritative remote tag passes this part of the gate because it is eligible to establish a new
+version-to-content mapping.
 
 Use the fixed-scope bump helper from the repository root so linked worktrees cannot be touched:
 
@@ -89,6 +99,7 @@ This is deliberately **read-only**: nothing in a session fetches, updates, or mu
 installed plugin tree on its own. The stamp only makes an existing mismatch visible; a stale
 install is still fixed the normal way, by reinstalling.
 
-**Chosen seam:** this is seam 1 from issue #453 (a content stamp that makes staleness visible).
-Seam 2 (a release gate that refuses to let shipped content change land on an already-published
-version string) is a separate, independent hardening step and is not part of this change.
+The content stamp is seam 1 from issue #453: it makes staleness visible. The release content gate
+above is seam 2: it prevents shipped content from changing under an already-published version
+string. The two checks are independent and use hashes at different boundaries: installed skills
+for activation, and the complete built plugin for release identity.

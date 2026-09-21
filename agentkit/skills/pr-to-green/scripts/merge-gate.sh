@@ -486,9 +486,11 @@ scan_boundary() {
     scan_boundary_state=unreadable
     "$GH_BIN" api --paginate "repos/$repo/issues/$pr/timeline" \
         >"$work_dir/cs-timeline.json" 2>"$work_dir/api.err" || return 0
-    jq -e 'type == "array"' "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
-    event_time=$(jq -r --arg base "$live_base" '
-      [ .[]?
+    jq -se 'length > 0 and all(.[]; type == "array")' \
+        "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
+    event_time=$(jq -sr --arg base "$live_base" '
+      add
+      | [ .[]?
         | select((.event // "") == "base_ref_changed" or
                  (.event // "") == "automatic_base_change_succeeded")
         | ([.base_ref, .baseRefName, .base_ref_name]

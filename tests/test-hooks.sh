@@ -1184,6 +1184,143 @@ out=$(pre_input "$repo" 'printf x > .github/workflows/x.yml' | "$hooks/pre-tool-
 assert_eq 'deny' "$(decision "$out")" \
     'a real redirect into .github/workflows/ remains denied (issue #397)'
 
+# The session ledger records human grants, so it has one writer: the shipped
+# helper. Direct shell and edit-tool writes are hard refusals, including on a
+# repeated attempt, and the remedy names the supported interface.
+ledger_guard_sid=$(fresh_sid)
+for unrelated_python_guard in \
+    'git status' \
+    "python3 -c 'print(1)'" \
+    'cat .agent/session-ledger.ndjson'; do
+    parser_marker="$tmp/python-ledger-parser-called"
+    rm -f -- "$parser_marker"
+    (
+        source "$hooks/lib/guard-lib.sh" 2>/dev/null
+        # shellcheck disable=SC2329 # invoked indirectly by the function under test.
+        guard_gh_command_segments() { : > "$parser_marker"; }
+        # shellcheck disable=SC2329 # invoked indirectly by the function under test.
+        guard_destructive_command_segments() { : > "$parser_marker"; }
+        # shellcheck disable=SC2329 # invoked indirectly by the function under test.
+        guard_python_payload_writes_session_ledger() { : > "$parser_marker"; }
+        guard_session_ledger_python_write_reason "$unrelated_python_guard" >/dev/null
+    )
+    assert_eq no "$([[ -e $parser_marker ]] && printf yes || printf no)" \
+        "an unrelated command skips shell and Python parsing: $unrelated_python_guard"
+done
+for attempt in 1 2; do
+    out=$(pre_input "$repo" 'printf x >> .agent/session-ledger.ndjson' "$ledger_guard_sid" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'deny' "$(decision "$out")" \
+        "a direct ledger redirect is refused on attempt $attempt"
+    assert_contains "$out" 'session-ledger.sh' \
+        "the direct-write refusal names the ledger helper on attempt $attempt"
+done
+python_ledger_write=$(printf '%s\n' "python3 - <<'PY'" \
+    'from pathlib import Path' \
+    '# session-ledger.sh is unavailable; do not let this comment bypass the guard' \
+    "with Path('.agent/session-ledger.ndjson').open('a') as ledger:" \
+    "    ledger.write('{}\\n')" 'PY')
+out=$(pre_input "$repo" "$python_ledger_write" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'the Python heredoc write from the reported incident is refused'
+assert_contains "$out" 'session-ledger.sh' \
+    'the Python-write refusal names the supported helper'
+out=$(pre_input "$repo" \
+    "python3 -c 'from pathlib import Path; Path(\".agent/session-ledger.ndjson\").open(\"a\")'" \
+    "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'an actual Python -c ledger write remains refused'
+out=$(pre_input "$repo" \
+    "python3 -c 'from pathlib import Path; print(Path(\".agent/session-ledger.ndjson\").read_text())'" \
+    "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a Python read of the ledger remains available for diagnosis'
+out=$(pre_input "$repo" \
+    "python3 -c 'from pathlib import Path; data=Path(\".agent/session-ledger.ndjson\").read_text(); Path(\"backup.json\").write_text(data)'" \
+    "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'reading the ledger does not taint an unrelated Python write target'
+for documented_python in \
+    "git commit -m \"guard: refuse python3 -c Path('.agent/session-ledger.ndjson').open('a') writes\"" \
+    "gh pr create --body \"Document python3 -c Path('.agent/session-ledger.ndjson').open('a') refusal\""; do
+    out=$(pre_input "$repo" "$documented_python" "$(fresh_sid)" |
+        "$hooks/pre-tool-use.sh" 2>/dev/null)
+    assert_eq 'allow' "$(decision "$out")" \
+        "quoted Python ledger documentation is data, not an executed write: $documented_python"
+done
+python_documentation=$(printf '%s\n' "cat > docs/ledger-incident.md <<'EOF'" \
+    "python3 - <<'PY'" \
+    'from pathlib import Path' \
+    "Path('.agent/session-ledger.ndjson').open('a')" \
+    'PY' 'EOF')
+out=$(pre_input "$repo" "$python_documentation" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a Python ledger snippet in a documentation heredoc is not executed'
+python_writes_documentation=$(printf '%s\n' "python3 - <<'PY'" \
+    'from pathlib import Path' \
+    "Path('tests/generated-regression.py').write_text(\"Path('.agent/session-ledger.ndjson').open('a')\")" \
+    'PY')
+out=$(pre_input "$repo" "$python_writes_documentation" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an actual Python payload may write documentation containing the guarded call'
+python_c_ignores_stdin=$(printf '%s\n' "python3 -c 'print(1)' <<'DOC'" \
+    "Path('.agent/session-ledger.ndjson').write_text('documentation')" \
+    'DOC')
+out=$(pre_input "$repo" "$python_c_ignores_stdin" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'Python -c ignores a documentation heredoc when selecting its program'
+python_script_stdin=$(printf '%s\n' "python3 script.py <<'DOC'" \
+    "Path('.agent/session-ledger.ndjson').write_text('documentation')" \
+    'DOC')
+out=$(pre_input "$repo" "$python_script_stdin" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'stdin passed to a Python script is data rather than its program'
+out=$(pre_input "$repo" \
+    "python3 script.py -c \"Path('.agent/session-ledger.ndjson').write_text('argument')\"" \
+    "$(fresh_sid)" | "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'a -c token after a Python script selector is an ordinary script argument'
+overridden_python_stdin=$(printf '%s\n' "python3 - <<'BAD' <<'GOOD'" \
+    "Path('.agent/session-ledger.ndjson').write_text('overridden')" 'BAD' \
+    'print(1)' 'GOOD')
+out=$(pre_input "$repo" "$overridden_python_stdin" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an overridden Python stdin heredoc is not treated as executable'
+queued_python_heredoc=$(printf '%s\n' "cat <<'DOC'; python3 - <<'PY'" \
+    'documentation' 'DOC' \
+    'from pathlib import Path' \
+    "Path('.agent/session-ledger.ndjson').write_text('x')" \
+    'PY')
+out=$(pre_input "$repo" "$queued_python_heredoc" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a queued Python heredoc is paired with its own executable payload'
+multiline_python_c=$(printf '%s\n' 'python3 -c "from pathlib import Path' \
+    "Path('.agent/session-ledger.ndjson').write_text('x')\"")
+out=$(pre_input "$repo" "$multiline_python_c" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a multiline quoted Python -c payload remains one executable argument'
+compound_python_documentation=$(printf '%s\n' \
+    "python3 -c 'print(1)'" \
+    "cat > docs/ledger-incident.md <<'EOF'" \
+    "Path('.agent/session-ledger.ndjson').write_text('example')" \
+    'EOF')
+out=$(pre_input "$repo" "$compound_python_documentation" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'an unrelated real Python command does not activate a documentation payload'
+out=$(pre_input "$repo" 'printf x > .agent/session-ledger.ndjson.backup' "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'allow' "$(decision "$out")" \
+    'the hard guard matches the canonical ledger filename exactly'
+
 # --- issue #397 follow-up: a `$(...)`/`...` substitution INSIDE an outer
 # double-quoted argument still executes, and must not hide behind the
 # data-string exemption above. guard_tokenize_words correctly reads the
@@ -1748,6 +1885,13 @@ edit_input() {
           session_id:$sid,tool_name:"Edit",tool_use_id:"t",transcript_path:null,
           tool_input:{file_path:$path}}'
 }
+
+out=$(edit_input "$repo" "$repo/.agent/session-ledger.ndjson" "$(fresh_sid)" |
+    "$hooks/pre-tool-use.sh" 2>/dev/null)
+assert_eq 'deny' "$(decision "$out")" \
+    'a file-edit tool cannot write the session ledger directly'
+assert_contains "$out" 'session-ledger.sh' \
+    'the edit-tool refusal names the ledger helper'
 
 # --- target classification follows the resolved repository -----------------
 # A designated temporary fixture is a real git repository, but repository
@@ -3448,7 +3592,8 @@ assert_eq yes "$( [[ ! -e $unresolved_370/.agent/logs/hook-errors.jsonl ]] && pr
     'guard_log_error with no resolved root writes nothing rather than falling back to $PWD'
 
 # 2026-09-08 size wave two: hold the hook sources at their measured line counts.
-for hook_ceiling in 'lib/guard-lib.sh:2298' 'pre-tool-use.sh:198' 'post-tool-use.sh:250' 'session-start.sh:350'; do
+# Issue #844 adds hard ledger-write refusals at dispatch.
+for hook_ceiling in 'lib/guard-lib.sh:2298' 'pre-tool-use.sh:204' 'post-tool-use.sh:250' 'session-start.sh:350'; do
     hook_file=${hook_ceiling%%:*}; hook_cap=${hook_ceiling##*:}
     assert_eq yes "$([[ $(wc -l < "$hooks/$hook_file") -le $hook_cap ]] && printf yes || printf no)" \
         "$hook_file stays at or under $hook_cap lines (measured $(wc -l < "$hooks/$hook_file"))"
