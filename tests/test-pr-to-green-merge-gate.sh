@@ -238,6 +238,31 @@ good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
 
+# Issue #834: stale is the expected state of every successor after a strict
+# serial merge. The refusal must carry the complete sanctioned recovery loop
+# at the failure boundary so operators do not reach for the forbidden admin
+# escape hatch or spend the one allowed adversarial review a second time.
+good_digest
+sed -i 's/behind=0 stale=no/behind=1 stale=yes/' "$tmp/digest.txt"
+rc=0
+out=$(run_gate) || rc=$?
+assert_eq 1 "$rc" 'a stale base remains a hard merge block'
+assert_contains "$out" 'blocked reason=pull request base is stale -- next:' \
+    'the stale-base refusal renders its corrective action alongside the reason'
+assert_contains "$out" 'chain-advance.sh --retarget' \
+    'the stale-base corrective action names the sanctioned retarget helper'
+assert_contains "$out" 'review-ledger.sh cover --reason "merge-down:<exact-new-base-sha>"' \
+    'the corrective action extends review lineage against the exact advanced base'
+assert_contains "$out" 'fresh CI' \
+    'the corrective action requires revalidation on the advanced head'
+assert_contains "$out" 're-run merge-gate.sh' \
+    'the corrective action closes the loop by naming gate revalidation'
+assert_contains "$out" '--admin does not bypass this stale-base block' \
+    'the refusal prevents the admin exception from being mistaken for a remedy'
+assert_contains "$out" 'gate=BLOCKED pr=9' \
+    'adding a corrective action does not weaken the stale-base decision'
+good_digest
+
 jq -n --arg sha "$HEAD_SHA" '{version:1,repository:"owner/repo",source:"operator-confirmed",
   queue:[{pr:9,headSha:$sha,base:"main",humanReviewers:"none",reviewProvider:"disabled"}]}' >"$tmp/capability.json"
 rc=0

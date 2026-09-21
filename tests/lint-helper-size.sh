@@ -44,7 +44,8 @@ declare -A KNOWN_OVERSIZE=(
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1189:17748:800"
     # #852: reject same-head analyses created before the latest retarget.
-    [skills/pr-to-green/scripts/merge-gate.sh]="840:10292:800"
+    # #834: carry a truthful corrective action for every blocked reason.
+    [skills/pr-to-green/scripts/merge-gate.sh]="897:11749:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -172,7 +173,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #850/#843: bounded landing replay and compatible receipt lineage.
 # #844: scoped ledger validation, quarantine, and direct-write guards.
 # #845 prerequisite join: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=469886
+# #834: blocked merge-gate reasons carry their corrective actions in-band.
+readonly MAX_TREE_TOKENS=471342
 
 violations=0
 checked=0

@@ -41,6 +41,7 @@ cs_code_security_disabled_probe=no
 scan_boundary_epoch=''
 scan_boundary_state=unreadable
 declare -a reasons=()
+declare -a corrective_actions=()
 
 die() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -165,7 +166,10 @@ chmod 700 "$work_dir"
 cleanup() { rm -rf -- "$work_dir"; }
 trap cleanup EXIT HUP INT TERM
 
-block() { reasons+=("$1"); }
+block() {
+    reasons+=("$1")
+    corrective_actions+=("${2-}")
+}
 
 # --- Code Quality scan-state: an optional live helper file reconciled       -
 # against (or standing in for) the manually-supplied flag. code-quality-
@@ -193,13 +197,15 @@ if [[ -n $cq_state_file ]]; then
             [[ $cq_line =~ ^scan-state=complete\ head=([0-9a-f]{40})\ findings-on-head=[0-9]+$ ]] ||
                 die 'code-quality state file is malformed (complete requires a full 40-character head= and findings-on-head=)'
             [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
-                block 'code-quality state file predates the current head (stale evidence)'
+                block 'code-quality state file predates the current head (stale evidence)' \
+                    'run code-quality-state.sh --head for the current head, then re-run merge-gate.sh'
             ;;
         pending)
             [[ $cq_line =~ ^scan-state=pending\ head=([0-9a-f]{40})$ ]] ||
                 die 'code-quality state file is malformed (pending requires a full 40-character head=)'
             [[ ${BASH_REMATCH[1]} == "$head_sha" ]] ||
-                block 'code-quality state file predates the current head (stale evidence)'
+                block 'code-quality state file predates the current head (stale evidence)' \
+                    'run code-quality-state.sh --head for the current head, then re-run merge-gate.sh'
             ;;
         unknown)
             cq_file_reason=$(sed -nE 's/^.*reason=(.*)$/\1/p' <<<"$cq_line")
@@ -235,14 +241,20 @@ live_sha=$(jq -r '.head.sha' "$work_dir/pr.json")
 live_base=$(jq -r '.base.ref' "$work_dir/pr.json")
 live_mergeable=$(jq -r '.mergeable' "$work_dir/pr.json")
 
-[[ $live_state == open ]] || block 'pull request is not open'
-[[ $live_draft == false ]] || block 'pull request is still a draft'
-[[ $live_sha == "$head_sha" ]] || block 'pull request head changed since evidence was captured'
-[[ $live_base == "$base" ]] || block 'pull request base changed since evidence was captured'
-[[ $live_mergeable == true ]] || block "pull request is not mergeable (mergeable=$live_mergeable)"
+[[ $live_state == open ]] || block 'pull request is not open' \
+    'reopen the pull request or remove it from the merge queue'
+[[ $live_draft == false ]] || block 'pull request is still a draft' \
+    'have the operator mark the pull request ready for review, then re-run merge-gate.sh'
+[[ $live_sha == "$head_sha" ]] || block 'pull request head changed since evidence was captured' \
+    'recapture review, CI, and digest evidence for the current head, then re-run merge-gate.sh'
+[[ $live_base == "$base" ]] || block 'pull request base changed since evidence was captured' \
+    'recapture evidence for the current base and head, then re-run merge-gate.sh'
+[[ $live_mergeable == true ]] || block "pull request is not mergeable (mergeable=$live_mergeable)" \
+    'resolve merge conflicts or wait for GitHub mergeability, then refresh evidence and re-run merge-gate.sh'
 
 if [[ $(jq -r '(.requested_reviewers | length) + (.requested_teams | length)' "$work_dir/pr.json") != 0 ]]; then
-    block 'a requested reviewer is still pending'
+    block 'a requested reviewer is still pending' \
+        'obtain the requested review or clear the request, then refresh review evidence'
 fi
 
 # --- Human review decisions: latest actionable review per human reviewer ---
@@ -264,35 +276,43 @@ changes_requested=$(jq -r '
         last // {state:""}) |
     map(select(.state == "CHANGES_REQUESTED")) | length)
 ' "$work_dir/reviews.json")
-[[ $changes_requested == 0 ]] || block 'a human review is CHANGES_REQUESTED and undecided'
+[[ $changes_requested == 0 ]] || block 'a human review is CHANGES_REQUESTED and undecided' \
+    'resolve the requested changes and obtain the reviewer decision before re-running merge-gate.sh'
 
 # --- pr-state digest: CI, base freshness, provider threads, findings, alerts ---
 if grep -qE '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{7,40}$' "$digest_file"; then
     digest_pr=$(sed -nE 's/^pr=([0-9]+) .*$/\1/p' "$digest_file" | head -n 1)
     digest_mergeable=$(sed -nE 's/^pr=[0-9]+ draft=(true|false) mergeable=([A-Z_]+) .*$/\2/p' "$digest_file" | head -n 1)
     digest_sha=$(sed -nE 's/^.*sha=([0-9a-f]{7,40})$/\1/p' "$digest_file" | head -n 1)
-    [[ $digest_pr == "$pr" ]] || block 'pr-state digest is for a different pull request'
-    [[ $digest_mergeable == MERGEABLE ]] || block "pr-state digest reports mergeable=$digest_mergeable"
+    [[ $digest_pr == "$pr" ]] || block 'pr-state digest is for a different pull request' \
+        'run gh-pr-state.sh --digest-out for this pull request, then re-run merge-gate.sh'
+    [[ $digest_mergeable == MERGEABLE ]] || block "pr-state digest reports mergeable=$digest_mergeable" \
+        'resolve mergeability, regenerate the digest with gh-pr-state.sh, then re-run merge-gate.sh'
     # The binding is exactly as strong as whatever length the digest provides
     # -- a 7-char digest still binds a 7-char prefix; once gh-pr-state.sh
     # emits a full 40-char SHA this comparison is full-strength automatically,
     # with no further change here.
     [[ ${head_sha:0:${#digest_sha}} == "$digest_sha" ]] ||
-        block 'pr-state digest predates the current head (stale evidence)'
+        block 'pr-state digest predates the current head (stale evidence)' \
+            'regenerate the digest with gh-pr-state.sh for the current head, then re-run merge-gate.sh'
 else
-    block 'pr-state digest is missing its pr= summary line'
+    block 'pr-state digest is missing its pr= summary line' \
+        'regenerate the digest with gh-pr-state.sh --digest-out, then re-run merge-gate.sh'
 fi
 
 if grep -qE '^base: ref=\S+ behind=[0-9]+ stale=(yes|no)$' "$digest_file"; then
     [[ $(sed -nE 's/^base: ref=\S+ behind=[0-9]+ stale=(yes|no)$/\1/p' "$digest_file" | head -n 1) == no ]] ||
-        block 'pull request base is stale'
+        block 'pull request base is stale' \
+            'merge down the advanced base; for a stacked successor run chain-advance.sh --retarget; run review-ledger.sh cover --reason "merge-down:<exact-new-base-sha>" --kind adversarial; obtain fresh CI for the new head; re-run merge-gate.sh; --admin does not bypass this stale-base block'
 else
-    block 'pr-state digest could not determine base freshness'
+    block 'pr-state digest could not determine base freshness' \
+        'regenerate the digest with gh-pr-state.sh so base freshness is readable, then re-run merge-gate.sh'
 fi
 
 if [[ $base =~ ^feat/issue-[1-9][0-9]*$ ]] &&
     grep -qE '^verification=(no-ci-on-stacked-base|partial-ci-on-stacked-base|unknown)$' "$digest_file"; then
-    block 'CI coverage comparison is missing checks or unavailable'
+    block 'CI coverage comparison is missing checks or unavailable' \
+        'merge the predecessor first; merge down the advanced base and run chain-advance.sh --retarget; obtain fresh CI for the new head; regenerate the digest; re-run merge-gate.sh'
 fi
 
 if grep -qE '^ci=[0-9]+/[0-9]+ [a-z]+ pending=[0-9]+ failing=[0-9]+$' "$digest_file"; then
@@ -300,36 +320,45 @@ if grep -qE '^ci=[0-9]+/[0-9]+ [a-z]+ pending=[0-9]+ failing=[0-9]+$' "$digest_f
     ci_word=$(sed -nE 's/^ci=[0-9]+\/[0-9]+ ([a-z]+) .*$/\1/p' <<<"$ci_line")
     ci_pending=$(sed -nE 's/^.*pending=([0-9]+) .*$/\1/p' <<<"$ci_line")
     ci_failing=$(sed -nE 's/^.*failing=([0-9]+)$/\1/p' <<<"$ci_line")
-    [[ $ci_word == green && $ci_pending == 0 && $ci_failing == 0 ]] || block 'CI is not fully green'
+    [[ $ci_word == green && $ci_pending == 0 && $ci_failing == 0 ]] || block 'CI is not fully green' \
+        'wait for pending checks or repair failing checks, regenerate the digest, then re-run merge-gate.sh'
 else
-    block 'pr-state digest could not determine CI state'
+    block 'pr-state digest could not determine CI state' \
+        'regenerate the digest with gh-pr-state.sh so CI state is readable, then re-run merge-gate.sh'
 fi
 
 # Every declared execution must actually pass, independently of aggregate CI.
 # Read all records: a duplicate success must never hide an unmet execution.
 while IFS= read -r acceptance_line; do
     [[ $acceptance_line == repo-verify=*' acceptance='*:* && ${acceptance_line##*:} == pass ]] ||
-        block "required acceptance execution is not pass: $acceptance_line"
+        block "required acceptance execution is not pass: $acceptance_line" \
+            'complete the named acceptance execution successfully, regenerate the digest, then re-run merge-gate.sh'
 done < <(grep -E '^repo-verify=.* acceptance=' "$digest_file" || true)
 if grep -qE '^ready-eligible=no( |$)' "$digest_file"; then
-    block 'pr-state digest reports ready-eligible=no'
+    block 'pr-state digest reports ready-eligible=no' \
+        'complete the digest-reported readiness requirement, regenerate the digest, then re-run merge-gate.sh'
 fi
 
 if grep -qE '^threads: coderabbit=[0-9]+ unresolved  code-quality=[0-9]+ open  human=[0-9]+  generic=[0-9]+' "$digest_file"; then
     threads_line=$(grep -E '^threads: coderabbit=[0-9]+ unresolved  code-quality=[0-9]+ open  human=[0-9]+  generic=[0-9]+' "$digest_file" | head -n 1)
     cr_unresolved=$(sed -nE 's/^threads: coderabbit=([0-9]+) .*$/\1/p' <<<"$threads_line")
     cq_open=$(sed -nE 's/^.*code-quality=([0-9]+) open.*$/\1/p' <<<"$threads_line")
-    [[ $cr_unresolved == 0 ]] || block "$cr_unresolved unresolved CodeRabbit thread(s)"
-    [[ $cq_open == 0 ]] || block "$cq_open open github-code-quality finding(s)"
+    [[ $cr_unresolved == 0 ]] || block "$cr_unresolved unresolved CodeRabbit thread(s)" \
+        'resolve or explicitly adjudicate every CodeRabbit thread, regenerate the digest, then re-run merge-gate.sh'
+    [[ $cq_open == 0 ]] || block "$cq_open open github-code-quality finding(s)" \
+        'repair or explicitly adjudicate every code-quality finding, regenerate the digest, then re-run merge-gate.sh'
 else
-    block 'pr-state digest carries no readable thread evidence'
+    block 'pr-state digest carries no readable thread evidence' \
+        'regenerate the digest with gh-pr-state.sh so thread evidence is readable, then re-run merge-gate.sh'
 fi
 
 if grep -qE '^nitpicks: [0-9]+ unhandled$' "$digest_file"; then
     [[ $(sed -nE 's/^nitpicks: ([0-9]+) unhandled$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
-        block 'a CodeRabbit body nitpick is still unhandled'
+        block 'a CodeRabbit body nitpick is still unhandled' \
+            'resolve or explicitly adjudicate the body nitpick, regenerate the digest, then re-run merge-gate.sh'
 else
-    block 'pr-state digest carries no readable nitpick evidence'
+    block 'pr-state digest carries no readable nitpick evidence' \
+        'regenerate the digest with gh-pr-state.sh so nitpick evidence is readable, then re-run merge-gate.sh'
 fi
 
 # --- Code scanning completion: proven from the analyses endpoint, not from
@@ -723,24 +752,30 @@ case $cs_status in
     pending)
         printf 'code-scanning: SETTLING rounds=1/%s runs=%s\n' \
             "$scan_settling_rounds" "${scan_runs_names:-code-scanning}"
-        block 'code-scanning analysis has not completed for the current head'
+        block 'code-scanning analysis has not completed for the current head' \
+            'wait for the named code-scanning run to finish, refresh evidence, then re-run merge-gate.sh'
         ;;
     failed)
         printf 'code-scanning: FAILED runs=%s\n' "$scan_runs_failed"
-        block "scan-failed: $scan_runs_failed"
+        block "scan-failed: $scan_runs_failed" \
+            'repair and rerun the named code-scanning workflow, refresh evidence, then re-run merge-gate.sh'
         ;;
     stale-retarget)
         printf 'scan-stale: codeql analysis predates retarget boundary=%s\n' "$scan_boundary_epoch"
-        block 'code-scanning analysis predates the latest base retarget'
+        block 'code-scanning analysis predates the latest base retarget' \
+            'obtain a fresh code-scanning analysis after the retarget, refresh evidence, then re-run merge-gate.sh'
         ;;
     boundary-unreadable)
-        block 'code-scanning retarget boundary is unreadable'
+        block 'code-scanning retarget boundary is unreadable' \
+            'restore readable pull-request timeline evidence, refresh the digest, then re-run merge-gate.sh'
         ;;
     absent)
         printf 'scan-missing: codeql (human action: inspect the CodeQL workflow and dispatch it or update its path filter)\n'
-        block 'no code-scanning analysis is recorded for the current head'
+        block 'no code-scanning analysis is recorded for the current head' \
+            'inspect the CodeQL workflow and dispatch it or update its path filter, then refresh evidence'
         ;;
-    *) block 'code-scanning analysis status is unreadable for the current head' ;;
+    *) block 'code-scanning analysis status is unreadable for the current head' \
+        'restore readable code-scanning API evidence, refresh the digest, then re-run merge-gate.sh' ;;
 esac
 
 if [[ $cs_status == scheduled-only ]]; then
@@ -760,15 +795,20 @@ cs_completion_exempt=no
 
 if grep -qE '^alerts: code-scanning open=[0-9]+$' "$digest_file"; then
     [[ $(sed -nE 's/^alerts: code-scanning open=([0-9]+)$/\1/p' "$digest_file" | head -n 1) == 0 ]] ||
-        block 'an open code-scanning alert is attributable to this PR'
+        block 'an open code-scanning alert is attributable to this PR' \
+            'repair or explicitly dismiss the attributable alert, refresh evidence, then re-run merge-gate.sh'
 elif [[ $cs_completion_exempt != yes ]]; then
-    block 'code-scanning evidence is unreadable (n/a is never treated as zero findings)'
+    block 'code-scanning evidence is unreadable (n/a is never treated as zero findings)' \
+        'regenerate the digest with readable code-scanning alerts, then re-run merge-gate.sh'
 fi
 
 case $provider_result in
-    TRIGGERED) block 'CodeRabbit review is still in flight for the current head' ;;
-    BLOCKED) block 'CodeRabbit provider capability plan reported BLOCKED' ;;
-    STALE_HEAD) block 'CodeRabbit review is against a stale head, not evidence for the current head' ;;
+    TRIGGERED) block 'CodeRabbit review is still in flight for the current head' \
+        'wait for the in-flight review to land, refresh provider evidence, then re-run merge-gate.sh' ;;
+    BLOCKED) block 'CodeRabbit provider capability plan reported BLOCKED' \
+        'repair the provider capability plan or use an authorized alternative, then re-run merge-gate.sh' ;;
+    STALE_HEAD) block 'CodeRabbit review is against a stale head, not evidence for the current head' \
+        'run the authorized review path for the current head, refresh provider evidence, then re-run merge-gate.sh' ;;
 esac
 
 # --- Adversarial review completion: review-ledger.sh's own verdict word for
@@ -780,9 +820,12 @@ esac
 # "the ledger itself is corrupt".
 case $adversarial_status in
     covered-head|covered-diff|covered-lineage|not-required) ;;
-    stale) block 'adversarial review ledger is stale for the current head (reviewed a different tree)' ;;
-    absent) block 'no adversarial review is recorded in the ledger for the current head' ;;
-    blocked) block 'adversarial review ledger is present but unparseable (fails closed, never read as absent)' ;;
+    stale) block 'adversarial review ledger is stale for the current head (reviewed a different tree)' \
+        'run review-ledger.sh cover with the issue-comments artifact and --kind adversarial, using --reason "merge-down:<exact-new-base-sha>", "retarget:<old-base>", or "fix:<finding-id>" for the actual transition; then re-run merge-gate.sh' ;;
+    absent) block 'no adversarial review is recorded in the ledger for the current head' \
+        'run the one authorized adversarial review and record its receipt in the issue-comments artifact, then re-run merge-gate.sh' ;;
+    blocked) block 'adversarial review ledger is present but unparseable (fails closed, never read as absent)' \
+        'fetch the trusted issue-comments artifact, repair its review-ledger receipt, then re-run merge-gate.sh' ;;
 esac
 
 if [[ $adversarial_status == covered-* ]]; then
@@ -791,18 +834,25 @@ if [[ $adversarial_status == covered-* ]]; then
     [[ -z $diff_payload ]] || root_args+=(--diff-payload "$diff_payload")
     ledger_script=$SCRIPT_DIR/../../review-remote-pr/scripts/review-ledger.sh
     if [[ ! -f $adversarial_comments || -L $adversarial_comments || ! -O $adversarial_comments ]]; then
-        block 'adversarial remediation unknown: fetch trusted issue comments with --adversarial-comments'
+        block 'adversarial remediation unknown: fetch trusted issue comments with --adversarial-comments' \
+            'pass the owned trusted issue-comments artifact with --adversarial-comments, then re-run merge-gate.sh'
     elif ! remediation=$("$ledger_script" remediation --repo "$repo" --pr "$pr" \
         --comments "$adversarial_comments" --head "$head_sha" --kind adversarial ${root_args[@]+"${root_args[@]}"}); then
-        block 'adversarial remediation evidence unavailable: validate repair or adjudication evidence'
+        block 'adversarial remediation evidence unavailable: validate repair or adjudication evidence' \
+            'repair the finding-ledger evidence for this head, then re-run merge-gate.sh'
     elif [[ $(jq -r .remediation <<<"$remediation") != complete ]]; then
-        while IFS= read -r obligation; do block "adversarial remediation $obligation"; done \
+        while IFS= read -r obligation; do
+            block "adversarial remediation $obligation" \
+                'perform the embedded finding-ledger next action, record its evidence, then re-run merge-gate.sh'
+        done \
             < <(jq -r '.unresolved[] | "\(.title): \(.nextAction)"' <<<"$remediation")
-        block "adversarial remediation is $(jq -r .remediation <<<"$remediation")"
+        block "adversarial remediation is $(jq -r .remediation <<<"$remediation")" \
+            'complete every finding-ledger repair or adjudication, then re-run merge-gate.sh'
     fi
 fi
 
-[[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision'
+[[ $human_decided == yes ]] || block 'an observed human item has no explicit per-item decision' \
+    'record an explicit decision for every observed human item, then re-run merge-gate.sh'
 # not-enabled (issue #403) means Code Quality is disabled for the repository
 # -- a stable fact, not a scan in flight -- so it gates exactly like
 # complete; pending and unknown still block ("unknown" comes only from
@@ -810,25 +860,32 @@ fi
 # never fabricated here, and never treated as complete).
 case $cq_effective_state in
     complete|not-enabled) ;;
-    pending) block 'github-code-quality scan is still pending on the current head' ;;
+    pending) block 'github-code-quality scan is still pending on the current head' \
+        'wait for github-code-quality to finish, refresh its state file, then re-run merge-gate.sh' ;;
     unknown)
-        block "github-code-quality scan state is unknown${cq_file_reason:+ ($cq_file_reason)}"
+        block "github-code-quality scan state is unknown${cq_file_reason:+ ($cq_file_reason)}" \
+            'restore readable github-code-quality analysis evidence, refresh its state file, then re-run merge-gate.sh'
         ;;
-    *) block "github-code-quality scan state is unrecognized: $cq_effective_state" ;;
+    *) block "github-code-quality scan state is unrecognized: $cq_effective_state" \
+        'regenerate the state file with code-quality-state.sh --head, then re-run merge-gate.sh' ;;
 esac
 
 if [[ -n $review_capability_file ]]; then
     if review_capability=$(REVIEW_CAPABILITY_GH="$GH_BIN" "$SCRIPT_DIR/review-capability.sh" \
         --repo "$repo" --pr "$pr" --head-sha "$head_sha" --base "$base" --capability-file "$review_capability_file"); then
-        [[ $provider_result == DISABLED ]] || block 'review provider is not disabled'
+        [[ $provider_result == DISABLED ]] || block 'review provider is not disabled' \
+            'use the ordinary provider review path or supply DISABLED evidence before requesting admin eligibility'
     else
-        block "review capability does not permit admin: $review_capability"
+        block "review capability does not permit admin: $review_capability" \
+            'satisfy the reported review-capability requirement; --admin cannot bypass another unmet gate'
     fi
     printf '%s\n' "$review_capability"
 fi
 if ((${#reasons[@]} > 0)); then
-    for reason in "${reasons[@]}"; do
-        printf 'blocked reason=%s\n' "$reason"
+    for i in "${!reasons[@]}"; do
+        printf 'blocked reason=%s' "${reasons[$i]}"
+        [[ -z ${corrective_actions[$i]} ]] || printf ' -- next: %s' "${corrective_actions[$i]}"
+        printf '\n'
     done
     printf 'gate=BLOCKED pr=%s\n' "$pr"
     exit 1

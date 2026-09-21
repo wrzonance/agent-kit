@@ -236,6 +236,15 @@ entry's lineage instead of falsifying or parking:
   --reason "merge-down:$base_sha" --kind adversarial --repo-root "$repo_root" || true
 ```
 
+`merge-gate.sh` prints every blocked condition with `-- next: <action>` at
+the same failure boundary. For a stale base, follow that action as one loop:
+merge down the advanced base, run `chain-advance.sh --retarget` for a stacked
+successor, extend the existing review lineage with `review-ledger.sh cover
+--reason "merge-down:<exact-new-base-sha>" --kind adversarial`, obtain fresh CI
+for the resulting head, and re-run `merge-gate.sh`. The lineage extension
+preserves the one-review rule; it does not spend another review. `--admin`
+does not bypass the stale-base block.
+
 Always pass `--kind adversarial`: an unfiltered call extends whichever entry
 is LAST in the ledger, which may be a bot entry (e.g. a CodeRabbit record
 appended after the adversarial receipt) — leaving the receipt merge-gate.sh
