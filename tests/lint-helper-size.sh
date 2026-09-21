@@ -33,7 +33,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
-    [skills/parallel-issues/scripts/chain-advance.sh]="1076:12998:800"
+    [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -43,10 +43,10 @@ declare -A KNOWN_OVERSIZE=(
     # #711/#765/#850/#843: landing replay and compatible receipt lineage.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1189:17748:800"
-    # #852: reject same-head analyses created before the latest retarget.
     # #834: carry a truthful corrective action for every blocked reason.
     # #834 review repair: retain human-only decisions in four corrective actions.
-    [skills/pr-to-green/scripts/merge-gate.sh]="897:11797:800"
+    # #852 + PR #858 merge-down: retain retarget checks and owned-path diagnostics.
+    [skills/pr-to-green/scripts/merge-gate.sh]="899:11809:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -177,10 +177,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #834: blocked merge-gate reasons carry their corrective actions in-band.
 # Issue #844: exact-row quarantine plus payload-scoped Python ledger guarding
 # add measured recovery code to the shipped helper tree.
-# #845 repair merge: exact combined helper tree measurement.
 # #834 + repaired #845 parent: exact combined helper tree measurement.
 # #834 review repair: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=472600
+# PR #864 merge-down with PR #862: 1,891,246 bytes / 4 = 472,811 tokens.
+readonly MAX_TREE_TOKENS=472811
 
 violations=0
 checked=0
