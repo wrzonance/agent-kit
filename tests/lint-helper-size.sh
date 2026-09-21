@@ -166,7 +166,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
-readonly MAX_TREE_TOKENS=465846
+# PR #857 merge-down with #852: exact combined helper tree.
+readonly MAX_TREE_TOKENS=465999
 
 violations=0
 checked=0
