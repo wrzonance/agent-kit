@@ -249,6 +249,35 @@ class Activation(unittest.TestCase):
         self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("activation-unavailable", output["hookSpecificOutput"]["permissionDecisionReason"])
 
+    def test_pre_tool_does_not_skip_symlinked_agent_directory(self):
+        target = self.root / "agent-target"
+        (target / "activation").mkdir(parents=True)
+        (self.repo / ".agent").symlink_to(target, target_is_directory=True)
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+
+        output = self.public_event("PreToolUse", tool_name="Bash",
+                                   tool_input={"command": "true"})
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("activation-unavailable", output["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_pre_tool_does_not_skip_writable_activation_evidence_directories(self):
+        agent = self.repo / ".agent"
+        activation = agent / "activation"
+        activation.mkdir(parents=True)
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+
+        for unsafe in (agent, activation):
+            with self.subTest(unsafe=unsafe.name):
+                agent.chmod(0o700)
+                activation.chmod(0o700)
+                unsafe.chmod(0o722)
+                output = self.public_event("PreToolUse", tool_name="Bash",
+                                           tool_input={"command": "true"})
+                self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("activation-unavailable",
+                              output["hookSpecificOutput"]["permissionDecisionReason"])
+
     def test_competing_route_and_pending_dispatch_are_denied(self):
         self.prompt()
         payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Agent",
