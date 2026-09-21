@@ -1,11 +1,43 @@
 #!/usr/bin/env bash
-# Verify that every source and built plugin manifest carries the same version.
+# Verify that manifests agree and a published version still names one shipped tree.
 set -euo pipefail
 
 usage() {
     printf 'Usage: %s [--root ROOT] [--tag TAG]\n' "${0##*/}" >&2
     printf '  --root ROOT  checkout containing agentkit/ and plugin/ (default: repository root)\n' >&2
-    printf '  --tag TAG    git tag to compare (default: tag-push context only)\n' >&2
+    printf '  --tag TAG    git tag to compare (default: tag context or v<manifest-version>)\n' >&2
+}
+
+tree_content_hash() {
+    local tree=$1 path relative executable size
+    [[ -d $tree ]] || {
+        printf 'release content check failed: shipped tree is missing: %s\n' "$tree" >&2
+        return 1
+    }
+
+    (
+        cd -- "$tree"
+        while IFS= read -r -d '' path; do
+            relative=${path#./}
+            if [[ -L $path ]]; then
+                printf 'link\0%s\0%s\0' "$relative" "$(readlink -- "$path")"
+            elif [[ -d $path ]]; then
+                printf 'dir\0%s\0' "$relative"
+            elif [[ -f $path ]]; then
+                executable=no
+                [[ -x $path ]] && executable=yes
+                size=$(wc -c < "$path")
+                size=${size//[[:space:]]/}
+                printf 'file\0%s\0%s\0%s\0' "$relative" "$executable" "$size"
+                command cat -- "$path"
+                printf '\0'
+            else
+                printf 'release content check failed: unsupported entry: %s\n' \
+                    "$tree/$relative" >&2
+                exit 1
+            fi
+        done < <(find . -mindepth 1 -print0 | LC_ALL=C sort -z)
+    ) | sha256sum | awk '{print $1}'
 }
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -165,6 +197,67 @@ fi
 
 if ((failed)); then
     exit 1
+fi
+
+if ! git_root=$(git -C "$root" rev-parse --show-toplevel 2> /dev/null) ||
+        [[ $git_root != "$root" ]]; then
+    printf 'release content check failed: root is not a Git checkout: %s\n' "$root" >&2
+    exit 1
+fi
+
+content_tag=$tag
+if ((tag_set == 0)); then
+    content_tag="v$expected"
+fi
+
+if ! tag_commit=$(git -C "$root" rev-parse --verify --end-of-options \
+        "${content_tag}^{commit}" 2> /dev/null); then
+    if ((tag_set == 1)); then
+        printf 'release content check failed: tag does not resolve to a commit: %s\n' \
+            "$content_tag" >&2
+        exit 1
+    fi
+    printf 'release content check: no existing tag %s; shipped content is eligible for a new version\n' \
+        "$content_tag"
+    content_tag=''
+fi
+
+if [[ -n $content_tag ]]; then
+    content_tmp=$(mktemp -d)
+    trap 'rm -rf -- "$content_tmp"' EXIT
+    tagged_checkout=$content_tmp/tagged-checkout
+    mkdir -p "$tagged_checkout"
+
+    if ! git -C "$root" archive --format=tar "$tag_commit" |
+            tar -xf - -C "$tagged_checkout"; then
+        printf 'release content check failed: could not reconstruct tag %s\n' \
+            "$content_tag" >&2
+        exit 1
+    fi
+    if [[ ! -x $tagged_checkout/tests/build-plugin.sh ]]; then
+        printf 'release content check failed: tag %s has no executable tests/build-plugin.sh\n' \
+            "$content_tag" >&2
+        exit 1
+    fi
+    if ! "$tagged_checkout/tests/build-plugin.sh" "$tagged_checkout/plugin" > /dev/null; then
+        printf 'release content check failed: tag %s could not rebuild its shipped tree\n' \
+            "$content_tag" >&2
+        exit 1
+    fi
+
+    if ! current_hash=$(tree_content_hash "$root/plugin"); then
+        exit 1
+    fi
+    if ! tagged_hash=$(tree_content_hash "$tagged_checkout/plugin"); then
+        exit 1
+    fi
+    if [[ $current_hash != "$tagged_hash" ]]; then
+        printf 'shipped content changed under existing version %s: current hash %s; tag %s content hash %s\n' \
+            "$expected" "$current_hash" "$content_tag" "$tagged_hash" >&2
+        exit 1
+    fi
+    printf 'release content check passed: shipped content matches tag %s (content hash %s)\n' \
+        "$content_tag" "$current_hash"
 fi
 
 if ((tag_set == 1)); then
