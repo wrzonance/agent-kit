@@ -1843,16 +1843,20 @@ readonly LOG_HEADER_LINES=2
         "$concurrent_suites"
 } > "$log_file"
 
+started_at=$SECONDS
 # SIGKILL stays unterminated; catchable interrupts get an explicit marker.
 # shellcheck disable=SC2329,SC2317  # Invoked from trap strings below.
 log_interrupted() {
+    trap '' INT TERM
+    failure_class=cancelled
+    failure_state="interrupted-$1"
+    failure_action=inspect-retained-log-then-retry-declared-command-if-still-required
     printf '=== agent-run interrupted by %s -- the command did not finish\n' "$1" >> "$log_file"
+    if ((summary_cmd)); then elapsed=$((SECONDS - started_at)) summary_status=incomplete summary_ready=1; fi
     exit 130
 }
 trap 'log_interrupted SIGINT' INT
 trap 'log_interrupted SIGTERM' TERM
-
-started_at=$SECONDS
 rc=0
 attempt_start_line=3
 (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
