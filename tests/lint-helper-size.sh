@@ -43,8 +43,10 @@ declare -A KNOWN_OVERSIZE=(
     # #711/#765/#850/#843: landing replay and compatible receipt lineage.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1189:17748:800"
+    # #834: carry a truthful corrective action for every blocked reason.
+    # #834 review repair: retain human-only decisions in four corrective actions.
     # #852 + PR #858 merge-down: retain retarget checks and owned-path diagnostics.
-    [skills/pr-to-green/scripts/merge-gate.sh]="842:10302:800"
+    [skills/pr-to-green/scripts/merge-gate.sh]="899:11809:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -172,10 +174,13 @@ readonly MAX_HELPER_TOKENS=10000
 # #850/#843: bounded landing replay and compatible receipt lineage.
 # #844: scoped ledger validation, quarantine, and direct-write guards.
 # #845 prerequisite join: exact combined helper tree measurement.
+# #834: blocked merge-gate reasons carry their corrective actions in-band.
 # Issue #844: exact-row quarantine plus payload-scoped Python ledger guarding
 # add measured recovery code to the shipped helper tree.
-# PR #862 merge-down with PR #861: 1,885,219 bytes / 4 = 471,304 tokens.
-readonly MAX_TREE_TOKENS=471304
+# #834 + repaired #845 parent: exact combined helper tree measurement.
+# #834 review repair: exact combined helper tree measurement.
+# PR #864 merge-down with PR #862: 1,891,246 bytes / 4 = 472,811 tokens.
+readonly MAX_TREE_TOKENS=472811
 
 violations=0
 checked=0

@@ -238,6 +238,31 @@ good_digest
 out=$(run_gate)
 assert_contains "$out" 'gate=PASS pr=9' 'a fully clean PR passes the gate'
 
+# Issue #834: stale is the expected state of every successor after a strict
+# serial merge. The refusal must carry the complete sanctioned recovery loop
+# at the failure boundary so operators do not reach for the forbidden admin
+# escape hatch or spend the one allowed adversarial review a second time.
+good_digest
+sed -i 's/behind=0 stale=no/behind=1 stale=yes/' "$tmp/digest.txt"
+rc=0
+out=$(run_gate) || rc=$?
+assert_eq 1 "$rc" 'a stale base remains a hard merge block'
+assert_contains "$out" 'blocked reason=pull request base is stale -- next:' \
+    'the stale-base refusal renders its corrective action alongside the reason'
+assert_contains "$out" 'chain-advance.sh --retarget' \
+    'the stale-base corrective action names the sanctioned retarget helper'
+assert_contains "$out" 'review-ledger.sh cover --reason "merge-down:<exact-new-base-sha>"' \
+    'the corrective action extends review lineage against the exact advanced base'
+assert_contains "$out" 'fresh CI' \
+    'the corrective action requires revalidation on the advanced head'
+assert_contains "$out" 're-run merge-gate.sh' \
+    'the corrective action closes the loop by naming gate revalidation'
+assert_contains "$out" '--admin does not bypass this stale-base block' \
+    'the refusal prevents the admin exception from being mistaken for a remedy'
+assert_contains "$out" 'gate=BLOCKED pr=9' \
+    'adding a corrective action does not weaken the stale-base decision'
+good_digest
+
 jq -n --arg sha "$HEAD_SHA" '{version:1,repository:"owner/repo",source:"operator-confirmed",
   queue:[{pr:9,headSha:$sha,base:"main",humanReviewers:"none",reviewProvider:"disabled"}]}' >"$tmp/capability.json"
 rc=0
@@ -622,6 +647,23 @@ set -e
 assert_eq '1' "$rc" 'a pending requested reviewer blocks the merge'
 assert_contains "$out" 'blocked reason=a requested reviewer is still pending' \
     'the pending-reviewer block is named'
+assert_contains "$out" 'only a human may withdraw the request' \
+    'the pending-reviewer action preserves the human-only withdrawal boundary'
+assert_not_contains "$out" 'or clear the request' \
+    'the pending-reviewer action never invites automation to withdraw a review request'
+
+good_digest
+set +e
+out=$(PR_STATE=closed run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a closed pull request blocks the merge'
+assert_contains "$out" 'remove the pull request from the merge queue' \
+    'the closed-pull-request action removes an ineligible queue item'
+assert_contains "$out" 'only a human may decide to reopen an eligible closed pull request' \
+    'the closed-pull-request action preserves the human-only reopening decision'
+assert_not_contains "$out" 'reopen the pull request or remove it' \
+    'the action never directs automation to reopen a closed pull request'
 
 good_digest
 set +e
@@ -685,6 +727,10 @@ assert_eq '1' "$rc" \
     'no analysis recorded for the current head anywhere (PR ref or base ref) blocks the merge (absence of evidence is never evidence of completion)'
 assert_contains "$out" 'blocked reason=no code-scanning analysis is recorded for the current head' \
     'the no-analysis block is named, and distinct from the unreadable-status block'
+assert_contains "$out" 'human action required: inspect the CodeQL workflow and dispatch it or update its path filter' \
+    'the missing-analysis action keeps dispatch and path-filter changes human-only'
+assert_contains "$out" 'the agent must not dispatch it to satisfy this gate' \
+    'the missing-analysis action forbids manufactured gate evidence'
 
 # --- issue #390: the analyses endpoint is authoritative; the check-run app
 # slug is at most a secondary "still running" signal.
@@ -1078,6 +1124,10 @@ set -e
 assert_eq '1' "$rc" 'a configured repository with an open alert keeps blocking, unaffected by the corroboration'
 assert_contains "$out" 'blocked reason=an open code-scanning alert is attributable to this PR' \
     'the open-alert block is unchanged'
+assert_contains "$out" 'repair the attributable alert (dismissal is a human security decision)' \
+    'the open-alert action reserves dismissal for an explicit human security decision'
+assert_not_contains "$out" 'repair or explicitly dismiss' \
+    'the open-alert action never authorizes automated dismissal'
 
 good_digest
 out=$(CS_DEFAULT_SETUP_STATE=configured CS_ALERTS_PROBE=ok run_gate)
