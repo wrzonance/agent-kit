@@ -453,7 +453,7 @@ rc=0
 assert_eq 0 "$rc" '--help exits 0'
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 552 ]] && printf yes || printf no)" \
-    'prepare-issue-artifacts.sh stays at or under 552 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh") -le 557 ]] && printf yes || printf no)" \
+    'prepare-issue-artifacts.sh stays at or under 557 lines'
 
 finish

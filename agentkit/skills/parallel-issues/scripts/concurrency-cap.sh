@@ -3,6 +3,10 @@ set -uo pipefail
 
 readonly PROGRAM=${0##*/}
 readonly MAX=10
+cap_source=${BASH_SOURCE[0]}
+[[ $cap_source == */* ]] || cap_source=./$cap_source
+cap_dir=$(cd -P -- "${cap_source%/*}" && pwd -P)
+contract_cache_helper="$cap_dir/../../.shared/scripts/lib/contract-cache.sh"
 if [[ -n ${CODEX_HOME:-} ]]; then
     config_file=$CODEX_HOME/config.toml
 else
@@ -22,8 +26,9 @@ Print the effective cap, or refuse a prospective total above it. The total
 includes the root. No-spawn mode is serial.
 
 Recipe: read the dispatch cap
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+EOF
+    "$contract_cache_helper" --print-session-recovery || exit 1
+    cat <<'EOF'
   "$agentkit/parallel-issues/scripts/concurrency-cap.sh" --multi-agent "${multi_agent:-true}"
 EOF
 }

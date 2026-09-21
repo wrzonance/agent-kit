@@ -36,7 +36,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/chain-advance.sh]="1076:12998:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
+    # #845: keep the helper-owned recovery path readable.
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1010:11462:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1087:13310:800"
     # #711/#765/#850/#843: landing replay and compatible receipt lineage.
@@ -76,6 +77,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #725 review repair: resolve siblings for bare filename invocation.
 # #739: retry limits and confirmed review repairs.
 # #724: extracted declaration guard and generated-contract proposals; exact bytes / 4.
+# #845: canonical executable recovery for copied workflow recipes.
 # #764: REST CI evidence collection with bounded, validated archive extraction (+2241).
 # #764 review: aggregate transfer/retention limits and independent log collection (+894).
 # #761: line-addressable ledger diagnostics and locked conservative repair.
@@ -170,7 +172,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #850/#843: bounded landing replay and compatible receipt lineage.
 # #844: scoped ledger validation, quarantine, and direct-write guards.
 # #845 prerequisite join: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=469256
+readonly MAX_TREE_TOKENS=469886
 
 violations=0
 checked=0

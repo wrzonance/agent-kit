@@ -22,6 +22,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 queue="$root/agentkit/skills/pr-to-green/scripts/pr-queue.sh"
 repo_root="$tmp/repo"
 mkdir -p "$repo_root/.agent"
+assert_eq 0 "$(find "$repo_root/.agent" -mindepth 1 -print -quit | wc -l | tr -d ' ')" \
+    'the hand-made PR queue flow starts from an empty .agent directory'
 
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -174,6 +176,23 @@ assert_contains "$help" '--merge-plan FILE, --dispatch-plan FILE' \
     'help documents the merge-plan and dispatch-plan aliases together'
 assert_contains "$help" 'same file after the ready-flip upgrade' \
     'help explains the alias pair as two lifecycle stages'
+
+# Cold ad-hoc entry: PR #14 was created outside parallel-issues, so there is no
+# dispatch/merge plan. Live forge evidence creates the human-confirmed queue,
+# and that exact queue authorizes without any prior run receipt or proof file.
+manual_confirmed="$repo_root/.agent/pr-to-green-confirmed-queue.json"
+manual_display=$(GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
+    --repo owner/repo --repo-root "$repo_root" --pr 14 \
+    --write-confirmed-queue --no-providers --format table)
+assert_contains "$manual_display" '#14' \
+    'a hand-made PR is displayed from live forge evidence without a merge plan'
+manual_authorize="$root/agentkit/skills/pr-to-green/scripts/authorize-queue.sh"
+manual_auth=$(AUTHORIZE_QUEUE_GH="$tmp/gh" PR_QUEUE_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    bash "$manual_authorize" --repo owner/repo --repo-root "$repo_root" --pr 14 \
+    --ready-transition --no-auto-merge --confirmed-queue-file "$manual_confirmed" \
+    --no-providers)
+assert_eq "authorization=$repo_root/.agent/pr-to-green-auth.json queue=1" "$manual_auth" \
+    'the live hand-made PR queue authorizes without parallel-issues bookkeeping'
 
 missing_schema="$tmp/missing-schema.json"
 jq 'del(.schemaVersion)' "$tmp/dispatch-plan.json" >"$missing_schema"
@@ -336,8 +355,10 @@ assert_eq 'coderabbit:observe:operator-instruction' \
     "$(jq -r '.providers[0] | [.name,.action,.source] | join(":")' "$confirmed")" \
     'the displayed provider action and source are durably recorded'
 
-# Contract test: the writer's exact persisted snapshot must be consumable by
-# the authorizer without hand-editing away its budget metadata.
+# Cold-start contract: a valid hand-made PR can enter through live forge
+# evidence from an initially empty .agent directory. The writer's exact
+# persisted snapshot must be consumable by the authorizer without hand-editing
+# away its budget metadata.
 authorize="$root/agentkit/skills/pr-to-green/scripts/authorize-queue.sh"
 GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
     --repo owner/repo --repo-root "$repo_root" --merge-plan "$tmp/dispatch-plan.json" \

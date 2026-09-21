@@ -4,14 +4,14 @@ set -euo pipefail
 # gh paginates these listings at 30 by default. Every lookup below must be able to
 # see the whole board, or a card past the default page is indistinguishable from a
 # card that is not on the board at all -- a silent no-op that still exits 0.
-readonly ITEM_LIMIT=1000
-readonly FIELD_LIMIT=100
+readonly ITEM_LIMIT=1000 FIELD_LIMIT=100
 
 mover_source=${BASH_SOURCE[0]}
 [[ $mover_source == */* ]] || mover_source=./$mover_source
 mover_dir=$(cd -- "${mover_source%/*}" && pwd)
 # shellcheck source=../../.shared/scripts/lib/board-cache.sh
 source "$mover_dir/../../.shared/scripts/lib/board-cache.sh"
+contract_cache_helper="$mover_dir/../../.shared/scripts/lib/contract-cache.sh"
 
 usage() {
     printf 'Usage: %s --issue-number N [--issue-number N ...] --status STATUS --repo OWNER/REPO [--all-boards]\n' "${0##*/}"
@@ -59,10 +59,11 @@ board move must never fail the real work), 1 on bad arguments or an unrelated AP
 2 on an unexpected argument after --.
 
 Recipe: move a selected issue set
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
   : "${issue_numbers_csv:?replace with the selected issue numbers}"
   : "${target_status:?set In progress at dispatch or In review when the draft opens}"
+EOF
+    "$contract_cache_helper" --print-session-recovery || exit 1
+    cat <<'EOF'
   repository=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get repo.slug) || exit 1
   [[ $repository == */* ]] || { printf '%s\n' 'repo=none in the environment contract' >&2; exit 1; }
   "$agentkit/parallel-issues/scripts/move-github-project-item.sh" --issue-numbers "$issue_numbers_csv" \
