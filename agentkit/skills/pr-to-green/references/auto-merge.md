@@ -98,10 +98,11 @@ Own work needs `fix:ID` ledger coverage and records in
 `.agent/evidence/paths-touched.ndjson`. Resolution records list the full actual
 first-parent diff; scope checks cover resolutions. Other own commits stay in scope.
 
-`defaultAdvance:{from,to,prs:[15]}` anchors default first-parent history within
-an exact authorized head. Commits must be verified queued merges or generated-only
-nonmerge declared by owned config through `repo-config.sh`. Undeclared paths,
-empty/nonregular changes and squash/rebase PR merges fail closed. For stacked bases,
+`defaultAdvance:{from,to,prs:[15]}` anchors bounded default first-parent history.
+Each live `merge_commit_sha` must cleanly replay its authorized head; merges require
+that second parent, while squash/single-rebase trees must match.
+Other commits need generated-only proof; multi-commit rebase metadata names only its
+last commit, so it fails. For stacked bases,
 `oldBase:{pr,sha}` must name an authorized parent, its live PR branch must match
 the saved base, and contain the historical SHA. An earlier imported default is
 allowed only when its remaining verified tail is entirely generated-only.

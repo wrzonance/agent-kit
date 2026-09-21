@@ -260,6 +260,29 @@ clean_merge_tree() {
     [[ ${output%%$'\n'*} == "$tree" ]] || die 'lineage merge tree differs from clean replay'
 }
 
+verify_authorized_landing() {
+    local commit=${1:-} head=${2:-} output tree
+    local -a parents
+    [[ $commit =~ ^[0-9a-f]{40}$ && $head =~ ^[0-9a-f]{40}$ ]] ||
+        die 'authorized landing identity malformed'
+    output=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") ||
+        die 'authorized landing parents unreadable'
+    read -r -a parents <<<"$output"
+    case ${#parents[@]} in
+        3)
+            [[ ${parents[2]} == "$head" ]] || die 'default merge parent differs from authorized queue head'
+            clean_merge_tree "$commit"
+            ;;
+        2)
+            output=$(timeout 10 git -C "$repo_root" merge-tree --write-tree "${parents[1]}" "$head") ||
+                die 'authorized landing replay conflicts, is unavailable, or exceeded its bound'
+            tree=$(git -C "$repo_root" rev-parse "$commit^{tree}") || die 'authorized landing tree unreadable'
+            [[ ${output%%$'\n'*} == "$tree" ]] || die 'authorized landing tree differs from clean replay'
+            ;;
+        *) die 'authorized landing must have one or two parents' ;;
+    esac
+}
+
 resolution_tree() {
     local commit=$1 rc=0 tree path mode
     local -a parents
@@ -374,9 +397,7 @@ verify_lineage() {
                any($heads[0][]; .pr == $pr and .sha == $p.head.sha) and
                (.merge_commit_sha | test("^[0-9a-f]{40}$"))' <<<"$metadata" >/dev/null || die 'default merge is not an authorized queue head'
             commit=$(jq -r .merge_commit_sha <<<"$metadata")
-            parent=$(git -C "$repo_root" rev-parse "$commit^2") || die 'default advance supports merge commits only'
-            [[ $parent == "$(jq -r .head.sha <<<"$metadata")" ]] || die 'default merge parent differs from authorized queue head'
-            clean_merge_tree "$commit"
+            verify_authorized_landing "$commit" "$(jq -r .head.sha <<<"$metadata")"
             printf '%s\n' "$commit" >>"$work_dir/default-merges"
         done < <(jq -r '.defaultAdvance.prs[]' "$proof")
         git -C "$repo_root" rev-list --first-parent --max-count=17 "$main_from..$main_to" | LC_ALL=C sort >"$work_dir/default-actual"

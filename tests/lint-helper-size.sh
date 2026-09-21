@@ -39,9 +39,9 @@ declare -A KNOWN_OVERSIZE=(
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1087:13310:800"
-    # #711/#765: receipt fences and bounded exact-parent proof composition.
+    # #711/#765/#850: receipt fences and bounded authorized-landing replay.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
-    [skills/pr-to-green/scripts/authorize-queue.sh]="1100:16497:800"
+    [skills/pr-to-green/scripts/authorize-queue.sh]="1121:16721:800"
     # #852 + PR #858 merge-down: retain retarget checks and owned-path diagnostics.
     [skills/pr-to-green/scripts/merge-gate.sh]="842:10302:800"
     # Issue #706: preserve selected invalid model provenance through the result.
@@ -168,8 +168,10 @@ readonly MAX_HELPER_TOKENS=10000
 # Issue #844: exact-row quarantine plus payload-scoped Python ledger guarding
 # add measured recovery code to the shipped helper tree.
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
-# PR #857 and PR #858 merge-down: exact combined helper tree.
-readonly MAX_TREE_TOKENS=469425
+# #849: cause-specific owned-path diagnostics shared by workflow helpers.
+# #850: bounded content replay for merge, squash and single-rebase landings.
+# PR #860 merge-down with current main: 1,878,600 bytes / 4 = 469,650 tokens.
+readonly MAX_TREE_TOKENS=469650
 
 violations=0
 checked=0
