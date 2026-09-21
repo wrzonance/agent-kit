@@ -928,6 +928,48 @@ assert_not_contains "$refresh_missing_log" 'pr close' \
     'an untriggerable scan never closes the PR'
 assert_not_contains "$refresh_missing_log" 'pr reopen' \
     'an untriggerable scan never reopens the PR'
+
+# A default-setup repository may have no scan check on a head pushed while the
+# PR targeted a stacked base. Missing rollup evidence is therefore a refresh
+# decision, not proof that the repository has no scanning configuration.
+cat >"$tmp/gh-refresh-default-setup" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[]}' ;;
+    *"actions/workflows"*) printf '%s\n' '{"workflows":[]}' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"configured"}' ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-refresh-default-setup"
+set +e
+default_setup_output=$(EDIT_STATE="$tmp/refresh-default-setup.state" GH_LOG="$tmp/refresh-default-setup.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-default-setup" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+default_setup_rc=$?
+set -e
+assert_eq '2' "$default_setup_rc" 'configured default setup with no head scan stops after retarget'
+assert_contains "$default_setup_output" 'cannot-trigger: CodeQL default setup has no dispatch' \
+    'missing default-setup analysis is distinguished from a repository with no scanning'
+
+sed 's/"configured"/"not-configured"/' "$tmp/gh-refresh-default-setup" >"$tmp/gh-refresh-unused"
+chmod +x "$tmp/gh-refresh-unused"
+unused_output=$(EDIT_STATE="$tmp/refresh-unused.state" GH_LOG="$tmp/refresh-unused.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-unused" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+assert_contains "$unused_output" 'retargeted pr #7' \
+    'a repository whose default setup is not configured remains unaffected'
 # --- REST timeline events may omit the changed ref -------------------------
 # The REST representation of a base_ref_changed event carries the event kind
 # and timestamp, but not always the ref. A ref-less event is still authoritative

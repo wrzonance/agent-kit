@@ -82,6 +82,10 @@ repos/owner/repo/pulls/9/reviews*)
     printf '%s\n' "\${PR_REVIEWS_JSON:-[]}"
     ;;
 repos/owner/repo/issues/9/timeline)
+    if [[ \${CS_TIMELINE_UNREADABLE:-0} == 1 ]]; then
+        printf 'timeline unavailable\n' >&2
+        exit 1
+    fi
     printf '%s\n' "\${CS_TIMELINE_JSON:-\$default_timeline}"
     ;;
 repos/owner/repo/code-scanning/analyses)
@@ -786,6 +790,34 @@ assert_contains "$out" 'scan-missing: codeql' \
     'a skipped scan before the latest retarget falls through to missing evidence'
 assert_not_contains "$out" 'not-applicable (path-filtered)' \
     'pre-retarget skipped evidence is never classified as path-filtered'
+
+# A same-head analysis created before the latest retarget was produced for the
+# old base. The unchanged head SHA does not make that result evidence for the
+# new base; only an analysis created after the boundary may satisfy the gate.
+good_digest
+set +e
+out=$(CS_PR_ANALYSES_JSON="[{\"ref\":\"refs/pull/9/merge\",\"commit_sha\":\"$HEAD_SHA\",\"tool\":{\"name\":\"CodeQL\"},\"created_at\":\"2026-08-18T00:00:00Z\"}]" \
+    run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'a same-head analysis from before the retarget cannot authorize the new base'
+assert_contains "$out" 'blocked reason=code-scanning analysis predates the latest base retarget' \
+    'the gate identifies stale retarget analysis evidence explicitly'
+
+good_digest
+set +e
+out=$(CS_TIMELINE_UNREADABLE=1 run_gate)
+rc=$?
+set -e
+assert_eq '1' "$rc" 'an unreadable retarget timeline cannot authorize an otherwise matching analysis'
+assert_contains "$out" 'blocked reason=code-scanning retarget boundary is unreadable' \
+    'unreadable boundary evidence is distinguished from a current analysis'
+
+good_digest
+out=$(CS_TIMELINE_JSON='[{"event":"automatic_base_change_succeeded","base_ref":"main","created_at":"2026-08-19T00:00:00Z"}]' \
+    run_gate)
+assert_contains "$out" 'gate=PASS pr=9' \
+    'an analysis created after an automatic base change satisfies the retarget boundary'
 
 # --- PR #413 follow-up F1: a still-running scan blocks as pending even when
 # an earlier analysis already matches the head (a rerun or a second SARIF
