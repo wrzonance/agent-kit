@@ -28,7 +28,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776/#809: records, summaries, and truthful reuse diagnostics.
     [skills/.shared/scripts/agent-run.sh]="1920:20761:800"
-    [skills/.shared/scripts/bootstrap-repo.sh]="818:10354:800"
+    # #865: scope the generated regeneration hint to plugin-backed onboarding.
+    [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
@@ -179,8 +180,8 @@ readonly MAX_HELPER_TOKENS=10000
 # add measured recovery code to the shipped helper tree.
 # #834 + repaired #845 parent: exact combined helper tree measurement.
 # #834 review repair: exact combined helper tree measurement.
-# PR #864 merge-down with PR #862: 1,891,246 bytes / 4 = 472,811 tokens.
-readonly MAX_TREE_TOKENS=472811
+# #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
+readonly MAX_TREE_TOKENS=472870
 
 violations=0
 checked=0

@@ -59,6 +59,9 @@ assert_rc 0 'bootstrap succeeds' -- env PATH="$tmp/stub:$PATH" \
     "$bs_sh" --repo-root "$repo" --project 7
 assert_eq 'yes' "$([[ -f $repo/.agent/config.env ]] && echo yes || echo no)" 'writes config.env'
 assert_eq 'yes' "$([[ -f $repo/.agent/board.json ]] && echo yes || echo no)" 'writes board.json'
+assert_contains "$(cat "$repo/.agent/config.env")" \
+    '# Onboarding only: regenerate with bootstrap-repo.sh --force (requires the agentkit plugin)' \
+    'generated config scopes its regeneration hint to plugin-backed onboarding'
 
 # The printed handoff must resolve keyed-only contracts when executed.
 handoff_repo=$(make_repo)

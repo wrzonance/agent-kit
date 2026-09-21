@@ -28,14 +28,17 @@ skills_dir=${1:?usage: lint-skill-size.sh SKILLS_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     # #785: durable bare-review defaulting after the helper-owned recipe split.
-    [review-remote-pr]="473:8411:450"
+    # #865: permit bounded reference use when no workflow challenge was delivered.
+    [review-remote-pr]="483:8725:450"
+    [pr-to-green]="334:5289:450"
+    [onboard-repo]="329:5230:450"
     # #777: helper-owned recipes shrink the injected body toward the standard budget.
     # #779: retain destination-adjacent plan publication in the extracted body.
     # #783 + #785: atomic summary producers with durable sweep rehydration.
     # #784 final parent integration extends the durable dispatch recipe.
     # #810: require roots to preserve failed verification outcomes during collection.
-    # #845: state the cold-start boundary at workflow activation.
-    [parallel-issues]="761:15951:500"
+    # #845 + #865: state the cold-start/reference-use boundary at workflow activation.
+    [parallel-issues]="762:16242:500"
 )
 
 readonly MAX_BODY_LINES=500

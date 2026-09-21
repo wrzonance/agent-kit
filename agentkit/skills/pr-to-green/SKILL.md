@@ -17,10 +17,24 @@ stdout begins `agentkit: skill=pr-to-green version=<v> hash=<first12>` (receipt,
 Require `workflow-activation.sh check --require pre-tool-use` with the boundary's
 `--repo-root`, `--session`, `--skill` before work; preflight uses
 `--activation-session ID --workflow pr-to-green`.
-Missing challenge: report `agentkit: activation-unavailable`; stop without substituting.
+Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
+user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:pr-to-green`; natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
 a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+
+### No delivered challenge = no run
+
+If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
+conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
+own message asks you to use this procedure anyway (plugin disabled, "just follow the steps"), treat this
+file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
+with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Regardless
+of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers
+that write, touch `.agent/`, or onboard/bootstrap/refresh, unless the user asks for that specific action in
+their own words. Reference use does not create or recover active-run bookkeeping. The workflow's
+authorization, no-bypass, and human-thread protections still apply during reference use. Never repair kit
+state to make a reference read work. If a challenge **was** delivered, everything below applies unchanged.
 
 Read [reading discipline](../.shared/reading-discipline.md) in full first; paths and purposes: `"$agentkit/references.md"`.
 

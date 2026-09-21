@@ -206,8 +206,8 @@ out=$("$cache_reader" --read-session-context --repo-root "$stale_repo" 2> "$tmp/
 err=$(cat -- "$tmp/stale.err")
 assert_eq 75 "$rc" 'a stale digest keeps rc 75 (unchanged)'
 assert_eq '' "$out" 'a stale digest has no stdout (unchanged)'
-assert_eq 'contract-cache: session-context stale' "$err" \
-    'a stale digest names its class on stderr'
+assert_eq 'contract-cache: session-context stale; remedy applies only to onboarding or an active run' "$err" \
+    'a stale digest names its class and scopes its remedy on stderr'
 
 # --- success path: stdout and exit code untouched by this fix -------------
 ok_repo="$tmp/ok"

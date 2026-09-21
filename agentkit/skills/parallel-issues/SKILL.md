@@ -21,16 +21,28 @@ stdout begins `agentkit: skill=parallel-issues version=<v> hash=<first12>` (rece
 Before dispatch, require `workflow-activation.sh check --require pre-tool-use` with
 the boundary's `--repo-root`, `--session`, `--skill`; pass that session to preflight
 with `--activation-session ID --workflow parallel-issues`.
-Missing challenge: report `agentkit: activation-unavailable`; stop without substituting.
+Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
+user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Client restart/conversation resume retains
 the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
 
-### Cold-start contract
+### No delivered challenge = no run
 
-No current-session activation receipt means no parallel-issues run exists. For
-ordinary ad-hoc work, do not search for or reconstruct a ledger, backlog snapshot,
+If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
+conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
+own message asks you to use this procedure anyway (plugin disabled, "just follow the steps"), treat this
+file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
+with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Regardless
+of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers
+that write, touch `.agent/`, or onboard/bootstrap/refresh, unless the user asks for that specific action in
+their own words. Reference use does not create or recover active-run bookkeeping. The workflow's
+authorization, no-bypass, and human-thread protections still apply during reference use. Never repair kit
+state to make a reference read work. If a challenge **was** delivered, everything below applies unchanged.
+
+No current-session activation receipt means no parallel-issues run exists. For ordinary ad-hoc
+work, do not search for or reconstruct a ledger, backlog snapshot,
 proof, fingerprint, or environment contract merely because this repository contains
 state from an older run. The workflow begins only from a current invocation and its
 acknowledged receipt.

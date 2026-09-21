@@ -1898,7 +1898,7 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
     'Collect reuses only receipts already accepted by root'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2217 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2229 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
