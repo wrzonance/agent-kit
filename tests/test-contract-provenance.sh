@@ -221,6 +221,33 @@ assert_eq yes "$([[ -x $reader ]] && printf yes || printf no)" \
 assert_eq yes "$([[ -x $cache_reader ]] && printf yes || printf no)" \
     'contract cache data reader is an executable shared helper'
 
+installed_shared="$tmp/installed skills/.shared/scripts"
+mkdir -p -- "$installed_shared/lib"
+cp -- "$reader" "$installed_shared/contract-read.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/harness-id.sh" "$installed_shared/harness-id.sh"
+cp -- "$cache_reader" "$installed_shared/lib/contract-cache.sh"
+printf '#!/usr/bin/env bash\nexec %q "$@"\n' \
+    "$root/agentkit/skills/.shared/scripts/agent-preflight.sh" > "$installed_shared/agent-preflight.sh"
+chmod +x -- "$installed_shared/agent-preflight.sh"
+
+missing_reader="$installed_shared/contract-read.sh"
+missing_repo="$tmp/missing contract repo"
+mkdir -p -- "$missing_repo/.agent"
+git -C "$missing_repo" init -q
+missing_contract_rc=0
+missing_contract_out=$("$missing_reader" --repo-root "$missing_repo" --check 2>&1) || missing_contract_rc=$?
+assert_eq 3 "$missing_contract_rc" 'a missing environment contract retains exit 3'
+assert_contains "$missing_contract_out" 'agent-preflight.sh' \
+    'the missing-contract diagnostic names its producer'
+expected_recovery="$(printf '%q' "$installed_shared/agent-preflight.sh") --repo-root $(printf '%q' "$missing_repo") --ensure"
+assert_contains "$missing_contract_out" "create it with: $expected_recovery" \
+    'the missing-contract recovery shell-quotes producer and repository paths containing spaces'
+recovery_command=${missing_contract_out##*create it with: }
+assert_rc 0 'the advertised missing-contract recovery is directly executable' -- \
+    bash -c "$recovery_command"
+assert_rc 0 'the advertised recovery creates a trusted contract' -- \
+    "$missing_reader" --repo-root "$missing_repo" --check
+
 for consumer in \
     "$root/agentkit/skills/onboard-repo/SKILL.md" \
     "$root/agentkit/skills/review-remote-pr/SKILL.md" \

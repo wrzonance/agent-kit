@@ -62,6 +62,25 @@ else
     _fail 'and leaves the contract on disk' "no file at $repo/.agent/env-contract.txt"
 fi
 
+# --repo-root follows the shared helper convention while --worktree remains a
+# compatible spelling. Exercise a whitespace-bearing path so aliasing cannot
+# accidentally flatten the value into multiple arguments.
+alias_repo="$tmp/repo with spaces"
+mkdir -p -- "$alias_repo/.agent"
+git -C "$alias_repo" init -q
+worktree_alias_out=$("$script" --worktree "$alias_repo" --no-write 2> /dev/null)
+repo_root_alias_out=$("$script" --repo-root "$alias_repo" --no-write 2> /dev/null)
+assert_eq "$worktree_alias_out" "$repo_root_alias_out" \
+    '--repo-root is equivalent to --worktree for a path containing spaces'
+
+for root_flag in --worktree --repo-root; do
+    missing_value_rc=0
+    missing_value_out=$("$script" "$root_flag" --no-write 2>&1) || missing_value_rc=$?
+    assert_eq 2 "$missing_value_rc" "$root_flag rejects a missing value"
+    assert_contains "$missing_value_out" "$root_flag requires a value" \
+        "$root_flag names itself in its missing-value diagnostic"
+done
+
 codex_repo=$(new_repo)
 codex_out=$("${clean_harness_env[@]}" CODEX_HOME="$tmp/codex-home" \
     "$script" --worktree "$codex_repo" 2> /dev/null)
