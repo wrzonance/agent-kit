@@ -7,6 +7,7 @@ readonly PROGRAM=${0##*/}
 GH_BIN=${PR_QUEUE_GH:-gh}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 fingerprint_json() {
     jq -ecS 'sort_by(.filename) | map({filename, sha:(.sha // ""),
       patch:((.patch // "") | gsub("@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@"; "@@ @@"))})' "$1" |
@@ -150,10 +151,10 @@ if [[ -n $repo_root ]]; then
 fi
 if ((write_confirmed_queue)); then
     [[ -n $repo_root ]] || die '--write-confirmed-queue requires --repo-root'
-    [[ ! -L $repo_root && -O $repo_root ]] ||
-        die '--repo-root must be an owned directory, not a symlink'
-    [[ -d $repo_root/.agent && ! -L $repo_root/.agent && -O $repo_root/.agent ]] ||
-        die '.agent must be an owned directory, not a symlink'
+    path_error=$(owned_path_diagnostic "$repo_root" directory '--repo-root' \
+        'the repository checkout stage') || die "$path_error"
+    path_error=$(owned_path_diagnostic "$repo_root/.agent" directory .agent \
+        'the repository onboarding stage') || die "$path_error"
     if ((no_providers)); then
         ((${#providers[@]} == 0)) || die '--no-providers cannot be combined with --provider'
     else
@@ -237,8 +238,7 @@ plan_active=0
 # shellcheck disable=SC2034 # retained for transition diagnostics
 plan_drift=0
 if [[ -n $merge_plan ]]; then
-    [[ -f $merge_plan && ! -L $merge_plan && -O $merge_plan ]] ||
-        die "--merge-plan must be an owned regular file, not a symlink: $merge_plan"
+    path_error=$(owned_path_diagnostic "$merge_plan" file '--merge-plan' write-merge-plan.sh) || die "$path_error"
     plan_schema=$(jq -er '
       if type == "object" and (.schemaVersion | type) == "number"
       then .schemaVersion else empty end
@@ -613,9 +613,8 @@ fi
 
 if ((write_confirmed_queue)); then
     confirmed_output=$repo_root/.agent/pr-to-green-confirmed-queue.json
-    if [[ -e $confirmed_output &&
-          ( ! -f $confirmed_output || -L $confirmed_output || ! -O $confirmed_output ) ]]; then
-        die 'confirmed queue output must be an owned regular file, not a symlink'
+    if [[ -e $confirmed_output || -L $confirmed_output ]]; then
+        path_error=$(owned_path_diagnostic "$confirmed_output" file 'confirmed queue output' pr-queue.sh) || die "$path_error"
     fi
     jq --arg repo "$repo" --arg plan "$merge_plan" --arg planOption "$plan_option" \
       --argjson prs "$(printf '%s\n' "${explicit_prs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \

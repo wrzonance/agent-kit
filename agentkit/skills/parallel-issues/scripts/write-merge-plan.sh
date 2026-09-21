@@ -4,6 +4,9 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM=${0##*/}
+SCRIPT_DIR=${BASH_SOURCE[0]%/*}
+[[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 dispatch_plan=''
 merge_plan=''
 validate_only=0
@@ -64,12 +67,11 @@ else
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required; merge-plan evidence unavailable'
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
-inputs=("$dispatch_plan")
-[[ -z $merge_plan ]] || inputs+=("$merge_plan")
-for file in "${inputs[@]}"; do
-    [[ -f $file && ! -L $file && -O $file ]] ||
-        die "input must be an owned regular file, not a symlink: $file"
-done
+path_error=$(owned_path_diagnostic "$dispatch_plan" file input \
+    'the dispatch planning stage') || die "$path_error"
+[[ -z $merge_plan ]] ||
+    path_error=$(owned_path_diagnostic "$merge_plan" file input \
+        'the merge-plan drafting stage') || die "$path_error"
 
 # Resolve predictions against an immutable git tree when the dispatcher gives
 # us its chain base.  The argument may be a worktree (use its HEAD) or a git

@@ -18,6 +18,7 @@ SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 source "$SCRIPT_DIR/../../.shared/scripts/lib/private-dir.sh"
 # shellcheck disable=SC1091  # plugin-relative path is resolved at runtime
 source "$SCRIPT_DIR/../../.shared/scripts/lib/canonical-diff.sh"
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 COMMAND=${1:-}
 STATE_PATH=''
 WORKTREE=''
@@ -154,8 +155,8 @@ validate_context() {
             WORKTREE=$CONSENT_WORKTREE
         fi
         if [[ -n $WORKTREE ]]; then
-            [[ -d $WORKTREE && ! -L $WORKTREE && -O $WORKTREE ]] ||
-                die "worktree must be an owned regular directory, not a symlink: $WORKTREE" 2
+            path_error=$(owned_path_diagnostic "$WORKTREE" directory worktree \
+                'the checkout creation stage') || die "$path_error" 2
             WORKTREE=$(cd -- "$WORKTREE" && pwd -P) ||
                 die "could not resolve worktree: $WORKTREE" 2
         elif [[ -n $BASE_REF || -n $BASE_SHA ]]; then
@@ -218,8 +219,8 @@ validate_payload_inputs() {
     [[ -z $BASE_REF || -z $BASE_SHA ]] ||
         die_usage '--base-ref and --base-sha are mutually exclusive; pass exactly one'
     if [[ -n $DIFF_PATH ]]; then
-        [[ -f $DIFF_PATH && ! -L $DIFF_PATH && -O $DIFF_PATH ]] ||
-            die "diff must be an owned regular file, not a symlink: $DIFF_PATH" 2
+        path_error=$(owned_path_diagnostic "$DIFF_PATH" file diff \
+            'the canonical diff rendering stage') || die "$path_error" 2
     elif [[ -z $BASE_REF && -z $BASE_SHA ]]; then
         die_usage 'payload requires --base-ref, --base-sha, or --diff'
     fi
@@ -409,8 +410,8 @@ load_prior_source() {
 # Persist sorted paths privately and return their SHA-256 for the decision.
 record_granted_paths() {
     local src=$1 parent dest tmp hash
-    [[ -f $src && ! -L $src && -O $src ]] ||
-        die "--paths-file must be an owned regular file, not a symlink: $src"
+    path_error=$(owned_path_diagnostic "$src" file '--paths-file' \
+        'the payload --emit-paths stage') || die "$path_error"
     parent=$(state_parent) || return 1
     dest=$(granted_paths_path)
     tmp=$(mktemp "$parent/.consent-paths.XXXXXX") || return 1
@@ -747,11 +748,8 @@ check_reduced_auto_review_payload() {
             "$PROGNAME" >&2
         return 10
     }
-    [[ -f $PATHS_FILE && ! -L $PATHS_FILE && -O $PATHS_FILE ]] || {
-        printf '%s: check failed: --paths-file must be an owned regular file, not a symlink: %s\n' \
-            "$PROGNAME" "$PATHS_FILE" >&2
-        return 10
-    }
+    path_error=$(owned_path_diagnostic "$PATHS_FILE" file '--paths-file' \
+        'the payload --emit-paths stage') || die "$path_error" 10
     local sorted_payload_paths comm_rc=0
     sorted_payload_paths=$(mktemp) || {
         printf '%s: check failed: could not create a temporary file to compare payload paths\n' \

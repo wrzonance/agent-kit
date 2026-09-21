@@ -6,6 +6,7 @@ umask 077
 readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 QUEUE_HELPER=${AUTHORIZE_QUEUE_HELPER:-$SCRIPT_DIR/pr-queue.sh}
 PROVIDER_CONFIG=${AUTHORIZE_QUEUE_PROVIDER_CONFIG:-$SCRIPT_DIR/../../.shared/scripts/review-provider-config.sh}
 GH_BIN=${AUTHORIZE_QUEUE_GH:-gh}
@@ -448,15 +449,15 @@ verify_lineage() {
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     die '--repo must have the form OWNER/REPO'
 [[ -n $repo_root ]] || die '--repo-root is required'
-[[ -d $repo_root && ! -L $repo_root && -O $repo_root ]] ||
-    die '--repo-root must be an owned directory, not a symlink'
+path_error=$(owned_path_diagnostic "$repo_root" directory '--repo-root' \
+    'the repository checkout stage') || die "$path_error"
 repo_root=$(cd -- "$repo_root" && pwd -P) || die 'could not resolve --repo-root'
-[[ -d $repo_root/.agent && ! -L $repo_root/.agent && -O $repo_root/.agent ]] ||
-    die '.agent must be an owned directory, not a symlink'
+path_error=$(owned_path_diagnostic "$repo_root/.agent" directory .agent \
+    'the repository onboarding stage') || die "$path_error"
 expected_confirmed_queue=$repo_root/.agent/pr-to-green-confirmed-queue.json
 [[ -n $confirmed_queue_file ]] || die '--confirmed-queue-file is required'
-[[ -f $confirmed_queue_file && ! -L $confirmed_queue_file && -O $confirmed_queue_file ]] ||
-    die 'confirmed queue file must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$confirmed_queue_file" file 'confirmed queue file' \
+    'pr-queue.sh --write-confirmed-queue') || die "$path_error"
 confirmed_queue_file=$(realpath -- "$confirmed_queue_file") ||
     die 'could not resolve --confirmed-queue-file'
 [[ $confirmed_queue_file == "$expected_confirmed_queue" ]] ||
@@ -491,8 +492,8 @@ if ((${#retarget_proof_file[@]})); then
         die '--retarget-proof requires --allow-mechanical-advance'
     for pr in "${!retarget_proof_file[@]}"; do
         file=${retarget_proof_file[$pr]}
-        [[ -f $file && ! -L $file && -O $file ]] ||
-            die "--retarget-proof file must be an owned regular file, not a symlink: $file"
+        path_error=$(owned_path_diagnostic "$file" file '--retarget-proof file' \
+            'chain-advance.sh --retarget') || die "$path_error"
         reject_writable_by_others "$file" '--retarget-proof file'
     done
 fi
@@ -916,8 +917,8 @@ if ((full_match_ok == 0)); then
                 ' "$proof" >/dev/null || die 'self-authored push/finding evidence incomplete; redisplay and reconfirm'
                 if [[ -s $work_dir/commits ]]; then
                     touched=$repo_root/.agent/evidence/paths-touched.ndjson
-                    [[ -d $repo_root/.agent/evidence && ! -L $repo_root/.agent/evidence && -O $repo_root/.agent/evidence ]] ||
-                        die 'untrusted paths evidence directory'
+                    path_error=$(owned_path_diagnostic "$repo_root/.agent/evidence" directory \
+                        'paths evidence directory' 'the parallel-issues evidence collection stage') || die "$path_error"
                     private_file "$touched"
                     finding_ledger=$(jq -er '.findingLedger | select(type == "string" and length > 0)' "$proof") ||
                         die 'self-authored finding ledger missing; redisplay and reconfirm'
@@ -1062,8 +1063,8 @@ jq -n --arg repo "$repo" --slurpfile providers "$work_dir/providers.json" \
 ' >"$work_dir/authorization.json" || die 'could not compose authorization record'
 
 output=$repo_root/.agent/pr-to-green-auth.json
-if [[ -e $output && ( ! -f $output || -L $output || ! -O $output ) ]]; then
-    die 'authorization output must be an owned regular file, not a symlink'
+if [[ -e $output || -L $output ]]; then
+    path_error=$(owned_path_diagnostic "$output" file 'authorization output' authorize-queue.sh) || die "$path_error"
 fi
 if [[ -n $receipt ]]; then
     if [[ -f $receipt ]]; then

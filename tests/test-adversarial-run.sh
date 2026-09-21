@@ -721,6 +721,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$malformed_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/owned-path.sh" \
+    "$malformed_root/skills/.shared/scripts/lib/owned-path.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
     "$malformed_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$malformed_script_dir/claude-adversarial-review.sh" <<'EOF'
@@ -787,6 +789,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$verdict_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/owned-path.sh" \
+    "$verdict_root/skills/.shared/scripts/lib/owned-path.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
     "$verdict_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$verdict_script_dir/claude-adversarial-review.sh" <<'EOF'
@@ -1080,6 +1084,8 @@ cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/canonical-diff.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/canonical-diff.sh"
+cp -- "$root/agentkit/skills/.shared/scripts/lib/owned-path.sh" \
+    "$noreceipt_root/skills/.shared/scripts/lib/owned-path.sh"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/contract-cache.sh"
 cat >"$noreceipt_script_dir/claude-adversarial-review.sh" <<'EOF'

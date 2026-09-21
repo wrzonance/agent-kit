@@ -10,6 +10,7 @@ umask 077
 readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 GH_BIN=${MERGE_GATE_GH:-gh}
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
@@ -128,8 +129,8 @@ done
 [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
 [[ $head_sha =~ $SHA_RE ]] || die '--head-sha must be a full 40-character SHA'
 [[ -n $base ]] || die '--base is required'
-[[ -f $digest_file && ! -L $digest_file && -O $digest_file ]] ||
-    die '--pr-state-digest must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$digest_file" file '--pr-state-digest' \
+    'gh-pr-state.sh --digest-out') || die "$path_error"
 reject_writable_by_others "$digest_file" '--pr-state-digest' 'gh-pr-state.sh'
 case $provider_result in
     AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|LANDED|STALE_HEAD|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
@@ -150,8 +151,8 @@ if [[ -n $cq_scan_state ]]; then
     esac
 fi
 if [[ -n $cq_state_file ]]; then
-    [[ -f $cq_state_file && ! -L $cq_state_file && -O $cq_state_file ]] ||
-        die '--code-quality-state-file must be an owned regular file, not a symlink'
+    path_error=$(owned_path_diagnostic "$cq_state_file" file '--code-quality-state-file' \
+        'code-quality-state.sh --state-file') || die "$path_error"
     reject_writable_by_others "$cq_state_file" '--code-quality-state-file'
 fi
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
