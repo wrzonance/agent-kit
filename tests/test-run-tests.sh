@@ -28,6 +28,7 @@ make_fixture() {
     printf '{}' >"$dir/agentkit/.codex-plugin/plugin.json"
     printf '{}' >"$dir/agentkit/hooks/hooks.json"
     cp -- "$root/tests/run-tests.sh" "$dir/tests/run-tests.sh"
+    printf 'alpha\t100\nbeta\t80\n' >"$dir/tests/suite-weights.tsv"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-markdown-blocks.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-invocations.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-skill-size.sh"
@@ -98,6 +99,15 @@ run_fixture() {
         AGENT_TEST_JOBS=$jobs TRACE="$trace" \
             "$fixture/tests/run-tests.sh" >"$tmp/out" 2>&1 || rc=$?
     fi
+    printf '%s' "$rc"
+}
+
+run_shard_fixture() {
+    local shard=$1 locale=${2:-C}
+    : >"$trace"
+    local rc=0
+    LC_ALL=$locale AGENT_TEST_JOBS=1 TRACE="$trace" \
+        "$fixture/tests/run-tests.sh" --shard "$shard" >"$tmp/out" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 
@@ -202,5 +212,68 @@ assert_line_order 'parallel trace admits gamma before the still-blocked beta fin
 assert_line_order 'combined output remains deterministic despite parallel workers' \
     "$(grep -n 'alpha summary' "$tmp/out" | head -1 | cut -d: -f1)" \
     "$(grep -n 'beta summary' "$tmp/out" | head -1 | cut -d: -f1)"
+
+all_shards=$tmp/all-shards
+: >"$all_shards"
+for shard in 1/2 2/2; do
+    run_shard_fixture "$shard" > /dev/null
+    cat -- "$trace" >>"$all_shards"
+done
+for suite in alpha beta gamma fail; do
+    assert_eq '1' "$(grep -c "^$suite-start$" "$all_shards")" \
+        "shards partition $suite exactly once"
+done
+
+run_shard_fixture 1/2 C > /dev/null
+assert_contains "$(<"$trace")" 'alpha-start' \
+    'longest-first balancing puts the heaviest recorded suite in shard one'
+assert_not_contains "$(<"$trace")" 'beta-start' \
+    'longest-first balancing puts the next recorded suite in shard two'
+c_selection=$(grep -- '-start$' "$trace" | sort)
+if locale -a 2>/dev/null | grep -Fxiq 'C.utf8'; then
+    run_shard_fixture 1/2 C.utf8 > /dev/null
+    utf8_selection=$(grep -- '-start$' "$trace" | sort)
+    assert_eq "$c_selection" "$utf8_selection" \
+        'shard selection is deterministic across available locales'
+fi
+
+for invalid_shard in 0/2 3/2 1/0 one/two 1/2/3; do
+    rc=$(run_shard_fixture "$invalid_shard")
+    assert_eq '2' "$rc" "invalid shard is rejected: $invalid_shard"
+    assert_contains "$(<"$tmp/out")" 'invalid --shard value' \
+        "invalid shard error is explained: $invalid_shard"
+done
+
+rc=0
+AGENT_TEST_JOBS=1 TRACE="$trace" \
+    "$fixture/tests/run-tests.sh" --only alpha --shard 1/2 >"$tmp/out" 2>&1 || rc=$?
+assert_eq '2' "$rc" '--only and --shard cannot select competing suite sets'
+
+: >"$trace"
+rc=0
+AGENT_TEST_JOBS=1 TRACE="$trace" \
+    "$fixture/tests/run-tests.sh" --gates-only >"$tmp/out" 2>&1 || rc=$?
+assert_eq '0' "$rc" '--gates-only runs the static gates successfully'
+assert_eq '' "$(<"$trace")" '--gates-only does not run unit suites'
+
+ci_text=$(<"$root/.github/workflows/ci.yml")
+assert_contains "$ci_text" 'matrix:' 'CI defines a suite matrix'
+assert_contains "$ci_text" 'shard: [1, 2, 3, 4]' 'CI starts with four suite shards'
+assert_contains "$ci_text" 'tests/run-tests.sh --gates-only' \
+    'CI runs static gates independently from suites'
+# shellcheck disable=SC2016  # GitHub expression is literal workflow syntax.
+assert_contains "$ci_text" 'tests/run-tests.sh --shard ${{ matrix.shard }}/4' \
+    'each matrix job runs its selected suite shard'
+assert_contains "$ci_text" 'name: gates and suites' \
+    'CI preserves the stable aggregate check name'
+assert_contains "$ci_text" 'needs: [gates, suites]' \
+    'the aggregate waits for static gates and every matrix shard'
+# shellcheck disable=SC2016  # GitHub expression is literal workflow syntax.
+assert_contains "$ci_text" 'if: ${{ always() }}' \
+    'the aggregate runs after failed, cancelled, or skipped prerequisites'
+assert_contains "$ci_text" 'needs.gates.result' \
+    'the aggregate checks the static-gate result explicitly'
+assert_contains "$ci_text" 'needs.suites.result' \
+    'the aggregate checks the matrix result explicitly'
 
 finish
