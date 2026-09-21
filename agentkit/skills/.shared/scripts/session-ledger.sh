@@ -430,7 +430,12 @@ ensure_ledger() {
 }
 
 validate_record_stream() {
-    jq -s -e --arg secret_re "$SECRET_RE" '
+    local exactly_one=false
+    if [[ ${1:-} == --exactly-one ]]; then
+        exactly_one=true
+        shift
+    fi
+    jq -s -e --arg secret_re "$SECRET_RE" --argjson exactly_one "$exactly_one" '
       def safe_text:
         if type != "string" then false
         else length > 0 and length <= 4096
@@ -458,7 +463,7 @@ validate_record_stream() {
           and (.scope | safe_text)
           and (.quote | safe_quote)
         end;
-      all(.[]; valid_record)
+      (($exactly_one | not) or length == 1) and all(.[]; valid_record)
     ' "$@" >/dev/null 2>&1
 }
 
@@ -577,7 +582,7 @@ quarantine_records() {
     source_ledger=$LEDGER
     while IFS= read -r line || [[ -n $line ]]; do
         line_number=$((line_number + 1))
-        if printf '%s\n' "$line" | validate_record_stream; then
+        if printf '%s\n' "$line" | validate_record_stream --exactly-one; then
             printf '%s\n' "$line" >> "$kept" || die_evidence 'could not stage a valid ledger row'
             remaining=$((remaining + 1))
             continue
