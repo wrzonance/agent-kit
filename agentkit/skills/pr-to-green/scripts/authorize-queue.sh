@@ -316,7 +316,8 @@ generated_commit() {
     local commit=$1 config=$repo_root/.agent/config.env prefixes path prefix matched record count=0
     local -a parents patterns
     read -r -a parents <<<"$(git -C "$repo_root" rev-list --parents -n 1 "$commit")"
-    ((${#parents[@]} == 2)) || die 'unproved default commit is not a generated nonmerge'
+    ((${#parents[@]} == 2)) ||
+        die 'unproved default commit needs live merged-PR metadata or generated nonmerge evidence'
     private_file "$config"
     [[ ! -L $repo_root/.agent && -O $repo_root/.agent ]] || die 'untrusted config directory'
     "$SCRIPT_DIR/../../.shared/scripts/repo-config.sh" --repo-root "$repo_root" --config-file "$config" --validate >/dev/null || die 'generated config malformed'
@@ -344,6 +345,24 @@ generated_commit() {
         count=$((count + 1))
     done <"$work_dir/generated-diff"
     ((count > 0)) || die 'generated commit has no complete records'
+}
+
+authorized_queue_commit() {
+    local commit=$1 default=$2 candidate_pr metadata head
+    while IFS= read -r candidate_pr; do
+        metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/pulls/$candidate_pr" 2>/dev/null) || continue
+        if jq -e --arg commit "$commit" --arg default "$default" --argjson pr "$candidate_pr" \
+          --slurpfile heads "$work_dir/authorized-heads.json" '
+          . as $metadata | .merged == true and .base.ref == $default and
+          .merge_commit_sha == $commit and
+          any($heads[0][]; .pr == $pr and .sha == $metadata.head.sha)
+        ' <<<"$metadata" >/dev/null 2>&1; then
+            head=$(jq -r .head.sha <<<"$metadata")
+            verify_authorized_landing "$commit" "$head"
+            return 0
+        fi
+    done < <(jq -r 'map(.pr) | unique[]' "$work_dir/authorized-heads.json")
+    return 1
 }
 
 verify_lineage() {
@@ -404,7 +423,8 @@ verify_lineage() {
         (( $(wc -l <"$work_dir/default-actual") <= 16 )) || die 'default advance exceeds 16 commits'
         LC_ALL=C sort -u "$work_dir/default-merges" >"$work_dir/default-expected"
         while IFS= read -r commit; do
-            grep -Fxq "$commit" "$work_dir/default-expected" || generated_commit "$commit"
+            grep -Fxq "$commit" "$work_dir/default-expected" ||
+                authorized_queue_commit "$commit" "$default" || generated_commit "$commit"
         done <"$work_dir/default-actual"
         LC_ALL=C comm -23 "$work_dir/default-expected" "$work_dir/default-actual" >"$work_dir/off-history" || die 'default comparison unavailable'
         [[ ! -s $work_dir/off-history ]] || die 'default proof names off-history merges'
@@ -413,7 +433,8 @@ verify_lineage() {
         if [[ $old_ref != "$default" ]]; then
             base_pr=$(jq -er '.oldBase.pr|select(type=="number" and floor==. and .>0)' "$proof") || die 'stacked default advance needs oldBase identity'
             base_sha=$(jq -er '.oldBase.sha|select(test("^[0-9a-f]{40}$"))' "$proof") || die 'oldBase SHA missing'
-            jq -e --argjson pr "$base_pr" --arg sha "$base_sha" 'any(.[];.pr==$pr and .sha==$sha)' "$work_dir/authorized-heads.json" >/dev/null || die 'oldBase is not receipt-authorized'
+            jq -e --argjson pr "$base_pr" --arg sha "$base_sha" 'any(.[];.pr==$pr and .sha==$sha)' "$work_dir/authorized-heads.json" >/dev/null ||
+                die 'oldBase is not receipt-authorized; a compatible prior run receipt is required'
             metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/pulls/$base_pr") || die 'oldBase PR unreadable'
             [[ $(jq -r .head.ref <<<"$metadata") == "$old_ref" ]] || die 'oldBase branch differs from original base'
             metadata=$(timeout 10 "$GH_BIN" api "repos/$repo/git/ref/heads/$old_ref") || die 'oldBase branch unreadable'
@@ -644,6 +665,48 @@ if [[ -n $run_id ]]; then
       {repository:$repo,selector:$argv,providers:$providers[0],writeSet:$paths[0],
        autoMerge:$auto,mergeMethod:$method,branch:$branch,prs:($snapshot[0].queue | map(.pr) | sort)}
     ' >"$work_dir/predicate.json"
+    printf '[]\n' >"$work_dir/inherited-receipts.json"
+    if [[ ! -e $receipt && ! -L $receipt ]]; then
+        : >"$work_dir/inherited-receipts.jsonl"
+        for candidate in "$repo_root"/.agent/pr-to-green-run-*.json; do
+            [[ -f $candidate && ! -L $candidate && -O $candidate && $candidate != "$receipt" ]] || continue
+            mode=$(file_mode "$candidate") || continue
+            (( (8#$mode & 0022) == 0 )) || continue
+            candidate_run=${candidate##*/pr-to-green-run-}
+            candidate_run=${candidate_run%.json}
+            jq -ce --arg run "$candidate_run" --arg repo "$repo" \
+              --slurpfile current "$work_dir/predicate.json" '
+              select(.runId == $run and (.source == "predicate" or .source == "interactive") and
+                (.predicate | type) == "object" and .predicate.repository == $repo and
+                (.predicate | del(.prs,.selector.prs)) ==
+                  ($current[0] | del(.prs,.selector.prs)) and
+                (($current[0].prs - .predicate.prs) == []) and
+                (($current[0].selector.prs - .predicate.selector.prs) == []) and
+                ((.authorizedHeads // []) | type) == "array" and
+                all((.authorizedHeads // [])[];
+                  (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
+                  (.sha | type) == "string" and (.sha | test("^[0-9a-f]{40}$"))) and
+                (.advances | type) == "array" and
+                all(.advances[];
+                  (.pr | type) == "number" and .pr > 0 and (.pr | floor) == .pr and
+                  (.kind == "merge-down" or .kind == "retarget" or
+                   .kind == "self-authored" or .kind == "lineage" or
+                   .kind == "lineage-retarget" or .kind == "vanished") and
+                  (if .kind == "vanished" then .from == "-" and .to == "-" and .base == "-"
+                   else (.from | type) == "string" and (.from | test("^[0-9a-f]{40}$")) and
+                     (.to | type) == "string" and (.to | test("^[0-9a-f]{40}$")) and
+                     (.base | type) == "string" and (.base | length) > 0 end)) and
+                ((.inheritedReceipts // []) | type) == "array" and
+                all((.inheritedReceipts // [])[];
+                  (keys | sort) == ["runId"] and
+                  (.runId | type) == "string" and
+                  (.runId | test("^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")))) |
+              {runId,authorizedHeads:(.authorizedHeads // []),advances,
+               inheritedReceipts:(.inheritedReceipts // [])}
+            ' "$candidate" >>"$work_dir/inherited-receipts.jsonl" 2>/dev/null || true
+        done
+        jq -s '.' "$work_dir/inherited-receipts.jsonl" >"$work_dir/inherited-receipts.json"
+    fi
     if [[ -e $receipt || -L $receipt ]]; then
         private_file "$receipt"
         jq -e --arg run "$run_id" --slurpfile p "$work_dir/predicate.json" \
@@ -1092,8 +1155,13 @@ if [[ -n $receipt ]]; then
         cp -- "$receipt" "$work_dir/receipt.json"
     else
         jq -n --arg run "$run_id" --arg source "$([[ $fast_mode == 1 ]] && printf predicate || printf interactive)" \
-          --slurpfile predicate "$work_dir/predicate.json" \
-          '{runId:$run,source:$source,predicate:$predicate[0],advances:[]}' >"$work_dir/receipt.json"
+          --slurpfile predicate "$work_dir/predicate.json" --slurpfile inherited "$work_dir/inherited-receipts.json" '
+          {runId:$run,source:$source,predicate:$predicate[0],
+           authorizedHeads:($inherited[0] | map(.authorizedHeads[]) | unique),
+           advances:($inherited[0] | map(.advances[]) | unique),
+           inheritedReceipts:($inherited[0] |
+             map((.inheritedReceipts // []) + [{runId:.runId}]) | add // [] | unique)}
+        ' >"$work_dir/receipt.json"
     fi
     [[ -f $work_dir/reconcile.json ]] || printf '{"perPr":[]}' >"$work_dir/reconcile.json"
     jq --slurpfile reconciliation "$work_dir/reconcile.json" --slurpfile auth "$work_dir/authorization.json" \
