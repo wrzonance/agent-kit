@@ -14,7 +14,10 @@ skills="$root/agentkit/skills"
 reference_heading='No delivered challenge = no run'
 reference_trigger='If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this conversation'
 reference_authority='Reference use carries **none** of the workflow'
-reference_forbidden='Do not run kit helpers that write, touch `.agent/`, onboard/bootstrap/refresh, merge, flip ready, trigger review bots, resolve threads or move board items'
+reference_exception="unless the user's own message explicitly requests the no-delivery reference use described below"
+reference_forbidden='Regardless of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers that write, touch `.agent/`, or onboard/bootstrap/refresh'
+reference_bookkeeping='Reference use does not create or recover active-run bookkeeping.'
+reference_protections="The workflow's authorization, no-bypass, and human-thread protections still apply during reference use."
 
 for workflow in review-remote-pr pr-to-green parallel-issues onboard-repo; do
     step_zero=$(awk '
@@ -29,8 +32,14 @@ for workflow in review-remote-pr pr-to-green parallel-issues onboard-repo; do
         "$workflow keys reference use to challenge delivery"
     assert_contains "$step_zero_flat" "$reference_authority" \
         "$workflow gives reference use no workflow authority"
+    assert_contains "$step_zero_flat" "$reference_exception" \
+        "$workflow makes its missing-challenge stop defer to explicit reference use"
     assert_contains "$step_zero_flat" "$reference_forbidden" \
-        "$workflow preserves the complete helper-write prohibition"
+        "$workflow makes protected-action bans command-independent"
+    assert_contains "$step_zero_flat" "$reference_bookkeeping" \
+        "$workflow does not reconstruct bookkeeping during reference use"
+    assert_contains "$step_zero_flat" "$reference_protections" \
+        "$workflow preserves authorization, no-bypass, and human-thread protections"
 done
 
 assert_contains "$(<"$skills/review-remote-pr/SKILL.md")" \
@@ -53,13 +62,20 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 repo="$tmp/repo"
 git -C "$tmp" init -q repo
-for action in ack check; do
+for action in ack check redeliver; do
     rc=0
     out=$("$activation" "$action" --repo-root "$repo" --session reference-use \
         --skill review-remote-pr 2>&1) || rc=$?
     assert_eq 1 "$rc" "$action without a receipt keeps its refusal exit code"
-    assert_contains "$out" 'no challenge was delivered in this session, so no workflow run exists; reference use needs no activation' \
-        "$action without a receipt explains the reference-use path"
+    assert_contains "$out" 'no receipt at activation origin for session' \
+        "$action without a receipt keeps the strict receipt refusal"
+    if [[ $action == check ]]; then
+        assert_contains "$out" 'if no challenge was delivered in this conversation, no workflow run exists; reference use needs no activation' \
+            'check without a receipt conditionally explains the reference-use path'
+    else
+        assert_not_contains "$out" 'reference use needs no activation' \
+            "$action without a receipt does not redirect an initiated run to reference use"
+    fi
 done
 
 preflight_help=$("$skills/.shared/scripts/agent-preflight.sh" --help)

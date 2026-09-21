@@ -67,7 +67,16 @@ class Activation(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no receipt at activation origin", result.stderr)
         self.assertIn("invoke parallel-issues in that checkout", result.stderr)
-        self.assertIn("no challenge was delivered in this session, so no workflow run exists", result.stderr)
+        self.assertIn("if no challenge was delivered in this conversation, no workflow run exists", result.stderr)
+
+    def test_missing_receipt_reference_guidance_is_check_only(self):
+        for action in ("ack", "redeliver"):
+            with self.subTest(action=action):
+                result = self.invoke(action, "--repo-root", str(self.repo),
+                                     "--session", "test-session", "--skill", "parallel-issues")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("no receipt at activation origin", result.stderr)
+                self.assertNotIn("reference use needs no activation", result.stderr)
 
     def test_failed_activation_helper_does_not_block_ordinary_prompt(self):
         self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
