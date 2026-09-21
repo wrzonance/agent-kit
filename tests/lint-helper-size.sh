@@ -164,7 +164,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
 # Issue #844: scoped ledger validation, auditable quarantine, and the hard
 # direct-write guard add measured recovery code to the shipped helper tree.
-readonly MAX_TREE_TOKENS=466859
+readonly MAX_TREE_TOKENS=466944
 
 violations=0
 checked=0

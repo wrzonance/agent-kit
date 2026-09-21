@@ -26,6 +26,8 @@ assert_contains "$(<"$skills/references.md")" '$agentkit/.shared/reading-discipl
 assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'kit-state-red' 'queue separates repairable kit state from code failures'
 assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'session-ledger.sh" quarantine --ledger' \
     'queue names the shipped recovery helper instead of inventing one'
+assert_contains "$(<"$skills/pr-to-green/SKILL.md")" 'Retry the failed Phase A check once' \
+    'queue bounds kit-state repair to one retry'
 help_out=$("$skills/review-remote-pr/scripts/adversarial-run.sh" --help)
 for term in '--reviewer' '--override-authorization' '--provenance' 'required together' 'claude-*' 'gpt-6-*' '--list-adversarial-efforts'; do
     assert_contains "$help_out" "$term" "review help exposes $term"

@@ -233,7 +233,7 @@ parse_options() {
 
 require_commands() {
     local command
-    for command in date dirname flock jq mktemp mv readlink sha256sum stat; do
+    for command in date dirname flock jq mktemp mv readlink sha256sum stat tail; do
         command -v "$command" >/dev/null 2>&1 ||
             die_evidence "$command is not installed; session ledger unavailable"
     done
@@ -478,6 +478,15 @@ validated_records_for_run() {
     [[ -z $records ]] || printf '%s\n' "$records"
 }
 
+ensure_append_boundary() {
+    local last_byte
+    [[ -s $LEDGER ]] || return 0
+    last_byte=$(tail -c 1 -- "$LEDGER" && printf x) ||
+        die_evidence "could not inspect ledger append boundary: $LEDGER"
+    [[ $last_byte == $'\nx' ]] || printf '\n' >> "$LEDGER" ||
+        die_evidence "could not terminate the prior ledger row: $LEDGER"
+}
+
 append_record() {
     local entry existing records
     validate_append_inputs
@@ -499,6 +508,7 @@ append_record() {
         --arg decision "$DECISION" --arg scope "$SCOPE" --arg quote "$QUOTE" \
         '{timestamp:$timestamp,run_id:$run_id,skills_path:$skills_path,procedure_set:$procedure_set,decision:$decision,scope:$scope,quote:$quote}') ||
         die_evidence 'could not encode ledger record'
+    ensure_append_boundary
     printf '%s\n' "$entry" >>"$LEDGER" ||
         die_evidence "could not append to ledger: $LEDGER"
     chmod 600 -- "$LEDGER" || die_evidence "could not secure ledger: $LEDGER"

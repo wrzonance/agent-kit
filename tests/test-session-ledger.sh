@@ -193,6 +193,51 @@ assert_rc 2 'append rejects a secret-shaped multiline quote' -- "$script" append
     --quote $'line one\ntoken=ghp_exampleabc123\nline three'
 assert_eq '5' "$(wc -l < "$ledger" | tr -d ' ')" 'secret-shaped input is never persisted'
 
+# Appending under the ledger lock establishes a physical NDJSON boundary even
+# when an earlier writer omitted the trailing newline. Preserve a valid prior
+# grant and make both records readable and coverable.
+unterminated_valid="$state/unterminated-valid.ndjson"
+valid_prior=$(jq -cn --arg skills "$skills_real" \
+    '{timestamp:"2026-09-20T00:00:00Z",run_id:"prior-run",skills_path:$skills,
+      procedure_set:"parallel-issues",decision:"prior grant",scope:"prior scope",quote:"approved prior"}')
+printf '%s' "$valid_prior" > "$unterminated_valid"
+chmod 600 -- "$unterminated_valid"
+assert_rc 0 'append starts a new physical line after an unterminated valid row' -- \
+    "$script" append --ledger "$unterminated_valid" --run-id new-run \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision 'new grant' --scope 'new scope' --quote 'approved new'
+assert_eq '2' "$(wc -l < "$unterminated_valid" | tr -d ' ')" \
+    'valid prior and appended grants occupy separate terminated physical lines'
+assert_eq '1' "$("$script" read --ledger "$unterminated_valid" --run-id prior-run | jq -s length)" \
+    'the unterminated valid prior grant remains readable after append'
+assert_rc 0 'the unterminated valid prior grant remains coverable after append' -- \
+    "$script" covers --ledger "$unterminated_valid" --run-id prior-run \
+    --decision 'prior grant' --scope 'prior scope'
+assert_eq '1' "$("$script" read --ledger "$unterminated_valid" --run-id new-run | jq -s length)" \
+    'the appended grant is readable after a valid unterminated row'
+assert_rc 0 'the appended grant is coverable after a valid unterminated row' -- \
+    "$script" covers --ledger "$unterminated_valid" --run-id new-run \
+    --decision 'new grant' --scope 'new scope'
+
+# An unattributed malformed final row is preserved as its own physical row;
+# it cannot swallow the valid grant appended for a different run.
+unterminated_bad="$state/unterminated-malformed.ndjson"
+printf '%s' 'not-json' > "$unterminated_bad"
+chmod 600 -- "$unterminated_bad"
+assert_rc 0 'append starts a new physical line after an unterminated malformed row' -- \
+    "$script" append --ledger "$unterminated_bad" --run-id recovered-run \
+    --skills-path "$skills_path" --procedure-set parallel-issues \
+    --decision 'recovered grant' --scope 'recovered scope' --quote 'approved recovery'
+assert_eq '2' "$(wc -l < "$unterminated_bad" | tr -d ' ')" \
+    'malformed prior and appended grants occupy separate terminated physical lines'
+assert_eq 'not-json' "$(sed -n '1p' "$unterminated_bad")" \
+    'the malformed unterminated row is preserved byte-for-byte'
+assert_eq '1' "$("$script" read --ledger "$unterminated_bad" --run-id recovered-run | jq -s length)" \
+    'the appended grant is readable after a malformed unterminated row'
+assert_rc 0 'the appended grant is coverable after a malformed unterminated row' -- \
+    "$script" covers --ledger "$unterminated_bad" --run-id recovered-run \
+    --decision 'recovered grant' --scope 'recovered scope'
+
 # Existing state is validated for the requested run only. An unrelated broken
 # row must not veto a new grant, while a malformed row that names the requested
 # run still fails closed.

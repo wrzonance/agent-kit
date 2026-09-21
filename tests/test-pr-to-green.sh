@@ -33,6 +33,12 @@ assert_contains "$text" 'chain-advance.sh' \
     'coordinator delegates verified successor retargeting'
 assert_contains "$text" 'session-ledger.sh" quarantine --ledger' \
     'corrupt ledger recovery invokes the supported quarantine helper'
+assert_contains "$text" "agent-preflight.sh\" --worktree \"\$repository_root\" --write \"\$stale_contract_path\"" \
+    'stale contract recovery refreshes the exact contract reported by Phase A'
+assert_contains "$text" 'Retry the failed Phase A check once' \
+    'kit-state repair has one bounded verification retry'
+assert_contains "$text" 'Never erase review history or bypass trust/consent gates' \
+    'kit-state repair preserves review history and trust boundaries'
 assert_contains "$flat" 'provider plan, verified dependency graph, and exact serial queue' \
     'confirmation presents every authorization input before mutation'
 assert_contains "$flat" 'remediation pushes, ready transitions, and trigger-capable requests' \
@@ -110,10 +116,10 @@ assert_eq yes "$(test -x "$skills/pr-to-green/scripts/merge-pr.sh" && printf yes
 assert_contains "$readme_text" '`pr-to-green` skill' 'root capability inventory lists the coordinator'
 assert_contains "$readme_text" 'ships four skills' 'root inventory count includes the coordinator'
 
-# Issue #844: the explicit corrupt-ledger recovery recipe is part of the
-# executable coordinator contract; ratchet its measured final size.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20369 ]] && printf yes || printf no)" \
-    'pr-to-green SKILL.md stays at or under 20369 bytes'
+# Issue #844: explicit contract and ledger recovery recipes are part of the
+# executable coordinator contract; ratchet their measured final size.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/pr-to-green/SKILL.md") -le 20370 ]] && printf yes || printf no)" \
+    'pr-to-green SKILL.md stays at or under 20370 bytes'
 
 # shellcheck disable=SC2016 # Markdown backticks are literal.
 assert_contains "$text" '| `--fast-mode` |' 'coordinator exposes queue preauthorization'
