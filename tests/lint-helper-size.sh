@@ -162,7 +162,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #809: cause-accurate verification reuse diagnostics and usage documentation.
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
-readonly MAX_TREE_TOKENS=465200
+# PR #857 merge-down: session-scoped activation gate plus final #811 runner growth.
+readonly MAX_TREE_TOKENS=465276
 
 violations=0
 checked=0

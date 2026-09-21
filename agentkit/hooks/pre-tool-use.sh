@@ -51,14 +51,14 @@ ADVISORY_CONTEXT=''
 
 # Only a current session receipt arms the activation gate.
 aroot=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true); agent_dir="$aroot/.agent"; adir="$agent_dir/activation"
-r='' gate=yes; if [[ -n $aroot && -n $session && -d $agent_dir && ! -L $agent_dir && -O $agent_dir && -d $adir && ! -L $adir && -O $adir ]] && amode=$(stat -c %a -- "$agent_dir" 2>/dev/null) && dmode=$(stat -c %a -- "$adir" 2>/dev/null) && (( (8#$amode & 8#022) == 0 && (8#$dmode & 8#022) == 0 )); then
+r='' gate=yes; if [[ -n $aroot && -n $session && ${#session} -le 256 && -d $agent_dir && ! -L $agent_dir && -O $agent_dir && -d $adir && ! -L $adir && -O $adir ]] && amode=$(stat -c %a -- "$agent_dir" 2>/dev/null) && dmode=$(stat -c %a -- "$adir" 2>/dev/null) && (( (8#$amode & 8#022) == 0 && (8#$dmode & 8#022) == 0 )); then
     if command -v sha256sum > /dev/null 2>&1; then r=$(printf '%s' "$session" | sha256sum) || r=''
     elif command -v shasum > /dev/null 2>&1; then
         r=$(printf '%s' "$session" | shasum -a 256) || r=''; fi
     r=${r%% *}
     [[ $r =~ ^[[:xdigit:]]{64}$ && ! -e $adir/$r.json && ! -L $adir/$r.json ]] && gate=no
 fi
-if [[ -n $aroot && (-e $adir || -L $adir) && $gate == yes ]]; then
+if [[ -n $aroot && $gate == yes && (-e $adir || -L $adir || -L $agent_dir || (-e $agent_dir && ! -d $agent_dir)) ]]; then
     activation_output=$("$self_dir/../skills/.shared/scripts/workflow-activation.sh" hook <<< "$input") || deny 'agentkit: activation-unavailable: cannot validate the invocation boundary'
     if [[ $(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$activation_output") == deny ]]; then printf '%s\n' "$activation_output"; exit 0; fi
 fi
