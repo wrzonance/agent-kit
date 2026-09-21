@@ -10,6 +10,7 @@ umask 077
 readonly PROGRAM=${0##*/}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 GH_BIN=${MERGE_GATE_GH:-gh}
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
@@ -38,6 +39,7 @@ scan_runs_failed=''
 repo_code_security_status=''
 cs_code_security_disabled_probe=no
 scan_boundary_epoch=''
+scan_boundary_state=unreadable
 declare -a reasons=()
 
 die() {
@@ -127,8 +129,8 @@ done
 [[ $pr =~ ^[1-9][0-9]*$ ]] || die '--pr must be a positive integer'
 [[ $head_sha =~ $SHA_RE ]] || die '--head-sha must be a full 40-character SHA'
 [[ -n $base ]] || die '--base is required'
-[[ -f $digest_file && ! -L $digest_file && -O $digest_file ]] ||
-    die '--pr-state-digest must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$digest_file" file '--pr-state-digest' \
+    'gh-pr-state.sh --digest-out') || die "$path_error"
 reject_writable_by_others "$digest_file" '--pr-state-digest' 'gh-pr-state.sh'
 case $provider_result in
     AUTO_REVIEW|TRIGGERED|ALREADY_SPENT|LANDED|STALE_HEAD|OBSERVE_ONLY|DISABLED|BLOCKED|NONE) ;;
@@ -149,8 +151,8 @@ if [[ -n $cq_scan_state ]]; then
     esac
 fi
 if [[ -n $cq_state_file ]]; then
-    [[ -f $cq_state_file && ! -L $cq_state_file && -O $cq_state_file ]] ||
-        die '--code-quality-state-file must be an owned regular file, not a symlink'
+    path_error=$(owned_path_diagnostic "$cq_state_file" file '--code-quality-state-file' \
+        'code-quality-state.sh --state-file') || die "$path_error"
     reject_writable_by_others "$cq_state_file" '--code-quality-state-file'
 fi
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
@@ -481,12 +483,16 @@ scan_check_runs() {
 scan_boundary() {
     local event_time
     scan_boundary_epoch=''
+    scan_boundary_state=unreadable
     "$GH_BIN" api --paginate "repos/$repo/issues/$pr/timeline" \
         >"$work_dir/cs-timeline.json" 2>"$work_dir/api.err" || return 0
-    jq -e 'type == "array"' "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
-    event_time=$(jq -r --arg base "$live_base" '
-      [ .[]?
-        | select((.event // "") == "base_ref_changed")
+    jq -se 'length > 0 and all(.[]; type == "array")' \
+        "$work_dir/cs-timeline.json" >/dev/null 2>&1 || return 0
+    event_time=$(jq -sr --arg base "$live_base" '
+      add
+      | [ .[]?
+        | select((.event // "") == "base_ref_changed" or
+                 (.event // "") == "automatic_base_change_succeeded")
         | ([.base_ref, .baseRefName, .base_ref_name]
            | map(select(type == "string" and length > 0)) | first // "") as $event_base
         | select($event_base == "" or $event_base == $base)
@@ -495,12 +501,19 @@ scan_boundary() {
         | select(length > 0)
       ] | sort | last // empty
     ' "$work_dir/cs-timeline.json" 2>/dev/null) || return 0
-    [[ -n $event_time ]] || return 0
-    scan_boundary_epoch=$(date -u -d "$event_time" +%s 2>/dev/null) || {
+    if [[ -z $event_time ]]; then
+        scan_boundary_state=none
+        return 0
+    fi
+    scan_boundary_epoch=$(jq -nr --arg value "$event_time" '$value | try fromdateiso8601 catch empty' 2>/dev/null) || {
         scan_boundary_epoch=''
         return 0
     }
-    [[ $scan_boundary_epoch =~ ^[1-9][0-9]*$ ]] || scan_boundary_epoch=''
+    if [[ $scan_boundary_epoch =~ ^[1-9][0-9]*$ ]]; then
+        scan_boundary_state=found
+    else
+        scan_boundary_epoch=''
+    fi
 }
 
 # A pull_request-event CodeQL/SARIF upload sets GITHUB_SHA to the GitHub-
@@ -524,16 +537,38 @@ if code_security_disabled_response "$work_dir/cs-analyses-pr.json" ||
     cs_code_security_disabled_probe=yes
 fi
 
+scan_boundary
+cs_head_matches_total=0
 cs_head_matches=0
 if [[ $pr_analyses_state == ok ]]; then
-    cs_head_matches=$(jq --arg sha "$head_sha" --arg msha "$merge_commit_sha" '
+    cs_head_matches_total=$(jq --arg sha "$head_sha" --arg msha "$merge_commit_sha" '
         [.[] | select(.commit_sha == $sha or ($msha != "" and .commit_sha == $msha))] | length
+    ' "$work_dir/cs-analyses-pr.json" 2>/dev/null) || cs_head_matches_total=''
+    cs_head_matches=$(jq --arg sha "$head_sha" --arg msha "$merge_commit_sha" \
+        --argjson boundary "${scan_boundary_epoch:-null}" '
+        def after_boundary:
+          if $boundary == null then true
+          else try (((.created_at // .createdAt // "") | fromdateiso8601) > $boundary) catch false
+          end;
+        [.[]
+         | select(.commit_sha == $sha or ($msha != "" and .commit_sha == $msha))
+         | select(after_boundary)] | length
     ' "$work_dir/cs-analyses-pr.json" 2>/dev/null) || cs_head_matches=''
 fi
 
+cs_head_ref_matches_total=0
 cs_head_ref_matches=0
 if [[ $pr_head_analyses_state == ok ]]; then
-    cs_head_ref_matches=$(jq --arg sha "$head_sha" '[.[] | select(.commit_sha == $sha)] | length' \
+    cs_head_ref_matches_total=$(jq --arg sha "$head_sha" \
+        '[.[] | select(.commit_sha == $sha)] | length' \
+        "$work_dir/cs-analyses-pr-head.json" 2>/dev/null) || cs_head_ref_matches_total=''
+    cs_head_ref_matches=$(jq --arg sha "$head_sha" \
+        --argjson boundary "${scan_boundary_epoch:-null}" '
+        def after_boundary:
+          if $boundary == null then true
+          else try (((.created_at // .createdAt // "") | fromdateiso8601) > $boundary) catch false
+          end;
+        [.[] | select(.commit_sha == $sha) | select(after_boundary)] | length' \
         "$work_dir/cs-analyses-pr-head.json" 2>/dev/null) || cs_head_ref_matches=''
 fi
 
@@ -555,6 +590,12 @@ if [[ $cs_head_matches =~ ^[0-9]+$ ]] && ((cs_head_matches > 0)); then
     cs_any_head_match=yes
 elif [[ $cs_head_ref_matches =~ ^[0-9]+$ ]] && ((cs_head_ref_matches > 0)); then
     cs_any_head_match=yes
+fi
+cs_stale_head_match=no
+if [[ -n $scan_boundary_epoch && $cs_any_head_match == no ]] &&
+   { [[ $cs_head_matches_total =~ ^[1-9][0-9]*$ ]] ||
+     [[ $cs_head_ref_matches_total =~ ^[1-9][0-9]*$ ]]; }; then
+    cs_stale_head_match=yes
 fi
 
 # --- Code scanning non-use corroboration: a repository is only established
@@ -610,7 +651,6 @@ fi
 cs_status=''
 cs_last_ref=''
 cs_last_date=''
-scan_boundary
 scan_check_runs
 if [[ $scan_runs_state == pending ]]; then
     cs_status=pending
@@ -620,8 +660,12 @@ elif [[ $scan_runs_state == not-applicable ]]; then
     cs_status=not-applicable
 elif [[ $repo_code_security_status == disabled && $cs_code_security_disabled_probe == yes ]]; then
     cs_status=not-enabled
+elif [[ $cs_any_head_match == yes && $scan_boundary_state == unreadable ]]; then
+    cs_status=boundary-unreadable
 elif [[ $cs_any_head_match == yes ]]; then
     cs_status=current
+elif [[ $cs_stale_head_match == yes ]]; then
+    cs_status=stale-retarget
 elif [[ $pr_analyses_state == error ]]; then
     cs_status=unreadable
 else
@@ -686,6 +730,13 @@ case $cs_status in
     failed)
         printf 'code-scanning: FAILED runs=%s\n' "$scan_runs_failed"
         block "scan-failed: $scan_runs_failed"
+        ;;
+    stale-retarget)
+        printf 'scan-stale: codeql analysis predates retarget boundary=%s\n' "$scan_boundary_epoch"
+        block 'code-scanning analysis predates the latest base retarget'
+        ;;
+    boundary-unreadable)
+        block 'code-scanning retarget boundary is unreadable'
         ;;
     absent)
         printf 'scan-missing: codeql (human action: inspect the CodeQL workflow and dispatch it or update its path filter)\n'

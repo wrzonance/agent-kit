@@ -18,6 +18,7 @@ GH_BIN=${REVIEW_TRANSITION_GH:-gh}
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
 SHARED_DIR=$(cd -- "$SCRIPT_DIR/../../.shared/scripts" && pwd -P)
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 PROVIDER_CONFIG=${REVIEW_TRANSITION_PROVIDER_CONFIG:-$SHARED_DIR/review-provider-config.sh}
 COMMENT_HELPER=${REVIEW_TRANSITION_COMMENT:-$SCRIPT_DIR/../../review-remote-pr/scripts/gh-comment.sh}
 # shellcheck source=../../.shared/scripts/lib/review-provider-catalog.sh
@@ -320,8 +321,7 @@ while IFS= read -r line; do
 done <"$work_dir/providers.txt"
 plan_resolved=1
 
-[[ -f $authorization_file && ! -L $authorization_file && -O $authorization_file ]] ||
-    die 'authorization file must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$authorization_file" file 'authorization file' authorize-queue.sh) || die "$path_error"
 jq -e --arg repo "$repo" --argjson pr "$pr" '
   type == "object" and .repository == $repo and .readyTransition == true and
   ((.providers | type) == "array") and

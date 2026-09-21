@@ -253,7 +253,7 @@ out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh" bash "$merge_pr" \
 rc=$?
 set -e
 assert_eq '1' "$rc" 'a direct invocation with no authorization record refuses'
-assert_contains "$out" 'authorization file must be an owned regular file' \
+assert_contains "$out" 'authorization file is missing; run authorize-queue.sh first' \
     'the missing-authorization refusal names the missing record'
 assert_eq '0' "$(grep -c 'pulls/9/merge' "$tmp/merge.log" || true)" \
     'no merge request is sent without an authorization record'
@@ -286,7 +286,7 @@ out=$(MERGE_LOG="$tmp/merge.log" MERGE_PR_GH="$tmp/gh" bash "$merge_pr" \
 rc=$?
 set -e
 assert_eq '1' "$rc" 'a direct invocation with no gate-result record refuses'
-assert_contains "$out" 'gate-result file must be an owned regular file' \
+assert_contains "$out" 'gate-result file is missing; run merge-gate.sh first' \
     'the missing-gate-result refusal names the missing record'
 assert_eq '0' "$(grep -c 'pulls/9/merge' "$tmp/merge.log" || true)" \
     'no merge request is sent without a gate-result record'

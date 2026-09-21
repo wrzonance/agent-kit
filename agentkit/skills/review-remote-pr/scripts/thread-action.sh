@@ -11,6 +11,7 @@ readonly AGENT_MARKER='<!-- review-remote-pr:agent-reply '
 
 SCRIPT_DIR=${BASH_SOURCE[0]%/*}
 [[ $SCRIPT_DIR != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+source "$SCRIPT_DIR/../../.shared/scripts/lib/owned-path.sh"
 GH_BIN=${THREAD_ACTION_GH:-gh}
 COMMENT_HELPER=${THREAD_ACTION_COMMENT:-$SCRIPT_DIR/gh-comment.sh}
 COMPOSER=${THREAD_ACTION_COMPOSER:-$SCRIPT_DIR/compose-review-reply.sh}
@@ -66,8 +67,8 @@ done
 [[ $repo =~ $SLUG_RE ]] || die '--repo must have the form OWNER/REPO'
 [[ -n $thread_id || -n $comment_id ]] || die '--thread-id or --comment-id is required'
 [[ -z $comment_id || $comment_id =~ $UINT_RE ]] || die '--comment-id must be a positive integer'
-[[ -f $artifact && ! -L $artifact && -O $artifact ]] ||
-    die '--threads-artifact must be an owned regular file, not a symlink'
+path_error=$(owned_path_diagnostic "$artifact" file '--threads-artifact' \
+    'the review artifact collection stage') || die "$path_error"
 command -v jq >/dev/null 2>&1 || die 'jq is required; settlement evidence unavailable'
 command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
 
@@ -77,8 +78,8 @@ if ((settle)); then
 else
     case $disposition in fixed|dismissed|deferred) ;; *) die 'unsupported disposition' ;; esac
     [[ $sha =~ $SHA_RE ]] || die '--sha must be 7-64 hexadecimal characters'
-    [[ -f $reasoning_file && ! -L $reasoning_file && -O $reasoning_file ]] ||
-        die '--reasoning-file must be an owned regular file, not a symlink'
+    path_error=$(owned_path_diagnostic "$reasoning_file" file '--reasoning-file' \
+        'the remediation reasoning stage') || die "$path_error"
     [[ -x $COMPOSER ]] || die "canonical reply composer is not executable: $COMPOSER"
     [[ -x $COMMENT_HELPER ]] || die "comment transport is not executable: $COMMENT_HELPER"
 fi

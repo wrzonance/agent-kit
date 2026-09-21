@@ -236,6 +236,51 @@ class Activation(unittest.TestCase):
 
         self.assertEqual(output, {})
 
+    def test_pre_tool_resolves_missing_cwd_before_receipt_lookup(self):
+        self.prompt()
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Bash",
+                       tool_input={"command": "true"})
+        payload.pop("cwd")
+
+        result = subprocess.run([str(self.plugin / "hooks/pre-tool-use.sh")],
+                                input=json.dumps(payload), text=True, capture_output=True,
+                                cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("activation-unavailable", output["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_pre_tool_does_not_skip_oversized_session_identity(self):
+        self.payload["session_id"] = "previous-session"
+        self.prompt()
+        self.payload["session_id"] = "x" * 257
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+
+        output = self.public_event("PreToolUse", tool_name="Bash",
+                                   tool_input={"command": "true"})
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("activation-unavailable", output["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_pre_tool_validates_malformed_agent_parent_entries(self):
+        self.helper.rename(self.helper.with_name("workflow-activation.disabled"))
+        agent = self.repo / ".agent"
+        for malformed in ("dangling-symlink", "regular-file"):
+            with self.subTest(malformed=malformed):
+                if malformed == "dangling-symlink":
+                    agent.symlink_to(self.root / "missing-agent-target", target_is_directory=True)
+                else:
+                    agent.write_text("not a directory\n")
+                try:
+                    output = self.public_event("PreToolUse", tool_name="Bash",
+                                               tool_input={"command": "true"})
+                    self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+                    self.assertIn("activation-unavailable",
+                                  output["hookSpecificOutput"]["permissionDecisionReason"])
+                finally:
+                    agent.unlink()
+
     def test_pre_tool_does_not_skip_symlinked_activation_directory(self):
         (self.repo / ".agent").mkdir()
         target = self.root / "activation-target"
