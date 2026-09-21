@@ -22,7 +22,7 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 # same PR, so every raise is a reviewed line in the diff, never a drift.
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
-    [hooks/lib/guard-lib.sh]="2262:24666:800"
+    [hooks/lib/guard-lib.sh]="2288:24898:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
@@ -162,9 +162,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #809: cause-accurate verification reuse diagnostics and usage documentation.
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
-# Issue #844: scoped ledger validation, auditable quarantine, and the hard
-# direct-write guard add measured recovery code to the shipped helper tree.
-readonly MAX_TREE_TOKENS=466944
+# Issue #844: exact-row quarantine plus payload-scoped Python ledger guarding
+# add measured recovery code to the shipped helper tree.
+readonly MAX_TREE_TOKENS=468154
 
 violations=0
 checked=0
