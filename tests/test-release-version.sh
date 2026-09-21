@@ -81,6 +81,57 @@ tagged_content_hash=$(sed -n 's/.*content hash \([0-9a-f]\{64\}\).*/\1/p' "$out"
 assert_eq '64' "${#tagged_content_hash}" \
     'the passing gate reports the reproducible SHA-256 content hash'
 
+fixture_link="$tmp/tree-link"
+ln -s -- "$fixture" "$fixture_link"
+out="$tmp/symlink-root.out"
+symlink_rc=0
+"$checker" --root "$fixture_link" >"$out" 2>&1 || symlink_rc=$?
+assert_eq '0' "$symlink_rc" 'a symlinked checkout root resolves to the physical Git root'
+assert_contains "$(cat -- "$out")" "shipped content matches tag v$expected_version" \
+    'the content gate runs normally through a symlinked checkout root'
+
+missing_tag_checkout="$tmp/missing-tag-checkout"
+git clone -q --no-tags "file://$fixture" "$missing_tag_checkout"
+printf 'changed bytes hidden by a missing local tag\n' \
+    > "$missing_tag_checkout/agentkit/skills/example/SKILL.md"
+"$missing_tag_checkout/tests/build-plugin.sh"
+out="$tmp/missing-local-tag.out"
+missing_tag_rc=0
+"$checker" --root "$missing_tag_checkout" >"$out" 2>&1 || missing_tag_rc=$?
+assert_eq '1' "$missing_tag_rc" \
+    'a published version fetched from origin still rejects changed shipped content'
+assert_contains "$(cat -- "$out")" \
+    "shipped content changed under existing version $expected_version" \
+    'a missing local tag cannot make a published version look new'
+assert_eq 'yes' \
+    "$(git -C "$missing_tag_checkout" show-ref --verify --quiet \
+        "refs/tags/v$expected_version" && printf yes || printf no)" \
+    'the gate fetches the exact published version tag from origin'
+
+git -C "$missing_tag_checkout" tag -d "v$expected_version" > /dev/null
+out="$tmp/missing-explicit-tag.out"
+missing_explicit_rc=0
+"$checker" --root "$missing_tag_checkout" --tag "refs/tags/v$expected_version" \
+    >"$out" 2>&1 || missing_explicit_rc=$?
+assert_eq '1' "$missing_explicit_rc" \
+    'an explicit fully qualified published tag is fetched before content comparison'
+assert_contains "$(cat -- "$out")" \
+    "shipped content changed under existing version $expected_version" \
+    'the fully qualified tag form uses the exact remote tag name'
+
+unreachable_checkout="$tmp/unreachable-origin-checkout"
+git clone -q --no-tags "file://$fixture" "$unreachable_checkout"
+"$unreachable_checkout/tests/build-plugin.sh"
+git -C "$unreachable_checkout" remote set-url origin "$tmp/no-such-origin"
+out="$tmp/unreachable-origin.out"
+unreachable_rc=0
+"$checker" --root "$unreachable_checkout" >"$out" 2>&1 || unreachable_rc=$?
+assert_eq '1' "$unreachable_rc" \
+    'an unavailable origin fails instead of treating a missing local tag as unpublished'
+assert_contains "$(cat -- "$out")" \
+    "could not establish whether tag v$expected_version exists on origin" \
+    'the remote lookup failure explains how published-version evidence is unavailable'
+
 out="$tmp/tag.out"
 assert_eq '0' "$(run_checker "$out" --tag "refs/tags/v$expected_version")" \
     'a v-prefixed tag matches the manifest version'

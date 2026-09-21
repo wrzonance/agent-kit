@@ -13,6 +13,11 @@ file bytes all participate in the hash. One published version therefore cannot n
 trees. `tests/check-release-version.sh` gates these invariants; CI runs it on every push, tag, and
 release (`.github/workflows/ci.yml`).
 
+If the matching tag is absent locally, the gate asks the existing `origin` for that exact tag and
+fetches it when present. A transport or authentication failure stops the check instead of treating
+missing local history as proof that the version is new. A repository with no `origin`, or an
+`origin` that authoritatively reports no matching tag, may establish a new version.
+
 ```bash
 tests/build-plugin.sh
 tests/check-release-version.sh                    # agreement + existing-version content gate
@@ -21,8 +26,9 @@ tests/check-release-version.sh --tag "v$VERSION"   # what CI runs on a tag/relea
 
 Bump the version in all four plugin manifests together, and in `opencode/package.json` and
 `plugin/opencode/package.json` too, before tagging -- every manifest the gate above checks.
-Any change to shipped bytes requires a new version. A checkout whose version has no matching tag
-passes this part of the gate because it is eligible to establish a new version-to-content mapping.
+Any change to shipped bytes requires a new version. A checkout whose version has no matching local
+or authoritative remote tag passes this part of the gate because it is eligible to establish a new
+version-to-content mapping.
 
 Use the fixed-scope bump helper from the repository root so linked worktrees cannot be touched:
 

@@ -40,7 +40,7 @@ tree_content_hash() {
     ) | sha256sum | awk '{print $1}'
 }
 
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tag=''
 tag_set=0
 
@@ -93,7 +93,7 @@ while (($#)); do
 done
 
 root_input=$root
-if ! root=$(cd -- "$root" 2>/dev/null && pwd); then
+if ! root=$(cd -- "$root" 2>/dev/null && pwd -P); then
     printf 'release version check failed: root is not a directory: %s\n' "$root_input" >&2
     exit 2
 fi
@@ -200,6 +200,7 @@ if ((failed)); then
 fi
 
 if ! git_root=$(git -C "$root" rev-parse --show-toplevel 2> /dev/null) ||
+        ! git_root=$(cd -- "$git_root" 2> /dev/null && pwd -P) ||
         [[ $git_root != "$root" ]]; then
     printf 'release content check failed: root is not a Git checkout: %s\n' "$root" >&2
     exit 1
@@ -209,17 +210,51 @@ content_tag=$tag
 if ((tag_set == 0)); then
     content_tag="v$expected"
 fi
+content_tag_name=${content_tag#refs/tags/}
+content_tag_ref="refs/tags/$content_tag_name"
 
+tag_commit=''
 if ! tag_commit=$(git -C "$root" rev-parse --verify --end-of-options \
         "${content_tag}^{commit}" 2> /dev/null); then
-    if ((tag_set == 1)); then
-        printf 'release content check failed: tag does not resolve to a commit: %s\n' \
-            "$content_tag" >&2
-        exit 1
+    if git -C "$root" remote get-url origin > /dev/null 2>&1; then
+        remote_rc=0
+        GIT_TERMINAL_PROMPT=0 git -C "$root" ls-remote --exit-code --tags origin \
+            "$content_tag_ref" > /dev/null 2>&1 || remote_rc=$?
+        case $remote_rc in
+            0)
+                if ! GIT_TERMINAL_PROMPT=0 git -C "$root" fetch --quiet --no-tags origin \
+                        "$content_tag_ref:$content_tag_ref"; then
+                    printf 'release content check failed: tag %s exists on origin but could not be fetched\n' \
+                        "$content_tag" >&2
+                    exit 1
+                fi
+                if ! tag_commit=$(git -C "$root" rev-parse --verify --end-of-options \
+                        "${content_tag}^{commit}" 2> /dev/null); then
+                    printf 'release content check failed: fetched tag does not resolve to a commit: %s\n' \
+                        "$content_tag" >&2
+                    exit 1
+                fi
+                ;;
+            2)
+                ;;
+            *)
+                printf 'release content check failed: could not establish whether tag %s exists on origin; fetch the tag or make origin reachable\n' \
+                    "$content_tag" >&2
+                exit 1
+                ;;
+        esac
     fi
-    printf 'release content check: no existing tag %s; shipped content is eligible for a new version\n' \
-        "$content_tag"
-    content_tag=''
+
+    if [[ -z $tag_commit ]]; then
+        if ((tag_set == 1)); then
+            printf 'release content check failed: tag does not exist locally or on origin: %s\n' \
+                "$content_tag" >&2
+            exit 1
+        fi
+        printf 'release content check: no existing tag %s; shipped content is eligible for a new version\n' \
+            "$content_tag"
+        content_tag=''
+    fi
 fi
 
 if [[ -n $content_tag ]]; then
