@@ -1273,6 +1273,20 @@ ANCHOR_GIT=$anchor_git ANCHOR_TAIL=$anchor_tail ANCHOR_CALLS="$tmp/anchor-calls"
 assert_eq 0 "$lineage_rc" 'verified queued main merges allow inherited diff shrink on an unchanged head'
 assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'an old-head anchor avoids retained-head git subprocesses'
 cp "$lineage" "$tmp/main-proof"
+
+# GitHub's merge_commit_sha identifies the commit placed on the default branch
+# for squash merges too, even though that commit has no authorized-head parent.
+squash_one=$(git -C "$repo_root" commit-tree "$merge_one^{tree}" -p "$old" -m squash-one)
+squash_two=$(git -C "$repo_root" commit-tree "$merge_two^{tree}" -p "$squash_one" -m squash-two)
+cp "$tmp/lineage-after" "$lineage_receipt"
+jq --arg tip "$squash_two" '.defaultAdvance.to=$tip' "$lineage" >"$tmp/changed"
+cp "$tmp/changed" "$lineage"
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_OLD_COMPARE=$old QUEUE_MAIN_SHA=$squash_two \
+  QUEUE_MERGE_15=$squash_one QUEUE_MERGE_16=$squash_two \
+  run_lineage --lineage-proof "14:$lineage" >"$tmp/squash-advance.out" 2>&1 || lineage_rc=$?
+assert_eq 0 "$lineage_rc" 'verified queued squash commits allow inherited diff shrink on an unchanged head'
+
 for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
     cp "$tmp/lineage-after" "$lineage_receipt"
     cp "$tmp/main-proof" "$lineage"

@@ -374,9 +374,6 @@ verify_lineage() {
                any($heads[0][]; .pr == $pr and .sha == $p.head.sha) and
                (.merge_commit_sha | test("^[0-9a-f]{40}$"))' <<<"$metadata" >/dev/null || die 'default merge is not an authorized queue head'
             commit=$(jq -r .merge_commit_sha <<<"$metadata")
-            parent=$(git -C "$repo_root" rev-parse "$commit^2") || die 'default advance supports merge commits only'
-            [[ $parent == "$(jq -r .head.sha <<<"$metadata")" ]] || die 'default merge parent differs from authorized queue head'
-            clean_merge_tree "$commit"
             printf '%s\n' "$commit" >>"$work_dir/default-merges"
         done < <(jq -r '.defaultAdvance.prs[]' "$proof")
         git -C "$repo_root" rev-list --first-parent --max-count=17 "$main_from..$main_to" | LC_ALL=C sort >"$work_dir/default-actual"
