@@ -45,12 +45,12 @@ stdout for the single completion or expiry line.
 
 ### Post-dispatch root budget
 
-After the authorized dispatch round and its bookkeeping are complete, discretionary root work while waiting for the first reported completion is a closed set: record each returned root turn with `"$agentkit/.shared/scripts/run-state.sh" append --run-id "$RUN_ID" --repo-root "$repository_root" --path root_turns --json true`, resume bounded collection, run the scheduled `stall-check.sh` sample only at its deadline, or send a `send_message`/`followup_task` that the worker's own message requested. Nothing else discretionary runs in that interval.
+After the authorized dispatch round and its bookkeeping are complete, discretionary root work while waiting for the first reported completion is a closed set: resume bounded collection, run the scheduled `stall-check.sh` sample only at its deadline, or send a `send_message`/`followup_task` that the worker's own message requested. Nothing else discretionary runs in that interval. Never make a tool call merely to count root turns; rollout parsing reconstructs that telemetry after the run.
 Required orchestration remains permitted: finish remaining approved initial or refill dispatches, persist returned worker IDs, and handle user steering.
 The exclusions are explicit: no external fetches, primary-source verification, new analysis artifacts,
 condition-gated reference reads, or root reads of repository files the worker may be rewriting.
 Those belong to the issue lead or to the post-push review phase. When the first completion arrives,
-run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path first_completion` before Collect and stop appending turns; the final handoff summary prints the frozen count.
+run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path first_completion` before Collect. The final handoff reports `root-turns-before-first-completion` from rollout data when available and `unavailable` otherwise.
 
 ### Idle notices are not quiescence proof
 
@@ -114,9 +114,11 @@ ending the root turn does not promise that completion mail starts a new one.
 Claude yields the turn with work recorded as pending and handles the later
 notification. Neither path declares the overall task complete before results.
 A mailbox wake can be a question, blocker, completion, or user input; act on that
-event and retain unfinished IDs. Empty capped yields resume the same operation,
-with no narration between calls except required user updates. They do not justify
-restarting helpers or inspecting disk/forge. Keep the original deadline. At its
+event and retain unfinished IDs. After an empty capped yield, re-issue the same wait with no message text.
+The only permitted mid-wait output is `Heartbeat: outstanding=<IDs> deadline=<deadline>`, emitted
+no sooner than 10 minutes after collection began or the previous heartbeat. This specific rule
+overrides the harness's default of narrating before each tool call while a bounded wait is in progress.
+Empty yields do not justify restarting helpers or inspecting disk/forge. Keep the original deadline. At its
 expiry, report outstanding IDs and the next action. Collection expiry does not terminate a worker or authorize worktree writes.
 Failure status remains failure.
 

@@ -105,11 +105,14 @@ assert_contains "$missing_state_err" 'receipt_prs' 'missing collection refusal n
 # Initialization is explicit and idempotent: it creates only absent summary
 # arrays and never resets an existing producer record.
 "$script" init-summary --run-id wave --repo-root "$repo"
-assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":false}' \
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"first_completion":false}' \
     "$(jq -c . "$state")" \
-    'summary initialization creates each missing collection without resetting existing state'
+    'summary initialization omits per-wake root-turn bookkeeping'
+assert_contains "$("$script" summary --run-id wave --repo-root "$repo")" \
+    'root-turns-before-first-completion=unavailable' \
+    'a new summary renders unavailable root turns without root_turns records'
 "$script" init-summary --run-id wave --repo-root "$repo"
-assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"root_turns":[],"first_completion":false}' \
+assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[],"first_completion":false}' \
     "$(jq -c . "$state")" \
     'resumed summary initialization preserves prior producer records'
 
@@ -124,7 +127,7 @@ assert_eq '{"opened_prs":[201,202],"queued":[],"receipt_prs":[],"skipped_prs":[]
 "$script" record-summary --run-id wave --repo-root "$repo" --path receipt_prs --json 203
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
 "$script" record-summary --run-id wave --repo-root "$repo" --path skipped_prs --json 204
-assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204],"root_turns":[],"first_completion":false}' \
+assert_eq '{"opened_prs":[201,202,203,204],"queued":[],"receipt_prs":[203],"skipped_prs":[204],"first_completion":false}' \
     "$(jq -c . "$state")" \
     'producer recording and queue-to-dispatch removal are idempotent across resumed sweeps'
 

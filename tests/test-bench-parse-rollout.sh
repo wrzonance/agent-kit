@@ -236,6 +236,68 @@ assert_eq '2760.0' "$(jq -r '.wait_seconds' <<< "$RUN_OUT")" \
 assert_eq '2.0' "$(jq -r '.requests_per_wait_minute' <<< "$RUN_OUT")" \
     'requests_per_wait_minute is derived from measured turns and elapsed waits'
 
+# Empty root waits must resume directly. A bookkeeping call and assistant
+# narration between empty waits are distinct observable violations.
+wait_violation_fixture="$tmp/wait-collection-violation.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T04:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T04:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"idle-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:01:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"idle-1","output":"timed out with no activity"}}' \
+    '{"timestamp":"2026-09-16T04:01:01Z","type":"response_item","payload":{"type":"function_call","call_id":"bookkeeping","name":"exec_command","arguments":"{\"cmd\":\"run-state.sh append --path root_turns --json true\"}"}}' \
+    '{"timestamp":"2026-09-16T04:01:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"bookkeeping","output":""}}' \
+    '{"timestamp":"2026-09-16T04:01:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"The workers have not returned completion evidence yet."}}' \
+    '{"timestamp":"2026-09-16T04:01:04Z","type":"response_item","payload":{"type":"function_call","call_id":"idle-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:02:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"idle-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"wait-violation","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":124,"exit_condition":"complete"}}' \
+    > "$wait_violation_fixture"
+run "$wait_violation_fixture" --timestamp 2026-09-16T04:03:00Z
+assert_eq '0' "$RUN_RC" 'a contaminated empty-wait sequence parses successfully'
+assert_eq 'fail' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'a non-wait call and narration between empty waits fail collection discipline'
+assert_eq '1' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'per-wake bookkeeping is counted as a non-wait call'
+assert_eq '1' "$(jq -r '.wait_collection.commentary_messages_between_empty_waits' <<< "$RUN_OUT")" \
+    'per-wake narration is counted separately from tool churn'
+
+wait_clean_fixture="$tmp/wait-collection-clean.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T05:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T05:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"clean-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T05:01:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"clean-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T05:01:00Z","type":"response_item","payload":{"type":"function_call","call_id":"clean-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T05:02:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"clean-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"wait-clean","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":120,"exit_condition":"complete"}}' \
+    > "$wait_clean_fixture"
+run "$wait_clean_fixture" --timestamp 2026-09-16T05:03:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'plain consecutive empty waits pass collection discipline'
+assert_eq '1' "$(jq -r '.wait_collection.empty_wait_resumptions' <<< "$RUN_OUT")" \
+    'the parser reports the clean empty-wait boundary it measured'
+
+wait_heartbeat_fixture="$tmp/wait-collection-heartbeat.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T06:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T06:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T06:01:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-1","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T06:11:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Heartbeat: outstanding=issue-1,issue-2 deadline=2026-09-16T06:16:00Z"}}' \
+    '{"timestamp":"2026-09-16T06:11:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T06:12:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-2","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"wait-heartbeat","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":720,"exit_condition":"complete"}}' \
+    > "$wait_heartbeat_fixture"
+run "$wait_heartbeat_fixture" --timestamp 2026-09-16T06:13:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'a named heartbeat at the ten-minute boundary is allowed between empty waits'
+assert_eq '1' "$(jq -r '.wait_collection.heartbeats' <<< "$RUN_OUT")" \
+    'the parser reports an allowed heartbeat explicitly'
+
+sed 's/06:11:00Z/06:10:59Z/g' "$wait_heartbeat_fixture" > "$tmp/wait-collection-early-heartbeat.jsonl"
+run "$tmp/wait-collection-early-heartbeat.jsonl" --timestamp 2026-09-16T06:13:00Z
+assert_eq 'fail' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'a heartbeat before ten minutes is commentary churn'
+
 # --- worker verification churn is attributed per rollout session ---------
 worker_churn_fixture="$tmp/worker-churn.jsonl"
 printf '%s\n' \

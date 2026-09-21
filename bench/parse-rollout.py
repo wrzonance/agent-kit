@@ -276,6 +276,23 @@ def output_chars(payload):
     return 0
 
 
+def is_empty_poll_output(payload):
+    output = payload.get('output', '')
+    if output in ('', [], {}):
+        return True
+    try:
+        text = json.dumps(output, sort_keys=True).lower()
+    except (TypeError, ValueError):
+        return False
+    return any(marker in text for marker in ('timed out', 'timeout', 'no activity', 'no updates'))
+
+
+def is_wait_heartbeat(payload):
+    texts = message_texts(payload)
+    return len(texts) == 1 and re.fullmatch(
+        r'Heartbeat: outstanding=\S+ deadline=\S+', texts[0]) is not None
+
+
 def is_verification_launch(payload):
     command = call_command_text(payload)
     helper = r'(?:^|\s)["\']?(?:[^\s"\']*/)?agent-run\.sh["\']?(?=\s|$)'
@@ -342,6 +359,27 @@ def merge_polling_report(actors):
             wait_seconds = round(elapsed, 3)
     rate = round(turns / (wait_seconds / 60), 3) if wait_seconds else None
     return turns, poll_input_tokens, wait_seconds, rate
+
+
+def merge_wait_collection_report(actors):
+    roots = [actor for actor in actors if actor['actor'] == 'orchestrator']
+    resumptions = sum(actor['polling']['empty_wait_resumptions'] for actor in roots)
+    non_wait_calls = sum(actor['polling']['non_wait_calls_between_empty_waits'] for actor in roots)
+    commentary = sum(actor['polling']['commentary_messages_between_empty_waits'] for actor in roots)
+    heartbeats = sum(actor['polling']['heartbeats'] for actor in roots)
+    if not roots or not resumptions:
+        status = 'unavailable'
+    elif non_wait_calls or commentary:
+        status = 'fail'
+    else:
+        status = 'pass'
+    return {
+        'status': status,
+        'empty_wait_resumptions': resumptions,
+        'non_wait_calls_between_empty_waits': non_wait_calls,
+        'commentary_messages_between_empty_waits': commentary,
+        'heartbeats': heartbeats,
+    }
 
 
 def function_call_text(arguments_raw):
@@ -543,8 +581,15 @@ def parse_session_file(path):
     pending_input_tokens = None
     response_calls = []
     polling = {'turns': 0, 'input_tokens': 0, 'inputs_complete': True,
-               'intervals': [], 'intervals_complete': True}
+               'intervals': [], 'intervals_complete': True,
+               'empty_wait_resumptions': 0,
+               'non_wait_calls_between_empty_waits': 0,
+               'commentary_messages_between_empty_waits': 0,
+               'heartbeats': 0}
     pending_poll_calls = {}
+    idle_gap = None
+    collection_started_at = None
+    last_heartbeat_at = None
     churn = {'resume_calls': 0, 'min_yield_ms': None, 'log_reads_between_resumes': 0}
     pending_verification_calls = set()
     verification_runtime_ids = set()
@@ -573,10 +618,28 @@ def parse_session_file(path):
             effort = payload.get('effort', effort)
         elif rtype == 'response_item' and payload.get('type') == 'message':
             prose_chars_injected += injected_skill_chars(payload)
+            if idle_gap is not None and payload.get('role') == 'assistant':
+                message_at = record_timestamp(rec)
+                heartbeat_floor = last_heartbeat_at or collection_started_at
+                if (is_wait_heartbeat(payload) and message_at is not None
+                        and heartbeat_floor is not None and message_at - heartbeat_floor >= 600):
+                    idle_gap['heartbeats'] += 1
+                    last_heartbeat_at = message_at
+                else:
+                    idle_gap['commentary'] += 1
         elif (rtype == 'response_item' or rtype in CALL_TYPES) and item.get('type') in CALL_TYPES:
             for ref_path in extract_reference_hits(call_arguments(item)):
                 reference_hits[ref_path] = reference_hits.get(ref_path, 0) + 1
             poll_call = is_poll_call(item)
+            if idle_gap is not None:
+                if poll_call:
+                    polling['empty_wait_resumptions'] += 1
+                    polling['non_wait_calls_between_empty_waits'] += idle_gap['non_wait_calls']
+                    polling['commentary_messages_between_empty_waits'] += idle_gap['commentary']
+                    polling['heartbeats'] += idle_gap['heartbeats']
+                    idle_gap = None
+                else:
+                    idle_gap['non_wait_calls'] += 1
             if pending_input_tokens is None:
                 response_calls.append(poll_call)
             elif poll_call:
@@ -633,6 +696,14 @@ def parse_session_file(path):
                 pending_verification_calls.remove(call_id)
             if isinstance(call_id, str) and call_id in pending_poll_calls:
                 ended = record_timestamp(rec)
+                if is_empty_poll_output(item):
+                    if collection_started_at is None:
+                        collection_started_at = ended
+                    idle_gap = {'non_wait_calls': 0, 'commentary': 0, 'heartbeats': 0}
+                else:
+                    idle_gap = None
+                    collection_started_at = None
+                    last_heartbeat_at = None
                 if ended is None:
                     polling['intervals_complete'] = False
                 else:
@@ -814,6 +885,7 @@ def main(argv):
         pricing.update(overrides)
     blended_usd = compute_blended_usd(parsed, pricing)
     poll_turns, poll_input_tokens, wait_seconds, requests_per_wait_minute = merge_polling_report(parsed)
+    wait_collection = merge_wait_collection_report(parsed)
     workers = [actor for actor in parsed if actor['actor'] != 'orchestrator']
 
     acceptance = None
@@ -842,6 +914,7 @@ def main(argv):
         'poll_input_tokens': poll_input_tokens,
         'wait_seconds': wait_seconds,
         'requests_per_wait_minute': requests_per_wait_minute,
+        'wait_collection': wait_collection,
         'worker_resume_calls': {a['actor']: a['verification_churn']['resume_calls'] for a in workers},
         'worker_min_yield_ms': {a['actor']: a['verification_churn']['min_yield_ms'] for a in workers},
         'log_reads_between_resumes': {
