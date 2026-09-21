@@ -99,13 +99,12 @@ Own work needs `fix:ID` ledger coverage and records in
 first-parent diff; scope checks cover resolutions. Other own commits stay in scope.
 
 `defaultAdvance:{from,to,prs:[15]}` anchors bounded default first-parent history.
-Each live `merge_commit_sha` must cleanly replay its authorized head; merges require
-that second parent, while squash/single-rebase trees must match.
-Other commits need generated-only proof; multi-commit rebase metadata names only its
-last commit, so it fails. For stacked bases,
-`oldBase:{pr,sha}` must name an authorized parent, its live PR branch must match
-the saved base, and contain the historical SHA. An earlier imported default is
-allowed only when its remaining verified tail is entirely generated-only.
+Listed or inherited queue identities need live `merge_commit_sha` plus an exact
+landing replay: merge second parents must match; squash/single-rebase trees must match.
+Other commits and imported tails need generated-only proof. For stacked
+bases, `oldBase:{pr,sha}` names an authorized parent whose live branch retains that
+SHA. A compatible subset receipt inherits prior heads and advances with source-run
+provenance; changed policy, plan, repository, provider, or added PRs never inherit.
 
 Changed WAITING rows are parked: no executable authority or authorized-head
 growth; original snapshots stay intact. Pending drift is diagnostic;

@@ -1193,11 +1193,13 @@ lineage="$repo_root/.agent/lineage.json"
 run_lineage() {
     QUEUE_INCLUDE_16=1 QUEUE_SHA_15=$parent_one QUEUE_SHA_16=$parent_two \
       run_authorize_provider coderabbit:trigger:capability-default \
+      --pr 14 --pr 15 --pr 16 \
       --run-id lineage --write-set-file "$tmp/write-set" "$@"
 }
 write_confirmed "$old"
 jq --arg one "$parent_one" --arg two "$parent_two" \
-  '.queue[1].headSha=$one | .queue += [{pr:16,state:"RUNNABLE",headSha:$two,base:"main",
+  '.argv.prs=[14,15,16] | .queue[1].headSha=$one |
+    .queue += [{pr:16,state:"RUNNABLE",headSha:$two,base:"main",
     diffFingerprint:"7a926b1b60d7bec13dd83edefa996ebb00047a95fa5f59bdfc52edc7fa057504"}]' \
   "$confirmed" >"$tmp/changed"
 cp "$tmp/changed" "$confirmed"
@@ -1274,6 +1276,93 @@ assert_eq 0 "$lineage_rc" 'verified queued main merges allow inherited diff shri
 assert_eq no "$([[ -s $tmp/anchor-calls ]] && printf yes || printf no)" 'an old-head anchor avoids retained-head git subprocesses'
 cp "$lineage" "$tmp/main-proof"
 
+# A new authorization run for the surviving queue keeps the prior run's
+# historical parent identities. The refreshed display still names the stacked
+# base branch, while the parent PR itself has already merged and disappeared.
+cp "$tmp/lineage-after" "$lineage_receipt"
+jq '.advances += [{pr:15,kind:"vanished",from:"-",to:"-",base:"-"}]' \
+  "$lineage_receipt" >"$tmp/changed"
+cp "$tmp/changed" "$lineage_receipt"
+refresh_receipt="$repo_root/.agent/pr-to-green-run-lineage-refresh.json"
+foreign_receipt="$repo_root/.agent/pr-to-green-run-foreign-refresh.json"
+forged_receipt="$repo_root/.agent/pr-to-green-run-forged-refresh.json"
+jq --arg sha 9999999999999999999999999999999999999999 \
+  '.runId="foreign-refresh" | .predicate.mergeMethod="squash" |
+   .authorizedHeads += [{pr:999,sha:$sha}]' \
+  "$lineage_receipt" >"$foreign_receipt"
+jq --arg sha 8888888888888888888888888888888888888888 \
+  '.runId="forged-refresh" | .authorizedHeads += [{pr:998,sha:$sha}] |
+   .advances += [{pr:998,kind:"forged",from:$sha,to:$sha,base:"main"}]' \
+  "$lineage_receipt" >"$forged_receipt"
+chmod 600 "$foreign_receipt" "$forged_receipt"
+jq --arg fp "$new_fp" '.snapshot | .queue |= map(select(.pr != 15)) |
+  .argv.prs=[14,16] |
+  .queue[0].diffFingerprint=$fp |
+  .queue[0].base="feat/next" | .queue[0].state="RUNNABLE"' \
+  "$lineage_receipt" >"$confirmed"
+chmod 600 "$confirmed"
+run_lineage_refresh() {
+    QUEUE_INCLUDE_16=1 QUEUE_OMIT_15=1 QUEUE_SHA_15=$parent_one QUEUE_SHA_16=$parent_two \
+      run_authorize_provider coderabbit:trigger:capability-default \
+      --pr 14 --pr 16 \
+      --run-id lineage-refresh --write-set-file "$tmp/write-set" "$@"
+}
+QUEUE_SHA=$own_fix QUEUE_BASE_14=feat/next QUEUE_FP_14=$new_fp \
+  run_lineage_refresh >"$tmp/lineage-refresh.out"
+cp "$refresh_receipt" "$tmp/lineage-refresh-initial"
+assert_eq "$parent_one" \
+  "$(jq -r '.authorizedHeads[] | select(.pr == 15) | .sha' "$refresh_receipt")" \
+  'a refreshed receipt retains the merged stack parent authorized by the prior run'
+assert_eq '["lineage"]' "$(jq -c '[.inheritedReceipts[].runId]' "$refresh_receipt")" \
+  'receipt refresh records the exact prior authorization provenance'
+assert_eq 1 "$(jq '[.advances[] | select(.kind == "vanished" and .pr == 15)] | length' "$refresh_receipt")" \
+  'receipt refresh retains a prior verified-disappearance audit record'
+assert_eq 0 "$(jq '[.authorizedHeads[] | select(.pr == 999)] | length' "$refresh_receipt")" \
+  'a prior receipt with different authority settings contributes no history'
+assert_eq 0 "$(jq '[.authorizedHeads[] | select(.pr == 998)] | length' "$refresh_receipt")" \
+  'a malformed prior advance kind contributes no authorization history'
+
+# The refreshed receipt can later prove a stacked retarget and two serial
+# default merges against identities carried from the prior run. Its proof
+# names only the still-selected merge; the vanished predecessor stays outside
+# the refreshed executable queue.
+jq --arg sha "$parent_one" \
+  '.runId="lineage-refresh" | .defaultAdvance.prs=[16] |
+   .oldBase={pr:15,sha:$sha}' \
+  "$tmp/main-proof" >"$lineage"
+printf 'retargeted pr #14 base=main head=feat/demo sha=%s repo=owner/repo ci=3/3 green:post-retarget approval=none ancestry=verified boundaryEpoch=1704067200 closing-issues=1\n' \
+  "$own_fix" >"$tmp/refresh-retarget"
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$merge_two QUEUE_OLD_COMPARE=nope \
+  QUEUE_PARENT_REF=feat/next QUEUE_PARENT_TIP=$merge_two \
+  QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two \
+  run_lineage_refresh --lineage-proof "14:$lineage" \
+  --retarget-proof "14:$tmp/refresh-retarget" >"$tmp/refresh-retarget.out" 2>&1 || lineage_rc=$?
+[[ $lineage_rc == 0 ]] || cat "$tmp/refresh-retarget.out"
+assert_eq 0 "$lineage_rc" \
+  'two serial queue merges remain provable after an explicit-selector receipt refresh'
+assert_eq 0 "$lineage_rc" \
+  'a later stacked retarget accepts the parent identity retained across receipt refresh'
+
+# Matching metadata cannot bless a landing whose tree contains content other
+# than replaying the authorized head onto the landing's first parent.
+cp "$tmp/lineage-refresh-initial" "$refresh_receipt"
+evil_one=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$old" -p "$parent_one" -m evil-one)
+evil_tree=$(git -C "$repo_root" merge-tree --write-tree "$evil_one" "$parent_two")
+evil_two=$(git -C "$repo_root" commit-tree "$evil_tree" -p "$evil_one" -p "$parent_two" -m evil-two)
+jq --arg sha "$parent_one" --arg tip "$evil_two" \
+  '.runId="lineage-refresh" | .defaultAdvance.prs=[16] | .defaultAdvance.to=$tip |
+   .oldBase={pr:15,sha:$sha}' "$tmp/main-proof" >"$lineage"
+lineage_rc=0
+QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$evil_two QUEUE_OLD_COMPARE=nope \
+  QUEUE_PARENT_REF=feat/next QUEUE_PARENT_TIP=$evil_two \
+  QUEUE_MERGE_15=$evil_one QUEUE_MERGE_16=$evil_two \
+  run_lineage_refresh --lineage-proof "14:$lineage" \
+  --retarget-proof "14:$tmp/refresh-retarget" >"$tmp/evil-landing.out" 2>&1 || lineage_rc=$?
+assert_eq 1 "$lineage_rc" \
+  'an inherited queue identity cannot authorize extra content in its default landing'
+cp "$tmp/main-proof" "$lineage"
+
 # GitHub's merge_commit_sha identifies the commit placed on the default branch
 # for squash merges too, even though that commit has no authorized-head parent.
 squash_one=$(git -C "$repo_root" commit-tree "$merge_one^{tree}" -p "$old" -m squash-one)
@@ -1324,7 +1413,7 @@ for bad in evil-merge wrong-second-parent changed-squash replay-unavailable; do
     assert_eq 1 "$lineage_rc" "default proof rejects $bad landing content"
 done
 
-for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
+for bad in extra-main-commit stale-tip wrong-fingerprint; do
     cp "$tmp/lineage-after" "$lineage_receipt"
     cp "$tmp/main-proof" "$lineage"
     tip=$merge_two
@@ -1334,7 +1423,6 @@ for bad in extra-main-commit stale-tip wrong-fingerprint missing-pr; do
             if [[ $bad == extra-main-commit ]]; then
                 jq --arg tip "$tip" '.defaultAdvance.to=$tip' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage"
             fi;;
-        missing-pr) jq '.defaultAdvance.prs=[15]' "$lineage" >"$tmp/changed"; cp "$tmp/changed" "$lineage";;
     esac
     lineage_rc=0
     QUEUE_SHA=$own_fix QUEUE_FP_14=$new_fp QUEUE_MAIN_SHA=$tip \
@@ -1382,7 +1470,7 @@ cp "$tmp/lineage-after" "$lineage_receipt"
 QUEUE_SHA=$own_fix QUEUE_FP_14=$old_fp QUEUE_OMIT_15=1 QUEUE_MERGE_15=$merge_one \
   run_lineage --allow-mechanical-advance >"$tmp/vanished-parent.out"
 assert_eq "$parent_one" "$(jq -r '.authorizedHeads[] | select(.pr == 15) | .sha' "$lineage_receipt")" \
-  'verified vanished parent identity survives in the receipt'
+  'a member merged mid-run advances without a new confirmation and retains its identity'
 later_merge=$(git -C "$repo_root" commit-tree "$own_fix^{tree}" -p "$own_fix" -p "$parent_one" -m later-import)
 jq --arg from "$own_fix" --arg to "$later_merge" '.from=$from | .to=$to | .commits=[] | .merges=[$to] | del(.findingLedger)' \
   "$tmp/lineage-proof" >"$lineage"
@@ -1536,6 +1624,10 @@ for bad in valid wrong-ref unrelated-tip unrecorded-base missing-retarget; do
       QUEUE_MERGE_15=$merge_one QUEUE_MERGE_16=$merge_two run_lineage --lineage-proof "14:$lineage" \
       --retarget-proof "14:$tmp/stack-retarget" >"$tmp/old-base.out" 2>&1 || lineage_rc=$?
     assert_eq "$([[ $bad == valid ]] && printf 0 || printf 1)" "$lineage_rc" "historical stacked base case $bad"
+    if [[ $bad == unrecorded-base ]]; then
+        assert_contains "$(cat "$tmp/old-base.out")" 'compatible prior run receipt' \
+          'missing historical parent names the receipt artifact that can prove it'
+    fi
     [[ $bad != valid || $lineage_rc == 0 ]] || cat "$tmp/old-base.out"
 done
 
