@@ -43,7 +43,7 @@ declare -A KNOWN_OVERSIZE=(
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16476:800"
     # #852: reject same-head analyses created before the latest retarget.
-    [skills/pr-to-green/scripts/merge-gate.sh]="839:10265:800"
+    [skills/pr-to-green/scripts/merge-gate.sh]="839:10279:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -166,7 +166,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
 # #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
-readonly MAX_TREE_TOKENS=465642
+readonly MAX_TREE_TOKENS=465657
 
 violations=0
 checked=0

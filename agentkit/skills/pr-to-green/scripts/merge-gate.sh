@@ -502,7 +502,7 @@ scan_boundary() {
         scan_boundary_state=none
         return 0
     fi
-    scan_boundary_epoch=$(date -u -d "$event_time" +%s 2>/dev/null) || {
+    scan_boundary_epoch=$(jq -nr --arg value "$event_time" '$value | try fromdateiso8601 catch empty' 2>/dev/null) || {
         scan_boundary_epoch=''
         return 0
     }

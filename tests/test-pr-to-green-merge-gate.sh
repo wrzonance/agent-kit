@@ -819,6 +819,24 @@ out=$(CS_TIMELINE_JSON='[{"event":"automatic_base_change_succeeded","base_ref":"
 assert_contains "$out" 'gate=PASS pr=9' \
     'an analysis created after an automatic base change satisfies the retarget boundary'
 
+# macOS/BSD date has no GNU -d parser. A valid forge timestamp must use jq's
+# existing ISO-8601 conversion and remain current even when date rejects -d.
+mkdir -p "$tmp/bsd-bin"
+cat >"$tmp/bsd-bin/date" <<'EOF'
+#!/usr/bin/env bash
+[[ " $* " != *' -d '* ]] || exit 64
+exec /usr/bin/date "$@"
+EOF
+chmod +x "$tmp/bsd-bin/date"
+good_digest
+set +e
+out=$(PATH="$tmp/bsd-bin:$PATH" run_gate)
+rc=$?
+set -e
+assert_eq '0' "$rc" 'a BSD-like date implementation does not block a valid retarget boundary'
+assert_contains "$out" 'gate=PASS pr=9' \
+    'portable jq timestamp parsing preserves valid post-retarget analysis evidence'
+
 # --- PR #413 follow-up F1: a still-running scan blocks as pending even when
 # an earlier analysis already matches the head (a rerun or a second SARIF
 # upload in flight is real, incomplete evidence; scan_check_run_pending is
