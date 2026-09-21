@@ -49,6 +49,7 @@ JSON
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -80,6 +81,7 @@ case " $* " in
         printf '%s\n' '{"status":"behind","behind_by":3,"ahead_by":0}'
         ;;
     *" pr edit "*) printf '%s\n' 'edit must not run' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -131,6 +133,7 @@ case " $* " in
         printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -167,6 +170,7 @@ case " $* " in
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -198,6 +202,7 @@ case " $* " in
         printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CodeRabbit","app":{"slug":"coderabbitai"}}]}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -227,6 +232,7 @@ case " $* " in
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -263,6 +269,7 @@ case " $* " in
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -297,6 +304,7 @@ case " $* " in
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -327,6 +335,7 @@ case " $* " in
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
     *" pr edit "*) printf 'edit must not run\n' >&2; exit 24 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -360,6 +369,7 @@ case " $* " in
         printf '%s\n' '{"files":[{"filename":"bench/results/tier0.jsonl"}]}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *" pr edit "*) printf 'edit must not run for an already-correct base\n' >&2; exit 24 ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
@@ -386,6 +396,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0,"ahead_by":1}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -408,6 +419,7 @@ case " $* " in
         ;;
     *"compare/main..."*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -439,6 +451,7 @@ case " $* " in
     *"compare/main...1111111111111111111111111111111111111111"*)
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -475,6 +488,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -499,6 +513,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -524,6 +539,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -547,6 +563,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -576,6 +593,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -603,6 +621,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -628,6 +647,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:10:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -653,6 +673,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -681,6 +702,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -713,6 +735,7 @@ case " $* " in
         printf '%s\n' '{"status":"ahead","behind_by":0}'
         ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -740,6 +763,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) exit 23 ;;
 esac
 EOF
@@ -775,6 +799,7 @@ case " $* " in
     *"timeline"*)
         printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]'
         ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -868,6 +893,7 @@ case " $* " in
         printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}'
         ;;
     *"actions/runs/42/rerun"*) : ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -908,6 +934,7 @@ case " $* " in
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[]}' ;;
     *"actions/workflows/43/dispatches"*) printf '{"message":"workflow does not support workflow_dispatch","status":422}\n' >&2; exit 1 ;;
     *"actions/workflows"*) printf '%s\n' '{"workflows":[{"id":43,"name":"CodeQL","path":".github/workflows/codeql.yml","state":"active"}]}' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -928,6 +955,68 @@ assert_not_contains "$refresh_missing_log" 'pr close' \
     'an untriggerable scan never closes the PR'
 assert_not_contains "$refresh_missing_log" 'pr reopen' \
     'an untriggerable scan never reopens the PR'
+
+# A default-setup repository may have no scan check on a head pushed while the
+# PR targeted a stacked base. Missing rollup evidence is therefore a refresh
+# decision, not proof that the repository has no scanning configuration.
+cat >"$tmp/gh-refresh-default-setup" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$GH_LOG"
+printf '\n' >>"$GH_LOG"
+case " $* " in
+    *" pr edit "*) : >"$EDIT_STATE" ;;
+    *" pr view "*)
+        base=parent
+        [[ -e $EDIT_STATE ]] && base=main
+        printf '%s\n' "{\"number\":7,\"baseRefName\":\"$base\",\"headRefName\":\"feat/child\",\"headRefOid\":\"1111111111111111111111111111111111111111\",\"reviewDecision\":\"APPROVED\",\"reviews\":[],\"statusCheckRollup\":[{\"name\":\"tests\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"createdAt\":\"2024-01-01T00:05:00Z\"}],\"closingIssuesReferences\":[{\"number\":137}]}"
+        ;;
+    *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
+    *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
+    *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[]}' ;;
+    *"actions/workflows"*) printf '%s\n' '{"workflows":[]}' ;;
+    *"code-scanning/default-setup"*)
+        case ${DEFAULT_SETUP_MODE:-configured} in
+            configured|not-configured) printf '{"state":"%s"}\n' "${DEFAULT_SETUP_MODE:-configured}" ;;
+            api-fail) exit 1 ;;
+            malformed) printf '%s\n' '{' ;;
+            missing) printf '%s\n' '{}' ;;
+            unknown) printf '%s\n' '{"state":"unexpected"}' ;;
+        esac
+        ;;
+    *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
+esac
+EOF
+chmod +x "$tmp/gh-refresh-default-setup"
+set +e
+default_setup_output=$(EDIT_STATE="$tmp/refresh-default-setup.state" GH_LOG="$tmp/refresh-default-setup.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-default-setup" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+default_setup_rc=$?
+set -e
+assert_eq '2' "$default_setup_rc" 'configured default setup with no head scan stops after retarget'
+assert_contains "$default_setup_output" 'cannot-trigger: CodeQL default setup has no dispatch' \
+    'missing default-setup analysis is distinguished from a repository with no scanning'
+
+unused_output=$(DEFAULT_SETUP_MODE=not-configured EDIT_STATE="$tmp/refresh-unused.state" \
+    GH_LOG="$tmp/refresh-unused.log" PATH="$tmp:$PATH" \
+    CHAIN_ADVANCE_GH="$tmp/gh-refresh-default-setup" bash "$advance" \
+    --retarget --repo owner/repo --pr 7 --base main 2>&1)
+assert_contains "$unused_output" 'retargeted pr #7' \
+    'a repository whose default setup is not configured remains unaffected'
+
+for setup_mode in api-fail malformed missing unknown; do
+    set +e
+    setup_output=$(DEFAULT_SETUP_MODE="$setup_mode" EDIT_STATE="$tmp/default-setup-$setup_mode.state" \
+        GH_LOG="$tmp/default-setup-$setup_mode.log" PATH="$tmp:$PATH" \
+        CHAIN_ADVANCE_GH="$tmp/gh-refresh-default-setup" bash "$advance" \
+        --retarget --repo owner/repo --pr 7 --base main 2>&1)
+    setup_rc=$?
+    set -e
+    assert_eq '2' "$setup_rc" "$setup_mode default-setup evidence stops after retarget"
+    assert_contains "$setup_output" 'code-scanning default setup state is unreadable' \
+        "$setup_mode default-setup evidence fails closed"
+done
 # --- REST timeline events may omit the changed ref -------------------------
 # The REST representation of a base_ref_changed event carries the event kind
 # and timestamp, but not always the ref. A ref-less event is still authoritative
@@ -947,6 +1036,7 @@ case " $* " in
         # This mirrors the REST payload: no base_ref/base_ref_name field.
         printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z","performed_via_github_app":null}]]'
         ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -999,6 +1089,7 @@ case " $* " in
         fi
         printf '[%s,%s]\n' "$page1" "$page2"
         ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1037,6 +1128,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1061,6 +1153,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1085,6 +1178,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2024-01-01T00:00:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1122,6 +1216,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) exit 23 ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1233,6 +1328,7 @@ case " $* " in
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
     *"actions/runs/42/rerun"*) : ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1276,6 +1372,7 @@ case " $* " in
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
     *"actions/runs?head_sha=1111111111111111111111111111111111111111"*) printf '%s\n' '{"workflow_runs":[{"id":42,"name":"CodeQL\\u001b[31m\\nInjected","status":"completed","conclusion":"skipped","head_sha":"1111111111111111111111111111111111111111"}]}' ;;
     *"actions/runs/42/rerun"*) : ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 23 ;;
 esac
 EOF
@@ -1535,6 +1632,7 @@ case " $* " in
         ;;
     *"compare/main...1111111111111111111111111111111111111111"*) printf '%s\n' '{"status":"ahead","behind_by":0}' ;;
     *"timeline"*) printf '%s\n' '[[{"event":"base_ref_changed","base_ref":"main","created_at":"2024-01-01T00:01:00Z"}]]' ;;
+    *"code-scanning/default-setup"*) printf '%s\n' '{"state":"not-configured"}' ;;
     *"issues/18/comments"*)
         [[ " $* " != *' --slurp '* || " $* " != *' --jq '* ]] || exit 2
         [[ " $* " == *' --slurp '* ]] || exit 24
@@ -1598,7 +1696,10 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 # 2026-09-09 CodeRabbit #683: +6 for mirroring persist_boundary's full-path
 # symlink checks (path_has_no_symlink pre- and post-mkdir) in
 # persist_proof_line, closing the symlinked-evidence-dir gap (measured).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1076 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1076 lines'
+#
+# 2026-09-21 PR #855 repair: +10 to classify the default CodeQL setup probe
+# explicitly and fail closed when its state is unavailable (measured).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1086 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1086 lines'
 
 finish

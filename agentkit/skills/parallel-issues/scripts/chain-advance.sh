@@ -735,7 +735,7 @@ code_scanning_refresh_needed() {
           | select(is_scan)
           | ([.startedAt, .started_at, .createdAt, .created_at] | first_nonempty)
         ] as $timestamps
-        | if ($timestamps | length) == 0 then "no"
+        | if ($timestamps | length) == 0 then "yes"
           elif any($timestamps[];
                    . == "" or (try (fromdateiso8601 <= $boundary) catch true))
           then "yes"
@@ -758,26 +758,39 @@ sanitize_label() {
 }
 
 # A base edit does not reliably emit a pull_request workflow event. Refresh
-# only a code-scanning workflow named by the PR's check rollup: rerun a known
-# head-associated run, or dispatch its workflow when the API accepts that
-# capability. A missing dispatch is an operator handoff, never a reason to
-# close and reopen a PR. This function intentionally does nothing when the PR
-# has no code-scanning-labelled check, preserving the retarget proof contract
-# for repositories without such a workflow.
+# a code-scanning workflow: rerun a known head-associated run, or dispatch its
+# workflow when the API accepts that capability. Missing rollup evidence is
+# harmless only when default setup is explicitly not configured.
 refresh_code_scanning() {
     local pr_json=$1 head_sha=$2 head_ref=$3 names runs run_id run_name workflows workflow_id
-    local safe_run_name safe_name
+    local default_setup_state safe_run_name safe_name
     names=$(jq -r '
         [.statusCheckRollup[]?
          | select(((.name // .context // "") | ascii_downcase)
                   | test("codeql|code[ -]?scanning"))
          | (.name // .context)] | unique | join("\n")
     ' <<<"$pr_json") || die 'could not identify code-scanning checks; refresh evidence unavailable'
-    [[ -n $names ]] || return 0
-
-    runs=$(
-        "$GH_BIN" api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" 2>/dev/null
-    ) || runs='{"workflow_runs":[]}'
+    if [[ -z $names ]]; then
+        default_setup_state=$("$GH_BIN" api "repos/$REPO/code-scanning/default-setup" 2>/dev/null) ||
+            default_setup_state=''
+        default_setup_state=$(jq -er \
+            'select(type == "object") | .state | select(type == "string" and length > 0)' \
+            <<<"$default_setup_state" 2>/dev/null) || default_setup_state=''
+        case $default_setup_state in
+            not-configured) return 0 ;;
+            configured)
+                printf 'cannot-trigger: CodeQL default setup has no dispatch; human action: push a new commit or run CodeQL for %s\n' \
+                    "$(sanitize_label "$head_ref")" >&2
+                ;;
+            *)
+                printf 'cannot-trigger: code-scanning default setup state is unreadable; human action: inspect CodeQL default setup for %s\n' \
+                    "$(sanitize_label "$head_ref")" >&2
+                ;;
+        esac
+        return 1
+    fi
+    runs=$("$GH_BIN" api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100" 2>/dev/null) ||
+        runs='{"workflow_runs":[]}'
     run_id=''
     run_name=''
     while IFS=$'\t' read -r candidate_id candidate_name; do
