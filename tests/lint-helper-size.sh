@@ -32,7 +32,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777: repository-facts recipe moved from injected prose into --help.
     [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
-    [skills/parallel-issues/scripts/chain-advance.sh]="1076:12966:800"
+    # #852: distinguish configured missing scans at the retarget boundary.
+    [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1009:11462:800"
@@ -41,6 +42,8 @@ declare -A KNOWN_OVERSIZE=(
     # #711/#765: receipt fences and bounded exact-parent proof composition.
     # #760 review: stop anchor probes after the first witness; 65,852 bytes / 4.
     [skills/pr-to-green/scripts/authorize-queue.sh]="1099:16476:800"
+    # #852: reject same-head analyses created before the latest retarget.
+    [skills/pr-to-green/scripts/merge-gate.sh]="841:10289:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
@@ -162,8 +165,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #809: cause-accurate verification reuse diagnostics and usage documentation.
 # #810: surface the newest completed verification in the existing stall sample.
 # #811: field-specific worker-result diagnostics and a self-describing write interface.
-# PR #857 merge-down: session-scoped activation gate plus final #811 runner growth.
-readonly MAX_TREE_TOKENS=465276
+# #852: post-retarget CodeQL freshness and configured-missing scan diagnostics.
+# PR #857 merge-down with #852: exact combined helper tree.
+readonly MAX_TREE_TOKENS=465999
 
 violations=0
 checked=0

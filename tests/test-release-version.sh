@@ -25,8 +25,10 @@ mismatch_version="${expected_version}-mismatch"
 fixture="$tmp/tree"
 mkdir -p "$fixture/agentkit/.claude-plugin" \
     "$fixture/agentkit/.codex-plugin" \
+    "$fixture/agentkit/skills/example" \
     "$fixture/plugin/agentkit/.claude-plugin" \
-    "$fixture/plugin/agentkit/.codex-plugin"
+    "$fixture/plugin/agentkit/.codex-plugin" \
+    "$fixture/tests"
 cp -- "$root/agentkit/.claude-plugin/plugin.json" \
     "$fixture/agentkit/.claude-plugin/plugin.json"
 cp -- "$root/agentkit/.codex-plugin/plugin.json" \
@@ -35,6 +37,31 @@ cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
 cp -- "$fixture/agentkit/.codex-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.codex-plugin/plugin.json"
+printf 'tagged content\n' > "$fixture/agentkit/skills/example/SKILL.md"
+cat > "$fixture/tests/build-plugin.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+rm -rf -- "$root/plugin"
+mkdir -p "$root/plugin/agentkit/.claude-plugin" \
+    "$root/plugin/agentkit/.codex-plugin" \
+    "$root/plugin/agentkit/skills/example"
+cp -- "$root/agentkit/.claude-plugin/plugin.json" \
+    "$root/plugin/agentkit/.claude-plugin/plugin.json"
+cp -- "$root/agentkit/.codex-plugin/plugin.json" \
+    "$root/plugin/agentkit/.codex-plugin/plugin.json"
+cp -- "$root/agentkit/skills/example/SKILL.md" \
+    "$root/plugin/agentkit/skills/example/SKILL.md"
+EOF
+chmod +x -- "$fixture/tests/build-plugin.sh"
+"$fixture/tests/build-plugin.sh"
+printf '/plugin/\n' > "$fixture/.gitignore"
+git -C "$fixture" init -q -b main
+git -C "$fixture" config user.name test
+git -C "$fixture" config user.email test@example.invalid
+git -C "$fixture" add -- .
+git -C "$fixture" commit -qm init
+git -C "$fixture" tag "v$expected_version"
 
 run_checker() {
     local out=$1
@@ -48,6 +75,112 @@ out="$tmp/agreement.out"
 assert_eq '0' "$(run_checker "$out")" 'matching manifests pass without a tag'
 assert_contains "$(cat -- "$out")" "all 4 manifests agree on $expected_version" \
     'agreement success names the version and manifest count'
+assert_contains "$(cat -- "$out")" "shipped content matches tag v$expected_version" \
+    'an unchanged shipped tree matches the content recorded by its version tag'
+tagged_content_hash=$(sed -n 's/.*content hash \([0-9a-f]\{64\}\).*/\1/p' "$out")
+assert_eq '64' "${#tagged_content_hash}" \
+    'the passing gate reports the reproducible SHA-256 content hash'
+
+find_failure_bin="$tmp/find-failure-bin"
+mkdir -p "$find_failure_bin"
+cat > "$find_failure_bin/find" <<'EOF'
+#!/usr/bin/env bash
+printf './agentkit/.claude-plugin/plugin.json\0'
+exit 9
+EOF
+chmod +x "$find_failure_bin/find"
+out="$tmp/find-enumeration-failure.out"
+find_failure_rc=0
+PATH="$find_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    find_failure_rc=$?
+assert_eq '1' "$find_failure_rc" \
+    'an entry finder that emits partial output and then fails stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not enumerate shipped tree' \
+    'a partial finder failure identifies unavailable tree enumeration'
+
+sort_failure_bin="$tmp/sort-failure-bin"
+mkdir -p "$sort_failure_bin"
+cat > "$sort_failure_bin/sort" <<'EOF'
+#!/usr/bin/env bash
+command cat > /dev/null
+exit 8
+EOF
+chmod +x "$sort_failure_bin/sort"
+out="$tmp/sort-enumeration-failure.out"
+sort_failure_rc=0
+PATH="$sort_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    sort_failure_rc=$?
+assert_eq '1' "$sort_failure_rc" 'an entry sort failure stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not enumerate shipped tree' \
+    'a sort failure identifies unavailable tree enumeration'
+
+cat_failure_bin="$tmp/cat-failure-bin"
+mkdir -p "$cat_failure_bin"
+cat > "$cat_failure_bin/cat" <<'EOF'
+#!/usr/bin/env bash
+printf 'partial file bytes'
+exit 7
+EOF
+chmod +x "$cat_failure_bin/cat"
+out="$tmp/entry-read-failure.out"
+cat_failure_rc=0
+PATH="$cat_failure_bin:$PATH" "$checker" --root "$fixture" >"$out" 2>&1 ||
+    cat_failure_rc=$?
+assert_eq '1' "$cat_failure_rc" \
+    'an entry reader that emits partial bytes and then fails stops the content gate'
+assert_contains "$(cat -- "$out")" 'could not hash shipped tree' \
+    'a partial entry read identifies unavailable tree hashing'
+
+fixture_link="$tmp/tree-link"
+ln -s -- "$fixture" "$fixture_link"
+out="$tmp/symlink-root.out"
+symlink_rc=0
+"$checker" --root "$fixture_link" >"$out" 2>&1 || symlink_rc=$?
+assert_eq '0' "$symlink_rc" 'a symlinked checkout root resolves to the physical Git root'
+assert_contains "$(cat -- "$out")" "shipped content matches tag v$expected_version" \
+    'the content gate runs normally through a symlinked checkout root'
+
+missing_tag_checkout="$tmp/missing-tag-checkout"
+git clone -q --no-tags "file://$fixture" "$missing_tag_checkout"
+printf 'changed bytes hidden by a missing local tag\n' \
+    > "$missing_tag_checkout/agentkit/skills/example/SKILL.md"
+"$missing_tag_checkout/tests/build-plugin.sh"
+out="$tmp/missing-local-tag.out"
+missing_tag_rc=0
+"$checker" --root "$missing_tag_checkout" >"$out" 2>&1 || missing_tag_rc=$?
+assert_eq '1' "$missing_tag_rc" \
+    'a published version fetched from origin still rejects changed shipped content'
+assert_contains "$(cat -- "$out")" \
+    "shipped content changed under existing version $expected_version" \
+    'a missing local tag cannot make a published version look new'
+assert_eq 'yes' \
+    "$(git -C "$missing_tag_checkout" show-ref --verify --quiet \
+        "refs/tags/v$expected_version" && printf yes || printf no)" \
+    'the gate fetches the exact published version tag from origin'
+
+git -C "$missing_tag_checkout" tag -d "v$expected_version" > /dev/null
+out="$tmp/missing-explicit-tag.out"
+missing_explicit_rc=0
+"$checker" --root "$missing_tag_checkout" --tag "refs/tags/v$expected_version" \
+    >"$out" 2>&1 || missing_explicit_rc=$?
+assert_eq '1' "$missing_explicit_rc" \
+    'an explicit fully qualified published tag is fetched before content comparison'
+assert_contains "$(cat -- "$out")" \
+    "shipped content changed under existing version $expected_version" \
+    'the fully qualified tag form uses the exact remote tag name'
+
+unreachable_checkout="$tmp/unreachable-origin-checkout"
+git clone -q --no-tags "file://$fixture" "$unreachable_checkout"
+"$unreachable_checkout/tests/build-plugin.sh"
+git -C "$unreachable_checkout" remote set-url origin "$tmp/no-such-origin"
+out="$tmp/unreachable-origin.out"
+unreachable_rc=0
+"$checker" --root "$unreachable_checkout" >"$out" 2>&1 || unreachable_rc=$?
+assert_eq '1' "$unreachable_rc" \
+    'an unavailable origin fails instead of treating a missing local tag as unpublished'
+assert_contains "$(cat -- "$out")" \
+    "could not establish whether tag v$expected_version exists on origin" \
+    'the remote lookup failure explains how published-version evidence is unavailable'
 
 out="$tmp/tag.out"
 assert_eq '0' "$(run_checker "$out" --tag "refs/tags/v$expected_version")" \
@@ -219,6 +352,8 @@ assert_eq "$linked_before" "$linked_after" \
 
 cp -- "$fixture/agentkit/.claude-plugin/plugin.json" \
     "$fixture/plugin/agentkit/.claude-plugin/plugin.json"
+cp -- "$fixture/agentkit/.codex-plugin/plugin.json" \
+    "$fixture/plugin/agentkit/.codex-plugin/plugin.json"
 out="$tmp/tag-context.out"
 export GITHUB_REF_TYPE=tag GITHUB_REF_NAME="v$expected_version"
 assert_eq '0' "$(run_checker "$out")" \
@@ -227,6 +362,41 @@ assert_contains "$(cat -- "$out")" \
     "tag v$expected_version matches $expected_version across 4 manifests" \
     'tag-push context reports the tag comparison, not the no-tag message'
 unset GITHUB_REF_TYPE GITHUB_REF_NAME
+
+printf 'changed bytes under the same version\n' > "$fixture/agentkit/skills/example/SKILL.md"
+"$fixture/tests/build-plugin.sh"
+out="$tmp/content-drift.out"
+assert_eq '1' "$(run_checker "$out")" \
+    'changing shipped content without moving the version fails the gate'
+assert_contains "$(cat -- "$out")" \
+    "shipped content changed under existing version $expected_version" \
+    'content drift identifies the version that must move'
+
+bumped_version="${expected_version%.*}.$((${expected_version##*.} + 1))"
+for manifest in \
+    "$fixture/agentkit/.claude-plugin/plugin.json" \
+    "$fixture/agentkit/.codex-plugin/plugin.json"; do
+    jq --arg version "$bumped_version" '.version = $version' "$manifest" > "$manifest.new"
+    mv -- "$manifest.new" "$manifest"
+done
+"$fixture/tests/build-plugin.sh"
+out="$tmp/content-bump.out"
+assert_eq '0' "$(run_checker "$out")" 'a normal version bump passes the content gate'
+assert_contains "$(cat -- "$out")" \
+    "no existing tag v$bumped_version; shipped content is eligible for a new version" \
+    'a version bump reports why no prior content comparison applies'
+
+clean_checkout="$tmp/tag-checkout"
+git clone -q "$fixture" "$clean_checkout"
+git -C "$clean_checkout" checkout -q "v$expected_version"
+"$clean_checkout/tests/build-plugin.sh"
+clean_out="$tmp/clean-tag.out"
+clean_rc=0
+"$checker" --root "$clean_checkout" >"$clean_out" 2>&1 || clean_rc=$?
+assert_eq '0' "$clean_rc" 'a clean checkout of the version tag passes the content gate'
+clean_content_hash=$(sed -n 's/.*content hash \([0-9a-f]\{64\}\).*/\1/p' "$clean_out")
+assert_eq "$tagged_content_hash" "$clean_content_hash" \
+    'a clean checkout of the tag reproduces the recorded content hash'
 
 bad_root="$tmp/missing-root"
 out="$tmp/bad-root.out"
