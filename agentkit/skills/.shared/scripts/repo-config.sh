@@ -835,6 +835,7 @@ validate() {
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
         AGENT_REVIEW_PROVIDER_*_LOGIN)
             [[ $key =~ $PROVIDER_LOGIN_KEY_PATTERN &&
+                ! $key =~ ^AGENT_REVIEW_PROVIDER_(CODERABBIT|GITHUB_CODE_QUALITY|NONE)_LOGIN$ &&
                 $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]]
             ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;

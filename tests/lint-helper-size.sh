@@ -185,7 +185,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
 # #876: open provider declarations add parser and catalog boundary validation.
-readonly MAX_TREE_TOKENS=475218
+readonly MAX_TREE_TOKENS=475241
 
 violations=0
 checked=0

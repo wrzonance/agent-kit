@@ -165,6 +165,21 @@ out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_contains "$out" "export AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN='codex-review-bot'" \
     'the optional provider login override is exported as data'
 
+for key in AGENT_REVIEW_PROVIDER_CODERABBIT_LOGIN \
+    AGENT_REVIEW_PROVIDER_GITHUB_CODE_QUALITY_LOGIN \
+    AGENT_REVIEW_PROVIDER_NONE_LOGIN; do
+    printf '%s=%s\n' "$key" custom-review-bot > "$repo/.agent/config.env"
+    set +e
+    invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
+    invalid_rc=$?
+    set -e
+    assert_eq 1 "$invalid_rc" "$key is rejected because built-in identities are fixed"
+    assert_contains "$invalid_out" "invalid value for $key" \
+        "$key reports the dead override instead of silently accepting it"
+    out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
+    assert_not_contains "$out" "export $key=" "$key is never exported as live configuration"
+done
+
 for providers in 'coderabbit,chatgpt-codex-connector' 'x-y,z9'; do
     printf 'AGENT_REVIEW_PROVIDERS=%s\n' "$providers" > "$repo/.agent/config.env"
     assert_rc 0 "valid provider list '$providers' validates" -- \
