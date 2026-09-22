@@ -335,9 +335,9 @@ failure; stop with evidence unavailable. A receipt marker is authoritative from 
 
 ## Step 2: Fix CI Failures
 
-**Step 1c — batch pushes:** batch each cycle's fixes into **one** push; never post `@coderabbitai pause`/`resume`. Review behavior after a push is provider configuration, not a workflow guarantee.
+**Step 1c — batch pushes:** batch each cycle's fixes into **one** push; never post `@coderabbitai pause`/`resume`. Provider behavior after a push is configuration, not a guarantee.
 
-Diagnose the causal failure (`gh run view --log-failed "$run_id" | grep -E "FAIL|error|Error"`, run ID from `gh pr checks`), then run the **Implementation-worker gate** above; the worker verifies before its cycle push:
+Diagnose the causal failure from the run ID in `gh pr checks`, then run the **Implementation-worker gate** above; the worker verifies before its cycle push:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
@@ -353,7 +353,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd test
 ```
 
-During red/green the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` through `AGENT_CMD_TEST_FOCUS`. After the final edit, commit, run unfocused `"$agent_run" --cmd test` once on clean committed HEAD, and push only after `PASS:`. On `FAIL`, set `check`, `log`, and `failing_paths` from its output:
+For red/green iterations use `"$agent_run" --cmd test --only NAME[,NAME...]` through `AGENT_CMD_TEST_FOCUS`. After the final edit, commit, then run the unfocused `"$agent_run" --cmd test` once on clean committed HEAD for the full-suite verdict; push only after `PASS:`. On `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
