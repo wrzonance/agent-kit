@@ -282,21 +282,54 @@ printf '%s\n' \
     '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
     '{"timestamp":"2026-09-16T06:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
     '{"timestamp":"2026-09-16T06:01:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-1","output":"timed out"}}' \
-    '{"timestamp":"2026-09-16T06:11:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Heartbeat: outstanding=issue-1,issue-2 deadline=2026-09-16T06:16:00Z"}}' \
-    '{"timestamp":"2026-09-16T06:11:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
-    '{"timestamp":"2026-09-16T06:12:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-2","output":"timed out"}}' \
-    '{"type":"bench_trial_meta","payload":{"run_id":"wait-heartbeat","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":720,"exit_condition":"complete"}}' \
+    '{"timestamp":"2026-09-16T06:10:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Heartbeat: outstanding=issue-1,issue-2 deadline=2026-09-16T06:25:00Z"}}' \
+    '{"timestamp":"2026-09-16T06:10:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T06:11:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-2","output":"timed out"}}' \
+    '{"timestamp":"2026-09-16T06:20:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Heartbeat: outstanding=issue-1,issue-2 deadline=2026-09-16T06:25:00Z"}}' \
+    '{"timestamp":"2026-09-16T06:20:00Z","type":"response_item","payload":{"type":"function_call","call_id":"heartbeat-3","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T06:21:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"heartbeat-3","output":"timed out"}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"wait-heartbeat","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":1260,"exit_condition":"complete"}}' \
     > "$wait_heartbeat_fixture"
-run "$wait_heartbeat_fixture" --timestamp 2026-09-16T06:13:00Z
+run "$wait_heartbeat_fixture" --timestamp 2026-09-16T06:22:00Z
 assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
-    'a named heartbeat at the ten-minute boundary is allowed between empty waits'
-assert_eq '1' "$(jq -r '.wait_collection.heartbeats' <<< "$RUN_OUT")" \
-    'the parser reports an allowed heartbeat explicitly'
+    'heartbeats at ten minutes from wait start and the prior heartbeat are allowed'
+assert_eq '2' "$(jq -r '.wait_collection.heartbeats' <<< "$RUN_OUT")" \
+    'the parser reports both allowed heartbeats explicitly'
 
-sed 's/06:11:00Z/06:10:59Z/g' "$wait_heartbeat_fixture" > "$tmp/wait-collection-early-heartbeat.jsonl"
-run "$tmp/wait-collection-early-heartbeat.jsonl" --timestamp 2026-09-16T06:13:00Z
+sed 's/06:10:00Z/06:09:59Z/g' "$wait_heartbeat_fixture" > "$tmp/wait-collection-early-heartbeat.jsonl"
+run "$tmp/wait-collection-early-heartbeat.jsonl" --timestamp 2026-09-16T06:22:00Z
 assert_eq 'fail' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
-    'a heartbeat before ten minutes is commentary churn'
+    'a first heartbeat 599 seconds after wait invocation is commentary churn'
+
+sed 's/06:20:00Z/06:19:59Z/g' "$wait_heartbeat_fixture" > "$tmp/wait-collection-early-repeat.jsonl"
+run "$tmp/wait-collection-early-repeat.jsonl" --timestamp 2026-09-16T06:22:00Z
+assert_eq 'fail' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'a repeated heartbeat must wait another 600 seconds'
+
+structured_timeout_fixture="$tmp/wait-collection-structured-timeout.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T07:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T07:00:00Z","type":"response_item","payload":{"type":"function_call","call_id":"structured-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T07:01:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"structured-1","output":{"timed_out":true,"updates":[]}}}' \
+    '{"timestamp":"2026-09-16T07:01:00Z","type":"response_item","payload":{"type":"function_call","call_id":"structured-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T07:02:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"structured-2","output":{"timed_out":false,"updates":[{"status":"completed","message":"worker fixed timeout handling"}]}}}' \
+    '{"timestamp":"2026-09-16T07:02:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Worker completed."}}' \
+    '{"timestamp":"2026-09-16T07:02:02Z","type":"response_item","payload":{"type":"function_call","call_id":"after-completion","name":"exec_command","arguments":"{\"cmd\":\"inspect completion\"}"}}' \
+    '{"timestamp":"2026-09-16T07:02:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"after-completion","output":"done"}}' \
+    '{"timestamp":"2026-09-16T07:02:04Z","type":"response_item","payload":{"type":"function_call","call_id":"structured-3","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T07:03:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"structured-3","output":{"timed_out":true,"updates":[]}}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"structured-timeout","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":184,"exit_condition":"complete"}}' \
+    > "$structured_timeout_fixture"
+run "$structured_timeout_fixture" --timestamp 2026-09-16T07:04:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'timed_out true opens a gap while timed_out false completion closes collection'
+assert_eq '1' "$(jq -r '.wait_collection.empty_wait_resumptions' <<< "$RUN_OUT")" \
+    'a completion mentioning timeout does not create a second empty-wait resumption'
+assert_eq '0' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'post-completion tool work is not scored as idle-wait churn'
+assert_eq '0' "$(jq -r '.wait_collection.commentary_messages_between_empty_waits' <<< "$RUN_OUT")" \
+    'post-completion narration is not scored as idle-wait churn'
 
 # --- worker verification churn is attributed per rollout session ---------
 worker_churn_fixture="$tmp/worker-churn.jsonl"

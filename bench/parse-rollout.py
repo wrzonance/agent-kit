@@ -280,6 +280,14 @@ def is_empty_poll_output(payload):
     output = payload.get('output', '')
     if output in ('', [], {}):
         return True
+    decoded = output
+    if isinstance(output, str):
+        try:
+            decoded = json.loads(output)
+        except json.JSONDecodeError:
+            decoded = None
+    if isinstance(decoded, dict) and isinstance(decoded.get('timed_out'), bool):
+        return decoded['timed_out']
     try:
         text = json.dumps(output, sort_keys=True).lower()
     except (TypeError, ValueError):
@@ -698,7 +706,7 @@ def parse_session_file(path):
                 ended = record_timestamp(rec)
                 if is_empty_poll_output(item):
                     if collection_started_at is None:
-                        collection_started_at = ended
+                        collection_started_at = pending_poll_calls[call_id]
                     idle_gap = {'non_wait_calls': 0, 'commentary': 0, 'heartbeats': 0}
                 else:
                     idle_gap = None
