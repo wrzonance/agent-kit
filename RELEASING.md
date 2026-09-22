@@ -13,6 +13,10 @@ file bytes all participate in the hash. One published version therefore cannot n
 trees. `tests/check-release-version.sh` gates these invariants; CI runs it on every push, tag, and
 release (`.github/workflows/ci.yml`).
 
+The canonical local runner enforces the same check. Both a full run and
+`tests/run-tests.sh --gates-only` rebuild the plugin and run the release-version gate, so content
+drift under an existing tag fails before a branch is pushed.
+
 If the matching tag is absent locally, the gate asks the existing `origin` for that exact tag and
 fetches it when present. A transport or authentication failure stops the check instead of treating
 missing local history as proof that the version is new. A repository with no `origin`, or an
@@ -51,6 +55,17 @@ tests/check-release-version.sh
 
 The bump must precede the build so the generated plugin carries the new version; the release
 version check is the final gate before committing.
+
+After publishing and tagging that commit, leave `main` on the next unpublished patch version.
+From the primary checkout, while `v$VERSION` still points at `HEAD`, run and commit the result:
+
+```bash
+tests/prepare-next-version.sh "$VERSION"
+```
+
+This verifies the completed stable release, advances `X.Y.Z` to `X.Y.(Z+1)` with the fixed-scope
+bump helper, and rebuilds the generated plugin manifests. The next feature can then change shipped
+bytes under the new, untagged version without choosing or editing release metadata itself.
 
 ## Step 0: does the installed tree match `main`? (#453)
 
