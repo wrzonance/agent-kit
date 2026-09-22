@@ -186,7 +186,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
 # #874: status and duplicate prevention keep yielded verification single-run.
 # #873 chain: tested-head metadata and repair handback validation.
-readonly MAX_TREE_TOKENS=475765
+# #873 review repair: real SHA-256 evidence fixture and split verification recipe.
+readonly MAX_TREE_TOKENS=475784
 
 violations=0
 checked=0

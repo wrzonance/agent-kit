@@ -347,7 +347,14 @@ The worker verifies independently before its cycle push, through `agent-run.sh`:
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
-# After the worker-gate commit, before push:
+```
+
+Commit the repair through the worker gate. After the worker-gate commit and before push, run the
+full test on the clean committed HEAD:
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd test
 ```
 

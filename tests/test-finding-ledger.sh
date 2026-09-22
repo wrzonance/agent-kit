@@ -413,6 +413,34 @@ real_rc=0
 evidence --log "$real_log" --repair-sha "$ev_repair" >/dev/null 2>"$tmp/real.err" || real_rc=$?
 assert_eq 0 "$real_rc" "a real agent-run.sh log certifies the repair ($(cat "$tmp/real.err"))"
 
+# Git repositories can use 64-character SHA-256 object IDs. When this Git
+# supports that object format, exercise the real runner and evidence producer
+# together so the log-header contract stays aligned with Git's full IDs.
+sha256_repo="$tmp/ev-sha256-repo"
+if git init -q --object-format=sha256 "$sha256_repo" 2>/dev/null; then
+    git -C "$sha256_repo" config user.name Test
+    git -C "$sha256_repo" config user.email test@example.invalid
+    mkdir -p "$sha256_repo/.agent" "$sha256_repo/tests"
+    printf 'AGENT_CMD_TEST=tests/regression.sh\n' >"$sha256_repo/.agent/config.env"
+    printf '.agent/\n' >"$sha256_repo/.gitignore"
+    printf '#!/bin/sh\necho regression ok\n' >"$sha256_repo/tests/regression.sh"
+    chmod +x "$sha256_repo/tests/regression.sh"
+    printf 'broken\n' >"$sha256_repo/affected.sh"
+    git -C "$sha256_repo" add .gitignore affected.sh tests/regression.sh
+    git -C "$sha256_repo" commit -qm baseline
+    printf 'repaired\n' >"$sha256_repo/affected.sh"
+    git -C "$sha256_repo" commit -qam repair
+    sha256_repair=$(git -C "$sha256_repo" rev-parse HEAD)
+    assert_eq 64 "${#sha256_repair}" 'the regression fixture uses a full SHA-256 object ID'
+    (cd -- "$sha256_repo" && "$agent_run" --cmd test >/dev/null 2>&1)
+    sha256_log=$(find "$sha256_repo/.agent/logs" -name '*-test.log' -type f -print -quit)
+    sha256_rc=0
+    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$sha256_repo" \
+        --log "$sha256_log" --repair-sha "$sha256_repair" >/dev/null 2>"$tmp/sha256.err" || sha256_rc=$?
+    assert_eq 0 "$sha256_rc" \
+        "a real SHA-256 repository log certifies the repair ($(cat "$tmp/sha256.err"))"
+fi
+
 # Validation remains backward-compatible with records produced before the
 # tested-head header existed. Only evidence creation requires the new binding.
 legacy_digest=$(sha256sum "$tmp/ev-unbound.log"); legacy_digest=${legacy_digest%% *}
