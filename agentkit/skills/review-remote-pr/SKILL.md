@@ -346,13 +346,14 @@ The worker verifies independently before its cycle push, through `agent-run.sh`:
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
-"$agent_run" --cmd lint --if-declared --cmd test
+"$agent_run" --cmd lint --if-declared
+# After the worker-gate commit, before push:
+"$agent_run" --cmd test
 ```
 
 For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
-repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
-before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
+repo's `AGENT_CMD_TEST_FOCUS` declaration). After the final edit, commit, then run the unfocused `"$agent_run" --cmd test` once
+on the clean committed HEAD for the full-suite verdict; push only after `PASS:`. On `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }

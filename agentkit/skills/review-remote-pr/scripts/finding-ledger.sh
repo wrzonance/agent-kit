@@ -32,7 +32,8 @@ Usage: $PROGNAME add --title TITLE --severity P1|P2 --verdict fixed --sha SHA
        $PROGNAME ids --file FILE    (prints ID<TAB>TITLE; review-ledger.sh cover --reason fix:ID names one)
        $PROGNAME evidence --title T --path P --log LOG --repo-root DIR --repair-sha SHA [--head SHA]
                  (prints fixed-verdict evidence JSON; LOG must be a green unfocused agent-run.sh --cmd test
-                 log; head defaults to DIR's HEAD; SHA is the commit that changed P)
+                 log run on DIR's clean committed HEAD; head defaults to that HEAD; SHA is the
+                 commit that changed P)
 
 Terminal evidence: --evidence FILE --repo-root DIR --head SHA. Evidence JSON
 binds finding (title) to decision rejected|accepted-risk and rationale, or to
@@ -441,6 +442,21 @@ resolve_commit() {
     git -C "$1" rev-parse --verify -q "$2^{commit}" 2>/dev/null || die_evidence "not a commit in $1: $2"
 }
 
+require_tested_head() {
+    local log=$1 current=$2 header tested clean
+    header=$(sed -n '2p' "$log")
+    if [[ $header =~ '  head='([0-9a-f]{40})'  tracked-clean='(yes|no)$ ]]; then
+        tested=${BASH_REMATCH[1]}
+        clean=${BASH_REMATCH[2]}
+    else
+        die_evidence 'verification log has no tested-head metadata; commit the repair, then run agent-run.sh --cmd test'
+    fi
+    [[ $tested == "$current" ]] ||
+        die_evidence "verification log tested $tested, not the current head $current"
+    [[ $clean == yes ]] ||
+        die_evidence 'verification log ran with uncommitted tracked changes; commit the repair, then run agent-run.sh --cmd test'
+}
+
 # Emit fixed-verdict evidence for one finding, refusing anything add would
 # later reject: the log must be the green, unfocused declared test run, and the
 # named repair commit must change the finding's path.
@@ -472,6 +488,9 @@ cmd_evidence() {
     [[ -n $declared ]] || die_evidence 'the repository declares no AGENT_CMD_TEST'
     [[ -n $command && $command == "$declared" ]] ||
         die_evidence "log is not the unfocused declared test run (log: ${command:-<none>}; declared: $declared); run agent-run.sh --cmd test without --only"
+    [[ $(tail -n 1 -- "$log") == '=== agent-run exited rc=0 '* ]] ||
+        die_evidence 'verification log has no final successful agent-run result'
+    require_tested_head "$log" "$head"
     digest=$(verification_digest "$log") || die_evidence 'verification log digest unavailable (requires sha256sum or shasum)'
     row=$(jq -cn --arg finding "$title" --arg sha "$repair_sha" --arg head "$head" \
         --arg path "$path" --arg command "$command" --arg log "$log" --arg digest "${digest%% *}" \
