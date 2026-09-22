@@ -297,8 +297,10 @@ assert_contains "$ci_text" 'name: gates and suites' \
 assert_contains "$ci_text" 'needs: [gates, suites]' \
     'the aggregate waits for static gates and every matrix shard'
 # shellcheck disable=SC2016  # GitHub expression is literal workflow syntax.
-assert_contains "$ci_text" 'if: ${{ always() }}' \
-    'the aggregate runs after failed, cancelled, or skipped prerequisites'
+assert_contains "$ci_text" 'if: ${{ !cancelled() }}' \
+    'the aggregate runs after failed or skipped prerequisites but not in a superseded run'
+assert_not_contains "$ci_text" 'always()' \
+    'a run cancelled by a newer push does not report the aggregate as failed'
 assert_contains "$ci_text" 'needs.gates.result' \
     'the aggregate checks the static-gate result explicitly'
 assert_contains "$ci_text" 'needs.suites.result' \

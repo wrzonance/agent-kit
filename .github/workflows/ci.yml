@@ -154,7 +154,9 @@ jobs:
 
   aggregate:
     name: gates and suites
-    if: ${{ always() }}
+    # Runs after failed, timed-out, or skipped prerequisites, but not when a newer
+    # push cancelled this run: a superseded run is not a red check on main.
+    if: ${{ !cancelled() }}
     needs: [gates, suites]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
