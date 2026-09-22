@@ -260,6 +260,58 @@ assert_eq '1' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<<
 assert_eq '1' "$(jq -r '.wait_collection.commentary_messages_between_empty_waits' <<< "$RUN_OUT")" \
     'per-wake narration is counted separately from tool churn'
 
+stall_fixture="$tmp/wait-collection-stall-check.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T04:10:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T04:10:00Z","type":"response_item","payload":{"type":"function_call","call_id":"stall-wait-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:11:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"stall-wait-1","output":"Wait timed out."}}' \
+    '{"timestamp":"2026-09-16T04:11:01Z","type":"response_item","payload":{"type":"function_call","call_id":"stall-sample","name":"exec_command","arguments":"{\"cmd\":\"/kit/parallel-issues/scripts/stall-check.sh --run-id wave --issue 867\"}"}}' \
+    '{"timestamp":"2026-09-16T04:11:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"stall-sample","output":"progress"}}' \
+    '{"timestamp":"2026-09-16T04:11:03Z","type":"response_item","payload":{"type":"function_call","call_id":"stall-wait-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:12:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"stall-wait-2","output":"Wait timed out."}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"stall-check","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":123,"exit_condition":"complete"}}' \
+    > "$stall_fixture"
+run "$stall_fixture" --timestamp 2026-09-16T04:13:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'a scheduled stall-check executable is allowed between empty waits'
+assert_eq '0' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'the allowed stall sample is not scored as tool churn'
+
+sed 's#/kit/parallel-issues/scripts/stall-check.sh --run-id wave --issue 867#printf stall-check.sh-is-documented#' \
+    "$stall_fixture" > "$tmp/wait-collection-incidental-stall-text.jsonl"
+run "$tmp/wait-collection-incidental-stall-text.jsonl" --timestamp 2026-09-16T04:13:00Z
+assert_eq 'fail' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'incidental stall-check text does not receive the executable exemption'
+assert_eq '1' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'an unrelated command mentioning stall-check remains tool churn'
+
+steering_fixture="$tmp/wait-collection-user-steering.jsonl"
+printf '%s\n' \
+    '{"timestamp":"2026-09-16T04:20:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"low"}}' \
+    '{"timestamp":"2026-09-16T04:20:00Z","type":"response_item","payload":{"type":"function_call","call_id":"steer-1","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:21:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"steer-1","output":"Wait timed out."}}' \
+    '{"timestamp":"2026-09-16T04:21:01Z","type":"response_item","payload":{"type":"message","role":"user","content":"Please also preserve the expiry evidence."}}' \
+    '{"timestamp":"2026-09-16T04:21:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"I will preserve it."}}' \
+    '{"timestamp":"2026-09-16T04:21:03Z","type":"response_item","payload":{"type":"function_call","call_id":"steer-work","name":"exec_command","arguments":"{\"cmd\":\"inspect requested evidence\"}"}}' \
+    '{"timestamp":"2026-09-16T04:21:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"steer-work","output":"done"}}' \
+    '{"timestamp":"2026-09-16T04:21:05Z","type":"response_item","payload":{"type":"function_call","call_id":"steer-2","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:22:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"steer-2","output":"Wait timed out."}}' \
+    '{"timestamp":"2026-09-16T04:22:06Z","type":"response_item","payload":{"type":"function_call","call_id":"steer-3","name":"wait_agent","arguments":"{\"timeout_ms\":60000}"}}' \
+    '{"timestamp":"2026-09-16T04:23:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"steer-3","output":"Wait timed out."}}' \
+    '{"type":"bench_trial_meta","payload":{"run_id":"user-steering","plugin_sha":"53e7e8c850380444cd4fb0edb25ebfd8adb32b61","fixture_version":"wait-collection-v1","assigned_model":"gpt-5.6-luna","assigned_effort":"low","is_drift_control":false,"selected_issues":[],"chain_plan":[],"serialization_events":[],"retry_events":[],"worker_count":0,"wall_clock_seconds":186,"exit_condition":"complete"}}' \
+    > "$steering_fixture"
+run "$steering_fixture" --timestamp 2026-09-16T04:24:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'observed user steering starts a new collection window'
+assert_eq '1' "$(jq -r '.wait_collection.empty_wait_resumptions' <<< "$RUN_OUT")" \
+    'only the post-steering consecutive waits form a measured resumption'
+assert_eq '0' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'user-requested work is outside the prior idle gap'
+assert_eq '0' "$(jq -r '.wait_collection.commentary_messages_between_empty_waits' <<< "$RUN_OUT")" \
+    'the reply to observed user steering is outside the prior idle gap'
+
 wait_clean_fixture="$tmp/wait-collection-clean.jsonl"
 printf '%s\n' \
     '{"timestamp":"2026-09-16T05:00:00Z","type":"session_meta","payload":{"originator":"orchestrator","model":"gpt-5.6-luna"}}' \
@@ -330,6 +382,19 @@ assert_eq '0' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<<
     'post-completion tool work is not scored as idle-wait churn'
 assert_eq '0' "$(jq -r '.wait_collection.commentary_messages_between_empty_waits' <<< "$RUN_OUT")" \
     'post-completion narration is not scored as idle-wait churn'
+
+jq -c 'if .payload.call_id? == "structured-1" and (.payload.type | endswith("output")) then
+        .payload.output = "Wait timed out."
+    elif .payload.call_id? == "structured-2" and (.payload.type | endswith("output")) then
+        .payload.output = "worker fixed timeout handling"
+    else . end' "$structured_timeout_fixture" > "$tmp/wait-collection-plain-timeout.jsonl"
+run "$tmp/wait-collection-plain-timeout.jsonl" --timestamp 2026-09-16T07:04:00Z
+assert_eq 'pass' "$(jq -r '.wait_collection.status' <<< "$RUN_OUT")" \
+    'the runtime timeout notice opens a gap while plain completion text does not'
+assert_eq '1' "$(jq -r '.wait_collection.empty_wait_resumptions' <<< "$RUN_OUT")" \
+    'plain completion text mentioning timeout does not create another resumption'
+assert_eq '0' "$(jq -r '.wait_collection.non_wait_calls_between_empty_waits' <<< "$RUN_OUT")" \
+    'plain completion text keeps legitimate follow-up tools outside idle churn'
 
 # --- worker verification churn is attributed per rollout session ---------
 worker_churn_fixture="$tmp/worker-churn.jsonl"

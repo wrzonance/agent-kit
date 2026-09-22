@@ -61,6 +61,13 @@ PROSE_READ_RE = re.compile(r'(?:^|[\s;&|])(?:cat|head|tail|sed|awk|grep|rg|less|
 CUSTOM_EXEC_CMD_RE = re.compile(
     r'''tools\.exec_command\s*\(\s*\{[^{}]*?\bcmd\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')''',
     re.DOTALL)
+STALL_CHECK_COMMAND_RE = re.compile(
+    r'''^\s*(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*)'''
+    r'''(?:(?:bash|sh)\s+)?(?:"(?:[^"]*/)?stall-check\.sh"|'''
+    r'''(?:'(?:[^']*/)?stall-check\.sh')|(?:[^\s;&|]*/)?stall-check\.sh)(?=\s|$)''')
+EMPTY_POLL_NOTICE_RE = re.compile(
+    r'(?:wait\s+)?timed out(?: with no activity)?\.?|no (?:activity|updates)\.?',
+    re.IGNORECASE)
 INJECTED_SKILL_MARKER = 'agentkit invocation boundary: explicit workflow delivery'
 
 TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
@@ -149,6 +156,12 @@ def call_command_text(payload):
 def is_log_read(payload):
     command = call_command_text(payload)
     return '.agent/logs/' in command and bool(re.search(r'(?:^|[\s;&|])(?:cat|tail|sed)(?=\s)', command))
+
+
+def is_stall_check_call(payload):
+    command = call_command_text(payload)
+    segments = re.split(r'(?:&&|\|\||[;\n]|(?<![|])\|(?!\|)|(?<!&)&(?!&))', command)
+    return any(STALL_CHECK_COMMAND_RE.match(segment) for segment in segments)
 
 
 def custom_exec_commands(payload):
@@ -288,11 +301,8 @@ def is_empty_poll_output(payload):
             decoded = None
     if isinstance(decoded, dict) and isinstance(decoded.get('timed_out'), bool):
         return decoded['timed_out']
-    try:
-        text = json.dumps(output, sort_keys=True).lower()
-    except (TypeError, ValueError):
-        return False
-    return any(marker in text for marker in ('timed out', 'timeout', 'no activity', 'no updates'))
+    text = decoded if isinstance(decoded, str) else output
+    return isinstance(text, str) and EMPTY_POLL_NOTICE_RE.fullmatch(text.strip()) is not None
 
 
 def is_wait_heartbeat(payload):
@@ -626,7 +636,11 @@ def parse_session_file(path):
             effort = payload.get('effort', effort)
         elif rtype == 'response_item' and payload.get('type') == 'message':
             prose_chars_injected += injected_skill_chars(payload)
-            if idle_gap is not None and payload.get('role') == 'assistant':
+            if payload.get('role') == 'user':
+                idle_gap = None
+                collection_started_at = None
+                last_heartbeat_at = None
+            elif idle_gap is not None and payload.get('role') == 'assistant':
                 message_at = record_timestamp(rec)
                 heartbeat_floor = last_heartbeat_at or collection_started_at
                 if (is_wait_heartbeat(payload) and message_at is not None
@@ -646,7 +660,7 @@ def parse_session_file(path):
                     polling['commentary_messages_between_empty_waits'] += idle_gap['commentary']
                     polling['heartbeats'] += idle_gap['heartbeats']
                     idle_gap = None
-                else:
+                elif not is_stall_check_call(item):
                     idle_gap['non_wait_calls'] += 1
             if pending_input_tokens is None:
                 response_calls.append(poll_call)
