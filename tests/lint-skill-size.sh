@@ -46,7 +46,8 @@ declare -A KNOWN_OVERSIZE=(
     # #845 + #865: state the cold-start/reference-use boundary at workflow activation.
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
-    [parallel-issues]="761:16265:500"
+    # #875 review: preserve summary evidence and persist an invocation-derived review mode.
+    [parallel-issues]="761:16438:500"
 )
 
 readonly MAX_BODY_LINES=500

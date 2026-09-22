@@ -335,24 +335,25 @@ failure; stop with evidence unavailable. A receipt marker is authoritative from 
 
 ## Step 2: Fix CI Failures
 
-**Step 1c — batch pushes:** review behavior after a push is provider configuration, not a
-workflow guarantee — still batch each cycle's fixes into **one** push; never post
-`@coderabbitai pause`/`resume`.
+**Step 1c — batch pushes:** batch each cycle's fixes into **one** push; never post `@coderabbitai pause`/`resume`. Provider behavior after a push is configuration, not a guarantee.
 
-Diagnose the causal failure (`gh run view --log-failed "$run_id" | grep -E "FAIL|error|Error"`,
-run ID from the `gh pr checks` URL column), then run the **Implementation-worker gate** above.
-The worker verifies independently before its cycle push, through `agent-run.sh`:
+Diagnose the causal failure from the run ID in `gh pr checks`, then run the **Implementation-worker gate** above; the worker verifies before its cycle push:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
-"$agent_run" --cmd lint --if-declared --cmd test
+"$agent_run" --cmd lint --if-declared
 ```
 
-For red/green iterations the worker uses `"$agent_run" --cmd test --only NAME[,NAME...]` (forwards through the
-repo's `AGENT_CMD_TEST_FOCUS` declaration); after the final tree change, the worker must run the unfocused `"$agent_run" --cmd test` once for the full-suite verdict
-before worker publication. A successful run prints one `PASS:` line; a failure prints `FAIL(rc=N):`,
-context, `note:` lines, matched errors, and the log path. **Never push without local verification passing** — on `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
+Commit the repair through the worker gate. After the worker-gate commit and before push, run the full test on clean committed HEAD:
+
+```bash
+[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+agent_run="$agentkit/.shared/scripts/agent-run.sh"
+"$agent_run" --cmd test
+```
+
+For red/green iterations use `"$agent_run" --cmd test --only NAME[,NAME...]` through `AGENT_CMD_TEST_FOCUS`. After the final edit, commit, then run the unfocused `"$agent_run" --cmd test` once on clean committed HEAD for the full-suite verdict; push only after `PASS:`. On `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
