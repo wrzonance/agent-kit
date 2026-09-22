@@ -278,26 +278,35 @@ print_summary() {
             then . else error("invalid handback evidence") end] | sort_by(.issue)
     ' "$LEDGER" 2>/dev/null) || die "unparseable active-workers evidence: $LEDGER"
     parked_count=$(jq 'length' <<<"$parked_rows")
-    local prs receipts skipped queued auto_review missing_review_prs root_turns review_resume
+    local prs receipts skipped queued auto_review missing_review_prs root_turns review_resume coverage_failure=''
     IFS=$'\t' read -r prs receipts skipped queued auto_review missing_review_prs root_turns <<<"$counts"
     if [[ $auto_review == true && $missing_review_prs != - ]]; then
         review_resume="/review-remote-pr --auto-review ${missing_review_prs//,/; /review-remote-pr --auto-review }"
-        die "auto-review coverage missing for PRs: $missing_review_prs; resume: $review_resume"
+        coverage_failure="auto-review coverage missing for PRs: $missing_review_prs; resume: $review_resume"
     fi
     printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s root-turns-before-first-completion=%s\n' \
         "$prs" "$receipts" "$skipped" "$parked_count" "$queued" "$root_turns"
     jq -r '.[] | "blocked=\(.issue):\(.evidence)"' <<<"$parked_rows"
 
-    [[ -n $REPORTS_DIR ]] || return 0
+    if [[ -z $REPORTS_DIR ]]; then
+        [[ -z $coverage_failure ]] || die "$coverage_failure"
+        return 0
+    fi
     [[ ! -L $REPORTS_DIR ]] || die "verification reports directory must not be a symlink: $REPORTS_DIR"
     [[ ! -e $REPORTS_DIR || (-d $REPORTS_DIR && -O $REPORTS_DIR) ]] ||
         die "verification reports must be an owned directory: $REPORTS_DIR"
-    [[ -e $REPORTS_DIR ]] || return 0
+    if [[ ! -e $REPORTS_DIR ]]; then
+        [[ -z $coverage_failure ]] || die "$coverage_failure"
+        return 0
+    fi
     local reports_mode report report_mode report_text report_issue content_issue
     reports_mode=$(stat -c %a -- "$REPORTS_DIR") || die "could not inspect verification reports: $REPORTS_DIR"
     (( (8#$reports_mode & 8#077) == 0 )) || die "verification reports directory must be owner-private: $REPORTS_DIR"
     local -a reports=("$REPORTS_DIR"/issue-*.report)
-    [[ -e ${reports[0]} ]] || return 0
+    if [[ ! -e ${reports[0]} ]]; then
+        [[ -z $coverage_failure ]] || die "$coverage_failure"
+        return 0
+    fi
     for report in "${reports[@]}"; do
         [[ ${report##*/} =~ ^issue-([1-9][0-9]*)\.report$ ]] ||
             die "verification report filename must be issue-POSITIVE_INTEGER.report: $report"
@@ -315,6 +324,7 @@ print_summary() {
             die "verification report filename issue does not match content issue: $report"
         cat -- "$report"
     done
+    [[ -z $coverage_failure ]] || die "$coverage_failure"
 }
 
 main() {

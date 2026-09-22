@@ -49,11 +49,33 @@ assert_rc 0 'non-auto-review summary permits opened PRs without review coverage'
 printf '%s\n' \
     '{"opened_prs":[594,595],"queued":[],"receipt_prs":[594],"skipped_prs":[],"auto_review":true}' >"$state"
 missing_review_rc=0
-missing_review_err=$("$script" summary --run-id wave --repo-root "$repo" 2>&1 >/dev/null) || missing_review_rc=$?
+missing_review_out="$tmp/missing-review.out"
+missing_review_err="$tmp/missing-review.err"
+"$script" summary --run-id wave --repo-root "$repo" --reports-dir "$reports" \
+    >"$missing_review_out" 2>"$missing_review_err" || missing_review_rc=$?
 assert_eq 1 "$missing_review_rc" 'auto-review summary refuses uncovered opened PRs'
-assert_contains "$missing_review_err" '595' 'auto-review refusal names every uncovered PR'
-assert_contains "$missing_review_err" '/review-remote-pr --auto-review 595' \
+assert_contains "$(cat "$missing_review_err")" '595' 'auto-review refusal names every uncovered PR'
+assert_contains "$(cat "$missing_review_err")" '/review-remote-pr --auto-review 595' \
     'auto-review refusal prints the exact review resume command'
+assert_contains "$(cat "$missing_review_out")" 'coverage= prs=2 receipts=1 skipped=0 parked=2 queued=0' \
+    'auto-review refusal preserves coverage output'
+assert_contains "$(cat "$missing_review_out")" 'blocked=101:src/one.sh' \
+    'auto-review refusal preserves parked-worker evidence'
+assert_contains "$(cat "$missing_review_out")" 'spec-verification= issue=103' \
+    'auto-review refusal preserves durable verification reports'
+
+for report_case in omitted absent; do
+    early_out="$tmp/missing-review-$report_case.out"
+    early_err="$tmp/missing-review-$report_case.err"
+    early_rc=0
+    early_args=()
+    [[ $report_case == omitted ]] || early_args=(--reports-dir "$tmp/absent-reports")
+    "$script" summary --run-id wave --repo-root "$repo" "${early_args[@]}" \
+        >"$early_out" 2>"$early_err" || early_rc=$?
+    assert_eq 1 "$early_rc" "auto-review refusal survives the $report_case reports early-return path"
+    assert_contains "$(cat "$early_out")" 'blocked=101:src/one.sh' \
+        "auto-review refusal preserves parked evidence with $report_case reports"
+done
 
 printf '%s\n' \
     '{"opened_prs":[594,595],"queued":[],"receipt_prs":[],"skipped_prs":[],"auto_review":true}' >"$state"
@@ -212,5 +234,13 @@ skill_text=$(tr '\n' ' ' <"$root/agentkit/skills/parallel-issues/SKILL.md" | tr 
 assert_contains "$skill_text" \
     "printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\\n' \"\$pr\" \"\${auto_review:-false}\"" \
     'PR-open recipe prints the immediate Step 3a action and auto-review mode'
+# The literal expansion is the unsafe recipe under test.
+# shellcheck disable=SC2016
+assert_not_contains "$skill_text" '--path auto_review --json "${auto_review:-false}"' \
+    'auto-review persistence never defaults an unset shell variable to false'
+assert_contains "$skill_text" '--path auto_review --json true' \
+    'auto-review invocation facts persist the literal true value'
+assert_contains "$skill_text" '--path auto_review --json false' \
+    'non-auto-review invocation facts persist the literal false value'
 
 finish
