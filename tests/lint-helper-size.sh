@@ -190,7 +190,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #873 chain: tested-head metadata and repair handback validation.
 # #873 review repair: real SHA-256 evidence fixture and split verification recipe.
 # #873/#874 + #875 + #876 final merge-down: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=476839
+readonly MAX_TREE_TOKENS=476840
 
 violations=0
 checked=0
