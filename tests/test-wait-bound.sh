@@ -62,10 +62,12 @@ assert_contains "$wait_text" 'new analysis artifacts' \
     'post-dispatch root budget excludes authoring analysis artifacts'
 assert_contains "$wait_text" 'repository files the worker may be rewriting' \
     'post-dispatch root budget excludes stale root-checkout reads'
-assert_contains "$wait_text" '--path root_turns --json true' \
-    'shared wait discipline records each root turn before first completion'
+assert_not_contains "$wait_text" '--path root_turns --json true' \
+    'shared wait discipline never spends a tool call counting root turns'
+assert_contains "$wait_text" 'rollout parsing reconstructs that telemetry' \
+    'shared wait discipline derives root-turn telemetry after the run'
 assert_contains "$wait_text" '--path first_completion' \
-    'shared wait discipline freezes the counter at first completion'
+    'shared wait discipline still records the first completion latch'
 assert_contains "$skill_text" 'Primary-source verification and design research are Steps 1–5 work owned by the issue lead' \
     'parallel skill assigns source and design research to the issue lead'
 assert_contains "$skill_text" 'instruction belongs in the composed worker prompt' \

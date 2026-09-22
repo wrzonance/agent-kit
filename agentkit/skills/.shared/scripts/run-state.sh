@@ -242,9 +242,11 @@ print_summary() {
         elif (($skipped - $prs) | length) > 0 then error("skipped_prs must be a subset of opened_prs")
         elif (($receipts + $skipped | length) != ($receipts + $skipped | unique | length))
             then error("receipt_prs and skipped_prs must be disjoint")
-        elif $has_root_turns != $has_first_completion then error("incomplete root-turn summary evidence")
-        elif $has_root_turns and (($root_turns | type) != "array" or any($root_turns[]; . != true)
-            or ($first_completion | type) != "boolean") then error("invalid root-turn summary evidence")
+        elif $has_root_turns and (($has_first_completion | not) or ($root_turns | type) != "array"
+            or any($root_turns[]; . != true) or ($first_completion | type) != "boolean")
+            then error("invalid root-turn summary evidence")
+        elif $has_first_completion and (($first_completion | type) != "boolean")
+            then error("invalid first-completion evidence")
         else (if $has_root_turns | not then "unavailable"
               elif $first_completion then ($root_turns | length | tostring) else "unlatched" end) as $telemetry |
             [($prs | length), ($receipts | length), ($skipped | length), ($queued | length), $telemetry] | @tsv end
@@ -380,7 +382,6 @@ main() {
                     | if has("queued") then . else .queued=[] end
                     | if has("receipt_prs") then . else .receipt_prs=[] end
                     | if has("skipped_prs") then . else .skipped_prs=[] end
-                    | if has("root_turns") then . else .root_turns=[] end
                     | if has("first_completion") then . else .first_completion=false end
                     | if ((.receipt_prs - .opened_prs) | length) > 0 or ((.skipped_prs - .opened_prs) | length) > 0 or
                          ((.receipt_prs + .skipped_prs | length) != (.receipt_prs + .skipped_prs | unique | length))

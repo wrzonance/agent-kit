@@ -573,6 +573,18 @@ assert_not_contains "$text" 'Between waits, read durable state instead of waitin
     'parallel body does not reintroduce the rejected wait phrasing'
 assert_contains "$wait_discipline_text" 'Inspect durable state for a completion or actionable blocker, not merely because time passed.' \
     'polling reads durable state only for actionable events'
+assert_not_contains "$wait_discipline_text" 'run-state.sh" append --run-id "$RUN_ID" --repo-root "$repository_root" --path root_turns' \
+    'empty root wakes do not append per-turn telemetry'
+assert_not_contains "$wait_discipline_text" 'except required user updates' \
+    'native collection has no generic narration exception'
+assert_contains "$wait_discipline_text" 're-issue the same wait with no message text' \
+    'an empty native wait resumes with no model narration'
+assert_contains "$wait_discipline_text" 'Heartbeat: outstanding=<IDs> deadline=<deadline>' \
+    'the allowed heartbeat has a measurable fixed shape'
+assert_contains "$wait_discipline_text" 'no sooner than 10 minutes' \
+    'mid-wait heartbeats have an explicit minimum interval'
+assert_contains "$wait_discipline_text" "overrides the harness's default of narrating before each tool call" \
+    'bounded collection silence overrides the generic harness narration default'
 assert_contains "$draft_loop_prompt" 'do not load `review-remote-pr/SKILL.md`' \
     'dispatch is self-contained without loading the worker skill'
 assert_not_contains "$text" 'Four total slots including the root' \
