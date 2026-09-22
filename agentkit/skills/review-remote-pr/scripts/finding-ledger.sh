@@ -30,16 +30,13 @@ Usage: $PROGNAME add --title TITLE --severity P1|P2 --verdict fixed --sha SHA
        $PROGNAME add --title TITLE --severity P1|P2 --verdict open --rationale NEXT_REPAIR
        $PROGNAME status|validate --file FILE [--repo-root DIR --head SHA]
        $PROGNAME ids --file FILE    (prints ID<TAB>TITLE; review-ledger.sh cover --reason fix:ID names one)
-       $PROGNAME evidence --title T --path P --log LOG --repo-root DIR --repair-sha SHA
-                 --reviewed-head SHA [--head SHA]
+       $PROGNAME evidence --title T --path P --log LOG --repo-root DIR --repair-sha SHA [--head SHA]
                  (prints fixed-verdict evidence JSON; LOG must be a green unfocused agent-run.sh --cmd test
-                 log run in DIR on a committed tree; head is the commit LOG records, and the repair
-                 must descend from the reviewed head)
+                 log; head defaults to DIR's HEAD; SHA is the commit that changed P)
 
 Terminal evidence: --evidence FILE --repo-root DIR --head SHA. Evidence JSON
 binds finding (title) to decision rejected|accepted-risk and rationale, or to
-repairSha, reviewedHead, head, path, command, status=passed, log and logSha256;
-add refuses a reviewedHead other than \$RUN_DIR/state/review-attempt.json's head. Legacy adds
+repairSha, head, path, command, status=passed, log and logSha256. Legacy adds
 remain readable but have unknown remediation semantics. Repeated titles update
 one finding, retaining disposition history; open findings require terminal evidence.
 
@@ -321,7 +318,6 @@ append_record() {
         entry=$(jq -c '.schemaVersion=2' <<<"$entry")
     elif [[ -n $EVIDENCE_FILE ]]; then
         [[ -f $EVIDENCE_FILE && ! -L $EVIDENCE_FILE && -O $EVIDENCE_FILE ]] || die_evidence 'invalid evidence file'
-        [[ $VERDICT != fixed ]] || require_attempt_reviewed_head "$EVIDENCE_FILE"
         entry=$(jq -c --slurpfile evidence "$EVIDENCE_FILE" \
             'if ($evidence|length)!=1 then error("one evidence object required") else .schemaVersion=2 | .evidence=$evidence[0] end' <<<"$entry") || die_evidence 'invalid evidence JSON'
     fi
@@ -353,75 +349,36 @@ verification_digest() {
     fi
 }
 
-# The review attempt record is the authority for which head was reviewed; a
-# caller-supplied reviewedHead must name it when the record exists.
-require_attempt_reviewed_head() {
-    local attempt=$RUN_DIR/state/review-attempt.json reviewed
-    [[ -e $attempt || -L $attempt ]] || return 0
-    [[ -f $attempt && ! -L $attempt ]] || die_evidence "review attempt record is not a regular file: $attempt"
-    reviewed=$(jq -er '.head | select(type == "string" and length > 0)' "$attempt" 2>/dev/null) ||
-        die_evidence "review attempt record names no reviewed head: $attempt"
-    jq -e --arg reviewed "$reviewed" '.reviewedHead == $reviewed' "$1" >/dev/null 2>&1 ||
-        die_evidence "evidence reviewedHead is not the reviewed head $reviewed in $attempt"
-}
-
-# Sets LOG_CWD, LOG_HEAD and LOG_CLEAN from agent-run.sh's `=== started` header,
-# which records the checkout, the commit under test and whether uncommitted
-# tracked changes were under test. Bash-only: status runs with a minimal PATH.
-read_log_header() {
-    local first second
-    local re='^=== started .*  cwd=(.*)  concurrent-suites=[0-9]+  head=([0-9a-f]{40}|none)  tracked-clean=(yes|no)$'
-    { IFS= read -r first && IFS= read -r second; } <"$1" || return 1
-    [[ $first == '=== agent-run '* && $second =~ $re ]] || return 1
-    LOG_CWD=${BASH_REMATCH[1]} LOG_HEAD=${BASH_REMATCH[2]} LOG_CLEAN=${BASH_REMATCH[3]}
-}
-
-# A green log certifies only the committed tree it records, and only as the
-# declared command it names.
-validate_repair_log() {
-    local log=$1 digest=$2 command=$3 tested=$4 actual
-    [[ -f $log && ! -L $log && -O $log ]] || die_evidence 'verification log is unavailable'
-    actual=$(verification_digest "$log") || die_evidence 'verification log digest unavailable (requires sha256sum or shasum)'
-    actual=${actual%% *}
-    [[ $actual == "$digest" ]] || die_evidence 'verification log digest mismatch'
-    read_log_header "$log" || die_evidence 'verification log has no agent-run.sh header recording the tested commit'
-    [[ $LOG_HEAD == "$tested" ]] || die_evidence "verification log tested $LOG_HEAD, not the recorded head $tested"
-    [[ $LOG_CLEAN == yes ]] || die_evidence 'verification log ran over uncommitted tracked changes'
-    grep -Fxq -- "=== agent-run $command" "$log" || die_evidence 'verification command does not match its log'
-    [[ $(tail -n 1 -- "$log") == '=== agent-run exited rc=0 '* ]] ||
-        die_evidence 'verification log has no final successful agent-run result'
-}
-
 # Verify repair evidence at every trust boundary, including publication and
 # readiness. A hexadecimal string alone never proves a repair was committed.
 validate_repairs() {
-    local file=$1 root=$2 head=$3 row sha tested reviewed path
+    local file=$1 root=$2 head=$3 row sha tested path log digest actual command
     while IFS= read -r row; do
         [[ -n $root && -n $head ]] || die_evidence 'repair verification requires --repo-root and --head'
         sha=$(jq -r .sha <<<"$row")
         tested=$(jq -r .evidence.head <<<"$row")
-        reviewed=$(jq -r '.evidence.reviewedHead // ""' <<<"$row")
         path=$(jq -r .evidence.path <<<"$row")
-        [[ $head =~ ^[0-9a-f]{40}$ && $sha =~ ^[0-9a-f]{40}$ && $tested =~ ^[0-9a-f]{40}$ ]] ||
+        log=$(jq -r .evidence.log <<<"$row")
+        digest=$(jq -r .evidence.logSha256 <<<"$row")
+        command=$(jq -r .evidence.command <<<"$row")
+        [[ $head =~ ^[0-9a-f]{40}$ && $sha =~ ^[0-9a-f]{40}$ && $tested =~ ^[0-9a-f]{40}$ && $digest =~ ^[0-9a-f]{64}$ ]] ||
             die_evidence 'repair evidence requires full commit and log hashes'
-        [[ $reviewed =~ ^[0-9a-f]{40}$ ]] || die_evidence 'repair evidence requires the full reviewedHead it repairs'
-        if [[ $reviewed == "$sha" ]] || ! git -C "$root" merge-base --is-ancestor "$reviewed" "$sha" 2>/dev/null; then
-            die_evidence "repair commit $sha is not after the reviewed head $reviewed"
-        fi
         if ! git -C "$root" merge-base --is-ancestor "$sha" "$tested" 2>/dev/null ||
             ! git -C "$root" merge-base --is-ancestor "$tested" "$head" 2>/dev/null; then
             die_evidence "repair or verification head is unreachable: $sha"
         fi
         [[ $path != /* && $path != -* && $path != *'..'* ]] || die_evidence 'repair path must be repository relative'
-        # First-parent diff: a merge that resolves the repair during conflict resolution counts.
-        git -C "$root" diff-tree --root --diff-merges=first-parent --no-commit-id --name-only -r "$sha" -- "$path" |
+        git -C "$root" diff-tree --root --no-commit-id --name-only -r "$sha" -- "$path" |
             grep -Fxq -- "$path" || die_evidence "repair commit does not change finding path: $path"
         git -C "$root" diff --quiet "$tested" "$head" -- "$path" ||
             die_evidence "repair verification is stale for changed path: $path"
-        [[ $(jq -r .evidence.logSha256 <<<"$row") =~ ^[0-9a-f]{64}$ ]] ||
-            die_evidence 'repair evidence requires full commit and log hashes'
-        validate_repair_log "$(jq -r .evidence.log <<<"$row")" "$(jq -r .evidence.logSha256 <<<"$row")" \
-            "$(jq -r .evidence.command <<<"$row")" "$tested"
+        [[ -f $log && ! -L $log && -O $log ]] || die_evidence 'verification log is unavailable'
+        actual=$(verification_digest "$log") || die_evidence 'verification log digest unavailable (requires sha256sum or shasum)'
+        actual=${actual%% *}
+        [[ $actual == "$digest" ]] || die_evidence 'verification log digest mismatch'
+        grep -Fxq -- "=== agent-run $command" "$log" || die_evidence 'verification command does not match its log'
+        [[ $(tail -n 1 -- "$log") == '=== agent-run exited rc=0 '* ]] ||
+            die_evidence 'verification log has no final successful agent-run result'
     done < <(jq -cs '.[] | select(.schemaVersion == 2 and .verdict == "fixed")' "$file")
 }
 
@@ -484,28 +441,11 @@ resolve_commit() {
     git -C "$1" rev-parse --verify -q "$2^{commit}" 2>/dev/null || die_evidence "not a commit in $1: $2"
 }
 
-# Refuse a log that cannot prove it tested this checkout's committed head: it
-# must carry agent-run.sh's header, name a commit, have run on a tree with no
-# uncommitted tracked changes, and have run inside ROOT.
-require_bound_log() {
-    local log=$1 root=$2 top cwd
-    read_log_header "$log" ||
-        die_evidence "log has no agent-run.sh header recording the tested commit: $log; run agent-run.sh --cmd test"
-    [[ $LOG_HEAD != none ]] || die_evidence 'log records no tested commit; commit the repair, then run agent-run.sh --cmd test'
-    [[ $LOG_CLEAN == yes ]] ||
-        die_evidence 'log ran over uncommitted tracked changes; commit the repair, then re-run agent-run.sh --cmd test'
-    if ! top=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null) || ! top=$(cd -P -- "$top" && pwd -P); then
-        die_evidence "not a commit in $root: $LOG_HEAD"
-    fi
-    cwd=$(cd -P -- "$LOG_CWD" 2>/dev/null && pwd -P) || cwd=$LOG_CWD
-    [[ $cwd == "$top" || $cwd == "$top"/* ]] || die_evidence "log was not run in $top (cwd=$LOG_CWD)"
-}
-
 # Emit fixed-verdict evidence for one finding, refusing anything add would
-# later reject. The log decides the tested head; the caller names the repair
-# commit, which must follow the reviewed head and change the finding's path.
+# later reject: the log must be the green, unfocused declared test run, and the
+# named repair commit must change the finding's path.
 cmd_evidence() {
-    local title='' path='' log='' root='' repair_sha='' reviewed='' head='' declared command digest row
+    local title='' path='' log='' root='' repair_sha='' head='' declared command digest row
     shift
     while (($#)); do
         case $1 in
@@ -514,22 +454,17 @@ cmd_evidence() {
             --log) require_value "$1" "${2-}"; log=$2; shift 2 ;;
             --repo-root) require_value "$1" "${2-}"; root=$2; shift 2 ;;
             --repair-sha) require_value "$1" "${2-}"; repair_sha=$2; shift 2 ;;
-            --reviewed-head) require_value "$1" "${2-}"; reviewed=$2; shift 2 ;;
             --head) require_value "$1" "${2-}"; head=$2; shift 2 ;;
             *) die_usage "unknown argument: $1" ;;
         esac
     done
-    [[ -n $title && -n $path && -n $log && -n $root && -n $repair_sha && -n $reviewed ]] ||
-        die_usage 'evidence requires --title, --path, --log, --repo-root, --repair-sha and --reviewed-head'
+    [[ -n $title && -n $path && -n $log && -n $root && -n $repair_sha ]] ||
+        die_usage 'evidence requires --title, --path, --log, --repo-root and --repair-sha'
     reject_unsafe_text '--title' "$title"
     [[ $path != /* && $path != -* && $path != *'..'* ]] || die_evidence 'repair path must be repository relative'
     [[ -f $log && ! -L $log ]] || die_evidence "verification log is unavailable: $log"
     log=$(cd -- "$(dirname -- "$log")" && pwd -P)/${log##*/}
-    require_bound_log "$log" "$root"
-    head=$(resolve_commit "$root" "${head:-$LOG_HEAD}") || exit 1
-    [[ $head == "$LOG_HEAD" ]] ||
-        die_evidence "log tested $LOG_HEAD, not --head $head; omit --head or re-run agent-run.sh --cmd test at $head"
-    reviewed=$(resolve_commit "$root" "$reviewed") && repair_sha=$(resolve_commit "$root" "$repair_sha") || exit 1
+    head=$(resolve_commit "$root" "${head:-HEAD}") && repair_sha=$(resolve_commit "$root" "$repair_sha") || exit 1
     command=$(sed -n '1s/^=== agent-run //p' "$log")
     declared=$("$SCRIPT_DIR/../../.shared/scripts/repo-config.sh" --repo-root "$root" \
         --get-argv AGENT_CMD_TEST | tr '\0' ' ') || die_evidence 'the repository declares no AGENT_CMD_TEST'
@@ -538,11 +473,10 @@ cmd_evidence() {
     [[ -n $command && $command == "$declared" ]] ||
         die_evidence "log is not the unfocused declared test run (log: ${command:-<none>}; declared: $declared); run agent-run.sh --cmd test without --only"
     digest=$(verification_digest "$log") || die_evidence 'verification log digest unavailable (requires sha256sum or shasum)'
-    row=$(jq -cn --arg finding "$title" --arg sha "$repair_sha" --arg reviewed "$reviewed" --arg head "$head" \
+    row=$(jq -cn --arg finding "$title" --arg sha "$repair_sha" --arg head "$head" \
         --arg path "$path" --arg command "$command" --arg log "$log" --arg digest "${digest%% *}" \
         '{schemaVersion:2, verdict:"fixed", sha:$sha, evidence:{finding:$finding, repairSha:$sha,
-          reviewedHead:$reviewed, head:$head, path:$path, command:$command, status:"passed", log:$log,
-          logSha256:$digest}}')
+          head:$head, path:$path, command:$command, status:"passed", log:$log, logSha256:$digest}}')
     ( validate_repairs <(printf '%s\n' "$row") "$root" "$head" ) || exit 1
     jq '.evidence' <<<"$row"
 }

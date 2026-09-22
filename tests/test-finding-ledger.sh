@@ -197,18 +197,11 @@ base_sha=$(git -C "$repair_repo" rev-parse HEAD)
 printf 'repaired\n' >"$repair_repo/affected.sh"
 git -C "$repair_repo" commit -qam repair
 repair_sha=$(git -C "$repair_repo" rev-parse HEAD)
-# agent_log FILE COMMAND HEAD [TRACKED_CLEAN [CWD [RC]]] writes a log in agent-run.sh's
-# header format, which binds the run to the commit it tested.
-agent_log() {
-    printf '=== agent-run %s\n=== started 2026-09-21T00:00:00Z  pid=1  cwd=%s  concurrent-suites=1  head=%s  tracked-clean=%s\n=== agent-run exited rc=%s after 1s\n' \
-        "$2" "${5:-$tmp}" "$3" "${4:-yes}" "${6:-0}" >"$1"
-}
-agent_log "$tmp/verification.log" tests/regression.sh "$repair_sha"
+printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/verification.log"
 log_hash=$(sha256sum "$tmp/verification.log"); log_hash=${log_hash%% *}
 for n in {1..8}; do
     jq -n --arg finding "confirmed-$n" --arg sha "$repair_sha" --arg log "$tmp/verification.log" --arg digest "$log_hash" \
-        --arg reviewed "$base_sha" \
-        '{finding:$finding,repairSha:$sha,reviewedHead:$reviewed,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
+        '{finding:$finding,repairSha:$sha,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
     if [[ $n == 1 ]]; then
         assert_rc 1 'syntactic repair SHA cannot resolve a finding on an unrelated head' -- \
             run_ledger_at "$open_run" add --title confirmed-1 --severity P1 --verdict fixed \
@@ -250,30 +243,6 @@ assert_contains "$portable_out" 'verification log digest unavailable' 'missing d
 jq -c '.evidence.command="unrelated-command"' "$open_run/findings.ndjson" >"$tmp/wrong-command.ndjson"
 assert_rc 1 'unrelated successful command cannot certify a repair' -- "$script" status \
     --file "$tmp/wrong-command.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
-jq -c 'del(.evidence.reviewedHead)' "$open_run/findings.ndjson" >"$tmp/no-reviewed.ndjson"
-assert_rc 1 'repair evidence must name the reviewed head it repairs' -- "$script" status \
-    --file "$tmp/no-reviewed.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
-jq -c --arg sha "$repair_sha" '.evidence.reviewedHead=$sha' "$open_run/findings.ndjson" >"$tmp/pre-review.ndjson"
-assert_rc 1 'a repair commit that is not after the reviewed head is refused' -- "$script" status \
-    --file "$tmp/pre-review.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
-rebind_log() {
-    local digest
-    digest=$(sha256sum "$2"); digest=${digest%% *}
-    jq -c --arg log "$2" --arg digest "$digest" '.evidence.log=$log | .evidence.logSha256=$digest' \
-        "$open_run/findings.ndjson" >"$1"
-}
-agent_log "$tmp/other-head.log" tests/regression.sh "$base_sha"
-rebind_log "$tmp/other-head.ndjson" "$tmp/other-head.log"
-assert_rc 1 'a log that tested a different commit cannot certify the recorded head' -- "$script" status \
-    --file "$tmp/other-head.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
-agent_log "$tmp/dirty.log" tests/regression.sh "$repair_sha" no
-rebind_log "$tmp/dirty.ndjson" "$tmp/dirty.log"
-assert_rc 1 'a log run over uncommitted tracked changes cannot certify a commit' -- "$script" status \
-    --file "$tmp/dirty.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
-printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/unbound.log"
-rebind_log "$tmp/unbound.ndjson" "$tmp/unbound.log"
-assert_rc 1 'a log with no tested-head header cannot certify a commit' -- "$script" status \
-    --file "$tmp/unbound.ndjson" --repo-root "$repair_repo" --head "$repair_sha"
 printf 'regressed\n' >"$repair_repo/affected.sh"
 git -C "$repair_repo" commit -qam regression
 regressed_sha=$(git -C "$repair_repo" rev-parse HEAD)
@@ -346,6 +315,9 @@ assert_rc 1 'ids refuses a missing findings file as unavailable evidence' -- \
     "$script" ids --file "$id_run/absent.ndjson"
 
 # --- evidence producer (issue #873) -------------------------------------------
+# Plan-level strictness: the log must be the green, unfocused declared test run
+# and the named repair commit must change the finding's path. The log is not
+# bound to a commit; forge-verifiable evidence is a separate follow-up.
 ev_repo="$tmp/ev-repo"
 git init -q "$ev_repo"
 git -C "$ev_repo" config user.name Test
@@ -359,7 +331,6 @@ chmod +x "$ev_repo/tests/regression.sh"
 printf 'broken\n' >"$ev_repo/affected.sh"
 git -C "$ev_repo" add .gitignore affected.sh tests/regression.sh
 git -C "$ev_repo" commit -qm baseline
-ev_reviewed=$(git -C "$ev_repo" rev-parse HEAD)
 printf 'repaired\n' >"$ev_repo/affected.sh"
 git -C "$ev_repo" commit -qam repair
 ev_repair=$(git -C "$ev_repo" rev-parse HEAD)
@@ -367,116 +338,62 @@ printf 'tidy\n' >"$ev_repo/other.txt"
 git -C "$ev_repo" add other.txt
 git -C "$ev_repo" commit -qm 'format follow-up'
 ev_head=$(git -C "$ev_repo" rev-parse HEAD)
-ev_cwd=$(cd -- "$ev_repo" && pwd -P)
-agent_log "$tmp/ev-full.log" tests/regression.sh "$ev_head" yes "$ev_cwd"
-agent_log "$tmp/ev-focused.log" 'tests/regression.sh --only one' "$ev_head" yes "$ev_cwd"
-agent_log "$tmp/ev-red.log" tests/regression.sh "$ev_head" yes "$ev_cwd" 1
+printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-full.log"
+printf '=== agent-run tests/regression.sh --only one\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-focused.log"
+printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=1 after 1s\n' >"$tmp/ev-red.log"
 evidence() {
-    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
-        --reviewed-head "$ev_reviewed" "$@"
+    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" "$@"
 }
 
 ev_out=$(evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair")
 assert_eq "$ev_repair" "$(jq -r .repairSha <<<"$ev_out")" 'evidence records the named repair commit'
-assert_eq "$ev_head" "$(jq -r .head <<<"$ev_out")" 'evidence records the head the log tested'
-assert_eq "$ev_reviewed" "$(jq -r .reviewedHead <<<"$ev_out")" 'evidence records the reviewed head'
+assert_eq "$ev_head" "$(jq -r .head <<<"$ev_out")" 'evidence head defaults to the checkout HEAD'
 assert_eq 'tests/regression.sh' "$(jq -r .command <<<"$ev_out")" 'evidence records the logged command'
+assert_eq false "$(jq 'has("reviewedHead")' <<<"$ev_out")" 'evidence carries no reviewedHead'
 printf '%s\n' "$ev_out" >"$tmp/ev.json"
 ev_run="$tmp/ev-run"
 mkdir -m 700 "$ev_run"
 cp "$run_dir/adversarial.result.json" "$ev_run/adversarial.result.json"
 run_ledger_at "$ev_run" add --title 'Guard input' --severity P2 --verdict open \
     --rationale 'repair required' >/dev/null
-mkdir -m 700 "$ev_run/state"
-jq -n --arg head "$ev_head" '{head:$head}' >"$ev_run/state/review-attempt.json"
-assert_rc 1 'add refuses evidence whose reviewed head is not the recorded review attempt head' -- \
-    run_ledger_at "$ev_run" add --title 'Guard input' --severity P2 --verdict fixed --sha "$ev_repair" \
-    --evidence "$tmp/ev.json" --repo-root "$ev_repo" --head "$ev_head"
-jq -n --arg head "$ev_reviewed" '{head:$head}' >"$ev_run/state/review-attempt.json"
 assert_rc 0 'producer output is accepted by add --verdict fixed unmodified' -- run_ledger_at "$ev_run" add \
     --title 'Guard input' --severity P2 --verdict fixed --sha "$ev_repair" --evidence "$tmp/ev.json" \
     --repo-root "$ev_repo" --head "$ev_head"
+assert_eq complete "$("$script" status --file "$ev_run/findings.ndjson" --repo-root "$ev_repo" \
+    --head "$ev_head" | jq -r .remediation)" \
+    'evidence from a header-less agent-run log validates as complete (existing ledgers keep working)'
 
 assert_rc 2 'evidence requires an explicit --repair-sha' -- evidence --log "$tmp/ev-full.log"
-assert_rc 2 'evidence requires --reviewed-head' -- "$script" evidence --title 'Guard input' \
-    --path affected.sh --repo-root "$ev_repo" --log "$tmp/ev-full.log" --repair-sha "$ev_repair"
 assert_rc 1 'a focused log is refused as repair evidence' -- \
     evidence --log "$tmp/ev-focused.log" --repair-sha "$ev_repair"
 assert_rc 1 'a red log is refused as repair evidence' -- \
     evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair"
 assert_rc 1 'a repair SHA that does not change the path is refused' -- \
     evidence --log "$tmp/ev-full.log" --repair-sha "$ev_head"
-pre_review_err=$(evidence --log "$tmp/ev-full.log" --repair-sha "$ev_reviewed" 2>&1 >/dev/null; printf 'rc=%s' "$?")
-assert_contains "$pre_review_err" 'rc=1' 'the commit that introduced the finding cannot be recorded as its repair'
-assert_contains "$pre_review_err" 'not after the reviewed head' 'the pre-review refusal names the cause'
 focused_err=$(evidence --log "$tmp/ev-focused.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$focused_err" 'without --only' 'the focused-log refusal says how to produce valid evidence'
 red_err=$(evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$red_err" 'no final successful agent-run result' 'the red-log refusal names the failed run'
 abs_err=$("$script" evidence --title 'Guard input' --path "$ev_repo/affected.sh" --log "$tmp/ev-full.log" \
-    --repo-root "$ev_repo" --reviewed-head "$ev_reviewed" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
+    --repo-root "$ev_repo" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
 assert_contains "$abs_err" 'repair path must be repository relative' 'an absolute --path is refused by name'
 assert_contains "$abs_err" 'rc=1' 'an absolute --path is an evidence refusal, not a git crash'
 bad_root_err=$("$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
-    --repo-root "$tmp/no-such-repo" --reviewed-head "$ev_reviewed" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
-assert_contains "$bad_root_err" "no-such-repo: $ev_head" 'an unresolvable head refusal keeps the value the log recorded'
-
-# The log, not the checkout, says which commit was tested (adversarial findings on #873).
-agent_log "$tmp/ev-unbound.log" tests/regression.sh none yes "$ev_cwd"
-assert_rc 1 'a log that records no tested commit is refused' -- \
-    evidence --log "$tmp/ev-unbound.log" --repair-sha "$ev_repair"
-printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-handwritten.log"
-assert_rc 1 'a log without the agent-run header is refused' -- \
-    evidence --log "$tmp/ev-handwritten.log" --repair-sha "$ev_repair"
-agent_log "$tmp/ev-dirty.log" tests/regression.sh "$ev_head" no "$ev_cwd"
-dirty_err=$(evidence --log "$tmp/ev-dirty.log" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
-assert_contains "$dirty_err" 'rc=1' 'a log run over uncommitted tracked changes is refused'
-assert_contains "$dirty_err" 'uncommitted' 'the dirty-tree refusal names the cause'
-agent_log "$tmp/ev-elsewhere.log" tests/regression.sh "$ev_head" yes /some/other/checkout
-elsewhere_err=$(evidence --log "$tmp/ev-elsewhere.log" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
-assert_contains "$elsewhere_err" 'rc=1' 'a log from another checkout is refused'
-assert_contains "$elsewhere_err" 'not run in' 'the other-checkout refusal names the cause'
-agent_log "$tmp/ev-at-repair.log" tests/regression.sh "$ev_repair" yes "$ev_cwd"
-at_repair=$(evidence --log "$tmp/ev-at-repair.log" --repair-sha "$ev_repair")
-assert_eq "$ev_repair" "$(jq -r .head <<<"$at_repair")" \
-    'the recorded head is the logged commit even when the checkout has moved on'
-stale_err=$(evidence --log "$tmp/ev-at-repair.log" --repair-sha "$ev_repair" --head "$ev_head" 2>&1 >/dev/null; printf 'rc=%s' "$?")
-assert_contains "$stale_err" 'rc=1' 'an explicit --head the log did not test is refused'
-assert_contains "$stale_err" 'tested' 'the head-mismatch refusal names the tested commit'
-printf 'REGRESSED\n' >"$ev_repo/affected.sh"
-git -C "$ev_repo" commit -qam regression
-ev_regressed=$(git -C "$ev_repo" rev-parse HEAD)
-assert_rc 1 'a green log from before a regression cannot certify the regressing commit' -- \
-    evidence --log "$tmp/ev-full.log" --repair-sha "$ev_regressed" --head "$ev_regressed"
-git -C "$ev_repo" revert -q --no-edit HEAD
-
-# A merge that resolves the repair during conflict resolution is a real repair commit.
-git -C "$ev_repo" checkout -q -b side "$ev_reviewed"
-printf 'side\n' >"$ev_repo/affected.sh"
-git -C "$ev_repo" commit -qam side
-git -C "$ev_repo" checkout -q -
-git -C "$ev_repo" merge -q side >/dev/null 2>&1
-printf 'merged repair\n' >"$ev_repo/affected.sh"
-git -C "$ev_repo" add affected.sh
-git -C "$ev_repo" commit -qm 'merge side with repair'
-ev_merge=$(git -C "$ev_repo" rev-parse HEAD)
-agent_log "$tmp/ev-merge.log" tests/regression.sh "$ev_merge" yes "$ev_cwd"
-assert_rc 0 'a merge commit that changes the path can be named as the repair' -- \
-    evidence --log "$tmp/ev-merge.log" --repair-sha "$ev_merge"
+    --repo-root "$tmp/no-such-repo" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
+assert_contains "$bad_root_err" 'no-such-repo: HEAD' 'an unresolvable head refusal keeps the value asked for'
 
 # End to end: a real agent-run.sh log is accepted as produced.
 agent_run="$root/agentkit/skills/.shared/scripts/agent-run.sh"
 (cd -- "$ev_repo" && "$agent_run" --cmd test >/dev/null 2>&1)
 real_log=$(find "$ev_repo/.agent/logs" -name '*-test.log' -type f -print -quit)
-real_out=$(evidence --log "$real_log" --repair-sha "$ev_merge")
-assert_eq "$ev_merge" "$(jq -r .head <<<"$real_out")" 'a real agent-run.sh log certifies the commit it ran on'
+real_rc=0
+evidence --log "$real_log" --repair-sha "$ev_repair" >/dev/null 2>"$tmp/real.err" || real_rc=$?
+assert_eq 0 "$real_rc" "a real agent-run.sh log certifies the repair ($(cat "$tmp/real.err"))"
 
 undeclared_repo="$tmp/ev-undeclared"
 git clone -q "$ev_repo" "$undeclared_repo"
-undeclared_cwd=$(cd -- "$undeclared_repo" && pwd -P)
-agent_log "$tmp/ev-undeclared.log" tests/regression.sh "$ev_merge" yes "$undeclared_cwd"
-undeclared_err=$("$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-undeclared.log" \
-    --repo-root "$undeclared_repo" --reviewed-head "$ev_reviewed" --repair-sha "$ev_merge" 2>&1 >/dev/null; printf 'rc=%s' "$?")
+undeclared_err=$("$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
+    --repo-root "$undeclared_repo" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
 assert_contains "$undeclared_err" 'the repository declares no AGENT_CMD_TEST' \
     'a repository without a declared test command is named as the cause'
 assert_contains "$undeclared_err" 'rc=1' 'an undeclared test command is an evidence refusal'

@@ -1173,15 +1173,12 @@ assert_rc 1 'an arbitrary descendant cannot replace the original reviewed head' 
 fixed_comments="$tmp/fixed-unspent.json"
 printf '%s\n' '[]' >"$fixed_comments"
 repair_log="$tmp/repair-verification.log"
-# agent-run.sh's header binds the green log to the commit it tested (#873).
-printf '%s\n' '=== agent-run test repair.txt' \
-    "=== started 2026-09-21T00:00:00Z  pid=1  cwd=$receipt_repo  concurrent-suites=1  head=$repair_head  tracked-clean=yes" \
-    '=== agent-run exited rc=0 after 1s' >"$repair_log"
+printf '%s\n' '=== agent-run test repair.txt' '=== agent-run exited rc=0 after 1s' >"$repair_log"
 repair_digest=$(sha256sum "$repair_log"); repair_digest=${repair_digest%% *}
 original_attempt=$(jq -r .attemptId "$tmp/adversarial.result.json")
-jq -cn --arg sha "$repair_head" --arg reviewed "$head_sha" --arg log "$repair_log" --arg digest "$repair_digest" \
+jq -cn --arg sha "$repair_head" --arg log "$repair_log" --arg digest "$repair_digest" \
     '{schemaVersion:2,title:"repair finding",severity:"P1",verdict:"fixed",sha:$sha,
-      evidence:{finding:"repair finding",repairSha:$sha,reviewedHead:$reviewed,head:$sha,path:"repair.txt",
+      evidence:{finding:"repair finding",repairSha:$sha,head:$sha,path:"repair.txt",
         command:"test repair.txt",status:"passed",log:$log,logSha256:$digest}}' >"$findings_file"
 fixed_rc=0
 (

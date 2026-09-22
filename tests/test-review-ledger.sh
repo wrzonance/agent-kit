@@ -737,13 +737,11 @@ assert_eq '2' "$bad_reason_rc" 'cover rejects a --reason outside fix:/merge-down
 # its review attempt or dropping an obligation from the durable ledger.
 repair_reviews=$(jq -c --arg head "$lineage_a" '.[0].head_sha=$head | .[0].attemptId="original-attempt"' <<<"$open_reviews")
 make_comments "$tmp/repair-comments.json" "$(ledger_body "$repair_reviews")" 88
-# agent-run.sh's header binds the green log to the commit it tested (#873).
-printf '=== agent-run regression\n=== started 2026-09-21T00:00:00Z  pid=1  cwd=%s  concurrent-suites=1  head=%s  tracked-clean=yes\n=== agent-run exited rc=0 after 1s\n' \
-    "$lineage_repo" "$lineage_b" >"$tmp/repair.log"
+printf '=== agent-run regression\n=== agent-run exited rc=0 after 1s\n' >"$tmp/repair.log"
 repair_digest=$(sha256sum "$tmp/repair.log"); repair_digest=${repair_digest%% *}
-jq -c --arg sha "$lineage_b" --arg reviewed "$lineage_a" --arg log "$tmp/repair.log" --arg digest "$repair_digest" '
+jq -c --arg sha "$lineage_b" --arg log "$tmp/repair.log" --arg digest "$repair_digest" '
     .[0].findings[] | .verdict="fixed" | del(.rationale) | .sha=$sha |
-    .evidence={finding:.title,repairSha:$sha,reviewedHead:$reviewed,head:$sha,path:"file",command:"regression",status:"passed",log:$log,logSha256:$digest}' \
+    .evidence={finding:.title,repairSha:$sha,head:$sha,path:"file",command:"regression",status:"passed",log:$log,logSha256:$digest}' \
     <<<"$repair_reviews" >"$tmp/repairs.ndjson"
 assert_rc 0 'eight repairs update the original durable review entry' -- env GH_COMMENT_STUB_OUT="$tmp/repaired-body.txt" \
     "$script" cover --repo owner/repo --pr 1 --comments "$tmp/repair-comments.json" \
