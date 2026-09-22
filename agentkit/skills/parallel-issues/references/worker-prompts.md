@@ -544,12 +544,13 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
    silent.
 3. Follow this composed verification runbook:
    __VERIFY_RUNBOOK__
-   Run every focused and full verification command through `agent-run.sh`; retain the fresh
-   green marker-bearing log path and do not rerun a failed command outside the wrapper.
-4. When verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
+   Run every verification command through `agent-run.sh`; use focused checks during TDD, but
+   commit the repair before the final unfocused run. Do not rerun a failed command outside the wrapper.
+4. When focused verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
    operands, Conventional Commit subject, the expanded `--trailer "$worker_attribution"`
-   -- or omitted, letting the helper derive it from the contract), then
-   push the branch. If unrelated dirt appears, stop and surface its files, diffstat, and
+   -- or omitted, letting the helper derive it from the contract). Run the unfocused full command
+   through `agent-run.sh` on that clean commit, retain its green marker-bearing log, and
+   push the branch only after that clean committed-HEAD run passes. If unrelated dirt appears, stop and surface its files, diffstat, and
    whether the checkpoint manifest explains it — never commit it.
 5. Return a completion report: branch, full commit SHA from the helper's success line,
    diffstat, and the green verification log path. If the helper exits 2 (nothing

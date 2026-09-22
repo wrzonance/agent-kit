@@ -445,7 +445,8 @@ covered rather than `stale` with zero additional review spends — see
 Update the same title after repair. Produce its evidence with
 `finding-ledger.sh evidence --title TITLE --path AFFECTED_PATH --log GREEN_LOG --repo-root WORKTREE --repair-sha REPAIR_SHA > FILE`:
 the log must be the green, unfocused `agent-run.sh --cmd test` run (a focused `--only` or red log is
-refused), `--head` defaults to the checkout's HEAD, and `REPAIR_SHA` is the commit that changed that
+refused) made after the repair commit and before push. Its header binds the tested head and tracked-tree cleanliness;
+that head must be the checkout's clean current HEAD. `REPAIR_SHA` is the commit that changed the
 path (not a later formatting-only commit). Then record it with
 `add --verdict fixed --sha "$(jq -r .repairSha FILE)" --evidence FILE --repo-root WORKTREE --head CURRENT_SHA`
 (also supply title and severity). One evidence file per finding. The helper checks commit ancestry,

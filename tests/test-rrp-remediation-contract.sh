@@ -67,6 +67,16 @@ assert_contains "$(cat -- "$rrp_skill")" 'finding-ledger.sh" evidence' \
 worker_gate="$skills/review-remote-pr/references/worker-gate.md"
 assert_contains "$(cat -- "$worker_gate")" 'unfocused' \
     'the worker completion report names the unfocused test log'
+assert_contains "$(cat -- "$worker_gate")" 'after the repair commit and before push' \
+    'the repair handback orders full verification on the commit that will be pushed'
+assert_contains "$(cat -- "$worker_gate")" 'clean committed HEAD' \
+    'the repair handback requires the log to bind the committed head'
+fix_prompt=$(sed -n '/## PR-fix-batch worker prompt/,/## Exit Report/p' \
+    "$skills/parallel-issues/references/worker-prompts.md")
+assert_contains "$fix_prompt" 'commit the repair before the final unfocused run' \
+    'the composed fix-worker prompt commits before full verification'
+assert_contains "$fix_prompt" 'push the branch only after that clean committed-HEAD run passes' \
+    'the composed fix-worker prompt cannot push an unverified commit'
 
 # --- item 6: the spawn contract names the primary checkout's ledger ----------
 assert_contains "$(cat -- "$skills/.shared/spawn-contract.md")" "primary checkout's \`.agent/runs/active-workers.ndjson\`" \
@@ -123,8 +133,10 @@ assert_contains "$after_repair" 'RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/
 assert_contains "$after_repair" '--repair-sha' 'the evidence step names the repair commit'
 assert_not_contains "$after_repair" '--reviewed-head' 'the evidence step needs no reviewed head'
 assert_not_contains "$(cat -- "$adv_ref")" '--reviewed-head' 'the evidence contract needs no reviewed head'
-assert_not_contains "$(cat -- "$worker_gate")" 'after the commit, so its header' \
-    'workers are not told to re-run the suite after committing'
+assert_contains "$(cat -- "$adv_ref")" 'after the repair commit and before push' \
+    'the evidence recipe says when the binding full run occurs'
+assert_contains "$(cat -- "$adv_ref")" 'tested head and tracked-tree cleanliness' \
+    'the evidence recipe explains what the log binding proves'
 assert_not_contains "$(cat -- "$adv_ref")" 'defaults to the last commit' \
     'the evidence contract no longer promises a guessed repair commit'
 

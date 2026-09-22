@@ -1910,11 +1910,15 @@ printf '  if this call returns before "=== agent-run exited", the run is still g
 
 # The closing marker distinguishes completed logs; exclude bookkeeping lines.
 readonly LOG_HEADER_LINES=2
+log_head=none log_clean=no
+[[ -z $git_top ]] || log_head=$(git -C "$git_top" rev-parse --verify -q HEAD 2> /dev/null) || log_head=none
+[[ -z $git_top || -n $(git -C "$git_top" status --porcelain --untracked-files=no 2> /dev/null || printf x) ]] || log_clean=yes
 {
     printf '=== agent-run %s\n' "$cmd_str"
-    printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s\n' \
+    printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s  head=%s  tracked-clean=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" \
-        "$(current_process_start "$$")" "$EPOCHSECONDS" "$work_dir" "$concurrent_suites"
+        "$(current_process_start "$$")" "$EPOCHSECONDS" "$work_dir" "$concurrent_suites" \
+        "$log_head" "$log_clean"
 } > "$log_file"
 
 started_at=$SECONDS
