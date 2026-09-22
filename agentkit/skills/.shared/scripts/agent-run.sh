@@ -14,13 +14,60 @@ if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
     exit 2
 fi
 
+current_process_start() {
+    local pid=$1
+    if [[ -r /proc/$pid/stat ]]; then
+        awk '{print $22}' "/proc/$pid/stat" 2> /dev/null
+    else
+        kill -0 "$pid" 2> /dev/null || return 1
+        printf 'alive'
+    fi
+}
+
+status_agent_log() {
+    local requested=$1 log last header pid start epoch current elapsed
+    [[ -f $requested && ! -L $requested && -O $requested ]] || {
+        printf 'agent-run: error: status requires an owned regular log: %s\n' "$requested" >&2; exit 2;
+    }
+    log=$(realpath -e -- "$requested") || exit 2
+    case $log in
+        */.agent/logs/*.log|${TMPDIR:-/tmp}/agent-logs-$(id -u)/*.log) ;;
+        *) printf 'agent-run: error: status path is not an agent log: %s\n' "$requested" >&2; exit 2 ;;
+    esac
+    last=$(tail -n 1 -- "$log")
+    if [[ $last =~ ^===\ agent-run\ exited\ rc=([0-9]+)\ after\ [0-9]+s$ ]]; then
+        ((BASH_REMATCH[1] == 0)) && printf 'pass\n' || printf 'fail rc=%s\n' "${BASH_REMATCH[1]}"
+        exit 0
+    fi
+    [[ $last != '=== agent-run interrupted by '* ]] || { printf 'interrupted\n'; exit 0; }
+    header=$(sed -n '2p' -- "$log")
+    pid=$(sed -n 's/.* pid=\([0-9][0-9]*\) .*/\1/p' <<< "$header")
+    start=$(sed -n 's/.* process-start=\([^ ]*\) .*/\1/p' <<< "$header")
+    epoch=$(sed -n 's/.* epoch=\([0-9][0-9]*\) .*/\1/p' <<< "$header")
+    current=$(current_process_start "$pid" 2>/dev/null || true)
+    if [[ -n $pid && -n $start && $current == "$start" && $epoch =~ ^[0-9]+$ ]]; then
+        elapsed=$((EPOCHSECONDS - epoch)); ((elapsed >= 0)) || elapsed=0
+        printf 'running pid=%s elapsed=%ss\n' "$pid" "$elapsed"
+    else
+        printf 'interrupted\n'
+    fi
+    exit 0
+}
+
+if [[ ${1:-} == status ]]; then
+    (($# == 2)) || { printf 'agent-run: error: usage: agent-run.sh status LOG\n' >&2; exit 2; }
+    status_agent_log "$2"
+fi
+
 usage() {
     cat <<'EOF'
-Usage: agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--summary] [--only NAME[,NAME...]]
+Usage: agent-run.sh status LOG
+       agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--summary] [--only NAME[,NAME...]]
                     [--baseline-ref REF --baseline-path PATH --baseline-id ID]
                     (--cmd NAME | [--] <command> ...)
 
 Runs one command with a sandbox-safe environment and a compact result summary.
+  status LOG     Print running, pass, fail, or interrupted for an agent log.
   --dir PATH     Working directory for the command (default: current directory).
                  --repo-root PATH is a silent alias, accepted for
                  compatibility with the kit's other checkout-path helpers.
@@ -117,6 +164,7 @@ failure_result() {
             "${failure_evidence:-${log_file:-stderr}}" "$failure_state" "$failure_action" >&2
     fi
     if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
+    if declare -F cleanup_active_run >/dev/null; then cleanup_active_run; fi
     if ((summary_ready)); then
         printf 'agent-run-summary status=%s rc=%s duration_seconds=%s log=%q log-sha256=%s receipt=%q\n' \
             "$summary_status" "$status" "$elapsed" "$log_file" "$log_sha256" "$log_sha256_receipt"
@@ -162,6 +210,7 @@ finish() {
     [[ -z ${verification_fd:-} ]] || exec {verification_fd}>&-
     if ((rc == 0)) && ((${#remaining_queue[@]})); then
         if declare -F cleanup_suite_run >/dev/null; then cleanup_suite_run; fi
+        if declare -F cleanup_active_run >/dev/null; then cleanup_active_run; fi
         build_chain_argv
         exec "$0" "${chain_argv[@]}"
     fi
@@ -1083,18 +1132,6 @@ concurrent_suites=1
 timeout_scale=1
 suite_marker_dir=${TMPDIR:-/tmp}/agent-run-suites-$(id -u)
 
-current_process_start() {
-    local pid=$1
-    if [[ -r /proc/$pid/stat ]]; then
-        awk '{print $22}' "/proc/$pid/stat" 2> /dev/null
-    else
-        # macOS has no /proc; kill -0 is the portable liveness fallback. The
-        # marker is still short-lived and is removed by the EXIT trap.
-        kill -0 "$pid" 2> /dev/null || return 1
-        printf 'alive'
-    fi
-}
-
 suite_marker_live() {
     local marker=$1 pid start current
     read -r pid start < "$marker" 2> /dev/null || return 1
@@ -1144,6 +1181,39 @@ cleanup_suite_run() {
     [[ -n ${suite_marker:-} ]] || return 0
     rm -f -- "$suite_marker" 2> /dev/null || true
     suite_marker=''
+}
+
+active_run_handle='' active_run_fd='' active_run_owned=0
+claim_active_run() {
+    local root key prior
+    [[ -n ${git_top:-} && -z $verification_handle ]] || return 0
+    command -v flock >/dev/null || return 0
+    root=$git_top/.agent/run-records
+    assert_private_dir "$root"
+    key=$(printf '%s\0' "$work_dir" "${cmd[@]}" | sha256sum | awk '{print $1}')
+    active_run_handle=$root/$key
+    assert_private_dir "$active_run_handle"
+    [[ ! -L $active_run_handle/lock && ! -L $active_run_handle/running ]] ||
+        refuse_boundary "active run record is a symlink: $active_run_handle"
+    exec {active_run_fd}>"$active_run_handle/lock" || refuse_boundary "cannot open active run lock: $active_run_handle/lock"
+    if ! flock -n "$active_run_fd"; then
+        IFS= read -r prior < "$active_run_handle/running" 2>/dev/null || true
+        [[ -n $prior ]] || prior=$active_run_handle
+        failure_class=usage failure_state=command-already-running failure_action=wait-for-existing-log
+        failure_evidence=$prior
+        printf 'agent-run: already running: %s; wait for its exited line or run status on it\n' "$prior" >&2
+        finish 2
+    fi
+    printf '%s\n' "$log_file" > "$active_run_handle/running"
+    active_run_owned=1
+}
+
+# shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
+cleanup_active_run() {
+    ((active_run_owned)) || return 0
+    rm -f -- "$active_run_handle/running" 2>/dev/null || true
+    [[ -z $active_run_fd ]] || exec {active_run_fd}>&-
+    active_run_owned=0
 }
 
 # A worker may ask for one failed verification to be checked against the chain
@@ -1647,9 +1717,16 @@ claim_verification() {
     [[ ! -L $verification_handle/running ]] || refuse_boundary "verification running record is a symlink: $verification_handle/running"
     exec {verification_fd}>"$verification_handle/lock" || refuse_boundary "cannot open verification lock: $verification_handle/lock"
     if ! flock -n "$verification_fd"; then
+        local running_log=''
+        IFS= read -r running_log < "$verification_handle/running" 2>/dev/null || true
         failure_evidence=$verification_handle
-        failure_state=verification-running
-        failure_action=inspect-running-handle-before-retry
+        failure_state=command-already-running
+        failure_action=wait-for-existing-log
+        if [[ $running_log == "$git_top/.agent/logs/"*.log ]]; then
+            failure_evidence=$running_log
+            printf 'agent-run: already running: %s; wait for its exited line or run status on it\n' "$running_log" >&2
+            finish 2
+        fi
         printf 'agent-run: verification running: handle=%s\n' "$verification_handle"
         finish 75
     fi
@@ -1822,25 +1899,22 @@ fi
 
 log_file=$(choose_log)
 [[ -z $verification_handle ]] || printf '%s\n' "$log_file" > "$verification_handle/running"
+claim_active_run
 register_suite_run
 trap failure_result EXIT
 
 # Announce the log before captured output makes a long run look hung.
-if ((summary_cmd)); then
-    printf 'running: %s (wait for the terminal agent-run-summary marker)\n' "$cmd_str" >&2
-else
-    printf 'running: %s\n  log: %s (grows while this runs; tail it instead of waiting blind)\n' \
-        "$cmd_str" "$log_file" >&2
-fi
-printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
+printf 'running: %s\n  log: %s\n' "$cmd_str" "$log_file" >&2
+printf '  if this call returns before "=== agent-run exited", the run is still going: resume this same call; never relaunch; status: %q status %q\n' \
+    "$0" "$log_file" >&2
 
 # The closing marker distinguishes completed logs; exclude bookkeeping lines.
 readonly LOG_HEADER_LINES=2
 {
     printf '=== agent-run %s\n' "$cmd_str"
-    printf '=== started %s  pid=%s  cwd=%s  concurrent-suites=%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir" \
-        "$concurrent_suites"
+    printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" \
+        "$(current_process_start "$$")" "$EPOCHSECONDS" "$work_dir" "$concurrent_suites"
 } > "$log_file"
 
 started_at=$SECONDS

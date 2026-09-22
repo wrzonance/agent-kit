@@ -394,7 +394,8 @@ assert_contains "$log" '=== agent-run echo hello' 'the log names the command it 
 assert_contains "$log" '=== started' 'and when it started'
 assert_contains "$log" 'concurrent-suites=1' 'the log records the active full-suite count'
 assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
-assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
+assert_contains "$out" 'resume this same call; never relaunch' \
+    'and the caller is told how to continue an unterminated run'
 
 # The suppressed-line count must report the command output, not the markers.
 assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bookkeeping'
@@ -740,7 +741,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1920 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1920 lines (#809 reuse diagnostics)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1994 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1994 lines (#874 yielded-run status)'
 
 finish
