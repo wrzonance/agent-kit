@@ -21,6 +21,7 @@ printf '%s\n' provider-resolve >>"$TRANSITION_LOG"
 case ${PROVIDER_MODE:-coderabbit} in
     coderabbit) printf '%s\n' 'provider=coderabbit mode=triggerable source=declared' ;;
     observe) printf '%s\n' 'provider=github-code-quality mode=observe-only source=declared' ;;
+    generic) printf '%s\n' 'provider=chatgpt-codex-connector mode=observe-only source=declared lane=generic-automated' ;;
     none) printf '%s\n' 'provider=none mode=disabled source=declared' ;;
     pair)
         printf '%s\n' 'provider=coderabbit mode=triggerable source=declared'
@@ -342,6 +343,14 @@ assert_contains "$out" 'provider=github-code-quality result=OBSERVE_ONLY' \
     'Code Quality remains observe-only'
 assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
     'observe-only provider cannot reach comment posting'
+
+write_auth '[{"name":"chatgpt-codex-connector","action":"observe","source":"capability-default"}]'
+: >"$tmp/transition.log"
+out=$(PROVIDER_MODE=generic run_transition)
+assert_contains "$out" 'provider=chatgpt-codex-connector result=OBSERVE_ONLY' \
+    'an unknown declared provider remains observe-only during ready transition'
+assert_eq '0' "$(grep -c '^comment ' "$tmp/transition.log" || true)" \
+    'an unknown declared provider cannot reach comment posting'
 
 write_auth "$(trigger_action coderabbit)"
 rm -f "$tmp/missing-auth.json"

@@ -91,6 +91,7 @@ readonly BASE_TRUSTED_KEYS=(
 # The NAME is what `agent-run.sh --cmd <name>` takes, so it is constrained to a
 # shape that survives being lowercased into a filename and an argument.
 readonly CMD_KEY_PATTERN='^AGENT_CMD_[A-Z][A-Z0-9_]*$'
+readonly PROVIDER_LOGIN_KEY_PATTERN='^AGENT_REVIEW_PROVIDER_[A-Z][A-Z0-9_]*_LOGIN$'
 
 # Mirrors codex-adversarial-review.sh / claude-adversarial-review.sh's own
 # `--effort` enum (no `ultra`): a value AGENT_WORKER_EFFORT would accept but
@@ -212,6 +213,7 @@ done
 if [[ $mode == keys ]]; then
     printf '%s\n' "${ACCEPTED_KEYS[@]}"
     printf 'AGENT_CMD_<NAME>\n'
+    printf 'AGENT_REVIEW_PROVIDER_<NAME>_LOGIN\n'
     printf 'AGENT_RUNDIR_<NAME>\n'
     printf 'AGENT_VERIFY_<NAME>_MODE\nAGENT_VERIFY_<NAME>_INPUTS\nAGENT_VERIFY_<NAME>_TOOLCHAIN\n'
     exit 0
@@ -274,6 +276,7 @@ is_accepted() {
     # here, and only a test that asked for the hole by name caught it.
     [[ ! $candidate =~ $SECRET_PATTERN ]] || return 1
     [[ ! $candidate =~ $CMD_KEY_PATTERN ]] || return 0
+    [[ ! $candidate =~ $PROVIDER_LOGIN_KEY_PATTERN ]] || return 0
     [[ ! $candidate =~ $RUNDIR_KEY_PATTERN ]] || return 0
     [[ ! $candidate =~ $VERIFY_KEY_PATTERN ]] || return 0
     for key in "${ACCEPTED_KEYS[@]}"; do
@@ -405,42 +408,33 @@ generated_paths_valid() {
     done
 }
 
-# Mirrors lib/review-provider-catalog.sh's REVIEW_PROVIDER_NAMES, for warning
-# text only. Kept as a local literal rather than sourcing that file: this
+# Mirrors lib/review-provider-catalog.sh's provider-specific names. Kept as a
+# local literal rather than sourcing that file: this
 # parser is deliberately self-contained (see the file header) so a missing or
 # broken lib file can never turn one bad declaration into a hard failure for
 # every accepted key. test-repo-config.sh pins this against the catalog.
+# shellcheck disable=SC2034  # test-repo-config.sh reads this schema mirror.
 readonly REVIEW_PROVIDER_ACCEPTED_NAMES=(coderabbit github-code-quality none)
 
-providers_display() {
-    local out='' name
-    for name in "${REVIEW_PROVIDER_ACCEPTED_NAMES[@]}"; do
-        out+="${out:+, }$name"
-    done
-    printf '%s' "$out"
-}
-
 providers_valid() {
-    local item saw_none=0 seen_coderabbit=0 seen_code_quality=0
+    local item saw_none=0
+    local -A seen=()
     [[ -n $1 && $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
     local -a items=()
     IFS=, read -ra items <<< "$1"
     ((${#items[@]})) || return 1
     for item in "${items[@]}"; do
         case $item in
-            coderabbit)
-                ((saw_none == 0 && seen_coderabbit == 0)) || return 1
-                seen_coderabbit=1
-                ;;
-            github-code-quality)
-                ((saw_none == 0 && seen_code_quality == 0)) || return 1
-                seen_code_quality=1
-                ;;
             none)
                 ((saw_none == 0 && ${#items[@]} == 1)) || return 1
                 saw_none=1
                 ;;
-            *) return 1 ;;
+            *)
+                [[ $item =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+                ((saw_none == 0)) || return 1
+                [[ -z ${seen[$item]+yes} ]] || return 1
+                seen[$item]=1
+                ;;
         esac
     done
     return 0
@@ -839,6 +833,10 @@ validate() {
             ;;
         AGENT_GENERATED_PATHS) generated_paths_valid "$value" ;;
         AGENT_REVIEW_PROVIDERS) providers_valid "$value" ;;
+        AGENT_REVIEW_PROVIDER_*_LOGIN)
+            [[ $key =~ $PROVIDER_LOGIN_KEY_PATTERN &&
+                $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]]
+            ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
         AGENT_WORKER_MODELS | AGENT_WORKER_MODELS_FALLBACK) worker_models_roster_valid "$value" ;;
         AGENT_WORKER_EFFORT)
@@ -975,7 +973,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ -z $value ]]; then
             warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
         elif [[ $key == AGENT_REVIEW_PROVIDERS ]]; then
-            warn "invalid value for $key on line $lineno, ignoring -- accepted: $(providers_display)"
+            warn "invalid value for $key on line $lineno, ignoring -- each name must match [a-z][a-z0-9-]*; none is exclusive; empty and duplicate items are forbidden"
         elif [[ $key == AGENT_ADVERSARIAL_REVIEWER ]]; then
             warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}")"
         elif [[ $key == AGENT_ADVERSARIAL_REVIEW_EFFORT ]]; then

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Single source of review-provider capabilities and canonical identities.
 
-# Canonical accepted provider identities, in display order. Every function in
-# this file recognizes exactly these values; review_provider_names() is what
-# a rejection message names instead of leaving a caller to read this file.
+# Provider-specific identities, in display order. Names outside this list use
+# the generic observe-only defaults when they match the declaration grammar.
 #
 # Not `readonly`: this file is sourced more than once within a single process
 # in practice (the pr-to-green transition engine sources it directly, then again
@@ -19,12 +18,33 @@ review_provider_names() {
     printf '%s\n' "$out"
 }
 
+review_provider_name_valid() {
+    [[ ${1:-} =~ ^[a-z][a-z0-9-]*$ ]]
+}
+
+review_provider_known() {
+    case ${1:-} in
+        coderabbit|github-code-quality|none) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+review_provider_override_login() {
+    local provider=$1 suffix key value
+    suffix=${provider^^}
+    suffix=${suffix//-/_}
+    key=AGENT_REVIEW_PROVIDER_${suffix}_LOGIN
+    value=${!key-}
+    [[ -n $value && $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]] || return 1
+    printf '%s\n' "${value,,}"
+}
+
 review_provider_mode() {
     case ${1:-} in
         coderabbit) printf '%s\n' triggerable ;;
         github-code-quality) printf '%s\n' observe-only ;;
         none) printf '%s\n' disabled ;;
-        *) return 1 ;;
+        *) review_provider_name_valid "${1:-}" && printf '%s\n' observe-only || return 1 ;;
     esac
 }
 
@@ -33,7 +53,7 @@ review_provider_lifecycle() {
         coderabbit) printf '%s\n' reply-settlement ;;
         github-code-quality) printf '%s\n' provider-rescan ;;
         none) printf '%s\n' disabled ;;
-        *) return 1 ;;
+        *) review_provider_name_valid "${1:-}" && printf '%s\n' generic-settlement || return 1 ;;
     esac
 }
 
@@ -42,16 +62,42 @@ review_provider_login() {
         coderabbit) printf '%s\n' coderabbitai ;;
         github-code-quality) printf '%s\n' github-code-quality ;;
         none) printf '%s\n' none ;;
-        *) return 1 ;;
+        *)
+            review_provider_name_valid "${1:-}" || return 1
+            review_provider_override_login "$1" 2>/dev/null || printf '%s\n' "$1"
+            ;;
     esac
 }
 
 review_provider_from_login() {
-    case ${1,,} in
+    local login=${1,,} provider expected bot_suffix=0
+    local -a declared_providers=()
+    case $login in
         coderabbitai|coderabbitai\[bot\]) printf '%s\n' coderabbit ;;
         github-code-quality|github-code-quality\[bot\]) printf '%s\n' github-code-quality ;;
-        *) return 1 ;;
+        *)
+            [[ $login == *'[bot]' ]] && bot_suffix=1
+            login=${login%\[bot\]}
+            IFS=, read -r -a declared_providers <<< "${AGENT_REVIEW_PROVIDERS:-}"
+            for provider in "${declared_providers[@]}"; do
+                review_provider_name_valid "$provider" || continue
+                expected=$(review_provider_login "$provider" 2>/dev/null) || continue
+                [[ $login == "$expected" ]] || continue
+                printf '%s\n' "$provider"
+                return 0
+            done
+            ((bot_suffix)) || return 1
+            review_provider_name_valid "$login" || return 1
+            [[ $login != none ]] || return 1
+            printf '%s\n' "$login"
+            ;;
     esac
+}
+
+review_provider_lane() {
+    review_provider_name_valid "${1:-}" || return 1
+    review_provider_known "$1" && return 1
+    printf '%s\n' generic-automated
 }
 
 review_provider_request_marker() {

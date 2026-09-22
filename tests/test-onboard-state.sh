@@ -49,6 +49,16 @@ out=$($state_sh --repo-root "$repo" --report)
 assert_contains "$out" 'stage=armed' 'ignored local declarations arm after verification'
 assert_contains "$out" 'next=none' 'the local model has no commit step'
 
+# An invalid declaration cannot be called armed merely because it is locally
+# ignored and has a command. It must return to declaration repair first.
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_BASE_BRANCH=main\nAGENT_CMD_VERIFY=true\nAGENT_REVIEW_PROVIDERS=X-1\n' \
+    > "$repo/.agent/config.env"
+out=$("$state_sh" --repo-root "$repo" --report)
+assert_not_contains "$out" 'stage=armed' 'invalid config never reports the repository as armed'
+assert_contains "$out" 'stage=declared' 'invalid config returns to the declaration stage'
+assert_contains "$out" 'next=verify' 'invalid config asks for verification after repair'
+printf 'AGENT_REPO_SLUG=o/r\nAGENT_BASE_BRANCH=main\nAGENT_CMD_VERIFY=true\n' > "$repo/.agent/config.env"
+
 printf '.agent/*\n!.agent/config.env\n!.agent/board.json\n' > "$repo/.gitignore"
 git -C "$repo" add -- .agent/config.env .agent/board.json .gitignore
 out=$("$state_sh" --repo-root "$repo" --report)

@@ -38,8 +38,36 @@ for provider in coderabbit github-code-quality none; do
     assert_contains "$names_out" "$provider" \
         "review_provider_names names $provider as accepted"
 done
+assert_eq observe-only "$(catalog_call review_provider_mode chatgpt-codex-connector)" \
+    'a syntactically valid unknown provider is observe-only'
+assert_eq generic-settlement "$(catalog_call review_provider_lifecycle chatgpt-codex-connector)" \
+    'an unknown provider uses generic settlement'
+assert_eq chatgpt-codex-connector \
+    "$(catalog_call review_provider_login chatgpt-codex-connector)" \
+    'an unknown provider defaults its login to its declared name'
+assert_eq chatgpt-codex-connector \
+    "$(AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector \
+        catalog_call review_provider_from_login chatgpt-codex-connector)" \
+    'an unknown provider login round-trips without a bot suffix'
+assert_eq chatgpt-codex-connector \
+    "$(catalog_call review_provider_from_login 'chatgpt-codex-connector[bot]')" \
+    'an unknown provider login round-trips with a bot suffix'
 # shellcheck disable=SC2016 # The inner shell expands its own positional parameter.
-assert_rc 1 'unknown providers have no capability entry' -- bash -c \
-    'source "$1"; review_provider_mode unexpected' bash "$catalog"
+assert_rc 1 'an unknown provider has no request marker' -- bash -c \
+    'source "$1"; review_provider_request_marker chatgpt-codex-connector' bash "$catalog"
+assert_eq codex-review-bot "$(AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector \
+    AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=codex-review-bot \
+    catalog_call review_provider_login chatgpt-codex-connector)" \
+    'a declared unknown provider accepts an explicit login override'
+assert_eq chatgpt-codex-connector "$(AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector \
+    AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=codex-review-bot \
+    catalog_call review_provider_from_login 'codex-review-bot[bot]')" \
+    'an explicit login override round-trips to its declared provider'
+# shellcheck disable=SC2016 # The inner shell expands its own positional parameter.
+assert_rc 1 'an undeclared human-shaped login is not promoted to a provider' -- bash -c \
+    'source "$1"; review_provider_from_login ordinary-human' bash "$catalog"
+# shellcheck disable=SC2016 # The inner shell expands its own positional parameter.
+assert_rc 1 'malformed provider names have no capability entry' -- bash -c \
+    'source "$1"; review_provider_mode X-1' bash "$catalog"
 
 finish

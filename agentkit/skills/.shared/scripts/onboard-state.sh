@@ -22,16 +22,24 @@ done
 [[ -n $repo_root && -d $repo_root ]] || usage
 (( want_report || want_next || want_preflight || want_next_steps )) || usage
 repo_root=$(cd -- "$repo_root" && pwd -P) || die "cannot resolve repository root: $repo_root"
+self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
 state='not onboarded'; next='discover'
 config=$repo_root/.agent/config.env; board=$repo_root/.agent/board.json
 marker=$repo_root/.agent/cache/onboarding-stage
+config_valid=yes
+if [[ -r $config && -x $self_dir/repo-config.sh ]] &&
+    ! "$self_dir/repo-config.sh" --repo-root "$repo_root" --validate >/dev/null 2>&1; then
+    config_valid=no
+fi
 if [[ ! -r $config ]]; then
     if [[ $(head -n 1 "$marker" 2> /dev/null || true) == discovered ]]; then
         state=discovered; next=declare
     fi
 elif [[ ! -r $board ]]; then
     state=discovered; next=declare
+elif [[ $config_valid == no ]]; then
+    state=declared; next=verify
 else
     command_declared=no
     grep -qE '^AGENT_CMD_[A-Z][A-Z0-9_]*=' "$config" 2> /dev/null && command_declared=yes
@@ -74,8 +82,6 @@ else
         fi
     fi
 fi
-
-self_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
 # --next is the bare stage/next line, exclusive of every other section.
 if ((want_next)); then

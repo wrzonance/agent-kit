@@ -31,7 +31,8 @@ declare -A KNOWN_OVERSIZE=(
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
-    [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
+    # #876: accept arbitrary review providers and their optional login keys.
+    [skills/.shared/scripts/repo-config.sh]="1154:12089:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
@@ -183,7 +184,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
-readonly MAX_TREE_TOKENS=474559
+# #876: open provider declarations add parser and catalog boundary validation.
+readonly MAX_TREE_TOKENS=475218
 
 violations=0
 checked=0

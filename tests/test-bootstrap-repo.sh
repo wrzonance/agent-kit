@@ -108,8 +108,11 @@ assert_contains "$listed" 'AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In revie
 assert_contains "$(cat "$repo/.agent/config.env")" '# AGENT_REVIEW_PROVIDERS=' \
     'generated config proposes an explicit automated review provider choice'
 assert_contains "$(cat "$repo/.agent/config.env")" \
-    'coderabbit, github-code-quality, or none' \
-    'provider proposal explains the supported choices'
+    'Known providers get provider-specific settlement' \
+    'provider proposal explains provider-specific handling'
+assert_contains "$(cat "$repo/.agent/config.env")" \
+    'Any other valid name is observed' \
+    'provider proposal explains the generic observe-only default'
 expected_generator=$(jq -r .version "$root/agentkit/.codex-plugin/plugin.json")
 assert_contains "$(cat "$repo/.agent/config.env")" "AGENT_ONBOARDED_BY=agentkit/$expected_generator" \
     'generated config records the installed generator version'
@@ -489,6 +492,17 @@ assert_eq '1' "$(grep -c '^AGENT_REVIEW_PROVIDERS=none$' "$repo/.agent/config.en
     'refresh preserves one selected provider declaration'
 assert_eq '0' "$(grep -c '^# AGENT_REVIEW_PROVIDERS=' "$repo/.agent/config.env" || true)" \
     'refresh does not leave a proposal beside a selected provider'
+
+# Arbitrary valid names are declarations too; refresh must preserve the choice
+# and must not reintroduce a commented proposal beside it.
+sed -i 's/^AGENT_REVIEW_PROVIDERS=none$/AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector/' \
+    "$repo/.agent/config.env"
+assert_rc 0 'refresh accepts an unknown observe-only provider choice' -- run_bs \
+    --repo-root "$repo" --project 7 --force
+assert_eq '1' "$(grep -c '^AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector$' "$repo/.agent/config.env")" \
+    'refresh preserves one unknown provider declaration'
+assert_eq '0' "$(grep -c '^# AGENT_REVIEW_PROVIDERS=' "$repo/.agent/config.env" || true)" \
+    'refresh does not propose a replacement for an unknown provider'
 
 # A declared worker model is likewise a declaration, not a proposal: refresh
 # must not nag once a repository has already made the choice. Uses --refresh
