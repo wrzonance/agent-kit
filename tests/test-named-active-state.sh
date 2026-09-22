@@ -193,4 +193,17 @@ jq -c 'select(.state == "terminal")' "$tmp/completed-ledger" >"$ledger"
 jq -c 'select(.state == "terminal") | .heartbeatEpoch=30000' "$tmp/completed-ledger" >>"$ledger"
 assert_rc 0 'valid terminal rows permit age-based maintenance' -- owner prune --now-epoch 30000
 assert_eq '[30000]' "$(jq -sc 'map(.heartbeatEpoch)' "$ledger")" 'prune removes valid aged rows and retains valid fresh rows'
+# Issue #873: a caller in a linked worktree passing its own .agent/runs path is
+# told the primary checkout's path, not a REPO_ROOT it never passed.
+primary_real=$(cd -P -- "$repo" && pwd -P)
+wt_rc=0
+wt_err=$("$helper" --repo-root "$worker" --ledger "$worker/.agent/runs/active-workers.ndjson" \
+    --issue 511 --open-pr none --fresh-hours 2 --now-epoch 2000000000 2>&1 >/dev/null) || wt_rc=$?
+assert_eq '2' "$wt_rc" 'a worktree-local ledger path is refused'
+assert_contains "$wt_err" "$primary_real/.agent/runs" \
+    'the refusal names the resolved primary checkout ledger directory'
+assert_contains "$wt_err" 'linked worktrees share its ledger' \
+    'the refusal explains that linked worktrees share the primary ledger'
+assert_eq 'absent' "$([[ -e $worker/.agent/runs/active-workers.ndjson ]] && printf present || printf absent)" \
+    'the refused worktree-local ledger is never created'
 finish

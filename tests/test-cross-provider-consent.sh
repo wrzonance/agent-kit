@@ -238,7 +238,9 @@ assert_eq '1' "$TRANSMISSION_COUNT" 'new-session consent transmits once'
 
 # Issue #709 adds 191 bytes of post-upgrade refresh guidance. Issue #865 scopes
 # grooming's resolver fences to delivered workflow runs.
-for ref_ceiling in environment-contract.md:3491 worker-gate.md:5300 grooming.md:5742; do
+# #873: worker-gate names the unfocused test log behind fixed-verdict evidence.
+# #873 review: the log must be run after the commit; dirty/other-commit logs are refused.
+for ref_ceiling in environment-contract.md:3491 worker-gate.md:5626 grooming.md:5742; do
     assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/${ref_ceiling%%:*}") -le ${ref_ceiling##*:} ]] && printf yes || printf no)" \
         "${ref_ceiling%%:*} stays at or under ${ref_ceiling##*:} bytes"
 done

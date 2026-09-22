@@ -312,7 +312,9 @@ for f in "$skills"/*/SKILL.md; do
 done
 
 # Issue #707: recommend target-branch coverage for stacked CI.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 21297 ]] && printf yes || printf no)" \
-    'onboard-repo SKILL.md stays at or under 21297 bytes'
+# #873: Step 0 separates check and preflight flags, with a canonical preflight path.
+# #873 review: preflight's flag set includes --activation-origin.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/onboard-repo/SKILL.md") -le 21411 ]] && printf yes || printf no)" \
+    'onboard-repo SKILL.md stays at or under 21411 bytes'
 
 finish

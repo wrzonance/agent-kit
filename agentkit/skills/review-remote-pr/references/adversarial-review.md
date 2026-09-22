@@ -442,12 +442,16 @@ covered rather than `stale` with zero additional review spends — see
 
 ### Terminal evidence and resume
 
-Update the same title after repair using `add --verdict fixed --sha FULL_SHA --evidence FILE
---repo-root WORKTREE --head CURRENT_SHA` (also supply title and severity). Evidence is JSON with
-`finding` equal to the title, `repairSha`, `head` (the tested commit), `path` (the affected repository
-path), `command`, `status:"passed"`, `log`, and `logSha256`. Keep the owner-private successful
-agent-run log. The helper checks commit ancestry, the changed path, and verification bytes;
-missing or unreachable evidence blocks resolution. It never runs a command from evidence.
+Update the same title after repair. Produce its evidence with
+`finding-ledger.sh evidence --title TITLE --path AFFECTED_PATH --log GREEN_LOG --repo-root WORKTREE --repair-sha REPAIR_SHA --reviewed-head REVIEWED_SHA > FILE`
+(`REVIEWED_SHA` is `.head` of `$RUN_DIR/state/review-attempt.json`, which `add` checks):
+the log must be the green, unfocused `agent-run.sh --cmd test` run in WORKTREE on a committed tree
+(a focused `--only`, red, dirty-tree or other-checkout log is refused). The head is the commit the
+log's header records, and the repair commit must descend from the reviewed head and change that path. Then record it with
+`add --verdict fixed --sha "$(jq -r .repairSha FILE)" --evidence FILE --repo-root WORKTREE --head CURRENT_SHA`
+(also supply title and severity). One evidence file per finding. The helper checks commit ancestry,
+the changed path, and verification bytes; missing or unreachable evidence blocks resolution. It
+never runs a command from evidence.
 
 A reasoned decline uses `--verdict declined --rationale REASON --evidence FILE`; its evidence
 must bind `finding`, `decision:"rejected"` or `decision:"accepted-risk"`, and the same `rationale`.
@@ -459,6 +463,7 @@ No natural-language substring decides whether a reason is valid.
 Legacy fixed/declined records remain readable with remediation `unknown` until re-adjudicated
 with evidence. `finding-ledger.sh status --file FILE --repo-root WORKTREE --head CURRENT_SHA`
 names unresolved obligations and next actions. After repairs, `review-ledger.sh cover` with
-`--findings-file FILE --reason fix:FINDING_ID` updates the existing review entry and retains its
+`--findings-file FILE --repo-root WORKTREE --reason fix:ID` (ID from `finding-ledger.sh ids --file
+FILE`, also printed by each `add`) updates the existing review entry and retains its
 attempt provenance. Re-fetch comments, then inspect `review-ledger.sh remediation` before readiness;
 coverage alone never proves repair completion. Do not purchase another review to resume.

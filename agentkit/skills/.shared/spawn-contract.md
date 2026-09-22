@@ -246,8 +246,9 @@ returns a task/agent identifier.
 ### Durable sole-writer gate
 
 Root uses `parallel-issues/scripts/named-active-state.sh` with
-`.agent/runs/active-workers.ndjson`, shared across runs/worktrees. Keep the dispatch plan's
-issue, branch and conflict-checked write set; ownership does not serialize shared migrations.
+the primary checkout's `.agent/runs/active-workers.ndjson`, shared across runs/worktrees.
+Keep the dispatch plan's issue, branch and conflict-checked write set; ownership does not
+serialize shared migrations.
 
 1. Before each native submission, `--action reserve --issue N --worktree DIR --branch BRANCH
    --run-id RUN --attempt UNIQUE`, with `--repo-root ROOT --ledger LEDGER`. Continue only on
@@ -257,7 +258,7 @@ issue, branch and conflict-checked write set; ownership does not serialize share
    Persist before the next spawn; later failures never clear prior IDs.
 3. A timeout/crash after submission remains `unknown`. Reconcile with native runtime
    inventory and attach the ID using `record`; never blindly retry. Without native
-   reconciliation, park and report the limitation.
+   reconciliation, park and report.
 4. Only confirmed pre-creation rejection, stop/completion, or explicit handback permits
    `--action release --attempt UNIQUE --disposition
    rejected|stopped|completed|handed-back --evidence RECEIPT`. The receipt identifies the

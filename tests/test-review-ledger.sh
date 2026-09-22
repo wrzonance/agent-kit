@@ -737,15 +737,17 @@ assert_eq '2' "$bad_reason_rc" 'cover rejects a --reason outside fix:/merge-down
 # its review attempt or dropping an obligation from the durable ledger.
 repair_reviews=$(jq -c --arg head "$lineage_a" '.[0].head_sha=$head | .[0].attemptId="original-attempt"' <<<"$open_reviews")
 make_comments "$tmp/repair-comments.json" "$(ledger_body "$repair_reviews")" 88
-printf '=== agent-run regression\n=== agent-run exited rc=0 after 1s\n' >"$tmp/repair.log"
+# agent-run.sh's header binds the green log to the commit it tested (#873).
+printf '=== agent-run regression\n=== started 2026-09-21T00:00:00Z  pid=1  cwd=%s  concurrent-suites=1  head=%s  tracked-clean=yes\n=== agent-run exited rc=0 after 1s\n' \
+    "$lineage_repo" "$lineage_b" >"$tmp/repair.log"
 repair_digest=$(sha256sum "$tmp/repair.log"); repair_digest=${repair_digest%% *}
-jq -c --arg sha "$lineage_b" --arg log "$tmp/repair.log" --arg digest "$repair_digest" '
+jq -c --arg sha "$lineage_b" --arg reviewed "$lineage_a" --arg log "$tmp/repair.log" --arg digest "$repair_digest" '
     .[0].findings[] | .verdict="fixed" | del(.rationale) | .sha=$sha |
-    .evidence={finding:.title,repairSha:$sha,head:$sha,path:"file",command:"regression",status:"passed",log:$log,logSha256:$digest}' \
+    .evidence={finding:.title,repairSha:$sha,reviewedHead:$reviewed,head:$sha,path:"file",command:"regression",status:"passed",log:$log,logSha256:$digest}' \
     <<<"$repair_reviews" >"$tmp/repairs.ndjson"
 assert_rc 0 'eight repairs update the original durable review entry' -- env GH_COMMENT_STUB_OUT="$tmp/repaired-body.txt" \
     "$script" cover --repo owner/repo --pr 1 --comments "$tmp/repair-comments.json" \
-    --head "$lineage_b" --reason fix:all-eight --findings-file "$tmp/repairs.ndjson" \
+    --head "$lineage_b" --reason fix:confirmed-1 --findings-file "$tmp/repairs.ndjson" \
     --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
 make_comments "$tmp/repaired-comments.json" "$(cat "$tmp/repaired-body.txt")" 88
 resumed=$("$script" remediation --repo owner/repo --pr 1 --comments "$tmp/repaired-comments.json" \
@@ -754,15 +756,48 @@ assert_eq complete "$(jq -r .remediation <<<"$resumed")" 'durable remediation re
 assert_contains "$(cat "$tmp/repaired-body.txt")" 'original-attempt' 'repair resume retains canonical attempt provenance'
 head -n 7 "$tmp/repairs.ndjson" >"$tmp/dropped-repair.ndjson"
 assert_rc 1 'resume cannot omit an unresolved obligation' -- "$script" cover --repo owner/repo --pr 1 \
-    --comments "$tmp/repair-comments.json" --head "$lineage_b" --reason fix:missing \
+    --comments "$tmp/repair-comments.json" --head "$lineage_b" --reason fix:confirmed-1 \
     --findings-file "$tmp/dropped-repair.ndjson" --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 : >"$tmp/empty-migration.ndjson"
 assert_rc 1 'legacy unknown cannot become resolved by supplying an empty ledger' -- "$script" cover \
-    --repo owner/repo --pr 1 --comments "$cover_base_comments" --head "$lineage_b" --reason fix:legacy \
+    --repo owner/repo --pr 1 --comments "$cover_base_comments" --head "$lineage_b" --reason "merge-down:$lineage_a" \
     --findings-file "$tmp/empty-migration.ndjson" --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 829 ]] && printf yes || printf no)" \
     'review-ledger.sh stays at or under 829 lines'
+
+# -- cover: finding IDs and --findings-file preconditions (issue #873) --------
+id_reviews=$(jq -cn --arg a "$lineage_a" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$a,counts:{p1:0,p2:1}}]')
+id_comments="$tmp/cover-id.json"
+make_comments "$id_comments" "$(ledger_body "$id_reviews")" 81
+id_findings="$tmp/cover-findings.ndjson"
+jq -cn '{title:"Guard cleared input",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$id_findings"
+
+rc=0
+"$script" cover --repo owner/repo --pr 1 --comments "$id_comments" --head "$lineage_b" \
+    --reason 'fix:guard-cleared-input' --findings-file "$id_findings" \
+    --gh-comment-script "$gh_comment_stub" >/dev/null 2>"$tmp/cover-noroot.err" || rc=$?
+assert_eq '2' "$rc" 'cover --findings-file without --repo-root fails at its own argument check'
+assert_contains "$(cat "$tmp/cover-noroot.err")" '--findings-file requires --repo-root' \
+    'the refusal names the missing cover flag, not a nested helper'
+
+rc=0
+"$script" cover --repo owner/repo --pr 1 --comments "$id_comments" --head "$lineage_b" \
+    --reason 'fix:not-a-finding' --findings-file "$id_findings" --repo-root "$lineage_repo" \
+    --gh-comment-script "$gh_comment_stub" >/dev/null 2>"$tmp/cover-badid.err" || rc=$?
+assert_eq '2' "$rc" 'cover refuses a fix: reason that names no finding'
+assert_contains "$(cat "$tmp/cover-badid.err")" 'known IDs: guard-cleared-input' \
+    'the refusal lists the IDs finding-ledger.sh ids prints'
+
+rc=0
+out=$(GH_COMMENT_STUB_OUT="$tmp/cover-id-body.txt" "$script" cover --repo owner/repo --pr 1 \
+    --comments "$id_comments" --head "$lineage_b" --reason 'fix:guard-cleared-input' \
+    --findings-file "$id_findings" --repo-root "$lineage_repo" \
+    --agent-identity 'Codex gpt-5.6-luna' --gh-comment-script "$gh_comment_stub") || rc=$?
+assert_eq '0' "$rc" 'cover accepts a fix: reason naming a real finding ID'
+assert_contains "$(cat "$tmp/cover-id-body.txt")" '"reason": "fix:guard-cleared-input"' \
+    'the ledger records the bound finding ID'
 
 finish

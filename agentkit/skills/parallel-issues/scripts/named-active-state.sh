@@ -60,14 +60,15 @@ repo_root=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null) ||
     die '--repo-root must be a Git checkout'
 repo_root=$(cd -P -- "$repo_root" && pwd -P) || die 'could not canonicalize --repo-root'
 # The primary checkout owns one ledger even when invoked from a linked worktree.
-repo_root=$(git -C "$repo_root" worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)
+repo_root=$(git -C "$repo_root" worktree list --porcelain | sed -n '1s/^worktree //p') ||
+    die 'could not list worktrees'
 repo_root=$(realpath -e -- "$repo_root") || die 'could not resolve primary checkout'
 [[ -n $ledger ]] || die '--ledger is required'
 [[ ! -L $ledger ]] || die 'ledger must not be a symlink'
 ledger_path=$(realpath -m -- "$ledger") || die 'could not canonicalize --ledger'
 case $ledger_path in
     "$repo_root"/.agent/runs/*) ;;
-    *) die '--ledger must be inside REPO_ROOT/.agent/runs' ;;
+    *) die "--ledger must be inside $repo_root/.agent/runs (the primary checkout; linked worktrees share its ledger)" ;;
 esac
 
 if [[ $action == classify && $open_pr != none ]]; then

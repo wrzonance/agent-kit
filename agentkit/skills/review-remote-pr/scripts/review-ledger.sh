@@ -40,6 +40,7 @@ Usage: $PROGNAME read   --repo OWNER/REPO --pr N --comments FILE
                  --reason (fix:ID|merge-down:SHA|retarget:REF) [--findings-file FILE] \\
                  [--kind adversarial|bot] [--provider NAME] [--agent-identity NAME] \\
                  [--trusted-author LOGIN] [--repo-root DIR] [--gh-comment-script PATH]
+       fix:ID is an ID printed by finding-ledger.sh ids; --findings-file requires --repo-root.
 
 Local attempt accounting: $PROGNAME attempt --help (requires Python 3).
 reserve returns 20 for any prior attempt; read never authorizes a new launch.
@@ -638,18 +639,14 @@ cmd_append() {
     fi
 }
 
-# cmd_cover -- issue #567: append-only extension of the latest matching
-# review entry's covered_heads, proving --head is a git descendant of that
-# entry's head_sha before recording it. See the script header comment for
-# the full contract.
+# cmd_cover -- issue #567: append-only extension of the latest matching review entry's
+# covered_heads, proving --head is a git descendant of that entry's head_sha first.
 readonly REASON_RE='^(fix|merge-down|retarget):[A-Za-z0-9._/-]+$'
 
 cmd_cover() {
-    # body_file is deliberately NOT local -- see the identical note on
-    # cmd_append's own body_file: the EXIT trap fires after this function
-    # returns and needs the variable to still be in scope then.
+    # body_file is deliberately NOT local: the EXIT trap needs it (see cmd_append).
     body_file=''
-    local findings_file='' findings='null'
+    local findings_file='' findings='null' finding_ids=''
     local repo='' pr='' comments='' head='' reason='' kind='' provider='' \
         agent_identity='' repo_root='' trusted_author_flag='' gh_comment_override=''
     while (($#)); do
@@ -683,8 +680,14 @@ cmd_cover() {
         die_usage "--reason must look like fix:<finding-id>, merge-down:<base-sha>, or retarget:<old-base>, got: $reason"
     [[ -z $kind || $kind == adversarial || $kind == bot ]] ||
         die_usage "--kind must be adversarial or bot, got: $kind"
+    [[ -z $findings_file || -n $repo_root ]] || die_usage '--findings-file requires --repo-root: repair evidence is verified against that checkout'
     [[ -n $agent_identity ]] || agent_identity='agentkit review-ledger cover'
     require_tools
+    if [[ -n $findings_file && $reason == fix:* ]]; then
+        finding_ids=$("$SCRIPT_DIR/finding-ledger.sh" ids --file "$findings_file" | cut -f1) ||
+            evidence_unavailable 'could not read finding IDs from --findings-file'
+        grep -Fxq -- "${reason#fix:}" <<<"$finding_ids" || die_usage "--reason $reason names no finding in $findings_file; known IDs: $(paste -sd, - <<<"$finding_ids")"
+    fi
 
     local author
     author=$(resolve_trusted_author "$trusted_author_flag" "$repo_root") ||
@@ -704,9 +707,8 @@ cmd_cover() {
     [[ $(jq -r '.repo' <<<"$ledger_json") == "$repo" && $(jq -r '.pr' <<<"$ledger_json") == "$pr" ]] ||
         evidence_unavailable 'existing ledger repo/pr does not match this call'
 
-    # The LATEST entry (last in append-only array order) matching the
-    # optional kind/provider filter is the one this SHA extends -- mirrors
-    # cmd_status's own candidate filtering.
+    # The LATEST entry (last in append-only array order) matching the optional
+    # kind/provider filter is the one this SHA extends -- mirrors cmd_status.
     local candidates candidate_count
     candidates=$(jq -c --arg kind "$kind" --arg provider "$provider" '
       [range(0; (.reviews | length)) as $i | .reviews[$i] |
@@ -742,10 +744,9 @@ cmd_cover() {
         ' <<<"$ledger_json" >/dev/null || evidence_unavailable 'remediation update drops or changes an existing obligation'
     fi
 
-    # Idempotence keys on the (sha, reason) PAIR (fix batch #2 F2): a retarget
-    # covers an UNCHANGED head under a NEW base, so a sha already recorded under
-    # a reason not yet logged still gets its coverage event (covered_heads stays
-    # a no-op via unique).
+    # Idempotence keys on the (sha, reason) PAIR (fix batch #2 F2): a retarget covers an UNCHANGED
+    # head under a NEW base, so a sha recorded under a reason not yet logged still gets its coverage
+    # event (covered_heads stays a no-op via unique).
     local sha_covered=0 reason_recorded=0
     if [[ $target_head == "$head" ]] ||
         jq -e --arg head "$head" '(.covered_heads // []) | index($head) != null' <<<"$target" >/dev/null 2>&1; then
@@ -762,11 +763,10 @@ cmd_cover() {
     fi
 
     if ((sha_covered == 0)); then
-        # Fail-closed like cmd_status's force-push demotion, extended per fix
-        # batch #2 F1: ancestry is proven against the ENTIRE covered frontier
-        # (head_sha AND every covered_heads entry), or a force-push to a sibling
-        # child that drops a covered fix commit would pass; "unknown"
-        # reachability never counts.
+        # Fail-closed like cmd_status's force-push demotion, extended per fix batch #2 F1:
+        # ancestry is proven against the ENTIRE covered frontier (head_sha AND every
+        # covered_heads entry), or a force-push to a sibling child that drops a covered
+        # fix commit would pass; "unknown" reachability never counts.
         local frontier frontier_count i sha reach
         frontier=$(jq -c '([.head_sha] + (.covered_heads // [])) | unique' <<<"$target")
         frontier_count=$(jq 'length' <<<"$frontier") || frontier_count=0

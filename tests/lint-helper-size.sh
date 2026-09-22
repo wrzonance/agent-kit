@@ -27,7 +27,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776/#809: records, summaries, and truthful reuse diagnostics.
-    [skills/.shared/scripts/agent-run.sh]="1920:20761:800"
+    # #873: the log header records the tested head and tracked-tree cleanliness.
+    [skills/.shared/scripts/agent-run.sh]="1924:20777:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -57,7 +58,8 @@ declare -A KNOWN_OVERSIZE=(
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
     # #727: independently validated remediation and repair resume.
-    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10180:800"
+    # #873: cover states its preconditions and binds fix:<id> via finding-ledger ids.
+    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10284:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -181,7 +183,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 + repaired #845 parent: exact combined helper tree measurement.
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
-readonly MAX_TREE_TOKENS=472870
+# #873 finding IDs, evidence producer, cover preconditions: 1,896,719 bytes / 4.
+# #873 review: log-bound repair evidence, collision-free IDs, tested-head log header: 1,902,951 bytes / 4.
+readonly MAX_TREE_TOKENS=475737
 
 violations=0
 checked=0

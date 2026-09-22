@@ -9,9 +9,8 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
 stdout begins `agentkit: skill=review-remote-pr version=<v> hash=<first12>` (receipt, not registry proof).
-Require `workflow-activation.sh check --require pre-tool-use` with the boundary's
-`--repo-root`, `--session`, `--skill` before work; preflight uses
-`--activation-session ID --workflow review-remote-pr`.
+Before work, require `workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr`;
+`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow review-remote-pr`, with the same R.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.
@@ -384,18 +383,36 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
-# After repair, update the same title with --verdict fixed --sha FULL_SHA --evidence FILE
-# --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
+# After repair: ev="$RUN_DIR/evidence-ID.json"; "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE'
+# --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA
+# --reviewed-head "$(jq -r .head "$RUN_DIR/state/review-attempt.json")" >"$ev", then
+# RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed
+# --sha "$(jq -r .repairSha "$ev")" --evidence "$ev" --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
 publish_rc=0
 # --head-sha/--diff-payload/--harness unlock post-receipt.sh's own ledger write-back (issue #486 item 4).
-rhs=$(jq -er '.head | select(type == "string" and length > 0)' "$RUN_DIR/state/review-attempt.json") || exit 1
+# Receipt fields come from the attempt record; a verified skip has none, so set PROVIDER/MODEL/EFFORT/MODE yourself.
+ra="$RUN_DIR/state/review-attempt.json"
+rhs=''; [[ ! -e $ra ]] || { rhs=$(jq -er '.head | select(type == "string" and length > 0)' "$ra") || exit 1; }
+[[ ! -e $ra ]] || { IFS=$'\t' read -r PROVIDER MODEL EFFORT MODE < <(jq -er '[.provider, .model, .effort, .mode] | select(all(type == "string" and length > 0)) | @tsv' "$ra") || exit 1; }
+: "${PROVIDER:?set PROVIDER}" "${MODEL:?set MODEL}" "${EFFORT:?set EFFORT}" "${MODE:?set MODE: cross-provider, or blind-fallback plus MODE_REASON}"
+P1_COUNT=$(jq -s '[.[] | select(.severity == "P1")] | length' "$RUN_DIR/findings.ndjson") || exit 1
+P2_COUNT=$(jq -s '[.[] | select(.severity == "P2")] | length' "$RUN_DIR/findings.ndjson") || exit 1
 rh=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.name 2>/dev/null) || rh=''
-rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --base-ref "$BASE_BRANCH" --diff "$RUN_DIR/adversarial.diff" 2>/dev/null) || rdp=''
+# The reviewed payload is the hash of the bytes the reviewer saw; a verified skip has no diff.
+rdp=''
+if [[ -e $RUN_DIR/adversarial.diff ]]; then
+    rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --diff "$RUN_DIR/adversarial.diff") || exit 1
+fi
+# The agent posting this receipt -- your own harness and model, never the reviewer's.
+: "${ROOT_MODEL:?set ROOT_MODEL to your own model id, e.g. gpt-5.6-luna}"
+AGENT_IDENTITY=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.identity --worker-model "$ROOT_MODEL") || exit 1
+AGENT_IDENTITY=${AGENT_IDENTITY% <*}
 rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")
+[[ -z ${MODE_REASON:-} ]] || rla+=(--mode-reason "$MODE_REASON")
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
-    --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
+    --mode "$MODE" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" "${rla[@]}" || publish_rc=$?
 # The ledger owns titles/dispositions/SHAs/rationales; the script owns every
 # receipt byte (--findings-file PATH overrides RUN_DIR). --skip-rationale S --oracle S for a skip.
