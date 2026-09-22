@@ -398,6 +398,105 @@ clean_content_hash=$(sed -n 's/.*content hash \([0-9a-f]\{64\}\).*/\1/p' "$clean
 assert_eq "$tagged_content_hash" "$clean_content_hash" \
     'a clean checkout of the tag reproduces the recorded content hash'
 
+# A release leaves main on the next unpublished patch version in one command.
+# Keep this fixture independent of the live checkout version so testing the
+# recipe never edits the repository's real manifests.
+post_release="$root/tests/prepare-next-version.sh"
+post_release_fixture="$tmp/post-release-tree"
+mkdir -p "$post_release_fixture/agentkit/.claude-plugin" \
+    "$post_release_fixture/agentkit/.codex-plugin" \
+    "$post_release_fixture/agentkit/skills/.shared/scripts" \
+    "$post_release_fixture/opencode" "$post_release_fixture/tests"
+post_release_version='1.2.3'
+for manifest in \
+    agentkit/.claude-plugin/plugin.json \
+    agentkit/.codex-plugin/plugin.json \
+    opencode/package.json; do
+    jq --arg version "$post_release_version" '.version = $version' \
+        "$root/$manifest" > "$post_release_fixture/$manifest"
+done
+cp -- "$bump" \
+    "$post_release_fixture/agentkit/skills/.shared/scripts/bump-version.sh"
+cp -- "$checker" "$post_release_fixture/tests/check-release-version.sh"
+cat > "$post_release_fixture/tests/build-plugin.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+destination=${1:-"$root/plugin"}
+rm -rf -- "$destination"
+mkdir -p "$destination/agentkit" "$destination/opencode"
+cp -R -- "$root/agentkit/." "$destination/agentkit/"
+cp -- "$root/opencode/package.json" "$destination/opencode/package.json"
+EOF
+chmod +x -- "$post_release_fixture/tests/build-plugin.sh" \
+    "$post_release_fixture/tests/check-release-version.sh"
+"$post_release_fixture/tests/build-plugin.sh"
+git -C "$post_release_fixture" init -q -b main
+git -C "$post_release_fixture" config user.name test
+git -C "$post_release_fixture" config user.email test@example.invalid
+git -C "$post_release_fixture" add -- .
+git -C "$post_release_fixture" commit -qm release
+git -C "$post_release_fixture" tag "v$post_release_version"
+
+post_release_out="$tmp/post-release.out"
+post_release_rc=0
+(cd "$post_release_fixture" && \
+    "$post_release" "$post_release_version" >"$post_release_out" 2>&1) || post_release_rc=$?
+assert_eq '0' "$post_release_rc" \
+    'the post-release helper advances a freshly tagged stable release'
+assert_contains "$(cat -- "$post_release_out")" \
+    'prepared next unpublished version 1.2.4' \
+    'the post-release helper reports the next patch version'
+for manifest in \
+    agentkit/.claude-plugin/plugin.json \
+    agentkit/.codex-plugin/plugin.json \
+    opencode/package.json \
+    plugin/agentkit/.claude-plugin/plugin.json \
+    plugin/agentkit/.codex-plugin/plugin.json \
+    plugin/opencode/package.json; do
+    assert_eq '1.2.4' "$(jq -r '.version' "$post_release_fixture/$manifest")" \
+        "the post-release helper advances $manifest"
+done
+assert_eq 'no' \
+    "$(git -C "$post_release_fixture" show-ref --verify --quiet refs/tags/v1.2.4 && \
+        printf yes || printf no)" \
+    'the next patch version remains unpublished'
+
+# A following feature change is allowed under that unpublished version without
+# another manifest edit, while the prior release tag remains fixed at 1.2.3.
+printf 'following feature bytes\n' \
+    > "$post_release_fixture/agentkit/skills/example.txt"
+"$post_release_fixture/tests/build-plugin.sh"
+post_release_check_out="$tmp/post-release-check.out"
+post_release_check_rc=0
+"$checker" --root "$post_release_fixture" \
+    >"$post_release_check_out" 2>&1 || post_release_check_rc=$?
+assert_eq '0' "$post_release_check_rc" \
+    'a feature change passes under the next unpublished version'
+assert_contains "$(cat -- "$post_release_check_out")" \
+    'no existing tag v1.2.4; shipped content is eligible for a new version' \
+    'the following feature change passes because the prepared version is unpublished'
+assert_eq '1.2.3' \
+    "$(git -C "$post_release_fixture" show v1.2.3:agentkit/.claude-plugin/plugin.json | \
+        jq -r '.version')" \
+    'the completed release tag keeps its original version'
+
+untagged_fixture="$tmp/untagged-post-release-tree"
+git clone -q "$post_release_fixture" "$untagged_fixture"
+git -C "$untagged_fixture" tag -d "v$post_release_version" >/dev/null
+untagged_before=$(git -C "$untagged_fixture" status --short)
+untagged_out="$tmp/untagged-post-release.out"
+untagged_rc=0
+(cd "$untagged_fixture" && \
+    "$post_release" "$post_release_version" >"$untagged_out" 2>&1) || untagged_rc=$?
+assert_eq '1' "$untagged_rc" \
+    'the post-release helper refuses to advance before the release tag exists locally'
+assert_contains "$(cat -- "$untagged_out")" \
+    'release tag does not exist locally: v1.2.3' \
+    'the missing-tag refusal explains the required release boundary'
+assert_eq "$untagged_before" "$(git -C "$untagged_fixture" status --short)" \
+    'a missing release tag leaves the checkout unchanged'
+
 bad_root="$tmp/missing-root"
 out="$tmp/bad-root.out"
 rc=0
@@ -407,6 +506,17 @@ assert_contains "$(cat -- "$out")" "root is not a directory: $bad_root" \
     'a missing checker root reports the original path'
 
 ci_text=$(cat -- "$root/.github/workflows/ci.yml")
+run_tests_text=$(cat -- "$root/tests/run-tests.sh")
+build_gate_call="\"\$here/build-plugin.sh\" || rc=1"
+check_gate_call="\"\$here/check-release-version.sh\" || rc=1"
+assert_contains "$run_tests_text" "step 'release version'" \
+    'the canonical local runner names the release-version static gate'
+assert_contains "$run_tests_text" "$build_gate_call" \
+    'the canonical local runner builds the plugin before release checking'
+assert_contains "$run_tests_text" "$check_gate_call" \
+    'the canonical local runner invokes the release-version check'
+assert_contains "$run_tests_text" "$build_gate_call"$'\n'"$check_gate_call" \
+    'the local static gate builds before checking the released content'
 assert_contains "$ci_text" "tags: ['v*']" 'CI runs the gate for versioned tag pushes'
 assert_contains "$ci_text" 'types: [published]' 'CI runs the gate for published releases'
 assert_contains "$ci_text" 'tests/check-release-version.sh' 'CI invokes the release gate'

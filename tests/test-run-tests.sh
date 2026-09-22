@@ -37,6 +37,21 @@ make_fixture() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-helper-refs.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-reference-manifest.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-versioned-plugin-paths.sh"
+    cat >"$dir/tests/build-plugin.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n ${GATE_TRACE:-} ]]; then
+    printf 'build\n' >> "$GATE_TRACE"
+fi
+EOF
+    cat >"$dir/tests/check-release-version.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n ${GATE_TRACE:-} ]]; then
+    printf 'check\n' >> "$GATE_TRACE"
+fi
+[[ ${RELEASE_GATE_FAIL:-no} == no ]] || exit 9
+EOF
     mkdir -p "$dir/tests/stub"
     cp -- "$root/tests/stub/gh" "$dir/tests/stub/gh"
     chmod +x "$dir/tests/run-tests.sh" "$dir/tests/lint-markdown-blocks.sh" \
@@ -44,7 +59,8 @@ make_fixture() {
         "$dir/tests/lint-helper-size.sh" \
         "$dir/tests/lint-collation.sh" \
         "$dir/tests/lint-helper-refs.sh" "$dir/tests/lint-reference-manifest.sh" \
-        "$dir/tests/lint-versioned-plugin-paths.sh" \
+        "$dir/tests/lint-versioned-plugin-paths.sh" "$dir/tests/build-plugin.sh" \
+        "$dir/tests/check-release-version.sh" \
         "$dir/tests/stub/gh"
     for suite in alpha beta; do
         cat >"$dir/tests/test-$suite.sh" <<EOF
@@ -250,11 +266,23 @@ AGENT_TEST_JOBS=1 TRACE="$trace" \
 assert_eq '2' "$rc" '--only and --shard cannot select competing suite sets'
 
 : >"$trace"
+gate_trace=$tmp/gates
+: >"$gate_trace"
 rc=0
-AGENT_TEST_JOBS=1 TRACE="$trace" \
+AGENT_TEST_JOBS=1 TRACE="$trace" GATE_TRACE="$gate_trace" \
     "$fixture/tests/run-tests.sh" --gates-only >"$tmp/out" 2>&1 || rc=$?
 assert_eq '0' "$rc" '--gates-only runs the static gates successfully'
 assert_eq '' "$(<"$trace")" '--gates-only does not run unit suites'
+assert_eq $'build\ncheck' "$(<"$gate_trace")" \
+    '--gates-only builds the plugin before checking the release version'
+
+: >"$gate_trace"
+rc=0
+AGENT_TEST_JOBS=1 TRACE="$trace" GATE_TRACE="$gate_trace" RELEASE_GATE_FAIL=yes \
+    "$fixture/tests/run-tests.sh" --gates-only >"$tmp/out" 2>&1 || rc=$?
+assert_eq '1' "$rc" '--gates-only propagates a release-version failure'
+assert_eq $'build\ncheck' "$(<"$gate_trace")" \
+    'a failing release gate still runs after a fresh plugin build'
 
 ci_text=$(<"$root/.github/workflows/ci.yml")
 assert_contains "$ci_text" 'matrix:' 'CI defines a suite matrix'

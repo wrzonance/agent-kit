@@ -221,6 +221,10 @@ else
 fi
 
 if [[ $run_gates == yes ]]; then
+step 'release version'
+"$here/build-plugin.sh" || rc=1
+"$here/check-release-version.sh" || rc=1
+
 step 'shellcheck (shipped scripts)'
 mapfile -t scripts < <(find "$plugin" -name '*.sh' | sort)
 printf '  %d scripts\n' "${#scripts[@]}"
