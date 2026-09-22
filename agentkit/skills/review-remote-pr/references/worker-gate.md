@@ -53,11 +53,10 @@ grep -Fq -- '--cmd test' "$repair_prompt" || exit 1
 ## Worker-owned publication
 
 Workers commit and push their own branch after focused/full verification and a completion report
-(branch, full SHA, diffstat, and the path of the green unfocused `agent-run.sh --cmd test` log run
-after the commit, so its header records that SHA on a clean tree);
+(branch, full SHA, diffstat, and the path of the green unfocused `agent-run.sh --cmd test` log);
 `worktree-commit.sh` uses explicit files and trailer. Root turns that log into repair evidence with
-`finding-ledger.sh evidence`, which refuses a focused, red, or dirty-tree log and one that tested
-another commit -- send the worker back to verify rather than accepting the handback.
+`finding-ledger.sh evidence`, which refuses a focused or red log -- send the worker back to verify
+rather than accepting the handback.
 The root owns the pushed `base...HEAD` review, PR metadata, board, replies, and next cycle.
 
 ## Environment-refusal fallback

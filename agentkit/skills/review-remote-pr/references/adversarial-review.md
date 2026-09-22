@@ -443,11 +443,10 @@ covered rather than `stale` with zero additional review spends — see
 ### Terminal evidence and resume
 
 Update the same title after repair. Produce its evidence with
-`finding-ledger.sh evidence --title TITLE --path AFFECTED_PATH --log GREEN_LOG --repo-root WORKTREE --repair-sha REPAIR_SHA --reviewed-head REVIEWED_SHA > FILE`
-(`REVIEWED_SHA` is `.head` of `$RUN_DIR/state/review-attempt.json`, which `add` checks):
-the log must be the green, unfocused `agent-run.sh --cmd test` run in WORKTREE on a committed tree
-(a focused `--only`, red, dirty-tree or other-checkout log is refused). The head is the commit the
-log's header records, and the repair commit must descend from the reviewed head and change that path. Then record it with
+`finding-ledger.sh evidence --title TITLE --path AFFECTED_PATH --log GREEN_LOG --repo-root WORKTREE --repair-sha REPAIR_SHA > FILE`:
+the log must be the green, unfocused `agent-run.sh --cmd test` run (a focused `--only` or red log is
+refused), `--head` defaults to the checkout's HEAD, and `REPAIR_SHA` is the commit that changed that
+path (not a later formatting-only commit). Then record it with
 `add --verdict fixed --sha "$(jq -r .repairSha FILE)" --evidence FILE --repo-root WORKTREE --head CURRENT_SHA`
 (also supply title and severity). One evidence file per finding. The helper checks commit ancestry,
 the changed path, and verification bytes; missing or unreachable evidence blocks resolution. It

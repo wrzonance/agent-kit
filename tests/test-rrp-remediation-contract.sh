@@ -121,8 +121,10 @@ after_repair=$(sed -n '/^# After repair/,/declines require/p' "$rrp_skill")
 assert_contains "$after_repair" 'RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title '"'SHORT_TITLE'"' --severity P1 --verdict fixed' \
     'the fixed-verdict add names RUN_DIR, the same title and a severity'
 assert_contains "$after_repair" '--repair-sha' 'the evidence step names the repair commit'
-assert_contains "$after_repair" '--reviewed-head' 'the evidence step names the reviewed head'
-assert_contains "$(cat -- "$adv_ref")" '--reviewed-head' 'the evidence contract names the reviewed head'
+assert_not_contains "$after_repair" '--reviewed-head' 'the evidence step needs no reviewed head'
+assert_not_contains "$(cat -- "$adv_ref")" '--reviewed-head' 'the evidence contract needs no reviewed head'
+assert_not_contains "$(cat -- "$worker_gate")" 'after the commit, so its header' \
+    'workers are not told to re-run the suite after committing'
 assert_not_contains "$(cat -- "$adv_ref")" 'defaults to the last commit' \
     'the evidence contract no longer promises a guessed repair commit'
 

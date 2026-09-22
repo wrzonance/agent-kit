@@ -384,8 +384,7 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
 # After repair: ev="$RUN_DIR/evidence-ID.json"; "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE'
-# --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA
-# --reviewed-head "$(jq -r .head "$RUN_DIR/state/review-attempt.json")" >"$ev", then
+# --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA >"$ev", then
 # RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed
 # --sha "$(jq -r .repairSha "$ev")" --evidence "$ev" --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
 publish_rc=0
