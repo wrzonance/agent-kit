@@ -26,9 +26,9 @@ declare -A KNOWN_OVERSIZE=(
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
-    # #731/#732/#776/#809/#874: records, summaries, reuse, and yielded-run status.
+    # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
-    [skills/.shared/scripts/agent-run.sh]="1998:21657:800"
+    [skills/.shared/scripts/agent-run.sh]="2008:21743:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -185,10 +185,11 @@ readonly MAX_HELPER_TOKENS=10000
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
 # #875 review: coverage failures preserve handoff evidence across every report path.
-# #874: status and duplicate prevention keep yielded verification single-run.
+# #874 PR #877: portable status and bounded active-run lease inheritance.
 # #873 chain: tested-head metadata and repair handback validation.
-# #873/#874 + #875 merge-down: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=476052
+# #873 review repair: real SHA-256 evidence fixture and split verification recipe.
+# #873/#874 + #875 final merge-down: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=476157
 
 violations=0
 checked=0

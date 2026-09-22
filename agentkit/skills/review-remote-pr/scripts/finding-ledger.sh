@@ -7,6 +7,7 @@ readonly PROGNAME=${0##*/}
 readonly RECEIPT_MARKER='<!-- adversarial-review:spent -->'
 readonly DOC_MARKER='<!-- review-remote-pr:agent-doc -->'
 readonly SHA_RE='^[[:xdigit:]]{7,64}(,[[:xdigit:]]{7,64})*$'
+readonly FULL_SHA_RE='^([[:xdigit:]]{40}|[[:xdigit:]]{64})$'
 readonly ORDER_RC=13
 readonly FINDING_SLUG_JQ='ascii_downcase | gsub("[^a-z0-9]+"; "-") | ltrimstr("-") | rtrimstr("-") | if . == "" then "finding" else . end'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -362,7 +363,7 @@ validate_repairs() {
         log=$(jq -r .evidence.log <<<"$row")
         digest=$(jq -r .evidence.logSha256 <<<"$row")
         command=$(jq -r .evidence.command <<<"$row")
-        [[ $head =~ ^[0-9a-f]{40}$ && $sha =~ ^[0-9a-f]{40}$ && $tested =~ ^[0-9a-f]{40}$ && $digest =~ ^[0-9a-f]{64}$ ]] ||
+        [[ $head =~ $FULL_SHA_RE && $sha =~ $FULL_SHA_RE && $tested =~ $FULL_SHA_RE && $digest =~ ^[0-9a-f]{64}$ ]] ||
             die_evidence 'repair evidence requires full commit and log hashes'
         if ! git -C "$root" merge-base --is-ancestor "$sha" "$tested" 2>/dev/null ||
             ! git -C "$root" merge-base --is-ancestor "$tested" "$head" 2>/dev/null; then
@@ -445,7 +446,7 @@ resolve_commit() {
 require_tested_head() {
     local log=$1 current=$2 header tested clean
     header=$(sed -n '2p' "$log")
-    if [[ $header =~ '  head='([0-9a-f]{40})'  tracked-clean='(yes|no)$ ]]; then
+    if [[ $header =~ '  head='([[:xdigit:]]{40}|[[:xdigit:]]{64})'  tracked-clean='(yes|no)$ ]]; then
         tested=${BASH_REMATCH[1]}
         clean=${BASH_REMATCH[2]}
     else

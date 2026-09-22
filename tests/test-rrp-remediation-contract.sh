@@ -78,6 +78,39 @@ assert_contains "$fix_prompt" 'commit the repair before the final unfocused run'
 assert_contains "$fix_prompt" 'push the branch only after that clean committed-HEAD run passes' \
     'the composed fix-worker prompt cannot push an unverified commit'
 
+# Step 2's runnable phases must not execute the full suite before the worker
+# commits. Execute its first fence with a recording runner, then ensure the
+# committed-head test is a separate fence after an explicit commit boundary.
+ci_fix_section=$(sed -n '/^## Step 2: Fix CI Failures/,/^For red\/green iterations/p' "$rrp_skill")
+fence() {
+    local number=$1
+    awk -v wanted="$number" '
+        /^```bash$/ { count++; capture=(count==wanted); next }
+        /^```$/ { if (capture) exit }
+        capture
+    ' <<<"$ci_fix_section"
+}
+precommit_fence=$(fence 1)
+postcommit_fence=$(fence 2)
+recipe_kit="$tmp/recipe-kit"
+recipe_calls="$tmp/recipe-calls"
+mkdir -p "$recipe_kit/.shared/scripts"
+cat >"$recipe_kit/.shared/scripts/agent-run.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
+EOF
+chmod +x "$recipe_kit/.shared/scripts/agent-run.sh"
+AGENTKIT_RECIPE_CALLS="$recipe_calls" agentkit="$recipe_kit" agentkit_provenance=ok \
+    bash -c "$precommit_fence"
+assert_eq '--cmd lint --if-declared' "$(cat "$recipe_calls")" \
+    'executing the precommit fence cannot run the full test on a dirty repair'
+assert_contains "$postcommit_fence" '"$agent_run" --cmd test' \
+    'committed-head verification has its own runnable fence'
+commit_line=$(grep -nF 'Commit the repair' <<<"$ci_fix_section" | cut -d: -f1 | head -n1)
+test_line=$(grep -nF '"$agent_run" --cmd test' <<<"$ci_fix_section" | cut -d: -f1 | head -n1)
+assert_eq yes "$([[ -n $commit_line && -n $test_line && $commit_line -lt $test_line ]] && printf yes || printf no)" \
+    'the actual commit step precedes the runnable full-test phase'
+
 # --- item 6: the spawn contract names the primary checkout's ledger ----------
 assert_contains "$(cat -- "$skills/.shared/spawn-contract.md")" "primary checkout's \`.agent/runs/active-workers.ndjson\`" \
     'the spawn contract says the ledger lives in the primary checkout'
