@@ -1835,16 +1835,12 @@ fi
 printf '  a log with no "=== agent-run exited" line has NOT finished\n' >&2
 
 # The closing marker distinguishes completed logs; exclude bookkeeping lines.
-# head= and tracked-clean= bind the log to the commit it tested (repair evidence).
 readonly LOG_HEADER_LINES=2
-log_head=none log_clean=no
-[[ -z $git_top ]] || log_head=$(git -C "$git_top" rev-parse --verify -q HEAD 2> /dev/null) || log_head=none
-[[ -z $git_top || -n $(git -C "$git_top" status --porcelain --untracked-files=no 2> /dev/null || printf x) ]] || log_clean=yes
 {
     printf '=== agent-run %s\n' "$cmd_str"
-    printf '=== started %s  pid=%s  cwd=%s  concurrent-suites=%s  head=%s  tracked-clean=%s\n' \
+    printf '=== started %s  pid=%s  cwd=%s  concurrent-suites=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" "$work_dir" \
-        "$concurrent_suites" "$log_head" "$log_clean"
+        "$concurrent_suites"
 } > "$log_file"
 
 started_at=$SECONDS

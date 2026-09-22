@@ -27,8 +27,7 @@ declare -A KNOWN_OVERSIZE=(
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776/#809: records, summaries, and truthful reuse diagnostics.
-    # #873: the log header records the tested head and tracked-tree cleanliness.
-    [skills/.shared/scripts/agent-run.sh]="1924:20777:800"
+    [skills/.shared/scripts/agent-run.sh]="1920:20761:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -183,9 +182,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 + repaired #845 parent: exact combined helper tree measurement.
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
-# #873 finding IDs, evidence producer, cover preconditions: 1,896,719 bytes / 4.
-# #873 review: log-bound repair evidence, collision-free IDs, tested-head log header: 1,902,951 bytes / 4.
-readonly MAX_TREE_TOKENS=475737
+# #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
+readonly MAX_TREE_TOKENS=474559
 
 violations=0
 checked=0

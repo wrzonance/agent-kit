@@ -395,28 +395,6 @@ assert_contains "$log" '=== started' 'and when it started'
 assert_contains "$log" 'concurrent-suites=1' 'the log records the active full-suite count'
 assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
 assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
-assert_contains "$log" 'head=none  tracked-clean=' 'a repository with no commit records no tested head'
-
-# Issue #873: repair evidence must prove which commit a green log tested. The
-# header binds the run to HEAD and says whether uncommitted tracked changes
-# were under test, so an old or dirty-tree log cannot certify a later commit.
-bound_repo=$(make_repo)
-printf 'AGENT_CMD_OK=echo hello\n' > "$bound_repo/.agent/config.env"
-printf '.agent/\n' > "$bound_repo/.gitignore"
-printf 'a\n' > "$bound_repo/tracked.txt"
-git -C "$bound_repo" add .gitignore tracked.txt
-git -C "$bound_repo" -c user.name=Test -c user.email=test@example.invalid commit -qm init
-bound_sha=$(git -C "$bound_repo" rev-parse HEAD)
-(cd "$bound_repo" && "$real_run_sh" --cmd ok > /dev/null 2>&1)
-log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
-assert_contains "$log" "head=$bound_sha  tracked-clean=yes" \
-    'the log header binds the run to the committed head it tested'
-printf 'b\n' > "$bound_repo/tracked.txt"
-rm -f -- "$bound_repo"/.agent/logs/*-ok.log*
-(cd "$bound_repo" && "$real_run_sh" --cmd ok > /dev/null 2>&1)
-log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
-assert_contains "$log" "head=$bound_sha  tracked-clean=no" \
-    'and says when uncommitted tracked changes were under test'
 
 # The suppressed-line count must report the command output, not the markers.
 assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bookkeeping'
@@ -762,8 +740,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-# #873: the log header records the tested head and tracked-tree cleanliness.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1924 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1924 lines (#873 tested-head header)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1920 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 1920 lines (#809 reuse diagnostics)'
 
 finish
