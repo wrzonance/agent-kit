@@ -24,8 +24,10 @@ current_process_start() {
     fi
 }
 
+epoch_seconds() { date -u +%s 2>/dev/null || printf '0'; }
+
 status_agent_log() {
-    local requested=$1 log last header pid start epoch current elapsed
+    local requested=$1 log last header pid start epoch current elapsed now
     [[ -f $requested && ! -L $requested && -O $requested ]] || {
         printf 'agent-run: error: status requires an owned regular log: %s\n' "$requested" >&2; exit 2;
     }
@@ -46,7 +48,7 @@ status_agent_log() {
     epoch=$(sed -n 's/.* epoch=\([0-9][0-9]*\) .*/\1/p' <<< "$header")
     current=$(current_process_start "$pid" 2>/dev/null || true)
     if [[ -n $pid && -n $start && $current == "$start" && $epoch =~ ^[0-9]+$ ]]; then
-        elapsed=$((EPOCHSECONDS - epoch)); ((elapsed >= 0)) || elapsed=0
+        now=$(epoch_seconds); elapsed=$((now - epoch)); ((elapsed >= 0)) || elapsed=0
         printf 'running pid=%s elapsed=%ss\n' "$pid" "$elapsed"
     else
         printf 'interrupted\n'
@@ -73,7 +75,7 @@ Runs one command with a sandbox-safe environment and a compact result summary.
                  compatibility with the kit's other checkout-path helpers.
   --label NAME   Label used in the log file name (default: the command's basename).
   --force        Require fresh execution, including recovery of unknown evidence.
-                 An identical in-flight local command still returns its handle.
+                 An identical in-flight command is still refused with its log.
   --summary      End with status, exit code, duration, log path, digest, and receipt.
   --verification-key  Read-only query for one local, generic, full-checkout
                  command. Prints only its current fingerprint; creates no execution
@@ -88,8 +90,8 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --if-declared  With --cmd, exit 0 quietly when the repository declares no such
                  command. For a command a skill treats as optional.
   --resolve NAME Query a named command without executing it. Prints declared,
-                 runner, or unresolved and exits 0, 4, or 3 respectively; exit 2
-                 is reserved for a fatal unsupported-interpreter guard.
+                 runner, or unresolved and exits 0, 4, or 3 respectively. The
+                 fatal unsupported-interpreter guard exits 2.
   --cmd NAME     Run the command this repository declares under that name, instead
                  of spelling one out. Repeatable: each --cmd runs only after the
                  previous one exits 0 (re-execs itself for the rest); --if-declared
@@ -140,7 +142,8 @@ Output:
   verification miss: no reusable evidence; a following command executes freshly,
                      or a completed result was not stored for later reuse
   verification current/reused: prior evidence, never a fresh PASS
-  verification running/unknown: durable handle and exit 75; inspect before retry
+  active duplicate exits 2 with its original log; wait instead of relaunching
+  verification unknown: unknown abandoned handle exits 75; inspect before retry
 
 Examples:
   agent-run.sh --cmd test
@@ -1100,7 +1103,7 @@ apply_test_focus() {
 # --------------------------------------------------------------------- logs ---
 choose_log() {
     local log_dir stamp log
-    if [[ -n $git_top ]] && dir_writable "$git_top/.agent/logs"; then
+    if [[ -n $git_top && ! -L $git_top/.agent ]] && dir_writable "$git_top/.agent/logs"; then
         log_dir=$git_top/.agent/logs
     else
         # Failing commands routinely echo tokens and credentialed URLs into these
@@ -1188,6 +1191,7 @@ claim_active_run() {
     local root key prior
     [[ -n ${git_top:-} && -z $verification_handle ]] || return 0
     command -v flock >/dev/null || return 0
+    [[ ! -L $git_top/.agent ]] || return 0
     root=$git_top/.agent/run-records
     assert_private_dir "$root"
     key=$(printf '%s\0' "$work_dir" "${cmd[@]}" | sha256sum | awk '{print $1}')
@@ -1917,7 +1921,7 @@ log_head=none log_clean=no
     printf '=== agent-run %s\n' "$cmd_str"
     printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s  head=%s  tracked-clean=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" \
-        "$(current_process_start "$$")" "$EPOCHSECONDS" "$work_dir" "$concurrent_suites" \
+        "$(current_process_start "$$")" "$(epoch_seconds)" "$work_dir" "$concurrent_suites" \
         "$log_head" "$log_clean"
 } > "$log_file"
 
@@ -1937,7 +1941,10 @@ trap 'log_interrupted SIGINT' INT
 trap 'log_interrupted SIGTERM' TERM
 rc=0
 attempt_start_line=3
-(cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+(
+    [[ -z $active_run_fd ]] || exec {active_run_fd}>&-
+    cd -- "$work_dir" && exec "${cmd[@]}"
+) >> "$log_file" 2>&1 || rc=$?
 load_flake_retry=0
 if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
     load_flake_retry=1
@@ -1945,7 +1952,10 @@ if ((rc != 0)) && probe_timeout_load_flake "$log_file"; then
         "$concurrent_suites" >> "$log_file"
     attempt_start_line=$(($(wc -l < "$log_file" | tr -d '[:space:]') + 1))
     rc=0
-    (cd -- "$work_dir" && exec "${cmd[@]}") >> "$log_file" 2>&1 || rc=$?
+    (
+        [[ -z $active_run_fd ]] || exec {active_run_fd}>&-
+        cd -- "$work_dir" && exec "${cmd[@]}"
+    ) >> "$log_file" 2>&1 || rc=$?
 fi
 trap - INT TERM
 elapsed=$((SECONDS - started_at))
