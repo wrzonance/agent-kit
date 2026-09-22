@@ -572,7 +572,9 @@ out=$(local_run); local_rc=$?
 assert_eq '2' "$local_rc" 'running identical command is refused before it can duplicate work'
 assert_contains "$out" 'already running:' 'running identical command returns the existing log'
 wait "$owner"
-running_handle=$(find "$local_repo/.agent/verification-records" -mindepth 1 -maxdepth 1 -type d -print -quit)
+# An unrelated record proves later checks never rediscover the handle by directory order.
+mkdir -p "$local_repo/.agent/verification-records/000-decoy"
+running_handle=${running_record%/running}
 out=$(local_run)
 assert_contains "$out" 'verification current:' 'a completed concurrent owner is reusable'
 record=$running_handle/result
