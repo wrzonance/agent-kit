@@ -234,6 +234,8 @@ print_summary() {
         positive_ids("queued"; true) as $queued |
         positive_ids("receipt_prs"; true) as $receipts |
         positive_ids("skipped_prs"; true) as $skipped |
+        has("auto_review") as $has_auto_review |
+        .auto_review as $auto_review |
         has("root_turns") as $has_root_turns |
         has("first_completion") as $has_first_completion |
         .root_turns as $root_turns |
@@ -242,6 +244,8 @@ print_summary() {
         elif (($skipped - $prs) | length) > 0 then error("skipped_prs must be a subset of opened_prs")
         elif (($receipts + $skipped | length) != ($receipts + $skipped | unique | length))
             then error("receipt_prs and skipped_prs must be disjoint")
+        elif $has_auto_review and ($auto_review | type) != "boolean"
+            then error("auto_review must be a boolean")
         elif $has_root_turns and (($has_first_completion | not) or ($root_turns | type) != "array"
             or any($root_turns[]; . != true) or ($first_completion | type) != "boolean")
             then error("invalid root-turn summary evidence")
@@ -249,7 +253,10 @@ print_summary() {
             then error("invalid first-completion evidence")
         else (if $has_root_turns | not then "unavailable"
               elif $first_completion then ($root_turns | length | tostring) else "unlatched" end) as $telemetry |
-            [($prs | length), ($receipts | length), ($skipped | length), ($queued | length), $telemetry] | @tsv end
+            ($prs - ($receipts + $skipped)) as $missing |
+            [($prs | length), ($receipts | length), ($skipped | length), ($queued | length),
+             (if $has_auto_review then ($auto_review | tostring) else "false" end),
+             ($missing | if length == 0 then "-" else map(tostring) | join(",") end), $telemetry] | @tsv end
     ' <<<"$STATE" 2>/dev/null) ||
         die 'summary state requires valid opened_prs, queued, receipt_prs, and skipped_prs collections'
     [[ ! -L $LEDGER && -f $LEDGER && -r $LEDGER && -O $LEDGER ]] ||
@@ -271,8 +278,12 @@ print_summary() {
             then . else error("invalid handback evidence") end] | sort_by(.issue)
     ' "$LEDGER" 2>/dev/null) || die "unparseable active-workers evidence: $LEDGER"
     parked_count=$(jq 'length' <<<"$parked_rows")
-    local prs receipts skipped queued root_turns
-    IFS=$'\t' read -r prs receipts skipped queued root_turns <<<"$counts"
+    local prs receipts skipped queued auto_review missing_review_prs root_turns review_resume
+    IFS=$'\t' read -r prs receipts skipped queued auto_review missing_review_prs root_turns <<<"$counts"
+    if [[ $auto_review == true && $missing_review_prs != - ]]; then
+        review_resume="/review-remote-pr --auto-review ${missing_review_prs//,/; /review-remote-pr --auto-review }"
+        die "auto-review coverage missing for PRs: $missing_review_prs; resume: $review_resume"
+    fi
     printf 'coverage= prs=%s receipts=%s skipped=%s parked=%s queued=%s root-turns-before-first-completion=%s\n' \
         "$prs" "$receipts" "$skipped" "$parked_count" "$queued" "$root_turns"
     jq -r '.[] | "blocked=\(.issue):\(.evidence)"' <<<"$parked_rows"

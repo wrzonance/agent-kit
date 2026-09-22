@@ -183,7 +183,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
-readonly MAX_TREE_TOKENS=474559
+# #875: auto-review coverage enforcement and its actionable resume evidence.
+readonly MAX_TREE_TOKENS=474760
 
 violations=0
 checked=0
