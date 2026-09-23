@@ -49,10 +49,10 @@ Recipe: triage once
   "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
   # Alternative explicit mode (replace with the requested numbers; do not run both):
   # "$agentkit/.shared/scripts/triage-issues.sh" --issues 57,54
+  "$agentkit/.shared/scripts/pick-issues.sh" --help  # next: mechanical selection over this digest
 
-The digest is evidence: each line includes issue number, board Status,
-prior-art verdict, ADR candidates, and referencing PR. It also warms the
-project-item cache used by the board mover.
+Digest lines are evidence (number, Status, prior-art verdict, ADR candidates,
+referencing PR) and warm the board mover's project-item cache.
 EOF
 }
 

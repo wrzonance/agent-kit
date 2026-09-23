@@ -90,10 +90,25 @@ check_token() {
 # Only shipped helper basenames belong to this rule: external URLs, repository
 # scripts, and example commands are not kit interfaces. Keep occurrence order,
 # including within a line, so a later path cannot conceal an earlier bare name.
+#
+# The same order holds inside every heading section: agents read SKILL.md by
+# anchored section, and a section that spells a helper's path only after its
+# bare name has already sent the reader guessing. #889: bare `pick-issues.sh`
+# five lines ahead of its path was guessed under the skill's own scripts/ and
+# the run stopped. That guess lands for the skill's own helpers, so only
+# shared and cross-skill helpers hold the section order. A heading-shaped
+# shell comment inside fenced code is not a section break.
 scan_first_mentions() {
-    local source_file=$1 line_no content token name candidate
-    local -A mentioned=()
+    local source_file=$1 line_no content token name candidate in_fence=0 reported own_scripts
+    local -A mentioned=() section_bare=() section_path=()
+    own_scripts=$(skill_root_for "$source_file")/scripts
     while IFS=: read -r line_no content; do
+        [[ $content =~ ^[[:space:]]*\`\`\` ]] && in_fence=$((1 - in_fence))
+        if ((in_fence == 0)) && [[ $content =~ ^#{1,6}[[:space:]] ]]; then
+            section_bare=() section_path=()
+            continue
+        fi
+        [[ $content == *.sh* ]] || continue
         while IFS= read -r token; do
             name=${token##*/}
             [[ -n ${helper_paths[$name]:-} ]] || continue
@@ -107,13 +122,27 @@ scan_first_mentions() {
                     ;;
                 *) candidate=$skills_dir/${helper_paths[$name]} ;;
             esac
+            reported=0
             if [[ -z ${mentioned[$name]:-} ]]; then
                 mentioned[$name]=1
                 if [[ $token != "\$agentkit/"* || ! -f $candidate ]]; then
+                    reported=1
                     # shellcheck disable=SC2016  # diagnostic names the literal root
                     report "$source_file" "$line_no" "$token" \
                         "\$agentkit/${helper_paths[$name]}" 'first helper mention; use a $agentkit-relative path for'
                 fi
+            fi
+            if [[ $token != */* ]]; then
+                ((reported)) || [[ -n ${section_path[$name]:-}${section_bare[$name]:-} ]] ||
+                    [[ -f $own_scripts/$name ]] || section_bare[$name]=$line_no
+            elif [[ -f $candidate ]]; then
+                if [[ -n ${section_bare[$name]:-} ]]; then
+                    # shellcheck disable=SC2016  # diagnostic names the literal root
+                    report "$source_file" "${section_bare[$name]}" "$name" \
+                        "\$agentkit/${helper_paths[$name]}" 'section-first helper mention; a later path in the same section cannot repair'
+                    unset 'section_bare[$name]'
+                fi
+                section_path[$name]=1
             fi
             # lib/ means source-only unless an explicitly documented CLI exists.
             # contract-cache is currently the sole dual-use library; executable
@@ -124,7 +153,7 @@ scan_first_mentions() {
                 report "$source_file" "$line_no" "$token" 'source/sourced-only library label' 'library interface for'
             fi
         done < <(grep -oE '[[:alnum:]_.$/{}/:-]+\.sh' <<< "$content" || true)
-    done < <(grep -nE '\.sh' "$source_file" || true)
+    done < <(grep -n '' "$source_file" || true)
 }
 
 scan_file() {
