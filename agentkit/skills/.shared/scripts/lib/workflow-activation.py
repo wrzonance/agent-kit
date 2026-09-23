@@ -303,8 +303,8 @@ DISPATCH_COMMANDS = (
     r"(^|/)create-issue-worktree\.sh(\s|$)",
     r"(^|/)worktree-commit\.sh(\s|$)",
     r"(^|/)chain-advance\.sh(\s|$)",
-    r"(?:^|[;&|(]\s*)git\s+(push|worktree\s+add)\b",
-    r"(?:^|[;&|(]\s*)gh\s+pr\s+(create|ready|merge)\b",
+    r"(?:^|[;&|(\n]\s*)git\s+(push|worktree\s+add)\b",
+    r"(?:^|[;&|(\n]\s*)gh\s+pr\s+(create|ready|merge)\b",
 )
 
 

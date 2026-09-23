@@ -56,6 +56,9 @@ out=$(hook PreToolUse Bash '{"command":"cd /tmp && git push -u origin fix/x"}')
 assert_contains "$out" 'pending session acknowledgement' 'pending: git push after a shell operator is still denied'
 out=$(hook PreToolUse Task '{"prompt":"x"}')
 assert_contains "$out" 'pending session acknowledgement' 'pending: the Task tool is denied'
+newline_input=$(jq -nc --arg c $'cd /tmp\ngit push origin main' '{command:$c}')
+out=$(hook PreToolUse Bash "$newline_input")
+assert_contains "$out" 'pending session acknowledgement' 'pending: a dispatch command on its own line after a newline is still denied'
 
 # Promote, then everything is allowed.
 nonce=$(jq -r .nonce "$receipt")
