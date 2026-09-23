@@ -1925,7 +1925,12 @@ printf '  if this call returns before "=== agent-run exited", the run is still g
 readonly LOG_HEADER_LINES=2
 log_head=none log_clean=no
 [[ -z $git_top ]] || log_head=$(git -C "$git_top" rev-parse --verify -q HEAD 2> /dev/null) || log_head=none
-[[ -z $git_top || -n $(git -C "$git_top" status --porcelain --untracked-files=no 2> /dev/null || printf x) ]] || log_clean=yes
+git_worktree_status() {
+    git -C "$git_top" status --porcelain --untracked-files=normal 2> /dev/null
+}
+if [[ -n $git_top ]] && log_status=$(git_worktree_status); then
+    [[ -n $log_status ]] || log_clean=yes
+fi
 {
     printf '=== agent-run %s\n' "$cmd_str"
     printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s  head=%s  tracked-clean=%s\n' \
@@ -1986,6 +1991,15 @@ if ((rc != 0)) && try_baseline_exclusion; then
 fi
 if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
     printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
+fi
+if ((rc == 0)) && [[ $log_clean == yes ]]; then
+    if ! log_status=$(git_worktree_status); then
+        rc=1 baseline_excluded=no
+        printf '=== finding checkout-dirty: checkout status unavailable after the command\n' >> "$log_file"
+    elif [[ -n $log_status ]]; then
+        rc=1 baseline_excluded=no
+        printf '=== finding checkout-dirty: checkout became dirty after the command\n' >> "$log_file"
+    fi
 fi
 printf '=== agent-run exited rc=%s after %ss\n' "$rc" "$elapsed" >> "$log_file"
 receipt_failure=no
