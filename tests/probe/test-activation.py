@@ -388,7 +388,7 @@ class Activation(unittest.TestCase):
         (self.repo / ".agent").symlink_to(self.root, target_is_directory=True)
         self.assertIn("unsafe evidence path", self.prompt()["reason"])
 
-    def test_pending_receipt_allows_inspection_but_not_mutation_or_dispatch(self):
+    def test_pending_receipt_allows_reads_but_not_dispatch(self):
         self.prompt()
         payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Bash",
                        tool_input={"command": "cat " + str(self.helper)})
@@ -396,11 +396,17 @@ class Activation(unittest.TestCase):
         self.assertEqual(self.record()["status"], "pending")
         native_read = dict(payload, tool_name="Read", tool_input={"file_path": str(self.helper)})
         self.assertEqual(json.loads(self.invoke("hook", payload=native_read).stdout), {})
+        # Pending delivery gates dispatch-class calls only; an arbitrary shell
+        # expression (even one shaped like a mutation) is not dispatch-class
+        # and proceeds, same as any other Bash call.
         for command in ("cat " + str(self.helper) + "; touch /tmp/forbidden",
                         "cat " + str(self.helper) + " > /tmp/forbidden"):
             payload["tool_input"]["command"] = command
             output = json.loads(self.invoke("hook", payload=payload).stdout)
-            self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertEqual(output, {})
+        dispatch = dict(payload, tool_name="Agent", tool_input={"prompt": "implement #1"})
+        output = json.loads(self.invoke("hook", payload=dispatch).stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_subdirectory_cannot_evade_pending_gate(self):
         self.prompt()
@@ -418,13 +424,21 @@ class Activation(unittest.TestCase):
         self.assertEqual(self.record()["deliveredDigest"], hashlib.sha256(body).hexdigest())
         self.assertNotEqual(self.record()["deliveredDigest"], self.record()["installedDigest"])
 
-    def test_inspection_never_allows_shell_expansion(self):
+    def test_dispatch_class_matches_despite_shell_decoration(self):
+        # Pending delivery no longer runs Bash commands through inspection()'s
+        # shell-metacharacter filter; a plain read proceeds even when its
+        # argument looks like a shell expansion. A dispatch-class command
+        # remains gated even when decorated with a trailing shell expression.
         self.prompt()
         malicious = self.plugin / "skills/$(id)"
         malicious.write_text("inert fixture filename")
-        payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Bash",
-                       tool_input={"command": "cat " + str(malicious)})
-        output = json.loads(self.invoke("hook", payload=payload).stdout)
+        read_payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Bash",
+                            tool_input={"command": "cat " + str(malicious)})
+        output = json.loads(self.invoke("hook", payload=read_payload).stdout)
+        self.assertEqual(output, {})
+        dispatch_payload = dict(self.payload, hook_event_name="PreToolUse", tool_name="Bash",
+                                tool_input={"command": "git push -u origin fix/x; $(id)"})
+        output = json.loads(self.invoke("hook", payload=dispatch_payload).stdout)
         self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def public_event(self, event, **fields):

@@ -298,6 +298,26 @@ def inspection(args, root, tool, tool_input):
     return True
 
 
+DISPATCH_TOOLS = ("Agent", "Task", "spawn_agent", "Skill")
+DISPATCH_COMMANDS = (
+    r"(^|/)create-issue-worktree\.sh(\s|$)",
+    r"(^|/)worktree-commit\.sh(\s|$)",
+    r"(^|/)chain-advance\.sh(\s|$)",
+    r"^\s*git\s+(push|worktree\s+add)\b",
+    r"^\s*gh\s+pr\s+(create|ready|merge)\b",
+)
+
+
+def dispatch_class(tool, tool_input):
+    """A dispatch-class call spends slots, opens PRs, or pushes; those wait for the receipt."""
+    if tool in DISPATCH_TOOLS:
+        return True
+    if tool in ("Bash", "exec_command"):
+        command = tool_input.get("command", tool_input.get("cmd", ""))
+        return any(re.search(pattern, command, re.MULTILINE) for pattern in DISPATCH_COMMANDS)
+    return False
+
+
 def hook(args):
     payload = json.load(sys.stdin)
     event = payload.get("hook_event_name", "UserPromptSubmit")
@@ -341,11 +361,14 @@ def hook(args):
         evidence.write(record)
         tool = payload.get("tool_name", "")
         tool_input = payload.get("tool_input", {})
-        # The challenge response must remain reachable while delivery is pending.
-        command = tool_input.get("command", tool_input.get("cmd", ""))
-        if tool in ("Bash", "exec_command") and command.strip() == ack_command(args, record):
+        if record.get("status") != "active":
+            # Pending delivery gates dispatch only; reads, edits, and inspection proceed.
+            if dispatch_class(tool, tool_input):
+                validate(args, record)
             return {}
         if inspection(args, evidence.root, tool, tool_input):
+            # A stale (content-mismatched) active record still permits bounded
+            # diagnostic reads; validate() below is what raises ContentMismatch.
             return {}
         validate(args, record)
         if tool == "Skill":
