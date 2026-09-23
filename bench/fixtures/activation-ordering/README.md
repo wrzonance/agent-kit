@@ -34,3 +34,30 @@ context reach the model before its first tool call?
   transcript entry — but the receipt file and the matched nonce are direct
   proof the hook ran and its context reached the model before its first
   tool call.
+
+## Post-change results (fix/activation-option-b, 2026-09-23)
+
+- **claude** (Claude Code 2.1.281): `ORDER=context-before-first-call
+  harness=claude`, run via `bench/activation-ordering.sh --harness claude
+  --repo <clone> --plugin-dir <worktree>/plugin/agentkit` against the
+  rebuilt plugin tree (`tests/build-plugin.sh`, 0.9.14). Denied-call count:
+  `grep -c 'pending session acknowledgement' transcript.jsonl` = **0**
+  (down from 2 on the pre-change 2026-09-23 cable-tool run). The receipt's
+  `skillsRoot` points at the built worktree tree, confirming the branch's
+  hooks were the ones exercised.
+- **codex** (codex-cli 0.155.1): probe attempted once by writing a
+  per-repo `.codex/hooks.json` in the clone, mirroring
+  `agentkit/hooks/hooks.json` with commands pointed at
+  `<worktree>/plugin/agentkit/hooks/*.sh`, then running
+  `bench/activation-ordering.sh --harness codex --repo <clone>` with no
+  `--dangerously-bypass-hook-trust` or other trust bypass. Codex ran the
+  probe (`ORDER=context-before-first-call`) but the written receipt's
+  `skillsRoot` is `/home/adam/.codex/plugins/cache/agent-kit/agentkit/0.9.13/skills`
+  — the untrusted per-repo hooks were silently skipped in favor of the
+  user's already-trusted installed plugin cache (still 0.9.13, pre-change),
+  and the denied-call count is **1**, matching pre-change behavior, not
+  this branch's. Codex has no per-session plugin-dir and only trusts hooks
+  by hash inside the interactive TUI's `/hooks` flow, so this branch's
+  hooks cannot be exercised non-interactively from an untrusted repo. This
+  leg is unverified pending a manual TUI trust step; see the PR's Testing
+  checklist for the follow-up.
