@@ -1576,16 +1576,16 @@ report_failure() {
 }
 
 # ---------------------------------------------------------------- verification cache ---
+verification_command_name() {
+    case ${cmd_name:-} in test|lint|typecheck|coverage|verify|check|*-test|*-lint|*-typecheck|*-check) return 0 ;; *) return 1 ;; esac
+}
 verification_cache_eligible() {
     verification_ineligible_reason=''
     [[ $cmd_declared == yes ]] || { verification_ineligible_reason='not-declared'; return 1; }
     [[ $verification_mode == local ]] || { verification_ineligible_reason='mode-not-local'; return 1; }
     [[ -n $verification_tools ]] || { verification_ineligible_reason='no-toolchain'; return 1; }
     [[ -z $baseline_ref ]] || { verification_ineligible_reason='baseline-run'; return 1; }
-    case ${cmd_name:-} in
-        test|lint|typecheck|coverage|verify|check|*-test|*-lint|*-typecheck|*-check) return 0 ;;
-        *) verification_ineligible_reason='name-not-verification'; return 1 ;;
-    esac
+    verification_command_name || { verification_ineligible_reason='name-not-verification'; return 1; }
 }
 
 hash_untracked_files() {
@@ -1992,7 +1992,7 @@ fi
 if ((rc != 0)) && compose_dependency_start_collision "$log_file"; then
     printf '=== finding environment-retry-eligible: compose dependency-start collision (not a code regression)\n' >> "$log_file"
 fi
-if ((rc == 0)) && [[ $log_clean == yes ]]; then
+if ((rc == 0)) && [[ $log_clean == yes ]] && verification_command_name; then
     if ! log_status=$(git_worktree_status); then
         rc=1 baseline_excluded=no
         printf '=== finding checkout-dirty: checkout status unavailable after the command\n' >> "$log_file"

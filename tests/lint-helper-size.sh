@@ -30,7 +30,7 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    [skills/.shared/scripts/agent-run.sh]="2031:21986:800"
+    [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -197,8 +197,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #873 PR repair: bind evidence overrides to the checkout's actual HEAD.
 # #873 evidence repair + #874/#875 merge: exact combined helper tree measurement.
 # #873/#874 + #875 + #876 provider-alias repair: exact combined helper tree measurement.
-# #873 PR repair: pre/post verification cleanliness and evidence-time validation.
-readonly MAX_TREE_TOKENS=477407
+# #873 PR repair: verification-scoped post-run cleanliness and setup compatibility.
+readonly MAX_TREE_TOKENS=477429
 
 violations=0
 checked=0
