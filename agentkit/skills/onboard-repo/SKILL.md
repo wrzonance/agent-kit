@@ -247,10 +247,10 @@ without a root test command, `agent-run.sh --cmd test` needs a dispatcher.
 
 Edit `.agent/config.env` directly — values are line-wise and never sourced. Write active
 `AGENT_REVIEW_PROVIDERS=...` and each command unquoted, then prove parsing. There is no approval
-step for the first run — `agent-run.sh --cmd <name>` runs a declared command directly — but hand
-the first invocation of each name to the user anyway: onboarding is attended, and them running and
-reading it once is the actual review moment before this skill leaves the command declared for
-every future session:
+step for the first run — `$agentkit/.shared/scripts/agent-run.sh --cmd <name>` runs a declared command
+directly — but hand each name's first invocation to the user anyway: onboarding is attended, and
+that first run is the review moment before this skill leaves the command declared for every
+future session:
 
 ```bash
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }

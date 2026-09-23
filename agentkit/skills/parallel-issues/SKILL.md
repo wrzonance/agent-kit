@@ -245,16 +245,16 @@ referencing it) is documented in
 Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full. Selection consumes `pick-issues.sh` output only: a body-free record carries status,
+in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: a body-free record carries status,
 eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and
 `workShape`. `workShape: "no-code"` means HOLD before worktree creation; retain `holdReason`, count
 `no-code-hold`, and use the anchored [work-shape verdict](references/triage-and-selection.md#work-shape-verdict)
 for ambiguity.
-`$agentkit/.shared/scripts/pick-issues.sh` answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
-exactly once after the final conflict and slot-cap decisions and before dispatch. Full, thin, and
-empty sets report requested/eligible/dispatched plus one reason per exclusion.
-An empty selection is an answer only with evidence. If `pick-issues.sh` is missing, non-executable, or fails,
-report `Selection funnel: degraded=yes; eligible=unknown`, its exact path and failure reason.
+The helper answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
+exactly once after the final conflict and slot-cap decisions and before dispatch. Every set reports
+requested/eligible/dispatched plus one reason per exclusion.
+An empty selection is an answer only with evidence. Report `Selection funnel: degraded=yes; eligible=unknown`
+only with `ls -l "$agentkit/.shared/scripts/pick-issues.sh"` output and its failure text, never a guessed path.
 Stop automatic selection until it succeeds. A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap. Preserve partial evidence as degraded.
 
 ### Step 3: Conflict analysis (file-level)

@@ -198,7 +198,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #873 evidence repair + #874/#875 merge: exact combined helper tree measurement.
 # #873/#874 + #875 + #876 provider-alias repair: exact combined helper tree measurement.
 # #873 PR repair: verification-scoped post-run cleanliness and setup compatibility.
-readonly MAX_TREE_TOKENS=477429
+# #889: triage --help ends with the selection helper's shipped path: exact tree measurement.
+readonly MAX_TREE_TOKENS=477442
 
 violations=0
 checked=0

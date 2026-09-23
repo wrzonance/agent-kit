@@ -198,6 +198,29 @@ printf '%s\n' 'Source `$agentkit/.shared/scripts/lib/private-dir.sh` (sourced-on
     > "$hfixture/demo/SKILL.md"
 assert_rc 0 'source instructions and the documented contract-cache CLI remain valid' -- "$lint" "$hfixture"
 
+# #889: a section that spelled the helper's path only after its bare name sent
+# a root guessing under the skill's own scripts/ and stopped the run. Order
+# holds per heading section for shared and cross-skill helpers (that guess
+# lands for the skill's own), and a heading-shaped shell comment inside a
+# fence is not a section break.
+printf '%s\n' 'Run `$agentkit/.shared/scripts/pick-issues.sh` once.' \
+    '' '### Later step' 'Selection consumes `pick-issues.sh` output only.' \
+    'Then `$agentkit/.shared/scripts/pick-issues.sh` answers the rest.' > "$hfixture/demo/SKILL.md"
+section_output=$("$lint" "$hfixture" 2>&1)
+assert_eq 1 "$?" 'a later path in the same section does not repair a bare section-first mention'
+assert_contains "$section_output" 'SKILL.md:4' \
+    'the section diagnostic names the bare line, not the later path'
+printf '%s\n' 'Run `$agentkit/.shared/scripts/pick-issues.sh` once.' \
+    '```bash' '# Step: no guessing' 'pick-issues.sh --help' '```' \
+    'Then `$agentkit/.shared/scripts/pick-issues.sh` answers the rest.' > "$hfixture/demo/SKILL.md"
+assert_rc 0 'a heading-shaped comment inside a fence does not start a section' -- "$lint" "$hfixture"
+mkdir -p "$hfixture/demo/scripts"
+touch "$hfixture/demo/scripts/own-helper.sh"
+printf '%s\n' 'Run `$agentkit/demo/scripts/own-helper.sh` once.' \
+    '' '### Later step' 'Then `own-helper.sh` again before `$agentkit/demo/scripts/own-helper.sh`.' \
+    > "$hfixture/demo/SKILL.md"
+assert_rc 0 'a helper shipped in the skill scripts/ directory may go bare before its path in a section' -- "$lint" "$hfixture"
+
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/six-step-loop.md") -le 6100 ]] && printf yes || printf no)" \
     'six-step-loop policy stays at or under 6100 bytes'
 
