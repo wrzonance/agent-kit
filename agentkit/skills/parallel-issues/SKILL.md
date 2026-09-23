@@ -510,14 +510,7 @@ Composer publishes once; root installs and verifies its hashed `uncoveredVerific
 ### Collect (per-completion — never wait for the slowest issue)
 
 `worker-result=PATH` uses the [result contract](references/worker-prompts.md#structured-result-contract): validate dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence is never green; unchanged accepted receipts resume without repeated work. Text fallbacks stay unknown.
-`agentkit activation-blocked: {...}` keeps ownership. Validate worker, worktree and workflow, then follow `.shared/spawn-contract.md` once to redeliver current bytes to the same context. The leaf acknowledges and resumes; unavailable or repeated delivery parks with work preserved.
-
-Restore the fixed invocation fact before either PR-open path, including after a resumed Collect:
-
-```bash
-auto_review_state=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review) || exit 1
-case $auto_review_state in true|false) ;; *) printf 'invalid durable auto_review: %s\n' "$auto_review_state" >&2; exit 1 ;; esac
-```
+`agentkit activation-blocked: {...}` keeps ownership. Validate worker, worktree and workflow, then follow `.shared/spawn-contract.md` once to redeliver current bytes to the same context. The leaf acknowledges and resumes; unavailable or repeated delivery parks with work preserved. Before either PR-open path, including after a resumed Collect, restore the fixed invocation fact with `auto_review_state=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review) || exit 1`; validate it with `case $auto_review_state in true|false) ;; *) printf 'invalid durable auto_review: %s\n' "$auto_review_state" >&2; exit 1 ;; esac`.
 
 - **Cross-write check first** → run the root-checkout Collect check against the immutable
   dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
