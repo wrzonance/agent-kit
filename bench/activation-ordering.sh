@@ -37,8 +37,17 @@ case $harness in
         session=$(jq -r 'select(.type=="thread.started") | .thread_id' "$out/transcript.jsonl" | head -1)
         ;;
     claude)
-        (cd -- "$repo" && claude -p --output-format stream-json --verbose --dangerously-skip-permissions "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
+        # A precise allow list for the one command the probe needs; never a blanket permission bypass.
+        # --allowedTools takes a variadic list; use = so it doesn't swallow the prompt positional.
+        (cd -- "$repo" && claude -p --output-format stream-json --verbose --allowedTools='Bash(printf:*)' "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
         first_call=$(jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command' "$out/transcript.jsonl" | head -1)
+        if [[ -z $first_call ]]; then
+            # The PreToolUse hook may block the command before it becomes a
+            # tool_use content block; fall back to the composed command as
+            # logged in the block notice, the same way the Codex leg does.
+            first_call=$(grep -o 'Command: .*' "$out/stderr.log" | head -1)
+            first_call=${first_call#Command: }
+        fi
         session=$(jq -r 'select(.type=="system" and .subtype=="init") | .session_id' "$out/transcript.jsonl" | head -1)
         ;;
 esac
