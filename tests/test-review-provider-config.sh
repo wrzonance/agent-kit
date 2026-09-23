@@ -67,24 +67,21 @@ assert_eq 'provider=none mode=disabled source=invalid' "$out" \
 
 repo=$(make_repo 'unknown-provider')
 out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=unknown-provider mode=observe-only source=declared lane=generic-automated' "$out" \
+    'unknown providers use the observe-only generic bot lane'
+assert_eq '' "$(<"$tmp/err")" 'a valid unknown provider declaration is silent'
+
+repo=$(make_repo 'coderabbitai')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
 assert_eq 'provider=none mode=disabled source=invalid' "$out" \
-    'unknown providers cannot select a trigger'
-unrecognized_source=$out
-for provider in coderabbit github-code-quality none; do
-    assert_contains "$(<"$tmp/err")" "$provider" \
-        "an unrecognized declared provider names $provider as accepted"
-done
+    'a built-in login alias cannot declare an implicit generic provider'
+assert_contains "$(<"$tmp/err")" 'reserved built-in login alias' \
+    'the implicit-alias rejection names the collision'
 
 repo=$(make_repo __missing__)
 out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
 assert_eq 'provider=none mode=disabled source=missing' "$out" \
     'missing configuration uses the safe disabled plan'
-# A declared-but-unrecognized provider (source=invalid, asserted above) and no
-# declaration at all (source=missing, just above) must never collapse to the
-# same reported source -- that would quietly hide an explicit bad choice
-# behind "nothing was asked for".
-assert_not_contains "$unrecognized_source" 'source=missing' \
-    'a declared-but-unrecognized provider never reports as an undeclared repository'
 assert_contains "$(<"$tmp/err")" 'using effective none' \
     'missing configuration warns without blocking'
 

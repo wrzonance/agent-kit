@@ -158,5 +158,10 @@ for provider in "${providers[@]}"; do
                 ;;
         esac
     fi
-    printf 'provider=%s mode=%s source=declared\n' "$provider" "$mode"
+    lane=$(review_provider_lane "$provider" 2>/dev/null || true)
+    if [[ -n $lane ]]; then
+        printf 'provider=%s mode=%s source=declared lane=%s\n' "$provider" "$mode" "$lane"
+    else
+        printf 'provider=%s mode=%s source=declared\n' "$provider" "$mode"
+    fi
 done
