@@ -244,8 +244,8 @@ assert_contains "$skill_text" \
     'Collect restores the durable auto-review mode before either PR-open path'
 assert_contains "$skill_text" "$auto_review_case_recipe" \
     'Collect refuses a restored auto-review value outside the boolean boundary'
-completion_recipe=$(rg -F -- '- **Completion report (branch + pushed SHA)**' "$root/agentkit/skills/parallel-issues/SKILL.md")
-blocked_recipe=$(rg -F -- '- **BLOCKED**' "$root/agentkit/skills/parallel-issues/SKILL.md")
+completion_recipe=$(grep -F -- '- **Completion report (branch + pushed SHA)**' "$root/agentkit/skills/parallel-issues/SKILL.md")
+blocked_recipe=$(grep -F -- '- **BLOCKED**' "$root/agentkit/skills/parallel-issues/SKILL.md")
 assert_contains "$completion_recipe" "$auto_review_value" \
     'normal PR-open completion prints the restored auto-review mode'
 assert_contains "$blocked_recipe" "$auto_review_value" \
