@@ -28,7 +28,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
     # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
-    [skills/.shared/scripts/agent-run.sh]="2008:21743:800"
+    # #874 review repair: stable process identity and canonical fallback boundaries.
+    [skills/.shared/scripts/agent-run.sh]="2017:21859:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -189,7 +190,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #873 chain: tested-head metadata and repair handback validation.
 # #873 review repair: real SHA-256 evidence fixture and split verification recipe.
 # #873/#874 + #875 final merge-down: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=476157
+# #874 review repair: stable identity and symlink-safe log selection.
+# #874 review + #875 merge: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=476274
 
 violations=0
 checked=0
