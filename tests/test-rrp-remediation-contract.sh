@@ -67,6 +67,49 @@ assert_contains "$(cat -- "$rrp_skill")" 'finding-ledger.sh" evidence' \
 worker_gate="$skills/review-remote-pr/references/worker-gate.md"
 assert_contains "$(cat -- "$worker_gate")" 'unfocused' \
     'the worker completion report names the unfocused test log'
+assert_contains "$(cat -- "$worker_gate")" 'after the repair commit and before push' \
+    'the repair handback orders full verification on the commit that will be pushed'
+assert_contains "$(cat -- "$worker_gate")" 'clean committed HEAD' \
+    'the repair handback requires the log to bind the committed head'
+fix_prompt=$(sed -n '/## PR-fix-batch worker prompt/,/## Exit Report/p' \
+    "$skills/parallel-issues/references/worker-prompts.md")
+assert_contains "$fix_prompt" 'commit the repair before the final unfocused run' \
+    'the composed fix-worker prompt commits before full verification'
+assert_contains "$fix_prompt" 'push the branch only after that clean committed-HEAD run passes' \
+    'the composed fix-worker prompt cannot push an unverified commit'
+
+# Step 2's runnable phases must not execute the full suite before the worker
+# commits. Execute its first fence with a recording runner, then ensure the
+# committed-head test is a separate fence after an explicit commit boundary.
+ci_fix_section=$(sed -n '/^## Step 2: Fix CI Failures/,/^For red\/green iterations/p' "$rrp_skill")
+fence() {
+    local number=$1
+    awk -v wanted="$number" '
+        /^```bash$/ { count++; capture=(count==wanted); next }
+        /^```$/ { if (capture) exit }
+        capture
+    ' <<<"$ci_fix_section"
+}
+precommit_fence=$(fence 1)
+postcommit_fence=$(fence 2)
+recipe_kit="$tmp/recipe-kit"
+recipe_calls="$tmp/recipe-calls"
+mkdir -p "$recipe_kit/.shared/scripts"
+cat >"$recipe_kit/.shared/scripts/agent-run.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
+EOF
+chmod +x "$recipe_kit/.shared/scripts/agent-run.sh"
+AGENTKIT_RECIPE_CALLS="$recipe_calls" agentkit="$recipe_kit" agentkit_provenance=ok \
+    bash -c "$precommit_fence"
+assert_eq '--cmd lint --if-declared' "$(cat "$recipe_calls")" \
+    'executing the precommit fence cannot run the full test on a dirty repair'
+assert_contains "$postcommit_fence" '"$agent_run" --cmd test' \
+    'committed-head verification has its own runnable fence'
+commit_line=$(grep -nF 'Commit the repair' <<<"$ci_fix_section" | cut -d: -f1 | head -n1)
+test_line=$(grep -nF '"$agent_run" --cmd test' <<<"$ci_fix_section" | cut -d: -f1 | head -n1)
+assert_eq yes "$([[ -n $commit_line && -n $test_line && $commit_line -lt $test_line ]] && printf yes || printf no)" \
+    'the actual commit step precedes the runnable full-test phase'
 
 # --- item 6: the spawn contract names the primary checkout's ledger ----------
 assert_contains "$(cat -- "$skills/.shared/spawn-contract.md")" "primary checkout's \`.agent/runs/active-workers.ndjson\`" \
@@ -123,8 +166,10 @@ assert_contains "$after_repair" 'RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/
 assert_contains "$after_repair" '--repair-sha' 'the evidence step names the repair commit'
 assert_not_contains "$after_repair" '--reviewed-head' 'the evidence step needs no reviewed head'
 assert_not_contains "$(cat -- "$adv_ref")" '--reviewed-head' 'the evidence contract needs no reviewed head'
-assert_not_contains "$(cat -- "$worker_gate")" 'after the commit, so its header' \
-    'workers are not told to re-run the suite after committing'
+assert_contains "$(cat -- "$adv_ref")" 'after the repair commit and before push' \
+    'the evidence recipe says when the binding full run occurs'
+assert_contains "$(cat -- "$adv_ref")" 'tested head and tracked-tree cleanliness' \
+    'the evidence recipe explains what the log binding proves'
 assert_not_contains "$(cat -- "$adv_ref")" 'defaults to the last commit' \
     'the evidence contract no longer promises a guessed repair commit'
 

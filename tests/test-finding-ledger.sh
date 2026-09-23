@@ -316,8 +316,9 @@ assert_rc 1 'ids refuses a missing findings file as unavailable evidence' -- \
 
 # --- evidence producer (issue #873) -------------------------------------------
 # Plan-level strictness: the log must be the green, unfocused declared test run
-# and the named repair commit must change the finding's path. The log is not
-# bound to a commit; forge-verifiable evidence is a separate follow-up.
+# on the clean current head, and the named repair commit must change the
+# finding's path. Existing ledgers written before tested-head metadata remain
+# readable, but new evidence cannot be produced from an unbound log.
 ev_repo="$tmp/ev-repo"
 git init -q "$ev_repo"
 git -C "$ev_repo" config user.name Test
@@ -338,9 +339,16 @@ printf 'tidy\n' >"$ev_repo/other.txt"
 git -C "$ev_repo" add other.txt
 git -C "$ev_repo" commit -qm 'format follow-up'
 ev_head=$(git -C "$ev_repo" rev-parse HEAD)
-printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-full.log"
-printf '=== agent-run tests/regression.sh --only one\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-focused.log"
-printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=1 after 1s\n' >"$tmp/ev-red.log"
+agent_log() {
+    printf '=== agent-run %s\n=== started 2026-09-22T00:00:00Z  pid=1  cwd=%s  concurrent-suites=1  head=%s  tracked-clean=%s\n=== agent-run exited rc=%s after 1s\n' \
+        "$2" "$ev_repo" "$3" "$4" "$5" >"$1"
+}
+agent_log "$tmp/ev-full.log" tests/regression.sh "$ev_head" yes 0
+agent_log "$tmp/ev-focused.log" 'tests/regression.sh --only one' "$ev_head" yes 0
+agent_log "$tmp/ev-red.log" tests/regression.sh "$ev_head" yes 1
+agent_log "$tmp/ev-other-head.log" tests/regression.sh "$ev_repair" yes 0
+agent_log "$tmp/ev-dirty.log" tests/regression.sh "$ev_head" no 0
+printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-unbound.log"
 evidence() {
     "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" "$@"
 }
@@ -361,7 +369,7 @@ assert_rc 0 'producer output is accepted by add --verdict fixed unmodified' -- r
     --repo-root "$ev_repo" --head "$ev_head"
 assert_eq complete "$("$script" status --file "$ev_run/findings.ndjson" --repo-root "$ev_repo" \
     --head "$ev_head" | jq -r .remediation)" \
-    'evidence from a header-less agent-run log validates as complete (existing ledgers keep working)'
+    'fresh tested-head evidence validates as complete'
 
 assert_rc 2 'evidence requires an explicit --repair-sha' -- evidence --log "$tmp/ev-full.log"
 assert_rc 1 'a focused log is refused as repair evidence' -- \
@@ -370,10 +378,33 @@ assert_rc 1 'a red log is refused as repair evidence' -- \
     evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair"
 assert_rc 1 'a repair SHA that does not change the path is refused' -- \
     evidence --log "$tmp/ev-full.log" --repair-sha "$ev_head"
+stale_override_rc=0
+evidence --head "$ev_repair" --log "$tmp/ev-other-head.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>"$tmp/ev-stale-override.err" || stale_override_rc=$?
+assert_eq 1 "$stale_override_rc" \
+    'an explicit reachable old head cannot replace the checkout HEAD for new evidence'
+assert_contains "$(cat "$tmp/ev-stale-override.err")" \
+    "evidence head $ev_repair is not the current head $ev_head" \
+    'the stale override refusal names both the requested and actual heads'
+assert_rc 1 'a log from another head cannot certify the current pushed head' -- \
+    evidence --log "$tmp/ev-other-head.log" --repair-sha "$ev_repair"
+assert_rc 1 'a log from a dirty tree cannot certify the committed head' -- \
+    evidence --log "$tmp/ev-dirty.log" --repair-sha "$ev_repair"
+assert_rc 1 'new repair evidence requires tested-head metadata' -- \
+    evidence --log "$tmp/ev-unbound.log" --repair-sha "$ev_repair"
 focused_err=$(evidence --log "$tmp/ev-focused.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$focused_err" 'without --only' 'the focused-log refusal says how to produce valid evidence'
 red_err=$(evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$red_err" 'no final successful agent-run result' 'the red-log refusal names the failed run'
+other_head_err=$(evidence --log "$tmp/ev-other-head.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
+assert_contains "$other_head_err" "tested $ev_repair, not the current head $ev_head" \
+    'the stale-log refusal names both the tested and current heads'
+dirty_err=$(evidence --log "$tmp/ev-dirty.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
+assert_contains "$dirty_err" 'uncommitted tracked changes' \
+    'the dirty-log refusal tells the worker to commit before full verification'
+unbound_err=$(evidence --log "$tmp/ev-unbound.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
+assert_contains "$unbound_err" 'no tested-head metadata' \
+    'the unbound-log refusal asks for a current agent-run log'
 abs_err=$("$script" evidence --title 'Guard input' --path "$ev_repo/affected.sh" --log "$tmp/ev-full.log" \
     --repo-root "$ev_repo" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
 assert_contains "$abs_err" 'repair path must be repository relative' 'an absolute --path is refused by name'
@@ -389,6 +420,43 @@ real_log=$(find "$ev_repo/.agent/logs" -name '*-test.log' -type f -print -quit)
 real_rc=0
 evidence --log "$real_log" --repair-sha "$ev_repair" >/dev/null 2>"$tmp/real.err" || real_rc=$?
 assert_eq 0 "$real_rc" "a real agent-run.sh log certifies the repair ($(cat "$tmp/real.err"))"
+
+# Git repositories can use 64-character SHA-256 object IDs. When this Git
+# supports that object format, exercise the real runner and evidence producer
+# together so the log-header contract stays aligned with Git's full IDs.
+sha256_repo="$tmp/ev-sha256-repo"
+if git init -q --object-format=sha256 "$sha256_repo" 2>/dev/null; then
+    git -C "$sha256_repo" config user.name Test
+    git -C "$sha256_repo" config user.email test@example.invalid
+    mkdir -p "$sha256_repo/.agent" "$sha256_repo/tests"
+    printf 'AGENT_CMD_TEST=tests/regression.sh\n' >"$sha256_repo/.agent/config.env"
+    printf '.agent/\n' >"$sha256_repo/.gitignore"
+    printf '#!/bin/sh\necho regression ok\n' >"$sha256_repo/tests/regression.sh"
+    chmod +x "$sha256_repo/tests/regression.sh"
+    printf 'broken\n' >"$sha256_repo/affected.sh"
+    git -C "$sha256_repo" add .gitignore affected.sh tests/regression.sh
+    git -C "$sha256_repo" commit -qm baseline
+    printf 'repaired\n' >"$sha256_repo/affected.sh"
+    git -C "$sha256_repo" commit -qam repair
+    sha256_repair=$(git -C "$sha256_repo" rev-parse HEAD)
+    assert_eq 64 "${#sha256_repair}" 'the regression fixture uses a full SHA-256 object ID'
+    (cd -- "$sha256_repo" && "$agent_run" --cmd test >/dev/null 2>&1)
+    sha256_log=$(find "$sha256_repo/.agent/logs" -name '*-test.log' -type f -print -quit)
+    sha256_rc=0
+    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$sha256_repo" \
+        --log "$sha256_log" --repair-sha "$sha256_repair" >/dev/null 2>"$tmp/sha256.err" || sha256_rc=$?
+    assert_eq 0 "$sha256_rc" \
+        "a real SHA-256 repository log certifies the repair ($(cat "$tmp/sha256.err"))"
+fi
+
+# Validation remains backward-compatible with records produced before the
+# tested-head header existed. Only evidence creation requires the new binding.
+legacy_digest=$(sha256sum "$tmp/ev-unbound.log"); legacy_digest=${legacy_digest%% *}
+jq -c --arg log "$tmp/ev-unbound.log" --arg digest "$legacy_digest" \
+    '.evidence.log=$log | .evidence.logSha256=$digest' "$ev_run/findings.ndjson" >"$tmp/legacy-repair.ndjson"
+assert_eq complete "$("$script" status --file "$tmp/legacy-repair.ndjson" --repo-root "$ev_repo" \
+    --head "$ev_head" | jq -r .remediation)" \
+    'existing header-less repair evidence remains readable'
 
 undeclared_repo="$tmp/ev-undeclared"
 git clone -q "$ev_repo" "$undeclared_repo"
