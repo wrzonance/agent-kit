@@ -462,7 +462,8 @@ class Activation(unittest.TestCase):
         self.assertIn("$agentkit:parallel-issues", json.dumps(output))
         self.assertNotEqual(self.check().returncode, 0)
         self.payload["prompt"] = "$agentkit:parallel-issues --yolo --fast-mode"
-        self.assertIn("Updated workflow content", json.dumps(self.prompt()))
+        self.prompt()
+        self.assertEqual(self.record()["deliveredDigest"], hashlib.sha256(body.read_bytes()).hexdigest())
         self.assertEqual(self.record()["status"], "pending")
         self.assertNotEqual(old["nonce"], self.record()["nonce"])
         denied = self.public_event("PreToolUse", tool_name="Agent", tool_input={"prompt": "run"})
@@ -506,8 +507,8 @@ class Activation(unittest.TestCase):
                                "--session", handback["session"],
                                "--skill", handback["workflow"])
         self.assertEqual(delivery.returncode, 0, delivery.stderr)
-        self.assertIn("Same-version recovery content", delivery.stdout)
         refreshed = self.record()
+        self.assertEqual(refreshed["deliveredDigest"], hashlib.sha256(body.read_bytes()).hexdigest())
         self.assertEqual(refreshed["deliverySource"], "root-redelivery")
         self.assertEqual(refreshed["status"], "pending")
         self.assertNotEqual(refreshed["nonce"], old["nonce"])
@@ -599,7 +600,7 @@ class Activation(unittest.TestCase):
                 self.payload.update(prompt=prompt, session_id="natural-" + workflow)
                 output = self.prompt()
                 self.assertIn("invocation boundary", json.dumps(output))
-                self.assertIn("--skill " + workflow, json.dumps(output))
+                self.assertIn("--workflow " + workflow, json.dumps(output))
 
     def test_quoted_negated_and_question_prompts_do_not_activate(self):
         for prompt in ('"run these issues in parallel"', 'Do not resume parallel-issues',
@@ -632,7 +633,7 @@ class Activation(unittest.TestCase):
         for selector in ("$agentkit:parallel-issues", "/parallel-issues"):
             with self.subTest(selector=selector):
                 self.payload["prompt"] = selector + " 57 54 — issue text mentions pr-to-green"
-                self.assertIn("--skill parallel-issues", json.dumps(self.prompt()))
+                self.assertIn("--workflow parallel-issues", json.dumps(self.prompt()))
                 self.assertEqual(self.record()["workflow"], "parallel-issues")
 
     def test_pending_upgrade_resume_does_not_offer_stale_ack(self):

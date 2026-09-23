@@ -249,16 +249,22 @@ def deliver(args, evidence, workflow, source, capabilities, recovery=False):
                 "run this exact receipt command, then resume the assigned work in the same worktree:\n")
     else:
         lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
-                "Before any dispatch, edits, or other workflow, run this exact receipt command. "
-                "You may inspect the installed helper first; its first receipt stdout line is the workflow identity:\n")
-    context = (lead + ack_command(args, record)
-               + "\nMissing capability remains unknown. Do not substitute another workflow.\n"
-               + "Installed skills root: " + args.skills + "\n\n" + body.decode())
+                "Run this exact preflight command first; it records the session receipt:\n")
+    context = (lead + ack_command(args, record) + "\n"
+               + "agentkit: skill=" + workflow + " version=" + identity(args)
+               + " hash=" + args.digest[:12] + "\n"
+               + "Installed skills root: " + args.skills + "\n"
+               + "Missing capability remains unknown. Do not substitute another workflow.")
     return record, context
 
 
 def inspection(args, root, tool, tool_input):
-    """Permit a bounded file inspection, never a general shell expression."""
+    """Permit a bounded file inspection, never a general shell expression.
+
+    Serves the stale-active path only: a content-mismatched active record still
+    permits bounded diagnostic reads and searches before validate() raises
+    ContentMismatch.
+    """
     directory = False
     if tool == "Read":
         paths = [tool_input.get("file_path", "")]
@@ -400,7 +406,9 @@ def hook(args):
         record["capabilities"]["pre-tool-use"] = "unknown"
         evidence.write(record)
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                "agentkit durable activation: " + json.dumps(record, sort_keys=True)
+                "agentkit durable activation: workflow=" + record["workflow"]
+                + " status=" + record.get("status", "unknown")
+                + " version=" + record.get("version", "unknown")
                 + "; historical session receipt only, not proof of this context's native registry. "
                 + ("" if record.get("status") == "active" else "Run: " + ack_command(args, record))}}
     return {}

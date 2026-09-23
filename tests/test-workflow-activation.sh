@@ -73,4 +73,24 @@ session=cold-session-$$
 out=$(hook PreToolUse Bash '{"command":"git push -u origin fix/x"}')
 assert_eq '{}' "$out" 'no receipt: nothing is gated'
 
+# Delivery carries identity and the first command, never the skill body.
+session=delivery-session-$$
+delivered=$(jq -nc --arg s "$session" --arg c "$repo" \
+    '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:"$agentkit:parallel-issues 1"}' | "$wa" hook)
+context=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$delivered")
+assert_not_contains "$context" '### Step' 'delivery does not embed the skill body'
+assert_contains "$context" 'skill=parallel-issues version=' 'delivery names the workflow identity'
+assert_contains "$context" '--activation-nonce' 'delivery names the preflight line'
+(( ${#context} < 1500 )) || assert_eq 'under-1500' "${#context}" 'delivery stays under the harness context caps'
+receipt="$repo/.agent/activation/$(printf '%s' "$session" | sha256sum | cut -d' ' -f1).json"
+assert_eq "$(sha256sum "$skills/parallel-issues/SKILL.md" | cut -d' ' -f1)" "$(jq -r .deliveredDigest "$receipt")" \
+    'deliveredDigest is still the on-disk skill digest'
+
+# A resumed session with a pending record re-delivers the first command and stays short.
+resumed=$(jq -nc --arg s "$session" --arg c "$repo" \
+    '{hook_event_name:"SessionStart", source:"resume", session_id:$s, cwd:$c}' | "$wa" hook)
+rcontext=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$resumed")
+assert_contains "$rcontext" '--activation-nonce' 'resume re-delivers the preflight line'
+(( ${#rcontext} < 1500 )) || assert_eq 'under-1500' "${#rcontext}" 'resume context stays short'
+
 finish
