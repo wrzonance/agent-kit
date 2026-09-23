@@ -4,12 +4,13 @@
 # as its FIRST tool call, then compare that call to the nonce in the receipt record.
 set -euo pipefail
 PROGRAM=${0##*/}
-usage() { printf 'usage: %s --harness codex|claude --repo DIR [--out DIR]\n' "$PROGRAM"; }
-harness='' repo='' out=''
+usage() { printf 'usage: %s --harness codex|claude --repo DIR [--plugin-dir DIR] [--out DIR]\n' "$PROGRAM"; }
+harness='' repo='' out='' plugin_dir=''
 while (($#)); do
     case $1 in
         --harness) harness=$2; shift 2 ;;
         --repo) repo=$2; shift 2 ;;
+        --plugin-dir) plugin_dir=$2; shift 2 ;;
         --out) out=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -17,6 +18,7 @@ while (($#)); do
 done
 [[ $harness == codex || $harness == claude ]] || { usage >&2; exit 2; }
 [[ -d $repo/.git ]] || { printf '%s: --repo must be a git checkout with the plugin hooks active\n' "$PROGRAM" >&2; exit 2; }
+[[ $harness != claude || -n $plugin_dir ]] || { printf '%s: --plugin-dir is required for --harness claude\n' "$PROGRAM" >&2; exit 2; }
 out=${out:-$(mktemp -d "${TMPDIR:-/tmp}/activation-ordering.XXXXXX")}
 # Literal $agentkit: workflow trigger below is not meant to expand.
 # shellcheck disable=SC2016
@@ -39,7 +41,10 @@ case $harness in
     claude)
         # A precise allow list for the one command the probe needs; never a blanket permission bypass.
         # --allowedTools takes a variadic list; use = so it doesn't swallow the prompt positional.
-        (cd -- "$repo" && claude -p --output-format stream-json --verbose --allowedTools='Bash(printf:*)' "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
+        # The plugin under test is loaded for this session only from the built tree
+        # (tests/build-plugin.sh), so the probe measures the branch's hooks and never
+        # touches the user's installed plugins.
+        (cd -- "$repo" && claude -p --output-format stream-json --verbose --allowedTools='Bash(printf:*)' --plugin-dir "$plugin_dir" "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
         first_call=$(jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command' "$out/transcript.jsonl" | head -1)
         if [[ -z $first_call ]]; then
             # The PreToolUse hook may block the command before it becomes a
