@@ -378,6 +378,14 @@ assert_rc 1 'a red log is refused as repair evidence' -- \
     evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair"
 assert_rc 1 'a repair SHA that does not change the path is refused' -- \
     evidence --log "$tmp/ev-full.log" --repair-sha "$ev_head"
+stale_override_rc=0
+evidence --head "$ev_repair" --log "$tmp/ev-other-head.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>"$tmp/ev-stale-override.err" || stale_override_rc=$?
+assert_eq 1 "$stale_override_rc" \
+    'an explicit reachable old head cannot replace the checkout HEAD for new evidence'
+assert_contains "$(cat "$tmp/ev-stale-override.err")" \
+    "evidence head $ev_repair is not the current head $ev_head" \
+    'the stale override refusal names both the requested and actual heads'
 assert_rc 1 'a log from another head cannot certify the current pushed head' -- \
     evidence --log "$tmp/ev-other-head.log" --repair-sha "$ev_repair"
 assert_rc 1 'a log from a dirty tree cannot certify the committed head' -- \

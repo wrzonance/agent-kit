@@ -192,7 +192,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #873/#874 + #875 final merge-down: exact combined helper tree measurement.
 # #874 review repair: stable identity and symlink-safe log selection.
 # #874 review + #875 merge: exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=476274
+# #873 PR repair: bind evidence overrides to the checkout's actual HEAD.
+# #873 evidence repair + #874/#875 merge: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=476322
 
 violations=0
 checked=0

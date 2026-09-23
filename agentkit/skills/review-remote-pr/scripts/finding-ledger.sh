@@ -462,7 +462,7 @@ require_tested_head() {
 # later reject: the log must be the green, unfocused declared test run, and the
 # named repair commit must change the finding's path.
 cmd_evidence() {
-    local title='' path='' log='' root='' repair_sha='' head='' declared command digest row
+    local title='' path='' log='' root='' repair_sha='' head='' actual_head='' declared command digest row
     shift
     while (($#)); do
         case $1 in
@@ -481,7 +481,11 @@ cmd_evidence() {
     [[ $path != /* && $path != -* && $path != *'..'* ]] || die_evidence 'repair path must be repository relative'
     [[ -f $log && ! -L $log ]] || die_evidence "verification log is unavailable: $log"
     log=$(cd -- "$(dirname -- "$log")" && pwd -P)/${log##*/}
-    head=$(resolve_commit "$root" "${head:-HEAD}") && repair_sha=$(resolve_commit "$root" "$repair_sha") || exit 1
+    head=$(resolve_commit "$root" "${head:-HEAD}") &&
+        actual_head=$(resolve_commit "$root" HEAD) &&
+        repair_sha=$(resolve_commit "$root" "$repair_sha") || exit 1
+    [[ $head == "$actual_head" ]] ||
+        die_evidence "evidence head $head is not the current head $actual_head"
     command=$(sed -n '1s/^=== agent-run //p' "$log")
     declared=$("$SCRIPT_DIR/../../.shared/scripts/repo-config.sh" --repo-root "$root" \
         --get-argv AGENT_CMD_TEST | tr '\0' ' ') || die_evidence 'the repository declares no AGENT_CMD_TEST'
