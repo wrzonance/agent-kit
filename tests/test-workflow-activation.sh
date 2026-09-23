@@ -20,7 +20,8 @@ hook() { # event tool json-tool-input [extra-json-fields]
 # Arm a pending record exactly as UserPromptSubmit does.
 delivered=$(jq -nc --arg s "$session" --arg c "$repo" \
     '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:"$agentkit:parallel-issues 1"}' | "$wa" hook)
-assert_contains "$delivered" 'workflow-activation.sh ack' 'delivery names the receipt command'
+assert_contains "$delivered" 'agent-preflight.sh' 'delivery names the preflight line'
+assert_contains "$delivered" '--activation-nonce' 'delivery carries the nonce flag'
 receipt=$(ls "$repo/.agent/activation/"*.json)
 assert_eq pending "$(jq -r .status "$receipt")" 'record starts pending'
 

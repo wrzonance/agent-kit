@@ -1453,8 +1453,10 @@ assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo 
 # issue #610: caches= grew CARGO_HOME/GOMODCACHE in place; issue #690 review:
 # +10 lines for the writable-default-cargo-home check the contract token now
 # mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1401 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1401 lines (including absolute-path guard and harness-bound tools)'
+# activation-gate option B task 2: +6 lines for the --activation-nonce flag and
+# the ack-before-check block in main() that folds the receipt into preflight.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1407 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1407 lines (including absolute-path guard and harness-bound tools)'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
@@ -1506,5 +1508,29 @@ for workflow in pr-to-green review-remote-pr onboard-repo; do
         else assert_eq "$cold_header" "$header_out" 'cached ensure returns the original contract bytes'; fi
     done
 done
+
+# --activation-nonce folds the receipt into the one call the root already makes.
+skills="$root/agentkit/skills"
+nonce_repo=$(mktemp -d); git -C "$nonce_repo" init -q; install -d -m 700 "$nonce_repo/.agent"
+nonce_session=nonce-session-$$
+jq -nc --arg s "$nonce_session" --arg c "$nonce_repo" \
+    '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:"$agentkit:parallel-issues 1"}' \
+    | "$skills/.shared/scripts/workflow-activation.sh" hook >/dev/null
+nonce_receipt=$(ls "$nonce_repo/.agent/activation/"*.json)
+good_nonce=$(jq -r .nonce "$nonce_receipt")
+
+bad_rc=0
+bad_out=$("$script" --worktree "$nonce_repo" --activation-session "$nonce_session" --activation-origin "$nonce_repo" \
+    --workflow parallel-issues --activation-nonce not-the-nonce 2>&1) || bad_rc=$?
+assert_eq 1 "$bad_rc" 'a wrong nonce fails preflight'
+assert_contains "$bad_out" 'session receipt challenge mismatch' 'a wrong nonce names the cause'
+assert_eq pending "$(jq -r .status "$nonce_receipt")" 'a wrong nonce leaves the record pending'
+[[ ! -e $nonce_repo/.agent/env-contract.txt ]] || assert_eq absent present 'a wrong nonce must not write the contract'
+
+good_out=$("$script" --worktree "$nonce_repo" --activation-session "$nonce_session" --activation-origin "$nonce_repo" \
+    --workflow parallel-issues --activation-nonce "$good_nonce" 2>&1)
+assert_eq active "$(jq -r .status "$nonce_receipt")" 'the right nonce promotes the record'
+assert_contains "$good_out" 'agent-preflight: wrote' 'the right nonce completes preflight'
+rm -rf "$nonce_repo"
 
 finish

@@ -26,6 +26,7 @@ ARG_ENSURE=0
 ARG_ACTIVATION_SESSION=""
 ARG_ACTIVATION_ORIGIN=""
 ARG_WORKFLOW=""
+ARG_ACTIVATION_NONCE=""
 ARG_MEASURED_FROM_SET=0
 ARG_INHERIT_SESSION=""
 ARG_INHERIT_SESSION_SET=0
@@ -94,7 +95,7 @@ Options:
   --ensure           Reuse and print a trusted existing contract; run the
                      preflight probes only when that contract is missing or
                      fails contract-read provenance checks.
-  --activation-session ID --activation-origin PATH --workflow NAME
+  --activation-session ID --activation-origin PATH --workflow NAME [--activation-nonce NONCE]
                      Require acknowledged workflow receipt and matching installed
                      content before any probes or cached-contract reuse. Missing
                      receipt is an error; installed bytes alone are not activation.
@@ -261,6 +262,7 @@ parse_args() {
             --activation-session) need_value "$@"; ARG_ACTIVATION_SESSION="$2"; shift 2 ;;
             --activation-origin) need_value "$@"; ARG_ACTIVATION_ORIGIN="$2"; shift 2 ;;
             --workflow) need_value "$@"; ARG_WORKFLOW="$2"; shift 2 ;;
+            --activation-nonce) need_value "$@"; ARG_ACTIVATION_NONCE="$2"; shift 2 ;;
             --measured-from)
                 need_value "$@"
                 ARG_MEASURED_FROM_SET=1
@@ -1297,6 +1299,15 @@ main() {
     parse_args "$@"
     if (( ARG_ENSURE && (ARG_WRITE_SET || ARG_REPO_SET || ARG_MEASURED_FROM_SET || ARG_INHERIT_SESSION_SET) )); then
         die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
+    fi
+    if [[ -n $ARG_ACTIVATION_NONCE ]]; then
+        "$SCRIPT_DIR/workflow-activation.sh" ack \
+            --repo-root "${ARG_ACTIVATION_ORIGIN:-${ARG_WORKTREE:-$PWD}}" \
+            --session "$ARG_ACTIVATION_SESSION" --skill "$ARG_WORKFLOW" \
+            --nonce "$ARG_ACTIVATION_NONCE" >/dev/null || {
+            printf 'agent-preflight: activation receipt failed; rerun with the exact --activation-nonce from your context\n' >&2
+            return 1
+        }
     fi
     if [[ -n $ARG_ACTIVATION_SESSION || -n $ARG_WORKFLOW ]]; then
         "$SCRIPT_DIR/workflow-activation.sh" check --repo-root "${ARG_ACTIVATION_ORIGIN:-${ARG_WORKTREE:-$PWD}}" \

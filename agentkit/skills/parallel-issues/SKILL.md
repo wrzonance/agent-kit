@@ -16,10 +16,10 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
-stdout begins `agentkit: skill=parallel-issues version=<v> hash=<first12>` (receipt, not registry proof).
-Before dispatch, require `workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow parallel-issues`, with the same R.
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
+stdout begins `skills=` (contract, not registry proof).
+Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
+`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow parallel-issues`, plus `--activation-nonce N`.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.

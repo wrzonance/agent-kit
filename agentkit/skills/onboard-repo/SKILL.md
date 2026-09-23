@@ -12,10 +12,10 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/workflow-activation.sh ack` command;
-stdout begins `agentkit: skill=onboard-repo version=<v> hash=<first12>` (receipt, not registry proof).
-Before work, require `workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill onboard-repo`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow onboard-repo`, with the same R.
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
+stdout begins `skills=` (contract, not registry proof).
+Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill onboard-repo`;
+`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow onboard-repo`, plus `--activation-nonce N`.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:onboard-repo`; natural triggers also deliver.

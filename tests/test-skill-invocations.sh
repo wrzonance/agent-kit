@@ -412,7 +412,7 @@ assert_contains "$LINT_OUT" 'EXPECTED zero full resolver definitions in referenc
 for skill in parallel-issues pr-to-green review-remote-pr onboard-repo; do
     skill_text=$(<"$here/../agentkit/skills/$skill/SKILL.md")
     assert_contains "$skill_text" 'workflow-activation.sh' "$skill requires boundary receipt"
-    assert_contains "$skill_text" "agentkit: skill=$skill version=<v> hash=<first12>" "$skill specifies first identity output"
+    assert_contains "$skill_text" 'stdout begins `skills=`' "$skill specifies first identity output"
 done
 
 finish

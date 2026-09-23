@@ -225,9 +225,11 @@ def validate(args, record, skill=None, require=()):
 
 
 def ack_command(args, record):
-    return shlex.join([str(Path(args.skills) / ".shared/scripts/workflow-activation.sh"), "ack",
-                       "--repo-root", record["repoRoot"], "--session", record["session"],
-                       "--skill", record["workflow"], "--nonce", record["nonce"]])
+    return shlex.join([str(Path(args.skills) / ".shared/scripts/agent-preflight.sh"),
+                       "--activation-session", record["session"],
+                       "--activation-origin", record["repoRoot"],
+                       "--workflow", record["workflow"],
+                       "--activation-nonce", record["nonce"]])
 
 
 def deliver(args, evidence, workflow, source, capabilities, recovery=False):

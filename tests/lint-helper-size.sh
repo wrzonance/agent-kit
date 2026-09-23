@@ -25,7 +25,8 @@ declare -A KNOWN_OVERSIZE=(
     [hooks/lib/guard-lib.sh]="2288:24898:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
-    [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
+    # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
+    [skills/.shared/scripts/agent-preflight.sh]="1407:17228:800"
     # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
@@ -199,7 +200,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #873/#874 + #875 + #876 provider-alias repair: exact combined helper tree measurement.
 # #873 PR repair: verification-scoped post-run cleanliness and setup compatibility.
 # #889: triage --help ends with the selection helper's shipped path: exact tree measurement.
-readonly MAX_TREE_TOKENS=477442
+# activation-gate option B task 2: --activation-nonce flag folds the receipt
+# into agent-preflight.sh's first call; exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=477595
 
 violations=0
 checked=0
