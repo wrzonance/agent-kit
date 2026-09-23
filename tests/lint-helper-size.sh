@@ -187,7 +187,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #874 PR #877: portable status and bounded active-run lease inheritance.
 # #873 chain: tested-head metadata and repair handback validation.
 # #873 review repair: real SHA-256 evidence fixture and split verification recipe.
-readonly MAX_TREE_TOKENS=475870
+# #873 PR repair: bind evidence overrides to the checkout's actual HEAD.
+readonly MAX_TREE_TOKENS=475919
 
 violations=0
 checked=0
