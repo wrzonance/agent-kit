@@ -416,6 +416,13 @@ generated_paths_valid() {
 # shellcheck disable=SC2034  # test-repo-config.sh reads this schema mirror.
 readonly REVIEW_PROVIDER_ACCEPTED_NAMES=(coderabbit github-code-quality none)
 
+provider_login_alias_reserved() {
+    case ${1,,} in
+        coderabbitai|github-code-quality) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 providers_valid() {
     local item saw_none=0
     local -A seen=()
@@ -430,7 +437,7 @@ providers_valid() {
                 saw_none=1
                 ;;
             *)
-                [[ $item =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+                [[ $item =~ ^[a-z][a-z0-9-]*$ && $item != coderabbitai ]] || return 1
                 ((saw_none == 0)) || return 1
                 [[ -z ${seen[$item]+yes} ]] || return 1
                 seen[$item]=1
@@ -836,7 +843,8 @@ validate() {
         AGENT_REVIEW_PROVIDER_*_LOGIN)
             [[ $key =~ $PROVIDER_LOGIN_KEY_PATTERN &&
                 ! $key =~ ^AGENT_REVIEW_PROVIDER_(CODERABBIT|GITHUB_CODE_QUALITY|NONE)_LOGIN$ &&
-                $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]]
+                $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]] &&
+                ! provider_login_alias_reserved "$value"
             ;;
         AGENT_WORKER_MODEL | AGENT_WORKER_MODEL_FALLBACK) worker_model_valid "$value" ;;
         AGENT_WORKER_MODELS | AGENT_WORKER_MODELS_FALLBACK) worker_models_roster_valid "$value" ;;
@@ -974,7 +982,11 @@ while IFS= read -r line || [[ -n $line ]]; do
         if [[ -z $value ]]; then
             warn "empty value for $key on line $lineno, ignoring -- to record that this repository has none, comment the line out instead"
         elif [[ $key == AGENT_REVIEW_PROVIDERS ]]; then
-            warn "invalid value for $key on line $lineno, ignoring -- each name must match [a-z][a-z0-9-]*; none is exclusive; empty and duplicate items are forbidden"
+            if [[ ,$value, == *,coderabbitai,* ]]; then
+                warn "invalid value for $key on line $lineno, ignoring -- coderabbitai is a reserved built-in login alias; declare coderabbit instead"
+            else
+                warn "invalid value for $key on line $lineno, ignoring -- each name must match [a-z][a-z0-9-]*; none is exclusive; empty and duplicate items are forbidden"
+            fi
         elif [[ $key == AGENT_ADVERSARIAL_REVIEWER ]]; then
             warn "invalid value for $key on line $lineno, ignoring -- accepted: $(names_display "${ADVERSARIAL_REVIEWER_ACCEPTED_NAMES[@]}")"
         elif [[ $key == AGENT_ADVERSARIAL_REVIEW_EFFORT ]]; then

@@ -19,7 +19,14 @@ review_provider_names() {
 }
 
 review_provider_name_valid() {
-    [[ ${1:-} =~ ^[a-z][a-z0-9-]*$ ]]
+    [[ ${1:-} =~ ^[a-z][a-z0-9-]*$ && $1 != coderabbitai ]]
+}
+
+review_provider_login_alias_reserved() {
+    case ${1,,} in
+        coderabbitai|github-code-quality) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 review_provider_known() {
@@ -36,6 +43,7 @@ review_provider_override_login() {
     key=AGENT_REVIEW_PROVIDER_${suffix}_LOGIN
     value=${!key-}
     [[ -n $value && $value =~ ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?$ ]] || return 1
+    review_provider_login_alias_reserved "$value" && return 1
     printf '%s\n' "${value,,}"
 }
 

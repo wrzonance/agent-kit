@@ -71,6 +71,13 @@ assert_eq 'provider=unknown-provider mode=observe-only source=declared lane=gene
     'unknown providers use the observe-only generic bot lane'
 assert_eq '' "$(<"$tmp/err")" 'a valid unknown provider declaration is silent'
 
+repo=$(make_repo 'coderabbitai')
+out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
+assert_eq 'provider=none mode=disabled source=invalid' "$out" \
+    'a built-in login alias cannot declare an implicit generic provider'
+assert_contains "$(<"$tmp/err")" 'reserved built-in login alias' \
+    'the implicit-alias rejection names the collision'
+
 repo=$(make_repo __missing__)
 out=$(bash "$resolver" --repo-root "$repo" 2> "$tmp/err")
 assert_eq 'provider=none mode=disabled source=missing' "$out" \

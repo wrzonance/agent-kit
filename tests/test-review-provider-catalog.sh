@@ -63,6 +63,15 @@ assert_eq chatgpt-codex-connector "$(AGENT_REVIEW_PROVIDERS=chatgpt-codex-connec
     AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=codex-review-bot \
     catalog_call review_provider_from_login 'codex-review-bot[bot]')" \
     'an explicit login override round-trips to its declared provider'
+for alias in coderabbitai CodeRabbitAI github-code-quality GITHUB-CODE-QUALITY; do
+    # shellcheck disable=SC2016 # The inner shell expands its own positional parameters.
+    assert_rc 1 "reserved login alias $alias is rejected by the catalog override boundary" -- \
+        env AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN="$alias" \
+        bash -c 'source "$1"; review_provider_override_login chatgpt-codex-connector' bash "$catalog"
+done
+# shellcheck disable=SC2016 # The inner shell expands its own positional parameter.
+assert_rc 1 'a built-in login alias cannot become an implicit generic provider name' -- bash -c \
+    'source "$1"; review_provider_mode coderabbitai' bash "$catalog"
 # shellcheck disable=SC2016 # The inner shell expands its own positional parameter.
 assert_rc 1 'an undeclared human-shaped login is not promoted to a provider' -- bash -c \
     'source "$1"; review_provider_from_login ordinary-human' bash "$catalog"

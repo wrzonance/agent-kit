@@ -165,6 +165,20 @@ out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 assert_contains "$out" "export AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN='codex-review-bot'" \
     'the optional provider login override is exported as data'
 
+for alias in coderabbitai CodeRabbitAI github-code-quality GITHUB-CODE-QUALITY; do
+    printf '%s\n' \
+        'AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector' \
+        "AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=$alias" \
+        > "$repo/.agent/config.env"
+    set +e
+    invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
+    invalid_rc=$?
+    set -e
+    assert_eq 1 "$invalid_rc" "reserved login alias '$alias' is rejected after normalization"
+    assert_contains "$invalid_out" 'invalid value for AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN' \
+        "reserved login alias '$alias' identifies the rejected override key"
+done
+
 for key in AGENT_REVIEW_PROVIDER_CODERABBIT_LOGIN \
     AGENT_REVIEW_PROVIDER_GITHUB_CODE_QUALITY_LOGIN \
     AGENT_REVIEW_PROVIDER_NONE_LOGIN; do
@@ -185,15 +199,20 @@ for providers in 'coderabbit,chatgpt-codex-connector' 'x-y,z9'; do
     assert_rc 0 "valid provider list '$providers' validates" -- \
         "$rc_sh" --repo-root "$repo" --validate
 done
-for providers in 'none,x' 'x,x' 'x,,y' 'X-1'; do
+for providers in 'none,x' 'x,x' 'x,,y' 'X-1' 'coderabbitai'; do
     printf 'AGENT_REVIEW_PROVIDERS=%s\n' "$providers" > "$repo/.agent/config.env"
     set +e
     invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
     invalid_rc=$?
     set -e
     assert_eq 1 "$invalid_rc" "invalid provider list '$providers' is rejected"
-    assert_contains "$invalid_out" '[a-z][a-z0-9-]*' \
-        "invalid provider list '$providers' names the provider-name rule"
+    if [[ $providers == coderabbitai ]]; then
+        assert_contains "$invalid_out" 'reserved built-in login alias' \
+            "invalid provider list '$providers' names the alias collision"
+    else
+        assert_contains "$invalid_out" '[a-z][a-z0-9-]*' \
+            "invalid provider list '$providers' names the provider-name rule"
+    fi
 done
 
 printf '%s\n' \
@@ -791,8 +810,8 @@ assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds
 # reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
 # model_family itself recognizes but adversarial-run.sh cannot launch (+4
 # lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1154 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1154 lines (issue #777 helper-owned recipe)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1165 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1165 lines (issue #876 review repair)'
 
 verify_repo=$(mktemp -d "$tmp/verification.XXXXXX")
 mkdir -p "$verify_repo/.agent"
