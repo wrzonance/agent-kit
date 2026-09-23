@@ -443,6 +443,14 @@ resolve_commit() {
     git -C "$1" rev-parse --verify -q "$2^{commit}" 2>/dev/null || die_evidence "not a commit in $1: $2"
 }
 
+require_clean_checkout() {
+    local status
+    status=$(git -C "$1" status --porcelain --untracked-files=normal 2>/dev/null) ||
+        die_evidence 'could not inspect checkout status; evidence unavailable'
+    [[ -z $status ]] ||
+        die_evidence 'checkout has staged, unstaged, or untracked changes; commit or remove them before evidence'
+}
+
 require_tested_head() {
     local log=$1 current=$2 header tested clean
     header=$(sed -n '2p' "$log")
@@ -455,7 +463,7 @@ require_tested_head() {
     [[ $tested == "$current" ]] ||
         die_evidence "verification log tested $tested, not the current head $current"
     [[ $clean == yes ]] ||
-        die_evidence 'verification log ran with uncommitted tracked changes; commit the repair, then run agent-run.sh --cmd test'
+        die_evidence 'verification log began with staged, unstaged, or untracked changes; clean the checkout, then run agent-run.sh --cmd test'
 }
 
 # Emit fixed-verdict evidence for one finding, refusing anything add would
@@ -486,6 +494,7 @@ cmd_evidence() {
         repair_sha=$(resolve_commit "$root" "$repair_sha") || exit 1
     [[ $head == "$actual_head" ]] ||
         die_evidence "evidence head $head is not the current head $actual_head"
+    require_clean_checkout "$root"
     command=$(sed -n '1s/^=== agent-run //p' "$log")
     declared=$("$SCRIPT_DIR/../../.shared/scripts/repo-config.sh" --repo-root "$root" \
         --get-argv AGENT_CMD_TEST | tr '\0' ' ') || die_evidence 'the repository declares no AGENT_CMD_TEST'

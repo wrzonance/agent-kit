@@ -7,6 +7,16 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
+fixture_digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -- "$1"
+    else
+        return 1
+    fi
+}
+
 script="$root/agentkit/skills/review-remote-pr/scripts/finding-ledger.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -198,7 +208,7 @@ printf 'repaired\n' >"$repair_repo/affected.sh"
 git -C "$repair_repo" commit -qam repair
 repair_sha=$(git -C "$repair_repo" rev-parse HEAD)
 printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/verification.log"
-log_hash=$(sha256sum "$tmp/verification.log"); log_hash=${log_hash%% *}
+log_hash=$(fixture_digest "$tmp/verification.log"); log_hash=${log_hash%% *}
 for n in {1..8}; do
     jq -n --arg finding "confirmed-$n" --arg sha "$repair_sha" --arg log "$tmp/verification.log" --arg digest "$log_hash" \
         '{finding:$finding,repairSha:$sha,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
@@ -222,6 +232,9 @@ for tool in bash dirname jq git grep tail; do
     ln -s "$(command -v "$tool")" "$portable_bin/$tool"
 done
 ln -s "$(command -v shasum)" "$portable_bin/shasum"
+portable_fixture_digest=$(PATH="$portable_bin" fixture_digest "$tmp/verification.log")
+assert_eq "$log_hash" "${portable_fixture_digest%% *}" \
+    'test fixture hashing supports shasum without GNU sha256sum'
 portable_rc=0
 portable_out=$(PATH="$portable_bin" "$script" status --file "$open_run/findings.ndjson" \
     --repo-root "$repair_repo" --head "$repair_sha" 2>&1) || portable_rc=$?
@@ -358,6 +371,40 @@ assert_eq "$ev_repair" "$(jq -r .repairSha <<<"$ev_out")" 'evidence records the 
 assert_eq "$ev_head" "$(jq -r .head <<<"$ev_out")" 'evidence head defaults to the checkout HEAD'
 assert_eq 'tests/regression.sh' "$(jq -r .command <<<"$ev_out")" 'evidence records the logged command'
 assert_eq false "$(jq 'has("reviewedHead")' <<<"$ev_out")" 'evidence carries no reviewedHead'
+printf 'dirty\n' >>"$ev_repo/other.txt"
+dirty_checkout_rc=0
+evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>"$tmp/ev-dirty-checkout.err" || dirty_checkout_rc=$?
+assert_eq 1 "$dirty_checkout_rc" 'evidence refuses current tracked checkout changes'
+assert_contains "$(cat "$tmp/ev-dirty-checkout.err")" 'checkout has staged, unstaged, or untracked changes' \
+    'the current tracked-dirt refusal names every unsupported change class'
+git -C "$ev_repo" checkout -q -- other.txt
+printf 'input\n' >"$ev_repo/untracked-test.conf"
+untracked_checkout_rc=0
+evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>"$tmp/ev-untracked-checkout.err" || untracked_checkout_rc=$?
+assert_eq 1 "$untracked_checkout_rc" 'evidence refuses current nonignored untracked inputs'
+assert_contains "$(cat "$tmp/ev-untracked-checkout.err")" 'checkout has staged, unstaged, or untracked changes' \
+    'the current untracked refusal uses the same fail-closed boundary'
+rm "$ev_repo/untracked-test.conf"
+status_bin="$tmp/evidence-status-bin"
+mkdir "$status_bin"
+cat >"$status_bin/git" <<'EOF'
+#!/bin/sh
+for arg do
+    [ "$arg" != status ] || exit 7
+done
+exec "$AGENTKIT_REAL_GIT" "$@"
+EOF
+chmod +x "$status_bin/git"
+status_error_rc=0
+PATH="$status_bin:$PATH" AGENTKIT_REAL_GIT=$(command -v git) \
+    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
+    --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>"$tmp/ev-status-error.err" || status_error_rc=$?
+assert_eq 1 "$status_error_rc" 'evidence fails closed when checkout status is unavailable'
+assert_contains "$(cat "$tmp/ev-status-error.err")" 'could not inspect checkout status' \
+    'the status error is not mistaken for an empty clean checkout'
 printf '%s\n' "$ev_out" >"$tmp/ev.json"
 ev_run="$tmp/ev-run"
 mkdir -m 700 "$ev_run"
@@ -400,8 +447,8 @@ other_head_err=$(evidence --log "$tmp/ev-other-head.log" --repair-sha "$ev_repai
 assert_contains "$other_head_err" "tested $ev_repair, not the current head $ev_head" \
     'the stale-log refusal names both the tested and current heads'
 dirty_err=$(evidence --log "$tmp/ev-dirty.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
-assert_contains "$dirty_err" 'uncommitted tracked changes' \
-    'the dirty-log refusal tells the worker to commit before full verification'
+assert_contains "$dirty_err" 'staged, unstaged, or untracked changes' \
+    'the dirty-log refusal names every change class that prevents reproducible verification'
 unbound_err=$(evidence --log "$tmp/ev-unbound.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$unbound_err" 'no tested-head metadata' \
     'the unbound-log refusal asks for a current agent-run log'
@@ -451,7 +498,7 @@ fi
 
 # Validation remains backward-compatible with records produced before the
 # tested-head header existed. Only evidence creation requires the new binding.
-legacy_digest=$(sha256sum "$tmp/ev-unbound.log"); legacy_digest=${legacy_digest%% *}
+legacy_digest=$(fixture_digest "$tmp/ev-unbound.log"); legacy_digest=${legacy_digest%% *}
 jq -c --arg log "$tmp/ev-unbound.log" --arg digest "$legacy_digest" \
     '.evidence.log=$log | .evidence.logSha256=$digest' "$ev_run/findings.ndjson" >"$tmp/legacy-repair.ndjson"
 assert_eq complete "$("$script" status --file "$tmp/legacy-repair.ndjson" --repo-root "$ev_repo" \

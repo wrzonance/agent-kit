@@ -401,22 +401,80 @@ assert_contains "$out" 'resume this same call; never relaunch' \
 # tested. The header records HEAD and tracked-tree cleanliness so a stale or
 # dirty log cannot certify the branch tip that was pushed.
 bound_repo=$(make_repo)
-printf 'AGENT_CMD_OK=echo hello\n' >"$bound_repo/.agent/config.env"
+printf 'AGENT_CMD_OK=echo hello\nAGENT_CMD_SETUP=./dirty-setup.sh\nAGENT_CMD_DIRTY_TEST=./dirty-tracked.sh\nAGENT_CMD_DIRTY_CHECK=./dirty-untracked.sh\n' \
+    >"$bound_repo/.agent/config.env"
 printf '.agent/\n' >"$bound_repo/.gitignore"
 printf 'a\n' >"$bound_repo/tracked.txt"
-git -C "$bound_repo" add .gitignore tracked.txt
+printf '#!/bin/sh\nprintf "changed\\n" >tracked.txt\n' >"$bound_repo/dirty-tracked.sh"
+printf '#!/bin/sh\nprintf "generated\\n" >verification-input.txt\n' >"$bound_repo/dirty-untracked.sh"
+printf '#!/bin/sh\nprintf "configured\\n" >setup-output.txt\n' >"$bound_repo/dirty-setup.sh"
+chmod +x "$bound_repo/dirty-tracked.sh" "$bound_repo/dirty-untracked.sh" "$bound_repo/dirty-setup.sh"
+git -C "$bound_repo" add .gitignore tracked.txt dirty-tracked.sh dirty-untracked.sh dirty-setup.sh
 git -C "$bound_repo" -c user.name=Test -c user.email=test@example.invalid commit -qm init
 bound_sha=$(git -C "$bound_repo" rev-parse HEAD)
 (cd "$bound_repo" && "$real_run_sh" --cmd ok >/dev/null 2>&1)
 log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
 assert_contains "$log" "head=$bound_sha  tracked-clean=yes" \
     'the log header binds a clean run to its committed head'
+printf 'input\n' >"$bound_repo/untracked-test.conf"
+rm -f -- "$bound_repo"/.agent/logs/*-ok.log*
+untracked_dev_rc=0
+(cd "$bound_repo" && "$real_run_sh" --cmd ok >/dev/null 2>&1) || untracked_dev_rc=$?
+log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
+assert_eq 0 "$untracked_dev_rc" 'an ordinary command keeps its native status in a dirty development tree'
+assert_contains "$log" "head=$bound_sha  tracked-clean=no" \
+    'a nonignored untracked verification input makes the run non-certifiable'
+rm "$bound_repo/untracked-test.conf"
+status_bin="$tmp/status-bin"
+mkdir "$status_bin"
+cat >"$status_bin/git" <<'EOF'
+#!/bin/sh
+for arg do
+    [ "$arg" != status ] || exit 7
+done
+exec "$AGENTKIT_REAL_GIT" "$@"
+EOF
+chmod +x "$status_bin/git"
+rm -f -- "$bound_repo"/.agent/logs/*-ok.log*
+status_dev_rc=0
+(cd "$bound_repo" && PATH="$status_bin:$PATH" AGENTKIT_REAL_GIT=$(command -v git) \
+    "$real_run_sh" --cmd ok >/dev/null 2>&1) || status_dev_rc=$?
+log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
+assert_eq 0 "$status_dev_rc" 'a status-read error does not block an ordinary development command'
+assert_contains "$log" "head=$bound_sha  tracked-clean=no" \
+    'a status-read error fails closed instead of certifying an empty clean status'
 printf 'b\n' >"$bound_repo/tracked.txt"
 rm -f -- "$bound_repo"/.agent/logs/*-ok.log*
-(cd "$bound_repo" && "$real_run_sh" --cmd ok >/dev/null 2>&1)
+dirty_dev_rc=0
+(cd "$bound_repo" && "$real_run_sh" --cmd ok >/dev/null 2>&1) || dirty_dev_rc=$?
 log=$(cat "$bound_repo"/.agent/logs/*-ok.log)
+assert_eq 0 "$dirty_dev_rc" 'preexisting tracked dirt does not change an ordinary command status'
 assert_contains "$log" "head=$bound_sha  tracked-clean=no" \
     'the log header records uncommitted tracked changes'
+git -C "$bound_repo" checkout -q -- tracked.txt
+rm -f -- "$bound_repo"/.agent/logs/*-setup.log*
+setup_rc=0
+(cd "$bound_repo" && "$real_run_sh" --cmd setup >/dev/null 2>&1) || setup_rc=$?
+assert_eq 0 "$setup_rc" 'a setup command keeps its native success after creating an untracked output'
+rm -f -- "$bound_repo/setup-output.txt"
+rm -f -- "$bound_repo"/.agent/logs/*-dirty-test.log*
+dirty_tracked_rc=0
+(cd "$bound_repo" && "$real_run_sh" --cmd dirty-test >/dev/null 2>&1) || dirty_tracked_rc=$?
+dirty_tracked_log=$(cat "$bound_repo"/.agent/logs/*-dirty-test.log)
+assert_eq 1 "$dirty_tracked_rc" 'a clean-start command cannot pass after dirtying a tracked file'
+assert_contains "$dirty_tracked_log" 'checkout became dirty after the command' \
+    'the tracked post-run refusal names the reproducibility failure'
+assert_contains "$dirty_tracked_log" '=== agent-run exited rc=1' \
+    'a tracked post-run change cannot leave a green terminal marker'
+git -C "$bound_repo" checkout -q -- tracked.txt
+rm -f -- "$bound_repo"/.agent/logs/*-dirty-check.log*
+dirty_untracked_rc=0
+(cd "$bound_repo" && "$real_run_sh" --cmd dirty-check >/dev/null 2>&1) || dirty_untracked_rc=$?
+dirty_untracked_log=$(cat "$bound_repo"/.agent/logs/*-dirty-check.log)
+assert_eq 1 "$dirty_untracked_rc" 'a clean-start command cannot pass after creating nonignored untracked input'
+assert_contains "$dirty_untracked_log" 'checkout became dirty after the command' \
+    'the untracked post-run refusal names the reproducibility failure'
+rm "$bound_repo/verification-input.txt"
 
 # The suppressed-line count must report the command output, not the markers.
 assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bookkeeping'
@@ -772,7 +830,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 2017 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 2017 lines (#873 metadata + #874 review repair)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 2031 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 2031 lines (#873 evidence cleanliness)'
 
 finish
