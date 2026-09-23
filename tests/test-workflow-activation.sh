@@ -44,6 +44,19 @@ assert_contains "$out" 'pending session acknowledgement' 'pending: worktree crea
 out=$(hook PreToolUse Bash '{"command":"gh pr create --draft --title x"}')
 assert_contains "$out" 'pending session acknowledgement' 'pending: opening a PR is denied'
 
+# Dispatch matching is executed-text only: heredoc bodies and quoted data
+# never trigger a false deny; a real dispatch command hidden after a shell
+# operator is still caught.
+heredoc_input=$(jq -nc --arg c $'cat <<EOF\ngit push origin main\nEOF' '{command:$c}')
+out=$(hook PreToolUse Bash "$heredoc_input")
+assert_eq '{}' "$out" 'pending: a heredoc body containing dispatch-shaped text is allowed'
+out=$(hook PreToolUse Bash '{"command":"printf '\''git push origin x'\''"}')
+assert_eq '{}' "$out" 'pending: dispatch-shaped text inside quotes is allowed'
+out=$(hook PreToolUse Bash '{"command":"cd /tmp && git push -u origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: git push after a shell operator is still denied'
+out=$(hook PreToolUse Task '{"prompt":"x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: the Task tool is denied'
+
 # Promote, then everything is allowed.
 nonce=$(jq -r .nonce "$receipt")
 "$wa" ack --repo-root "$repo" --session "$session" --skill parallel-issues --nonce "$nonce" >/dev/null

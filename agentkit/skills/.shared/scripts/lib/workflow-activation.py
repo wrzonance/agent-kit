@@ -303,9 +303,17 @@ DISPATCH_COMMANDS = (
     r"(^|/)create-issue-worktree\.sh(\s|$)",
     r"(^|/)worktree-commit\.sh(\s|$)",
     r"(^|/)chain-advance\.sh(\s|$)",
-    r"^\s*git\s+(push|worktree\s+add)\b",
-    r"^\s*gh\s+pr\s+(create|ready|merge)\b",
+    r"(?:^|[;&|(]\s*)git\s+(push|worktree\s+add)\b",
+    r"(?:^|[;&|(]\s*)gh\s+pr\s+(create|ready|merge)\b",
 )
+
+
+def executed_text(command):
+    """Strip heredoc bodies and quoted strings so patterns only match executed text,
+    never inert data (a commit message, a README snippet, an example CLI invocation)."""
+    stripped = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?^\1\s*$", " ", command,
+                      flags=re.DOTALL | re.MULTILINE)
+    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", stripped)
 
 
 def dispatch_class(tool, tool_input):
@@ -314,7 +322,8 @@ def dispatch_class(tool, tool_input):
         return True
     if tool in ("Bash", "exec_command"):
         command = tool_input.get("command", tool_input.get("cmd", ""))
-        return any(re.search(pattern, command, re.MULTILINE) for pattern in DISPATCH_COMMANDS)
+        text = executed_text(command)
+        return any(re.search(pattern, text) for pattern in DISPATCH_COMMANDS)
     return False
 
 
