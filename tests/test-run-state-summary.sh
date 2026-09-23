@@ -231,9 +231,27 @@ assert_eq 0 "$large_rc" 'primary worktree selection consumes a large porcelain s
 assert_contains "$large_output" 'coverage= prs=0' 'large worktree selection still resolves the primary ledger'
 
 skill_text=$(tr '\n' ' ' <"$root/agentkit/skills/parallel-issues/SKILL.md" | tr -s '[:space:]' ' ')
+# shellcheck disable=SC2016
+auto_review_get_recipe='auto_review_state=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review) || exit 1'
+# shellcheck disable=SC2016
+auto_review_case_recipe='case $auto_review_state in true|false)'
+# shellcheck disable=SC2016
+auto_review_value='"$auto_review_state"'
+# shellcheck disable=SC2016
+auto_review_default='${auto_review:-false}'
 assert_contains "$skill_text" \
-    "printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\\n' \"\$pr\" \"\${auto_review:-false}\"" \
-    'PR-open recipe prints the immediate Step 3a action and auto-review mode'
+    "$auto_review_get_recipe" \
+    'Collect restores the durable auto-review mode before either PR-open path'
+assert_contains "$skill_text" "$auto_review_case_recipe" \
+    'Collect refuses a restored auto-review value outside the boolean boundary'
+completion_recipe=$(rg -F -- '- **Completion report (branch + pushed SHA)**' "$root/agentkit/skills/parallel-issues/SKILL.md")
+blocked_recipe=$(rg -F -- '- **BLOCKED**' "$root/agentkit/skills/parallel-issues/SKILL.md")
+assert_contains "$completion_recipe" "$auto_review_value" \
+    'normal PR-open completion prints the restored auto-review mode'
+assert_contains "$blocked_recipe" "$auto_review_value" \
+    'partial-pushed PR-open completion prints the restored auto-review mode'
+assert_not_contains "$completion_recipe$blocked_recipe" "$auto_review_default" \
+    'neither Collect completion path can default a resumed auto-review run to false'
 # The literal expansion is the unsafe recipe under test.
 # shellcheck disable=SC2016
 assert_not_contains "$skill_text" '--path auto_review --json "${auto_review:-false}"' \
