@@ -389,9 +389,8 @@ done
 # infer from the forge. Keep the proposal visible until a valid declaration is
 # selected; a carried declaration then appears once as active config below.
 review_providers_declared=0
-if [[ -f $repo_root/.agent/config.env && $reset -eq 0 ]]; then
-    if grep -qE '^[[:space:]]*AGENT_REVIEW_PROVIDERS=(coderabbit|github-code-quality|none|coderabbit,github-code-quality|github-code-quality,coderabbit)[[:space:]]*$' \
-        "$repo_root/.agent/config.env" 2> /dev/null; then
+if [[ -f $repo_root/.agent/config.env && $reset -eq 0 && -x $resolver ]]; then
+    if "$resolver" --repo-root "$repo_root" --get AGENT_REVIEW_PROVIDERS > /dev/null 2>&1; then
         review_providers_declared=1
     fi
 fi
@@ -488,7 +487,8 @@ fi
     fi
     if ((review_providers_declared == 0)); then
         printf '\n# Automated review providers expected on pull requests. Choose one or more.\n'
-        printf '# Supported choices: coderabbit, github-code-quality, or none (none is exclusive).\n'
+        printf '# Known providers get provider-specific settlement. Any other valid name is observed\n'
+        printf '# and triaged on the merits, and is never triggered. Use none alone to disable reviews.\n'
         printf '# AGENT_REVIEW_PROVIDERS=\n'
     fi
     if [[ -n $proposal_inventory ]]; then

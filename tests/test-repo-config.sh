@@ -86,16 +86,14 @@ repo=$(make_repo config-bad.env)
 out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
 err=$("$rc_sh" --repo-root "$repo" --export 2>&1 > /dev/null)
 for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_PROJECT_NUMBER \
-    AGENT_ADR_DIR AGENT_WORKTREE_ROOT AGENT_BRANCH_PREFIXES AGENT_REVIEW_PROVIDERS; do
+    AGENT_ADR_DIR AGENT_WORKTREE_ROOT AGENT_BRANCH_PREFIXES; do
     assert_not_contains "$out" "export $key=" "rejects invalid $key"
 done
 assert_contains "$err" 'AGENT_UNKNOWN_KEY' 'warns about an unknown key'
 assert_contains "$err" '--list-keys' 'the unknown-key warning names a discoverable way to list accepted keys'
 assert_contains "$err" 'no equals sign' 'warns about a malformed line'
-assert_contains "$err" 'invalid value for AGENT_REVIEW_PROVIDERS' 'warns about the invalid provider declaration'
-for provider in coderabbit github-code-quality none; do
-    assert_contains "$err" "$provider" "the provider rejection names $provider as accepted"
-done
+assert_contains "$out" "export AGENT_REVIEW_PROVIDERS='coderabbit,not-a-provider'" \
+    'accepts arbitrary syntactically valid provider names in a mixed declaration'
 assert_rc 0 'a fully invalid config still exits 0' -- "$rc_sh" --repo-root "$repo" --export
 
 # Unknown declarations are onboarding drift, not a per-line emergency. One
@@ -139,6 +137,8 @@ for key in AGENT_REPO_SLUG AGENT_BASE_BRANCH AGENT_REVIEW_PROVIDERS AGENT_WORKER
     assert_contains "$list_out" "$key" "--list-keys names the accepted literal key $key"
 done
 assert_contains "$list_out" 'AGENT_CMD_<NAME>' '--list-keys documents the open-ended command pattern'
+assert_contains "$list_out" 'AGENT_REVIEW_PROVIDER_<NAME>_LOGIN' \
+    '--list-keys documents the open-ended provider login pattern'
 assert_contains "$list_out" 'AGENT_RUNDIR_<NAME>' '--list-keys documents the open-ended rundir pattern'
 list_out_repo=$("$rc_sh" --repo-root "$repo" --list-keys 2> /dev/null)
 assert_eq "$list_out" "$list_out_repo" '--list-keys is schema, not affected by which repo it is pointed at'
@@ -151,6 +151,76 @@ assert_eq 'yes' "$([[ -n $repo_config_providers ]] && printf yes || printf no)" 
     'repo-config.sh declares a provider display list to compare'
 assert_eq "$catalog_providers" "$repo_config_providers" \
     'repo-config.sh provider display list matches lib/review-provider-catalog.sh exactly'
+
+# --- open provider declarations and optional login overrides ---------------
+repo=$(mktemp -d "$tmp/repo.XXXXXX")
+mkdir -p "$repo/.agent"
+printf '%s\n' \
+    'AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector' \
+    'AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=codex-review-bot' \
+    > "$repo/.agent/config.env"
+assert_rc 0 'a valid unknown provider and login override validate' -- \
+    "$rc_sh" --repo-root "$repo" --validate
+out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
+assert_contains "$out" "export AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN='codex-review-bot'" \
+    'the optional provider login override is exported as data'
+
+for alias in coderabbitai CodeRabbitAI github-code-quality GITHUB-CODE-QUALITY; do
+    printf '%s\n' \
+        'AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector' \
+        "AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=$alias" \
+        > "$repo/.agent/config.env"
+    set +e
+    invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
+    invalid_rc=$?
+    set -e
+    assert_eq 1 "$invalid_rc" "reserved login alias '$alias' is rejected after normalization"
+    assert_contains "$invalid_out" 'invalid value for AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN' \
+        "reserved login alias '$alias' identifies the rejected override key"
+done
+
+for key in AGENT_REVIEW_PROVIDER_CODERABBIT_LOGIN \
+    AGENT_REVIEW_PROVIDER_GITHUB_CODE_QUALITY_LOGIN \
+    AGENT_REVIEW_PROVIDER_NONE_LOGIN; do
+    printf '%s=%s\n' "$key" custom-review-bot > "$repo/.agent/config.env"
+    set +e
+    invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
+    invalid_rc=$?
+    set -e
+    assert_eq 1 "$invalid_rc" "$key is rejected because built-in identities are fixed"
+    assert_contains "$invalid_out" "invalid value for $key" \
+        "$key reports the dead override instead of silently accepting it"
+    out=$("$rc_sh" --repo-root "$repo" --export 2> /dev/null)
+    assert_not_contains "$out" "export $key=" "$key is never exported as live configuration"
+done
+
+for providers in 'coderabbit,chatgpt-codex-connector' 'x-y,z9'; do
+    printf 'AGENT_REVIEW_PROVIDERS=%s\n' "$providers" > "$repo/.agent/config.env"
+    assert_rc 0 "valid provider list '$providers' validates" -- \
+        "$rc_sh" --repo-root "$repo" --validate
+done
+for providers in 'none,x' 'x,x' 'x,,y' 'X-1' 'coderabbitai'; do
+    printf 'AGENT_REVIEW_PROVIDERS=%s\n' "$providers" > "$repo/.agent/config.env"
+    set +e
+    invalid_out=$("$rc_sh" --repo-root "$repo" --validate 2>&1)
+    invalid_rc=$?
+    set -e
+    assert_eq 1 "$invalid_rc" "invalid provider list '$providers' is rejected"
+    if [[ $providers == coderabbitai ]]; then
+        assert_contains "$invalid_out" 'reserved built-in login alias' \
+            "invalid provider list '$providers' names the alias collision"
+    else
+        assert_contains "$invalid_out" '[a-z][a-z0-9-]*' \
+            "invalid provider list '$providers' names the provider-name rule"
+    fi
+done
+
+printf '%s\n' \
+    'AGENT_REVIEW_PROVIDERS=chatgpt-codex-connector' \
+    'AGENT_REVIEW_PROVIDER_CHATGPT_CODEX_CONNECTOR_LOGIN=bad login' \
+    > "$repo/.agent/config.env"
+assert_rc 1 'an unsafe provider login override is rejected' -- \
+    "$rc_sh" --repo-root "$repo" --validate
 
 # --- secret rejection ------------------------------------------------------
 repo=$(make_repo config-secrets.env)
@@ -740,8 +810,8 @@ assert_rc 0 '--validate still accepts launchable codex/claude reviewer compounds
 # reviewer_roster_entry_valid now refuses an OpenCode-family compound, which
 # model_family itself recognizes but adversarial-run.sh cannot launch (+4
 # lines). Measured.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1154 ]] && printf yes || printf no)" \
-    'repo-config.sh stays at or under 1154 lines (issue #777 helper-owned recipe)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/repo-config.sh") -le 1165 ]] && printf yes || printf no)" \
+    'repo-config.sh stays at or under 1165 lines (issue #876 review repair)'
 
 verify_repo=$(mktemp -d "$tmp/verification.XXXXXX")
 mkdir -p "$verify_repo/.agent"

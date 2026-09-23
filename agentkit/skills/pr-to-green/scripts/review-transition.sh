@@ -305,9 +305,11 @@ trap cleanup EXIT HUP INT TERM
 [[ -s $work_dir/providers.txt ]] || die 'provider capability resolver returned an empty plan'
 
 while IFS= read -r line; do
-    if [[ $line =~ ^provider=([a-z0-9-]+)[[:space:]]mode=([a-z-]+)[[:space:]]source=([a-z]+)$ ]]; then
+    lane=''
+    if [[ $line =~ ^provider=([a-z0-9-]+)[[:space:]]mode=([a-z-]+)[[:space:]]source=([a-z]+)([[:space:]]lane=([a-z-]+))?$ ]]; then
         provider=${BASH_REMATCH[1]}
         mode=${BASH_REMATCH[2]}
+        lane=${BASH_REMATCH[5]-}
     else
         die 'provider capability resolver returned a malformed record'
     fi
@@ -316,6 +318,9 @@ while IFS= read -r line; do
         die "provider capability plan contains unsupported provider: $provider"
     [[ $mode == "$expected_mode" ]] ||
         die "provider capability plan contains unsupported capability: $provider:$mode"
+    expected_lane=$(review_provider_lane "$provider" 2>/dev/null || true)
+    [[ $lane == "$expected_lane" ]] ||
+        die "provider capability plan contains unsupported lane: $provider:${lane:-none}"
     providers+=("$provider")
     modes[$provider]=$mode
 done <"$work_dir/providers.txt"

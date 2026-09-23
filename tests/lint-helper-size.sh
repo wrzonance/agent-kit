@@ -33,7 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
-    [skills/.shared/scripts/repo-config.sh]="1154:12008:800"
+    # #876 review repair: reject normalized aliases of built-in provider logins.
+    [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
@@ -185,12 +186,17 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
+# #875 review: coverage failures preserve handoff evidence across every report path.
 # #874 PR #877: portable status and bounded active-run lease inheritance.
 # #873 chain: tested-head metadata and repair handback validation.
 # #873 review repair: real SHA-256 evidence fixture and split verification recipe.
-# #873 PR repair: bind evidence overrides to the checkout's actual HEAD.
+# #873/#874 + #875 final merge-down: exact combined helper tree measurement.
 # #874 review repair: stable identity and symlink-safe log selection.
-readonly MAX_TREE_TOKENS=476035
+# #874 review + #875 merge: exact combined helper tree measurement.
+# #873 PR repair: bind evidence overrides to the checkout's actual HEAD.
+# #873 evidence repair + #874/#875 merge: exact combined helper tree measurement.
+# #873/#874 + #875 + #876 provider-alias repair: exact combined helper tree measurement.
+readonly MAX_TREE_TOKENS=477181
 
 violations=0
 checked=0

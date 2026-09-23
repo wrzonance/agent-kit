@@ -66,7 +66,7 @@ assert_contains "$out" 'toolchains=-1' \
 assert_contains "$out" 'paths=drift' \
     'summary preserves path drift alongside generator drift'
 
-printf '%s\n' 'AGENT_REVIEW_PROVIDERS=not-a-provider' >> "$repo/.agent/config.env"
+printf '%s\n' 'AGENT_REVIEW_PROVIDERS=X-1' >> "$repo/.agent/config.env"
 out=$(bash "$refresh_sh" --repo-root "$repo" --summary 2>&1)
 assert_contains "$out" 'review-providers=invalid' \
     'report identifies an invalid provider choice as an advisory gap'
