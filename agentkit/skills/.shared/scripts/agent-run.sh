@@ -15,26 +15,33 @@ if [[ -z ${BASH_VERSION:-} || ${BASH_VERSINFO[0]:-0} -lt 4 ]]; then
 fi
 
 current_process_start() {
-    local pid=$1
-    if [[ -r /proc/$pid/stat ]]; then
-        awk '{print $22}' "/proc/$pid/stat" 2> /dev/null
-    else
-        kill -0 "$pid" 2> /dev/null || return 1
-        printf 'alive'
+    local pid=$1 identity
+    if [[ -r /proc/$pid/stat ]] && identity=$(awk '{print $22}' "/proc/$pid/stat" 2> /dev/null) &&
+        [[ $identity =~ ^[0-9]+$ ]]; then
+        printf '%s' "$identity"
+        return 0
     fi
+    identity=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -d '[:space:]') || return 1
+    [[ $identity =~ ^[[:alnum:]:]+$ ]] || return 1
+    printf '%s' "$identity"
 }
 
 epoch_seconds() { date -u +%s 2>/dev/null || printf '0'; }
 
 status_agent_log() {
-    local requested=$1 log last header pid start epoch current elapsed now
+    local requested=$1 log fallback_dir last header pid start epoch current elapsed now
     [[ -f $requested && ! -L $requested && -O $requested ]] || {
         printf 'agent-run: error: status requires an owned regular log: %s\n' "$requested" >&2; exit 2;
     }
     log=$(realpath -e -- "$requested") || exit 2
     case $log in
-        */.agent/logs/*.log|${TMPDIR:-/tmp}/agent-logs-$(id -u)/*.log) ;;
-        *) printf 'agent-run: error: status path is not an agent log: %s\n' "$requested" >&2; exit 2 ;;
+        */.agent/logs/*.log) ;;
+        *)
+            fallback_dir=$(realpath -e -- "${TMPDIR:-/tmp}/agent-logs-$(id -u)" 2>/dev/null || true)
+            [[ -n $fallback_dir && $log == "$fallback_dir/"*.log ]] || {
+                printf 'agent-run: error: status path is not an agent log: %s\n' "$requested" >&2; exit 2;
+            }
+            ;;
     esac
     last=$(tail -n 1 -- "$log")
     if [[ $last =~ ^===\ agent-run\ exited\ rc=([0-9]+)\ after\ [0-9]+s$ ]]; then
@@ -1103,7 +1110,8 @@ apply_test_focus() {
 # --------------------------------------------------------------------- logs ---
 choose_log() {
     local log_dir stamp log
-    if [[ -n $git_top && ! -L $git_top/.agent ]] && dir_writable "$git_top/.agent/logs"; then
+    if [[ -n $git_top && ! -L $git_top/.agent && ! -L $git_top/.agent/logs ]] &&
+        dir_writable "$git_top/.agent/logs"; then
         log_dir=$git_top/.agent/logs
     else
         # Failing commands routinely echo tokens and credentialed URLs into these
@@ -1138,7 +1146,7 @@ suite_marker_dir=${TMPDIR:-/tmp}/agent-run-suites-$(id -u)
 suite_marker_live() {
     local marker=$1 pid start current
     read -r pid start < "$marker" 2> /dev/null || return 1
-    [[ $pid =~ ^[0-9]+$ && ($start =~ ^[0-9]+$ || $start == alive) ]] || return 1
+    [[ $pid =~ ^[0-9]+$ && $start =~ ^[[:alnum:]:]+$ ]] || return 1
     current=$(current_process_start "$pid")
     [[ -n $current && $current == "$start" ]]
 }
@@ -1156,7 +1164,7 @@ register_suite_run() {
         die "cannot create active-suite marker in $suite_marker_dir"
     pid=$$
     start=$(current_process_start "$pid")
-    [[ $start =~ ^[0-9]+$ || $start == alive ]] || {
+    [[ $start =~ ^[[:alnum:]:]+$ ]] || {
         rm -f -- "$marker"
         die "cannot identify active-suite process $pid"
     }
@@ -1906,6 +1914,7 @@ log_file=$(choose_log)
 claim_active_run
 register_suite_run
 trap failure_result EXIT
+process_start=$(current_process_start "$$") || die "cannot identify active process $$"
 
 # Announce the log before captured output makes a long run look hung.
 printf 'running: %s\n  log: %s\n' "$cmd_str" "$log_file" >&2
@@ -1918,7 +1927,7 @@ readonly LOG_HEADER_LINES=2
     printf '=== agent-run %s\n' "$cmd_str"
     printf '=== started %s  pid=%s  process-start=%s  epoch=%s  cwd=%s  concurrent-suites=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" \
-        "$(current_process_start "$$")" "$(epoch_seconds)" "$work_dir" "$concurrent_suites"
+        "$process_start" "$(epoch_seconds)" "$work_dir" "$concurrent_suites"
 } > "$log_file"
 
 started_at=$SECONDS
