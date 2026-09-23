@@ -564,15 +564,17 @@ printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\nAGENT_VERIFY_TES
 printf '%s\n' '#!/bin/sh' 'echo run >> "$COUNT_FILE"' 'sleep 2' 'exit 0' > "$local_repo/tools/run"
 local_run > "$tmp/owner-output" & owner=$!
 for ((attempt=0; attempt<100; attempt++)); do
-    [[ -d $local_repo/.agent/verification-records ]] &&
-        find "$local_repo/.agent/verification-records" -name running -print | grep -q . && break
+    running_record=$(find "$local_repo/.agent/verification-records" -name running -print -quit 2>/dev/null || true)
+    [[ -n $running_record ]] && grep -q '/.agent/logs/.*\.log$' "$running_record" && break
     sleep 0.05
 done
 out=$(local_run); local_rc=$?
-assert_eq '75' "$local_rc" 'running identical command returns non-success status'
-assert_contains "$out" 'verification running: handle=' 'running identical command returns existing handle'
-running_handle=$(printf '%s\n' "$out" | sed -n 's/^agent-run: verification running: handle=//p')
+assert_eq '2' "$local_rc" 'running identical command is refused before it can duplicate work'
+assert_contains "$out" 'already running:' 'running identical command returns the existing log'
 wait "$owner"
+# An unrelated record proves later checks never rediscover the handle by directory order.
+mkdir -p "$local_repo/.agent/verification-records/000-decoy"
+running_handle=${running_record%/running}
 out=$(local_run)
 assert_contains "$out" 'verification current:' 'a completed concurrent owner is reusable'
 record=$running_handle/result

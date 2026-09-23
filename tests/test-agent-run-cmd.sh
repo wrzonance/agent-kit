@@ -394,7 +394,8 @@ assert_contains "$log" '=== agent-run echo hello' 'the log names the command it 
 assert_contains "$log" '=== started' 'and when it started'
 assert_contains "$log" 'concurrent-suites=1' 'the log records the active full-suite count'
 assert_contains "$log" '=== agent-run exited rc=0' 'and terminates with the verdict'
-assert_contains "$out" 'has NOT finished' 'and the caller is told what an unterminated log means'
+assert_contains "$out" 'resume this same call; never relaunch' \
+    'and the caller is told how to continue an unterminated run'
 
 # The suppressed-line count must report the command output, not the markers.
 assert_contains "$out" '(1 lines suppressed' 'the line count excludes the log bookkeeping'
@@ -414,12 +415,19 @@ cat >"$marker_repo/bin/awk" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 if [[ ${1:-} == '{print $22}' ]]; then
-    printf 'alive\n'
+    exit 1
 else
     exec /usr/bin/awk "$@"
 fi
 EOF
 chmod +x -- "$marker_repo/bin/awk"
+cat >"$marker_repo/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ ${*: -1} != 999999 ]] || exit 1
+printf 'Tue Sep 22 12:34:56 2026\n'
+EOF
+chmod +x -- "$marker_repo/bin/ps"
 cat >"$marker_repo/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -438,9 +446,12 @@ printf '999999 1\n' >"$marker_suite_dir/agent-run.stale"
 marker_out=$(cd "$marker_repo" && PATH="$marker_repo/bin:$PATH" \
     TMPDIR="$tmp" "$real_run_sh" --force --cmd test 2>&1)
 marker_log=$(find "$marker_repo/.agent/logs" -type f -name '*-test.log' -print -quit)
-assert_contains "$marker_out" 'marker-ok' 'a no-proc marker accepts the alive fallback'
+assert_contains "$marker_out" 'PASS: printf marker-ok' \
+    'a failed proc read uses a stable process-start fallback'
 assert_not_contains "$marker_out" 'marker template is not BSD-compatible' \
     'the active marker uses a BSD-compatible trailing-X template'
+assert_not_contains "$(cat "$marker_log")" 'process-start=alive' \
+    'the process identity never degrades to a liveness sentinel'
 assert_contains "$(cat "$marker_log")" 'concurrent-suites=1' \
     'a stale new-format marker is removed before counting active suites'
 
@@ -740,7 +751,7 @@ assert_contains "$out" 'declared-test-ran' \
 # runner-resolved link; finding 2 carries --force into build_chain_argv. Both
 # were offset by further comment trims elsewhere, holding the line count at 1627.
 # #612 adds paired formatter resolution and bounded cargo failure summaries.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 1920 ]] && printf yes || printf no)" \
-    'agent-run.sh stays at or under 1920 lines (#809 reuse diagnostics)'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-run.sh") -le 2013 ]] && printf yes || printf no)" \
+    'agent-run.sh stays at or under 2013 lines (#874 review repair)'
 
 finish

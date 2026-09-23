@@ -26,8 +26,9 @@ declare -A KNOWN_OVERSIZE=(
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
-    # #731/#732/#776/#809: records, summaries, and truthful reuse diagnostics.
-    [skills/.shared/scripts/agent-run.sh]="1920:20761:800"
+    # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
+    # #874 review repair: stable process identity and canonical fallback boundaries.
+    [skills/.shared/scripts/agent-run.sh]="2013:21778:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -183,7 +184,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #834 review repair: exact combined helper tree measurement.
 # #865 reference-use clauses and bounded no-run diagnostics: 1,891,483 bytes / 4.
 # #873 (trimmed): IDs, evidence producer, cover preconditions: 1,898,236 bytes / 4.
-readonly MAX_TREE_TOKENS=474559
+# #874 PR #877: portable status and bounded active-run lease inheritance.
+# #874 review repair: stable identity and symlink-safe log selection.
+readonly MAX_TREE_TOKENS=475659
 
 violations=0
 checked=0
