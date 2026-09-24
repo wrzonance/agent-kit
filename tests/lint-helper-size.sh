@@ -66,7 +66,9 @@ declare -A KNOWN_OVERSIZE=(
     # #896 fix round: the ordered check now runs over the whole instruction,
     # not just a fixed-opener clause, so a doubled verb with no recognized
     # opener at all still grants.
-    [skills/review-remote-pr/scripts/consent-record.sh]="864:10154:800"
+    # #896 P1 review repair: bound the fallback to a performative verb
+    # governing the purpose and refuse any inquiry/explanation phrasing.
+    [skills/review-remote-pr/scripts/consent-record.sh]="895:10571:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -214,7 +216,8 @@ readonly MAX_HELPER_TOKENS=10000
 # final-review Minor #2: +67 tokens from agent-preflight.sh's usage-error guard.
 # #896: consent-record.sh crosses into KNOWN_OVERSIZE; exact tree measurement.
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
-readonly MAX_TREE_TOKENS=478475
+# #896 P1 review repair: performative-verb bound; exact tree measurement.
+readonly MAX_TREE_TOKENS=478892
 
 violations=0
 checked=0

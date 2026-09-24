@@ -501,11 +501,29 @@ word_index() {
 # repeated verbs (a harness name, an effort level, "make sure you have ...
 # have ... perform") are tolerated. The leading-word requirement rejects a
 # bare label with nothing said about it (the provider/model span cannot be
-# the very first word of the instruction).
+# the very first word of the instruction). Bounded per #896 review: naming
+# the harness/model in order is not itself an instruction, so the purpose
+# must be governed by a performative verb, and any inquiry/explanation
+# phrasing anywhere in the instruction refuses -- "explain how you would
+# review X" names every element without asking for the review to happen.
+# LOOSE_MATCH_REASON (global) carries the human-readable cause of a bounded
+# refusal so affirmation_refusal can name it instead of a generic message.
 has_ordered_authorization_words() {
     local words=$1 provider=$2 model_words=$3 model_alias=$4
     local -a provider_tokens purpose_tokens=('adversarial review' 'cross review' review)
-    local token model idx provider_idx=-1 model_idx=-1 purpose_idx=-1 first_idx
+    local -a inquiry_tokens=(explain describe 'how to' 'how do' 'what is' 'what would' \
+        'tell me' 'show me' document summarize summarise 'walk me through' \
+        'help me understand' teach)
+    local -a performative_tokens=(perform run 'do' execute conduct 'carry out' start \
+        'kick off' 'give me' 'get me')
+    local token model idx provider_idx=-1 model_idx=-1 purpose_idx=-1 performative_idx=-1 first_idx
+    LOOSE_MATCH_REASON=''
+    for token in "${inquiry_tokens[@]}"; do
+        if has_words "$words" "$token"; then
+            LOOSE_MATCH_REASON='instruction asks for an explanation'
+            return 1
+        fi
+    done
     case $provider in
         anthropic) provider_tokens=(claude anthropic opus sonnet haiku) ;;
         openai) provider_tokens=(codex openai gpt) ;;
@@ -533,10 +551,20 @@ has_ordered_authorization_words() {
     first_idx=$model_idx
     ((provider_idx < 0)) || first_idx=$provider_idx
     ((first_idx > 0)) || return 1
+    for token in "${performative_tokens[@]}"; do
+        idx=$(word_index "$words" "$token")
+        ((idx < 0)) && continue
+        { ((performative_idx < 0)) || ((idx < performative_idx)); } && performative_idx=$idx
+    done
+    if ((performative_idx < 0 || performative_idx >= purpose_idx)); then
+        LOOSE_MATCH_REASON='no performative verb governs the review purpose'
+        return 1
+    fi
     return 0
 }
 has_authorized_relationship() {
     local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
+    LOOSE_MATCH_REASON=''
     if clause=$(authorization_clause "$words"); then
         case $provider in
             anthropic) lead='((claude|anthropic)( with)? )?' ;;
@@ -579,12 +607,15 @@ strip_quoted_segments() {
     printf '%s' "$output"
 }
 affirmation_refusal() {
-    local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5 unparsed_clause=${6:-0}
+    local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
+    local unparsed_clause=${6:-0} reason=${7:-}
     record_refused_grant || die 'cannot persist refused-grant provenance'
     ((provider_found)) || printf '%s: operator instruction missing provider; accepted: %s\n' "$PROGNAME" "$provider_spellings" >&2
     ((model_found)) || printf '%s: operator instruction missing model; accepted: %s\n' "$PROGNAME" "$model_spellings" >&2
     if ((! purpose_found)); then
-        if ((provider_found && model_found && unparsed_clause)); then
+        if ((provider_found && model_found && unparsed_clause)) && [[ -n $reason ]]; then
+            printf '%s: %s\n' "$PROGNAME" "$reason" >&2
+        elif ((provider_found && model_found && unparsed_clause)); then
             printf '%s: could not parse an authorization clause; found provider, model and purpose\n' "$PROGNAME" >&2
         else
             printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
@@ -660,7 +691,7 @@ validate_operator_affirmation() {
     ((affirmative && safe)) || purpose_found=0
     ((provider_found && model_found && purpose_found)) ||
         affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings" \
-            "$unparsed_clause"
+            "$unparsed_clause" "$LOOSE_MATCH_REASON"
 }
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||

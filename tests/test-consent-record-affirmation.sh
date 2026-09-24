@@ -227,6 +227,47 @@ unparseable_out=$(bash "$consent" grant --state "$tmp/state/issue-896-unparseabl
 assert_contains "$unparseable_out" 'could not parse an authorization clause; found provider, model and purpose' \
     'an out-of-order but complete instruction names the real refusal cause'
 
+# #896 P1 (adversarial review): naming provider/model/purpose in order is not
+# itself an instruction -- an explanation request must still refuse even
+# though every element is present in order.
+explain_state="$tmp/state/issue-896-explain"
+explain_rc=0
+explain_out=$(bash "$consent" grant --state "$explain_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Use codex with gpt-6-astra to explain how to request consent for an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || explain_rc=$?
+assert_eq 2 "$explain_rc" 'an explanation request is refused even with provider, model and purpose in order'
+assert_contains "$explain_out" 'instruction asks for an explanation' \
+    'the explanation refusal names its real cause'
+assert_eq no \
+    "$([[ -e $explain_state || -e $explain_state.decision.json || -e $explain_state.consent-paths ]] && printf yes || printf no)" \
+    'the explanation refusal creates no grant evidence'
+
+# A second explanation phrasing ("tell me how you would do X") also refuses,
+# even though it also contains the performative verb "do".
+tellme_rc=0
+bash "$consent" grant --state "$tmp/state/issue-896-tellme" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'codex with gpt-6-astra, tell me how you would do an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || tellme_rc=$?
+assert_eq 2 "$tellme_rc" '"tell me how you would do X" is still an explanation request, not an instruction'
+
+# The two prior #896 grants still hold with the performative-verb bound in place.
+assert_rc 0 'the doubled-"have" #896 turn still grants under the performative-verb bound' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896b-reverify" --provider codex \
+        --payload "$payload" --source operator-instruction \
+        --operator-instruction 'make sure you have codex have gpt-6-astra xhigh perform an adversarial review' \
+        --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+        --purpose 'adversarial review' --paths-file "$tmp/paths"
+assert_rc 0 'the original #896 turn still grants under the performative-verb bound' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896-reverify" --provider codex \
+        --payload "$payload" --source operator-instruction \
+        --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort perform an adversarial review' \
+        --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+        --purpose 'adversarial review' --paths-file "$tmp/paths"
+
 # Provider aliases and natural model spellings are token-bounded and provider-specific.
 for accepted in \
     'Each PR is authorized to have one anthropic Opus 5 xhigh review.' \
