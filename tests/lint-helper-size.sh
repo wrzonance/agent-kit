@@ -68,7 +68,9 @@ declare -A KNOWN_OVERSIZE=(
     # opener at all still grants.
     # #896 P1 review repair: bound the fallback to a performative verb
     # governing the purpose and refuse any inquiry/explanation phrasing.
-    [skills/review-remote-pr/scripts/consent-record.sh]="895:10571:800"
+    # #896 round 4: distinct "not affirmative" message for a negated
+    # instruction that still satisfies the ordered/performative checks.
+    [skills/review-remote-pr/scripts/consent-record.sh]="898:10649:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -217,7 +219,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896: consent-record.sh crosses into KNOWN_OVERSIZE; exact tree measurement.
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
-readonly MAX_TREE_TOKENS=478892
+# #896 round 4: not-affirmative refusal message; exact tree measurement.
+readonly MAX_TREE_TOKENS=478970
 
 violations=0
 checked=0

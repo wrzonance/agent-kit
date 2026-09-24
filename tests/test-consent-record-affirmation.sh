@@ -238,21 +238,41 @@ explain_out=$(bash "$consent" grant --state "$explain_state" --provider codex \
     --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
     --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || explain_rc=$?
 assert_eq 2 "$explain_rc" 'an explanation request is refused even with provider, model and purpose in order'
-assert_contains "$explain_out" 'instruction asks for an explanation' \
+assert_contains "$explain_out" 'instruction asks for an explanation, not a review' \
     'the explanation refusal names its real cause'
 assert_eq no \
     "$([[ -e $explain_state || -e $explain_state.decision.json || -e $explain_state.consent-paths ]] && printf yes || printf no)" \
     'the explanation refusal creates no grant evidence'
 
-# A second explanation phrasing ("tell me how you would do X") also refuses,
-# even though it also contains the performative verb "do".
+# A second explanation phrasing ("tell me how you would do X") also refuses
+# with the same message, even though it also contains the performative verb
+# "do" -- the inquiry check wins.
 tellme_rc=0
-bash "$consent" grant --state "$tmp/state/issue-896-tellme" --provider codex \
+tellme_out=$(bash "$consent" grant --state "$tmp/state/issue-896-tellme" --provider codex \
     --payload "$payload" --source operator-instruction \
     --operator-instruction 'codex with gpt-6-astra, tell me how you would do an adversarial review' \
     --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
-    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || tellme_rc=$?
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || tellme_rc=$?
 assert_eq 2 "$tellme_rc" '"tell me how you would do X" is still an explanation request, not an instruction'
+assert_contains "$tellme_out" 'instruction asks for an explanation, not a review' \
+    'the "tell me how you would do X" refusal names the same explanation cause'
+
+# A negated form of the doubled-"have" turn refuses with an affirmative-
+# specific message, not a misleading "missing purpose" -- ordering and the
+# performative verb ("perform") are still present, only the negation blocks it.
+not_affirmative_rc=0
+not_affirmative_out=$(bash "$consent" grant --state "$tmp/state/issue-896-not-affirmative" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you have codex have gpt-6-astra xhigh do not perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || not_affirmative_rc=$?
+assert_eq 2 "$not_affirmative_rc" 'a negated doubled-"have" turn refuses'
+assert_contains "$not_affirmative_out" 'instruction is not affirmative' \
+    'the negated refusal names its real cause instead of a missing purpose'
+assert_eq no \
+    "$([[ -e $tmp/state/issue-896-not-affirmative || -e $tmp/state/issue-896-not-affirmative.decision.json \
+        || -e $tmp/state/issue-896-not-affirmative.consent-paths ]] && printf yes || printf no)" \
+    'the negated refusal creates no grant evidence'
 
 # The two prior #896 grants still hold with the performative-verb bound in place.
 assert_rc 0 'the doubled-"have" #896 turn still grants under the performative-verb bound' -- \

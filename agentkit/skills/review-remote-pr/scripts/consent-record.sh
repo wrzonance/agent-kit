@@ -520,7 +520,7 @@ has_ordered_authorization_words() {
     LOOSE_MATCH_REASON=''
     for token in "${inquiry_tokens[@]}"; do
         if has_words "$words" "$token"; then
-            LOOSE_MATCH_REASON='instruction asks for an explanation'
+            LOOSE_MATCH_REASON='instruction asks for an explanation, not a review'
             return 1
         fi
     done
@@ -608,12 +608,14 @@ strip_quoted_segments() {
 }
 affirmation_refusal() {
     local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
-    local unparsed_clause=${6:-0} reason=${7:-}
+    local unparsed_clause=${6:-0} reason=${7:-} not_affirmative=${8:-0}
     record_refused_grant || die 'cannot persist refused-grant provenance'
     ((provider_found)) || printf '%s: operator instruction missing provider; accepted: %s\n' "$PROGNAME" "$provider_spellings" >&2
     ((model_found)) || printf '%s: operator instruction missing model; accepted: %s\n' "$PROGNAME" "$model_spellings" >&2
     if ((! purpose_found)); then
-        if ((provider_found && model_found && unparsed_clause)) && [[ -n $reason ]]; then
+        if ((provider_found && model_found && not_affirmative)); then
+            printf '%s: instruction is not affirmative\n' "$PROGNAME" >&2
+        elif ((provider_found && model_found && unparsed_clause)) && [[ -n $reason ]]; then
             printf '%s: %s\n' "$PROGNAME" "$reason" >&2
         elif ((provider_found && model_found && unparsed_clause)); then
             printf '%s: could not parse an authorization clause; found provider, model and purpose\n' "$PROGNAME" >&2
@@ -686,12 +688,13 @@ validate_operator_affirmation() {
         explicit_pr=${BASH_REMATCH[3]}
         [[ $explicit_pr == "$payload_pr" ]] || safe=0
     fi
-    local unparsed_clause=0
+    local unparsed_clause=0 not_affirmative=0
     ((provider_found && model_found && purpose_found_raw && safe && ! affirmative)) && unparsed_clause=1
+    ((provider_found && model_found && purpose_found_raw && ! safe)) && not_affirmative=1
     ((affirmative && safe)) || purpose_found=0
     ((provider_found && model_found && purpose_found)) ||
         affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings" \
-            "$unparsed_clause" "$LOOSE_MATCH_REASON"
+            "$unparsed_clause" "$LOOSE_MATCH_REASON" "$not_affirmative"
 }
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||
