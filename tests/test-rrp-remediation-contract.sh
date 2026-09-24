@@ -125,8 +125,10 @@ for skill in review-remote-pr pr-to-green onboard-repo parallel-issues; do
         "$skill Step 0 keeps preflight flags out of the check sentence"
     # Preflight runs from a linked worktree, where the ack receipt is not; it
     # needs --activation-origin naming the checkout check received.
-    assert_contains "$step0" '`$agentkit/.shared/scripts/agent-preflight.sh` separately takes '"\`--activation-session ID --activation-origin R --workflow $skill\`" \
+    assert_contains "$step0" '`$agentkit/.shared/scripts/agent-preflight.sh` carries '"\`--activation-session ID --activation-origin R --workflow $skill --activation-nonce N\`" \
         "$skill Step 0 attributes the session flags, including the activation origin, to preflight"
+    assert_not_contains "$step0" 'separately takes' \
+        "$skill Step 0 no longer invites a redundant second preflight call"
 done
 
 # --- adversarial findings on #873: the receipt block runs as written ----------

@@ -225,12 +225,17 @@ def validate(args, record, skill=None, require=()):
 
 
 def ack_command(args, record):
-    return shlex.join([str(Path(args.skills) / ".shared/scripts/workflow-activation.sh"), "ack",
-                       "--repo-root", record["repoRoot"], "--session", record["session"],
-                       "--skill", record["workflow"], "--nonce", record["nonce"]])
+    return shlex.join([str(Path(args.skills) / ".shared/scripts/agent-preflight.sh"),
+                       "--activation-session", record["session"],
+                       "--activation-origin", record["repoRoot"],
+                       "--workflow", record["workflow"],
+                       "--activation-nonce", record["nonce"]])
 
 
-def deliver(args, evidence, workflow, source, capabilities, recovery=False):
+def deliver(args, evidence, workflow, source, capabilities, recovery=False, native=True):
+    """Build the pending record and the delivered context. `native` is False when the
+    workflow was selected from the operator's words rather than a `$`/`/` invocation:
+    no harness injected the skill body in that case, so the delivery must require it."""
     skill = Path(args.skills) / workflow / "SKILL.md"
     if not skill.is_file() or skill.is_symlink():
         fail("workflow-unavailable: " + workflow)
@@ -242,21 +247,32 @@ def deliver(args, evidence, workflow, source, capabilities, recovery=False):
               "nonce": secrets.token_hex(24), "capabilities": capabilities}
     evidence.write(record)
     if recovery:
-        lead = ("agentkit root-mediated activation recovery: current workflow bytes are delivered "
-                "only to refresh this receipt. Do not run or dispatch the orchestration workflow; "
-                "run this exact receipt command, then resume the assigned work in the same worktree:\n")
-    else:
+        lead = ("agentkit root-mediated activation recovery: the workflow content changed. "
+                "Read " + str(skill) + " in full now (reads are permitted while the receipt "
+                "is pending), then run this exact receipt command and resume the assigned "
+                "work in the same worktree:\n")
+    elif native:
         lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
-                "Before any dispatch, edits, or other workflow, run this exact receipt command. "
-                "You may inspect the installed helper first; its first receipt stdout line is the workflow identity:\n")
-    context = (lead + ack_command(args, record)
-               + "\nMissing capability remains unknown. Do not substitute another workflow.\n"
-               + "Installed skills root: " + args.skills + "\n\n" + body.decode())
+                "Run this exact preflight command first; it records the session receipt:\n")
+    else:
+        lead = ("agentkit invocation boundary: this workflow was selected from your words, so no "
+                "skill body was loaded natively. Run this exact preflight command first; it records "
+                "the session receipt. Then read " + str(skill) + " in full before any dispatch:\n")
+    context = (lead + ack_command(args, record) + "\n"
+               + "agentkit: skill=" + workflow + " version=" + record["version"]
+               + " hash=" + args.digest[:12] + "\n"
+               + "Installed skills root: " + args.skills + "\n"
+               + "Missing capability remains unknown. Do not substitute another workflow.")
     return record, context
 
 
 def inspection(args, root, tool, tool_input):
-    """Permit a bounded file inspection, never a general shell expression."""
+    """Permit a bounded file inspection, never a general shell expression.
+
+    Serves the stale-active path only: a content-mismatched active record still
+    permits bounded diagnostic reads and searches before validate() raises
+    ContentMismatch.
+    """
     directory = False
     if tool == "Read":
         paths = [tool_input.get("file_path", "")]
@@ -298,6 +314,62 @@ def inspection(args, root, tool, tool_input):
     return True
 
 
+DISPATCH_TOOLS = ("Agent", "Task", "spawn_agent", "Skill")
+# Command position: the start of the text or a shell operator, then any number of the wrappers
+# agents actually compose (env, VAR=x, timeout N, nohup, sudo, xargs, exec, command, time, and the
+# loop/conditional keywords do/then/else). A word that is not a wrapper (echo, printf, grep) means
+# the text after it is an argument, never a command, so `echo git push` is not dispatch.
+COMMAND_POSITION = (
+    r"(?:^|[;&|(\n{])\s*"
+    r"(?:(?:do|then|else|exec|command|time|nohup|sudo|env|xargs|timeout\s+\S+|\w+=\S*)\s+)*"
+)
+DISPATCH_COMMANDS = (
+    COMMAND_POSITION + r"(?:\S*/)?create-issue-worktree\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?worktree-commit\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?chain-advance\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?git\s+(?:-[cC]\s+\S+\s+)*(push|worktree\s+add)\b",
+    COMMAND_POSITION + r"(?:\S*/)?gh\s+(?:-R\s+\S+\s+|--repo\s+\S+\s+)?pr\s+(create|ready|merge)\b",
+)
+
+
+def executed_text(command):
+    """Strip heredoc bodies and quoted strings so patterns only match executed text,
+    never inert data (a commit message, a README snippet, an example CLI invocation).
+    A single-token quoted string (no internal whitespace) is unwrapped first, not
+    stripped, because it is the kit's own documented form for an absolute helper
+    path or invocation and must still match as executed text."""
+    # Drop only the heredoc BODY and its terminator; the rest of the header line is
+    # executed text (`cat <<EOF; git push origin main` runs the push after cat).
+    stripped = re.sub(r"(<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n).*?^\t*\2\s*$", r"\1", command,
+                      flags=re.DOTALL | re.MULTILINE)
+    # Unwrap `bash -c '...'` (and sh/zsh/dash, single or double quoted, and bundled forms
+    # such as `-lc`) into executed text BEFORE quoted strings are stripped as data: the
+    # kit's own recipes wrap commands this way (the harness shell is zsh), so the -c body
+    # is executed, not inert. One pass only; a `bash -c` nested inside another `bash -c`
+    # body stays unwrapped as a known gap.
+    shell_c = re.sub(
+        r"(?:^|(?<=[\s;&|(]))(?:bash|sh|zsh|dash)\s+(?:-[a-zA-Z]+\s+)*?-[a-zA-Z]*c\s+"
+        r"(?:'([^']*)'|\"([^\"]*)\")",
+        lambda m: " " + (m.group(1) if m.group(1) is not None else m.group(2)) + " ",
+        stripped)
+    unwrapped = re.sub(r"'([^'\s]*)'|\"([^\"\s]*)\"", r"\1\2", shell_c)
+    # A multi-token quoted string is inert data, but it still occupies an argument slot:
+    # `git -C '/path/my repo' push` must keep `push` as the subcommand, so the string
+    # becomes a placeholder token rather than vanishing into whitespace.
+    return re.sub(r"'[^']*'|\"[^\"]*\"", " _quoted_ ", unwrapped)
+
+
+def dispatch_class(tool, tool_input):
+    """A dispatch-class call spends slots, opens PRs, or pushes; those wait for the receipt."""
+    if tool in DISPATCH_TOOLS:
+        return True
+    if tool in ("Bash", "exec_command"):
+        command = tool_input.get("command", tool_input.get("cmd", ""))
+        text = executed_text(command)
+        return any(re.search(pattern, text) for pattern in DISPATCH_COMMANDS)
+    return False
+
+
 def hook(args):
     payload = json.load(sys.stdin)
     event = payload.get("hook_event_name", "UserPromptSubmit")
@@ -329,7 +401,8 @@ def hook(args):
                             "agentkit activation unchanged: acknowledged workflow=" + workflow
                             + "; reuse durable session receipt; do not repeat discovery."}}
         _, context = deliver(args, evidence, workflow, "UserPromptSubmit.additionalContext",
-                             {"user-prompt-submit": "observed", "pre-tool-use": "unknown"})
+                             {"user-prompt-submit": "observed", "pre-tool-use": "unknown"},
+                             native=bool(re.match(r"^\s*[$/]", prompt)))
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     try:
         evidence = Evidence(root, session)
@@ -341,11 +414,14 @@ def hook(args):
         evidence.write(record)
         tool = payload.get("tool_name", "")
         tool_input = payload.get("tool_input", {})
-        # The challenge response must remain reachable while delivery is pending.
-        command = tool_input.get("command", tool_input.get("cmd", ""))
-        if tool in ("Bash", "exec_command") and command.strip() == ack_command(args, record):
+        if record.get("status") != "active":
+            # Pending delivery gates dispatch only; reads, edits, and inspection proceed.
+            if dispatch_class(tool, tool_input):
+                validate(args, record)
             return {}
         if inspection(args, evidence.root, tool, tool_input):
+            # A stale (content-mismatched) active record still permits bounded
+            # diagnostic reads; validate() below is what raises ContentMismatch.
             return {}
         validate(args, record)
         if tool == "Skill":
@@ -366,7 +442,9 @@ def hook(args):
         record["capabilities"]["pre-tool-use"] = "unknown"
         evidence.write(record)
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                "agentkit durable activation: " + json.dumps(record, sort_keys=True)
+                "agentkit durable activation: workflow=" + record["workflow"]
+                + " status=" + record.get("status", "unknown")
+                + " version=" + record.get("version", "unknown")
                 + "; historical session receipt only, not proof of this context's native registry. "
                 + ("" if record.get("status") == "active" else "Run: " + ack_command(args, record))}}
     return {}

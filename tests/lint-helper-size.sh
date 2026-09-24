@@ -25,7 +25,10 @@ declare -A KNOWN_OVERSIZE=(
     [hooks/lib/guard-lib.sh]="2288:24898:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
-    [skills/.shared/scripts/agent-preflight.sh]="1401:17157:800"
+    # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
+    # final-review Minor #2: +4 lines / +67 tokens so a lone --activation-nonce
+    # dies (exit 2) naming the missing --activation-session/--workflow flag.
+    [skills/.shared/scripts/agent-preflight.sh]="1411:17295:800"
     # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
@@ -199,7 +202,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #873/#874 + #875 + #876 provider-alias repair: exact combined helper tree measurement.
 # #873 PR repair: verification-scoped post-run cleanliness and setup compatibility.
 # #889: triage --help ends with the selection helper's shipped path: exact tree measurement.
-readonly MAX_TREE_TOKENS=477442
+# activation-gate option B task 2: --activation-nonce flag folds the receipt
+# into agent-preflight.sh's first call; exact combined helper tree measurement.
+# final-review Minor #2: +67 tokens from agent-preflight.sh's usage-error guard.
+readonly MAX_TREE_TOKENS=477662
 
 violations=0
 checked=0
