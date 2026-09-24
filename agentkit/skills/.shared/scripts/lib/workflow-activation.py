@@ -251,7 +251,7 @@ def deliver(args, evidence, workflow, source, capabilities, recovery=False):
         lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
                 "Run this exact preflight command first; it records the session receipt:\n")
     context = (lead + ack_command(args, record) + "\n"
-               + "agentkit: skill=" + workflow + " version=" + identity(args)
+               + "agentkit: skill=" + workflow + " version=" + record["version"]
                + " hash=" + args.digest[:12] + "\n"
                + "Installed skills root: " + args.skills + "\n"
                + "Missing capability remains unknown. Do not substitute another workflow.")
@@ -308,20 +308,24 @@ def inspection(args, root, tool, tool_input):
 
 DISPATCH_TOOLS = ("Agent", "Task", "spawn_agent", "Skill")
 DISPATCH_COMMANDS = (
-    r"(^|/)create-issue-worktree\.sh(\s|$)",
-    r"(^|/)worktree-commit\.sh(\s|$)",
-    r"(^|/)chain-advance\.sh(\s|$)",
-    r"(?:^|[;&|(\n]\s*)git\s+(push|worktree\s+add)\b",
-    r"(?:^|[;&|(\n]\s*)gh\s+pr\s+(create|ready|merge)\b",
+    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?create-issue-worktree\.sh(?:\s|$)",
+    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?worktree-commit\.sh(?:\s|$)",
+    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?chain-advance\.sh(?:\s|$)",
+    r"(?<![\w/.-])git\s+(?:-[cC]\s+\S+\s+)*(push|worktree\s+add)\b",
+    r"(?<![\w/.-])gh\s+(?:-R\s+\S+\s+|--repo\s+\S+\s+)?pr\s+(create|ready|merge)\b",
 )
 
 
 def executed_text(command):
     """Strip heredoc bodies and quoted strings so patterns only match executed text,
-    never inert data (a commit message, a README snippet, an example CLI invocation)."""
-    stripped = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?^\1\s*$", " ", command,
+    never inert data (a commit message, a README snippet, an example CLI invocation).
+    A single-token quoted string (no internal whitespace) is unwrapped first, not
+    stripped, because it is the kit's own documented form for an absolute helper
+    path or invocation and must still match as executed text."""
+    stripped = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?^\t*\1\s*$", " ", command,
                       flags=re.DOTALL | re.MULTILINE)
-    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", stripped)
+    unwrapped = re.sub(r"'([^'\s]*)'|\"([^\"\s]*)\"", r"\1\2", stripped)
+    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", unwrapped)
 
 
 def dispatch_class(tool, tool_input):

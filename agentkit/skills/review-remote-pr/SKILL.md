@@ -10,7 +10,7 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
 stdout begins `skills=` (contract, not registry proof).
 Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow review-remote-pr`, plus `--activation-nonce N`.
+`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run it once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.

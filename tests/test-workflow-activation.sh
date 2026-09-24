@@ -61,6 +61,34 @@ newline_input=$(jq -nc --arg c $'cd /tmp\ngit push origin main' '{command:$c}')
 out=$(hook PreToolUse Bash "$newline_input")
 assert_contains "$out" 'pending session acknowledgement' 'pending: a dispatch command on its own line after a newline is still denied'
 
+# A quoted absolute helper path is the kit's own documented invocation form
+# and must still be denied while pending, not treated as inert quoted data.
+quoted_helper=$(jq -nc --arg c "\"$skills/parallel-issues/scripts/create-issue-worktree.sh\" --issue 1" '{command:$c}')
+out=$(hook PreToolUse Bash "$quoted_helper")
+assert_contains "$out" 'pending session acknowledgement' 'pending: a quoted absolute helper path is still denied'
+
+# git/gh prefixes agents actually compose: -C/-c flags, leading whitespace, loops.
+out=$(hook PreToolUse Bash '{"command":"git -C .worktrees/x push origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: git -C push is denied'
+out=$(hook PreToolUse Bash '{"command":"  git push origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: leading-whitespace git push is denied'
+loop_input=$(jq -nc --arg c $'for b in x; do git push origin $b; done' '{command:$c}')
+out=$(hook PreToolUse Bash "$loop_input")
+assert_contains "$out" 'pending session acknowledgement' 'pending: git push inside a for-loop body is denied'
+
+# Helper-name patterns match the invoked command, not a read of the helper file.
+read_helper=$(jq -nc --arg c "sed -n 1,20p $skills/parallel-issues/scripts/create-issue-worktree.sh" '{command:$c}')
+out=$(hook PreToolUse Bash "$read_helper")
+assert_eq '{}' "$out" 'pending: reading the helper file with sed is allowed'
+invoke_helper=$(jq -nc --arg c "$skills/parallel-issues/scripts/create-issue-worktree.sh --issue 1" '{command:$c}')
+out=$(hook PreToolUse Bash "$invoke_helper")
+assert_contains "$out" 'pending session acknowledgement' 'pending: invoking the absolute helper path is still denied'
+
+# <<- heredocs with a tab-indented terminator strip like plain heredocs.
+tab_heredoc=$(jq -nc --arg c $'cat <<-EOF\n\tgit push origin main\n\tEOF' '{command:$c}')
+out=$(hook PreToolUse Bash "$tab_heredoc")
+assert_eq '{}' "$out" 'pending: a <<- heredoc with a tab-indented terminator is allowed'
+
 # Promote, then everything is allowed.
 nonce=$(jq -r .nonce "$receipt")
 "$wa" ack --repo-root "$repo" --session "$session" --skill parallel-issues --nonce "$nonce" >/dev/null

@@ -1301,6 +1301,10 @@ main() {
         die '--ensure cannot be combined with --write, --repo, --measured-from, or --inherit-session'
     fi
     if [[ -n $ARG_ACTIVATION_NONCE ]]; then
+        local -a missing=()
+        [[ -n $ARG_ACTIVATION_SESSION ]] || missing+=("--activation-session")
+        [[ -n $ARG_WORKFLOW ]] || missing+=("--workflow")
+        (( ${#missing[@]} == 0 )) || die "--activation-nonce requires $(join_by ' and ' "${missing[@]}")"
         "$SCRIPT_DIR/workflow-activation.sh" ack \
             --repo-root "${ARG_ACTIVATION_ORIGIN:-${ARG_WORKTREE:-$PWD}}" \
             --session "$ARG_ACTIVATION_SESSION" --skill "$ARG_WORKFLOW" \

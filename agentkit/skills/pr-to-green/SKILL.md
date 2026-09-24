@@ -15,7 +15,7 @@ description: >-
 First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
 stdout begins `skills=` (contract, not registry proof).
 Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill pr-to-green`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` separately takes `--activation-session ID --activation-origin R --workflow pr-to-green`, plus `--activation-nonce N`.
+`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow pr-to-green --activation-nonce N`; run it once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:pr-to-green`; natural triggers also deliver.

@@ -1455,8 +1455,11 @@ assert_contains "$cargo_writable_line" " CARGO_HOME=$cargo_writable_home/.cargo 
 # mirrors from agent-run.sh's select_cargo_home. Ratchet down to the measured count.
 # activation-gate option B task 2: +6 lines for the --activation-nonce flag and
 # the ack-before-check block in main() that folds the receipt into preflight.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1407 ]] && printf yes || printf no)" \
-    'agent-preflight.sh stays at or under 1407 lines (including absolute-path guard and harness-bound tools)'
+# final-review Minor #2: +4 lines so a lone --activation-nonce dies (exit 2)
+# naming the missing --activation-session/--workflow flag instead of reaching
+# ack with empty required flags.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/agent-preflight.sh") -le 1411 ]] && printf yes || printf no)" \
+    'agent-preflight.sh stays at or under 1411 lines (including absolute-path guard and harness-bound tools)'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/gh-budget.sh") -le 42 ]] && printf yes || printf no)" \
     'lib/gh-budget.sh stays at or under 42 lines'
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/lib/sandbox-comparator.sh") -le 53 ]] && printf yes || printf no)" \
@@ -1532,5 +1535,14 @@ good_out=$("$script" --worktree "$nonce_repo" --activation-session "$nonce_sessi
 assert_eq active "$(jq -r .status "$nonce_receipt")" 'the right nonce promotes the record'
 assert_contains "$good_out" 'agent-preflight: wrote' 'the right nonce completes preflight'
 rm -rf "$nonce_repo"
+
+# --activation-nonce alone, without --activation-session/--workflow, is bad input:
+# die() with the standard usage-error exit (2), naming the missing flag, not the
+# "rerun with the exact --activation-nonce" recovery line (which implies the nonce
+# itself was wrong).
+lone_nonce_rc=0
+lone_nonce_out=$("$script" --activation-nonce abc 2>&1) || lone_nonce_rc=$?
+assert_eq 2 "$lone_nonce_rc" 'a lone --activation-nonce is a usage error (exit 2)'
+assert_contains "$lone_nonce_out" '--activation-session' 'a lone --activation-nonce names the missing --activation-session flag'
 
 finish
