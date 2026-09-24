@@ -191,6 +191,42 @@ assert_eq no \
     "$([[ -e $issue896_negated_state || -e $issue896_negated_state.decision.json || -e $issue896_negated_state.consent-paths ]] && printf yes || printf no)" \
     'the negated #896 turn creates no grant evidence'
 
+# #896 fix round: a second real operator turn, with a doubled "have" and no
+# clause opener the grammar recognizes at all, must also grant -- the ordered
+# check has to work over the whole instruction, not just a stripped clause.
+issue896b_state="$tmp/state/issue-896b"
+issue896b_out=$(bash "$consent" grant --state "$issue896b_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you have codex have gpt-6-astra xhigh perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+issue896b_rc=$?
+assert_eq 0 "$issue896b_rc" 'a real turn with a doubled "have" and no recognized opener still grants'
+assert_contains "$issue896b_out" 'source=operator-instruction' 'the #896 fix-round grant retains operator provenance'
+
+# The same sentence negated still refuses.
+issue896b_negated_state="$tmp/state/issue-896b-negated"
+issue896b_negated_rc=0
+bash "$consent" grant --state "$issue896b_negated_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you do not have codex have gpt-6-astra xhigh perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || issue896b_negated_rc=$?
+assert_eq 2 "$issue896b_negated_rc" 'a negated form of the second #896 turn is still refused'
+assert_eq no \
+    "$([[ -e $issue896b_negated_state || -e $issue896b_negated_state.decision.json || -e $issue896b_negated_state.consent-paths ]] && printf yes || printf no)" \
+    'the negated second #896 turn creates no grant evidence'
+
+# When provider, model and purpose are all present but out of order, the
+# refusal names the real cause instead of misreporting a missing purpose.
+unparseable_out=$(bash "$consent" grant --state "$tmp/state/issue-896-unparseable" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Perform an adversarial review using gpt-6-astra hosted via codex' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+assert_contains "$unparseable_out" 'could not parse an authorization clause; found provider, model and purpose' \
+    'an out-of-order but complete instruction names the real refusal cause'
+
 # Provider aliases and natural model spellings are token-bounded and provider-specific.
 for accepted in \
     'Each PR is authorized to have one anthropic Opus 5 xhigh review.' \

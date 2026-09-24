@@ -63,7 +63,10 @@ declare -A KNOWN_OVERSIZE=(
     # #896: tolerate ordinary filler words between provider/model/purpose in
     # an operator-instruction authorization clause, and name an unparsed
     # clause instead of misreporting it as a missing purpose.
-    [skills/review-remote-pr/scripts/consent-record.sh]="859:10075:800"
+    # #896 fix round: the ordered check now runs over the whole instruction,
+    # not just a fixed-opener clause, so a doubled verb with no recognized
+    # opener at all still grants.
+    [skills/review-remote-pr/scripts/consent-record.sh]="864:10154:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -210,7 +213,8 @@ readonly MAX_HELPER_TOKENS=10000
 # into agent-preflight.sh's first call; exact combined helper tree measurement.
 # final-review Minor #2: +67 tokens from agent-preflight.sh's usage-error guard.
 # #896: consent-record.sh crosses into KNOWN_OVERSIZE; exact tree measurement.
-readonly MAX_TREE_TOKENS=478395
+# #896 fix round: whole-instruction ordered check; exact tree measurement.
+readonly MAX_TREE_TOKENS=478475
 
 violations=0
 checked=0
