@@ -232,7 +232,10 @@ def ack_command(args, record):
                        "--activation-nonce", record["nonce"]])
 
 
-def deliver(args, evidence, workflow, source, capabilities, recovery=False):
+def deliver(args, evidence, workflow, source, capabilities, recovery=False, native=True):
+    """Build the pending record and the delivered context. `native` is False when the
+    workflow was selected from the operator's words rather than a `$`/`/` invocation:
+    no harness injected the skill body in that case, so the delivery must require it."""
     skill = Path(args.skills) / workflow / "SKILL.md"
     if not skill.is_file() or skill.is_symlink():
         fail("workflow-unavailable: " + workflow)
@@ -248,9 +251,13 @@ def deliver(args, evidence, workflow, source, capabilities, recovery=False):
                 "Read " + str(skill) + " in full now (reads are permitted while the receipt "
                 "is pending), then run this exact receipt command and resume the assigned "
                 "work in the same worktree:\n")
-    else:
+    elif native:
         lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
                 "Run this exact preflight command first; it records the session receipt:\n")
+    else:
+        lead = ("agentkit invocation boundary: this workflow was selected from your words, so no "
+                "skill body was loaded natively. Run this exact preflight command first; it records "
+                "the session receipt. Then read " + str(skill) + " in full before any dispatch:\n")
     context = (lead + ack_command(args, record) + "\n"
                + "agentkit: skill=" + workflow + " version=" + record["version"]
                + " hash=" + args.digest[:12] + "\n"
@@ -331,19 +338,25 @@ def executed_text(command):
     A single-token quoted string (no internal whitespace) is unwrapped first, not
     stripped, because it is the kit's own documented form for an absolute helper
     path or invocation and must still match as executed text."""
-    stripped = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?^\t*\1\s*$", " ", command,
+    # Drop only the heredoc BODY and its terminator; the rest of the header line is
+    # executed text (`cat <<EOF; git push origin main` runs the push after cat).
+    stripped = re.sub(r"(<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n).*?^\t*\2\s*$", r"\1", command,
                       flags=re.DOTALL | re.MULTILINE)
-    # Unwrap `bash -c '...'` (and sh/zsh/dash, single or double quoted) into executed text
-    # BEFORE quoted strings are stripped as data: the kit's own recipes wrap commands this
-    # way (the harness shell is zsh), so the -c body is executed, not inert. One pass only;
-    # a `bash -c` nested inside another `bash -c` body stays unwrapped as a known gap.
+    # Unwrap `bash -c '...'` (and sh/zsh/dash, single or double quoted, and bundled forms
+    # such as `-lc`) into executed text BEFORE quoted strings are stripped as data: the
+    # kit's own recipes wrap commands this way (the harness shell is zsh), so the -c body
+    # is executed, not inert. One pass only; a `bash -c` nested inside another `bash -c`
+    # body stays unwrapped as a known gap.
     shell_c = re.sub(
-        r"(?:^|(?<=[\s;&|(]))(?:bash|sh|zsh|dash)\s+(?:-[a-zA-Z]+\s+)*-c\s+"
+        r"(?:^|(?<=[\s;&|(]))(?:bash|sh|zsh|dash)\s+(?:-[a-zA-Z]+\s+)*?-[a-zA-Z]*c\s+"
         r"(?:'([^']*)'|\"([^\"]*)\")",
         lambda m: " " + (m.group(1) if m.group(1) is not None else m.group(2)) + " ",
         stripped)
     unwrapped = re.sub(r"'([^'\s]*)'|\"([^\"\s]*)\"", r"\1\2", shell_c)
-    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", unwrapped)
+    # A multi-token quoted string is inert data, but it still occupies an argument slot:
+    # `git -C '/path/my repo' push` must keep `push` as the subcommand, so the string
+    # becomes a placeholder token rather than vanishing into whitespace.
+    return re.sub(r"'[^']*'|\"[^\"]*\"", " _quoted_ ", unwrapped)
 
 
 def dispatch_class(tool, tool_input):
@@ -388,7 +401,8 @@ def hook(args):
                             "agentkit activation unchanged: acknowledged workflow=" + workflow
                             + "; reuse durable session receipt; do not repeat discovery."}}
         _, context = deliver(args, evidence, workflow, "UserPromptSubmit.additionalContext",
-                             {"user-prompt-submit": "observed", "pre-tool-use": "unknown"})
+                             {"user-prompt-submit": "observed", "pre-tool-use": "unknown"},
+                             native=bool(re.match(r"^\s*[$/]", prompt)))
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     try:
         evidence = Evidence(root, session)

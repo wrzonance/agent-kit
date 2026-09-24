@@ -88,6 +88,16 @@ out=$(hook PreToolUse Bash '{"command":"/usr/bin/git push origin fix/x"}')
 assert_contains "$out" 'pending session acknowledgement' 'pending: absolute-path git push is denied'
 out=$(hook PreToolUse Bash '{"command":"echo gh pr create --draft"}')
 assert_eq '{}' "$out" 'pending: echo of gh pr create words is allowed'
+# CodeRabbit review of PR #894: gaps in executed-text classification.
+out=$(hook PreToolUse Bash "{\"command\":\"git -C '/tmp/my repo' push origin fix/x\"}")
+assert_contains "$out" 'pending session acknowledgement' 'pending: git -C with a quoted path containing spaces is still denied'
+header_heredoc=$(jq -nc --arg c $'cat <<EOF; git push origin main\nbody text\nEOF' '{command:$c}')
+out=$(hook PreToolUse Bash "$header_heredoc")
+assert_contains "$out" 'pending session acknowledgement' 'pending: a command after the heredoc operator on the header line is denied'
+out=$(hook PreToolUse Bash '{"command":"bash -lc '\''git push origin main'\''"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: bash -lc git push is denied'
+out=$(hook PreToolUse Bash '{"command":"zsh -lc \"cd /tmp && git push origin x\""}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: zsh -lc with a shell operator is denied'
 loop_input=$(jq -nc --arg c $'for b in x; do git push origin $b; done' '{command:$c}')
 out=$(hook PreToolUse Bash "$loop_input")
 assert_contains "$out" 'pending session acknowledgement' 'pending: git push inside a for-loop body is denied'
@@ -137,6 +147,17 @@ assert_not_contains "$context" '### Step' 'delivery does not embed the skill bod
 assert_contains "$context" 'skill=parallel-issues version=' 'delivery names the workflow identity'
 assert_contains "$context" '--activation-nonce' 'delivery names the preflight line'
 (( ${#context} < 1500 )) || assert_eq 'under-1500' "${#context}" 'delivery stays under the harness context caps'
+assert_not_contains "$context" 'in full' 'a native $-invocation does not demand a re-read (the harness injected the body)'
+# A natural-language trigger creates a receipt without any native skill injection, so the
+# delivery must name the skill path and require reading it before dispatch (CodeRabbit, PR #894).
+session=nl-delivery-session-$$
+nl_delivered=$(jq -nc --arg s "$session" --arg c "$repo" \
+    '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:"run these issues in parallel"}' | "$wa" hook)
+nl_context=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$nl_delivered")
+assert_contains "$nl_context" "$skills/parallel-issues/SKILL.md" 'natural-language delivery names the exact skill path'
+assert_contains "$nl_context" 'in full' 'natural-language delivery requires reading the skill before dispatch'
+assert_contains "$nl_context" '--activation-nonce' 'natural-language delivery still names the preflight line'
+(( ${#nl_context} < 1500 )) || assert_eq 'under-1500' "${#nl_context}" 'natural-language delivery stays under the caps'
 receipt="$repo/.agent/activation/$(printf '%s' "$session" | sha256sum | cut -d' ' -f1).json"
 assert_eq "$(sha256sum "$skills/parallel-issues/SKILL.md" | cut -d' ' -f1)" "$(jq -r .deliveredDigest "$receipt")" \
     'deliveredDigest is still the on-disk skill digest'

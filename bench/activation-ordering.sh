@@ -29,7 +29,9 @@ printf "PROBE_NONCE=none\n" instead. Then stop.'
 case $harness in
     codex)
         (cd -- "$repo" && codex exec --json -s workspace-write --skip-git-repo-check "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
-        first_call=$(jq -r 'select(.type=="item.completed" and .item.type=="command_execution") | .item.command' "$out/transcript.jsonl" | head -1)
+        # The earliest tool ATTEMPT of any kind (started before completed; a blocked
+        # command still starts), as one JSON value so a multi-line command survives.
+        first_call=$(jq -rn 'first(inputs | select(.type=="item.started" or .type=="item.completed") | .item | select(.type != "agent_message" and .type != "reasoning") | (.command // .arguments // .input // .) | if type=="string" then . else tojson end)' "$out/transcript.jsonl")
         if [[ -z $first_call ]]; then
             # The PreToolUse hook may block the command before it becomes a
             # command_execution item; codex still logs the attempted command.
@@ -45,7 +47,8 @@ case $harness in
         # (tests/build-plugin.sh), so the probe measures the branch's hooks and never
         # touches the user's installed plugins.
         (cd -- "$repo" && claude -p --output-format stream-json --verbose --allowedTools='Bash(printf:*)' --plugin-dir "$plugin_dir" "$prompt") > "$out/transcript.jsonl" 2> "$out/stderr.log" || true
-        first_call=$(jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command' "$out/transcript.jsonl" | head -1)
+        # The earliest tool_use of ANY tool, as one JSON value so a multi-line command survives.
+        first_call=$(jq -rn 'first(inputs | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | (.input.command // (.input | tojson)))' "$out/transcript.jsonl")
         if [[ -z $first_call ]]; then
             # The PreToolUse hook may block the command before it becomes a
             # tool_use content block; fall back to the composed command as
