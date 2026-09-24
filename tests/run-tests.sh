@@ -27,6 +27,12 @@ pin_locale() {
 }
 pin_locale
 
+# Suites that import Python modules (e.g. the activation probe) write
+# __pycache__/ into the shipped tree unless bytecode writes are disabled.
+# Export it here so it reaches every suite subprocess and the probe stays
+# read-only (issue #897).
+export PYTHONDONTWRITEBYTECODE=1
+
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 # The plugin root holds both the skills and the hook dispatchers. The hooks are
