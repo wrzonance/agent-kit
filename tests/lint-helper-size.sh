@@ -60,6 +60,10 @@ declare -A KNOWN_OVERSIZE=(
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
     # #728 separates optional CI outcomes from required acceptance execution.
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
+    # #896: tolerate ordinary filler words between provider/model/purpose in
+    # an operator-instruction authorization clause, and name an unparsed
+    # clause instead of misreporting it as a missing purpose.
+    [skills/review-remote-pr/scripts/consent-record.sh]="859:10075:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -205,7 +209,8 @@ readonly MAX_HELPER_TOKENS=10000
 # activation-gate option B task 2: --activation-nonce flag folds the receipt
 # into agent-preflight.sh's first call; exact combined helper tree measurement.
 # final-review Minor #2: +67 tokens from agent-preflight.sh's usage-error guard.
-readonly MAX_TREE_TOKENS=477662
+# #896: consent-record.sh crosses into KNOWN_OVERSIZE; exact tree measurement.
+readonly MAX_TREE_TOKENS=478395
 
 violations=0
 checked=0

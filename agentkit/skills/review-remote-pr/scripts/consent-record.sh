@@ -477,15 +477,62 @@ authorization_clause() {
         authorize\ *) printf '%s' "${words#authorize }" ;;
         i\ approve\ *) printf '%s' "${words#i approve }" ;;
         i\ consent\ to\ *) printf '%s' "${words#i consent to }" ;;
+        have\ *) printf '%s' "${words#have }" ;;
         also\ each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#also each pr is authorized to have one }" ;;
         each\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#each pr is authorized to have one }" ;;
         this\ pr\ is\ authorized\ to\ have\ one\ *) printf '%s' "${words#this pr is authorized to have one }" ;;
         *) return 1 ;;
     esac
 }
+# Index (in characters) of the first standalone occurrence of `needle` inside
+# `haystack`, or -1 when absent. Used to check relative ordering of the
+# provider/model/purpose tokens within an authorization clause, independent
+# of whatever filler words the operator wrote between them.
+word_index() {
+    local haystack=" $1 " needle=$2 prefix
+    [[ $haystack == *" $needle "* ]] || { printf -- '-1'; return; }
+    prefix=${haystack%%" $needle "*}
+    printf '%s' "${#prefix}"
+}
+# Loose fallback for has_authorized_relationship: rather than requiring the
+# exact grammar `[provider] <model> [for] <purpose>` right after the clause
+# opener, only require that a provider token, the model words, and a purpose
+# phrase each appear somewhere in the clause, in that relative order -- any
+# words in between (harness names, effort levels, verbs) are tolerated.
+has_ordered_authorization_words() {
+    local clause=$1 provider=$2 model_words=$3 model_alias=$4
+    local -a provider_tokens purpose_tokens=('adversarial review' 'cross review' review)
+    local token model idx provider_idx=-1 model_idx=-1 purpose_idx=-1
+    case $provider in
+        anthropic) provider_tokens=(claude anthropic opus sonnet haiku) ;;
+        openai) provider_tokens=(codex openai gpt) ;;
+        *) provider_tokens=("$(normalize_words "$provider")") ;;
+    esac
+    for token in "${provider_tokens[@]}"; do
+        [[ -n $token ]] || continue
+        idx=$(word_index "$clause" "$token")
+        ((idx < 0)) && continue
+        { ((provider_idx < 0)) || ((idx < provider_idx)); } && provider_idx=$idx
+    done
+    for model in "$model_words" "$model_alias"; do
+        [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
+        idx=$(word_index "$clause" "$model")
+        ((idx < 0)) && continue
+        { ((model_idx < 0)) || ((idx < model_idx)); } && model_idx=$idx
+    done
+    for token in "${purpose_tokens[@]}"; do
+        idx=$(word_index "$clause" "$token")
+        ((idx < 0)) && continue
+        { ((purpose_idx < 0)) || ((idx < purpose_idx)); } && purpose_idx=$idx
+    done
+    ((model_idx >= 0 && purpose_idx >= 0 && model_idx < purpose_idx)) || return 1
+    ((provider_idx < 0)) || ((provider_idx < model_idx)) || return 1
+    return 0
+}
 has_authorized_relationship() {
     local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
     clause=$(authorization_clause "$words") || return 1
+    HAD_AUTHORIZATION_CLAUSE=1
     case $provider in
         anthropic) lead='((claude|anthropic)( with)? )?' ;;
         openai) lead='((codex|openai)( with)? )?' ;;
@@ -497,7 +544,9 @@ has_authorized_relationship() {
         [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
         pattern="^${lead}${model} ${tail}$"
         [[ $clause =~ $pattern ]] && return 0
-    done; return 1
+    done
+    has_ordered_authorization_words "$clause" "$provider" "$model_words" "$model_alias" && return 0
+    return 1
 }
 strip_quoted_segments() {
     local input=$1 output='' quote='' char close='' previous='' following='' i curly_open=$'\u2018' curly_close=$'\u2019'
@@ -524,11 +573,17 @@ strip_quoted_segments() {
     printf '%s' "$output"
 }
 affirmation_refusal() {
-    local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
+    local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5 unparsed_clause=${6:-0}
     record_refused_grant || die 'cannot persist refused-grant provenance'
     ((provider_found)) || printf '%s: operator instruction missing provider; accepted: %s\n' "$PROGNAME" "$provider_spellings" >&2
     ((model_found)) || printf '%s: operator instruction missing model; accepted: %s\n' "$PROGNAME" "$model_spellings" >&2
-    ((purpose_found)) || printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
+    if ((! purpose_found)); then
+        if ((provider_found && model_found && unparsed_clause)); then
+            printf '%s: could not parse an authorization clause; found provider, model and purpose\n' "$PROGNAME" >&2
+        else
+            printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
+        fi
+    fi
     exit 2
 }
 
@@ -536,6 +591,8 @@ validate_operator_affirmation() {
     local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words purpose_words
     local model_words model_alias model_spellings provider_spellings provider_found=0 model_found=0 purpose_found=0
     local affirmative=0 safe=1 payload_pr explicit_pr token purpose_pattern='^(one )?(adversarial review|cross review|review)( of (that|this) (diff|pr|pull request))?$'
+    local purpose_found_raw
+    HAD_AUTHORIZATION_CLAUSE=0
     field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
     outside=$(strip_quoted_segments "$instruction") || outside=''
     words=$(normalize_words "$outside")
@@ -579,6 +636,7 @@ validate_operator_affirmation() {
         purpose_found=1
     fi
     [[ $purpose_words =~ $purpose_pattern ]] || purpose_found=0
+    purpose_found_raw=$purpose_found
     has_authorized_relationship "$words" "$PROVIDER" "$model_words" "$model_alias" && affirmative=1
     full_words=${full_words%' do not ask again'}
     for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden revoke revoked instead if unless rather; do
@@ -592,9 +650,12 @@ validate_operator_affirmation() {
         explicit_pr=${BASH_REMATCH[3]}
         [[ $explicit_pr == "$payload_pr" ]] || safe=0
     fi
+    local unparsed_clause=0
+    ((HAD_AUTHORIZATION_CLAUSE && ! affirmative && safe && purpose_found_raw)) && unparsed_clause=1
     ((affirmative && safe)) || purpose_found=0
     ((provider_found && model_found && purpose_found)) ||
-        affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings"
+        affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings" \
+            "$unparsed_clause"
 }
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||

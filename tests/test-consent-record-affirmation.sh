@@ -166,6 +166,31 @@ assert_contains "$missing_purpose_out" 'missing purpose' 'purpose refusal names 
 assert_contains "$missing_purpose_out" 'adversarial review, review, cross-review' \
     'purpose refusal gives accepted spellings'
 
+# #896: an imperative turn with ordinary filler words between provider, model
+# and purpose grants -- it must not be misdiagnosed as a missing purpose.
+issue896_state="$tmp/state/issue-896"
+issue896_out=$(bash "$consent" grant --state "$issue896_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+issue896_rc=$?
+assert_eq 0 "$issue896_rc" 'the #896 verbatim operator turn grants despite filler words'
+assert_contains "$issue896_out" 'source=operator-instruction' 'the #896 grant retains operator provenance'
+
+# The same sentence negated still refuses.
+issue896_negated_state="$tmp/state/issue-896-negated"
+issue896_negated_rc=0
+bash "$consent" grant --state "$issue896_negated_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort do not perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || issue896_negated_rc=$?
+assert_eq 2 "$issue896_negated_rc" 'a negated form of the #896 turn is still refused'
+assert_eq no \
+    "$([[ -e $issue896_negated_state || -e $issue896_negated_state.decision.json || -e $issue896_negated_state.consent-paths ]] && printf yes || printf no)" \
+    'the negated #896 turn creates no grant evidence'
+
 # Provider aliases and natural model spellings are token-bounded and provider-specific.
 for accepted in \
     'Each PR is authorized to have one anthropic Opus 5 xhigh review.' \
