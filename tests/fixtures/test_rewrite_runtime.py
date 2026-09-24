@@ -205,7 +205,11 @@ class NativeRuntime(unittest.TestCase):
         spec = self.root / "prefix-fixture.json"
         spec.write_text(json.dumps({"profile": profile, "records": str(records.root)}))
         native = self.native.replace("'printf fixture'", shlex.quote(issued["command"]))
-        return [sys.executable, "-I", str(Path(__file__).resolve()), "--prefix-fixture", str(spec), native]
+        # -I ignores PYTHONDONTWRITEBYTECODE (it implies -E), and this
+        # reinvocation re-imports RUNTIME at module load before any guard in
+        # __main__ runs, so -B is required here to keep it from writing
+        # agentkit/hooks/lib/__pycache__ into the shipped tree (issue #897).
+        return [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--prefix-fixture", str(spec), native]
 
     def test_public_prefix_executes_once_with_native_result_and_refuses_replay(self):
         command = self.prefix_fixture('printf "%s|%s|%s\\n" "$PWD" "$1" "$2"\nprintf stderr >&2\nexit 37\n')

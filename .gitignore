@@ -1,6 +1,12 @@
 tests/tmp/
 plugin/
 
+# CPython writes these when a suite imports the hook's Python modules
+# (e.g. the activation probe); untracked but unignored, they dirty the
+# checkout after a green run (issue #897).
+__pycache__/
+*.pyc
+
 # opencode: @opencode-ai/plugin is a devDependency for typings only (issue
 # #319); node_modules/ is never imported at runtime and never ships (see
 # tests/build-plugin.sh, which copies only opencode/{index.js,package.json}).
