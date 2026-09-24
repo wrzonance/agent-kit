@@ -213,6 +213,18 @@ class Activation(unittest.TestCase):
         self.assertIn("worktree=" + str(target), result.stdout)
         self.assertNotIn("worktree=" + str(self.repo) + "\n", result.stdout)
 
+    def test_redeliver_requires_rereading_the_skill(self):
+        self.prompt()
+        self.assertEqual(self.acknowledge().returncode, 0)
+        skill = self.plugin / "skills/parallel-issues/SKILL.md"
+        skill.write_text(skill.read_text() + "\n<!-- content changed under an active session -->\n")
+        result = self.invoke("redeliver", "--repo-root", str(self.repo), "--session", "test-session",
+                             "--skill", "parallel-issues")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SKILL.md in full", result.stdout)
+        self.assertIn("--activation-nonce", result.stdout)
+        self.assertLess(len(result.stdout), 1500)
+
     def test_installed_loaded_mismatch_names_both_versions(self):
         self.prompt()
         self.acknowledge()

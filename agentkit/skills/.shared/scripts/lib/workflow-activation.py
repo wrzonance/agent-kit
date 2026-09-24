@@ -244,9 +244,10 @@ def deliver(args, evidence, workflow, source, capabilities, recovery=False):
               "nonce": secrets.token_hex(24), "capabilities": capabilities}
     evidence.write(record)
     if recovery:
-        lead = ("agentkit root-mediated activation recovery: current workflow bytes are delivered "
-                "only to refresh this receipt. Do not run or dispatch the orchestration workflow; "
-                "run this exact receipt command, then resume the assigned work in the same worktree:\n")
+        lead = ("agentkit root-mediated activation recovery: the workflow content changed. "
+                "Read " + str(skill) + " in full now (reads are permitted while the receipt "
+                "is pending), then run this exact receipt command and resume the assigned "
+                "work in the same worktree:\n")
     else:
         lead = ("agentkit invocation boundary: explicit workflow delivery, not native registry evidence. "
                 "Run this exact preflight command first; it records the session receipt:\n")
@@ -324,7 +325,16 @@ def executed_text(command):
     path or invocation and must still match as executed text."""
     stripped = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?^\t*\1\s*$", " ", command,
                       flags=re.DOTALL | re.MULTILINE)
-    unwrapped = re.sub(r"'([^'\s]*)'|\"([^\"\s]*)\"", r"\1\2", stripped)
+    # Unwrap `bash -c '...'` (and sh/zsh/dash, single or double quoted) into executed text
+    # BEFORE quoted strings are stripped as data: the kit's own recipes wrap commands this
+    # way (the harness shell is zsh), so the -c body is executed, not inert. One pass only;
+    # a `bash -c` nested inside another `bash -c` body stays unwrapped as a known gap.
+    shell_c = re.sub(
+        r"(?:^|(?<=[\s;&|(]))(?:bash|sh|zsh|dash)\s+(?:-[a-zA-Z]+\s+)*-c\s+"
+        r"(?:'([^']*)'|\"([^\"]*)\")",
+        lambda m: " " + (m.group(1) if m.group(1) is not None else m.group(2)) + " ",
+        stripped)
+    unwrapped = re.sub(r"'([^'\s]*)'|\"([^\"\s]*)\"", r"\1\2", shell_c)
     return re.sub(r"'[^']*'|\"[^\"]*\"", " ", unwrapped)
 
 

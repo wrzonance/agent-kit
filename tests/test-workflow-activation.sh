@@ -89,6 +89,17 @@ tab_heredoc=$(jq -nc --arg c $'cat <<-EOF\n\tgit push origin main\n\tEOF' '{comm
 out=$(hook PreToolUse Bash "$tab_heredoc")
 assert_eq '{}' "$out" 'pending: a <<- heredoc with a tab-indented terminator is allowed'
 
+# bash -c bodies are executed text (the kit's own recipes wrap commands this
+# way; the harness shell is zsh), not inert quoted data.
+out=$(hook PreToolUse Bash '{"command":"bash -c '\''git push origin HEAD'\''"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: bash -c git push is denied'
+out=$(hook PreToolUse Bash '{"command":"bash -c \"cd /tmp && git push origin x\""}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: bash -c with double quotes and a shell operator is denied'
+out=$(hook PreToolUse Bash '{"command":"bash -c '\''printf \"git push\"'\''"}')
+assert_eq '{}' "$out" 'pending: dispatch-shaped text inside a nested quote of a bash -c body is still inert'
+out=$(hook PreToolUse Bash '{"command":"bash -c '\''ls -la'\''"}')
+assert_eq '{}' "$out" 'pending: a harmless bash -c body is allowed'
+
 # Promote, then everything is allowed.
 nonce=$(jq -r .nonce "$receipt")
 "$wa" ack --repo-root "$repo" --session "$session" --skill parallel-issues --nonce "$nonce" >/dev/null
