@@ -308,12 +308,20 @@ def inspection(args, root, tool, tool_input):
 
 
 DISPATCH_TOOLS = ("Agent", "Task", "spawn_agent", "Skill")
+# Command position: the start of the text or a shell operator, then any number of the wrappers
+# agents actually compose (env, VAR=x, timeout N, nohup, sudo, xargs, exec, command, time, and the
+# loop/conditional keywords do/then/else). A word that is not a wrapper (echo, printf, grep) means
+# the text after it is an argument, never a command, so `echo git push` is not dispatch.
+COMMAND_POSITION = (
+    r"(?:^|[;&|(\n{])\s*"
+    r"(?:(?:do|then|else|exec|command|time|nohup|sudo|env|xargs|timeout\s+\S+|\w+=\S*)\s+)*"
+)
 DISPATCH_COMMANDS = (
-    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?create-issue-worktree\.sh(?:\s|$)",
-    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?worktree-commit\.sh(?:\s|$)",
-    r"(?:^\s*|[;&|(\n]\s*)(?:\S*/)?chain-advance\.sh(?:\s|$)",
-    r"(?<![\w/.-])git\s+(?:-[cC]\s+\S+\s+)*(push|worktree\s+add)\b",
-    r"(?<![\w/.-])gh\s+(?:-R\s+\S+\s+|--repo\s+\S+\s+)?pr\s+(create|ready|merge)\b",
+    COMMAND_POSITION + r"(?:\S*/)?create-issue-worktree\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?worktree-commit\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?chain-advance\.sh(?:\s|$)",
+    COMMAND_POSITION + r"(?:\S*/)?git\s+(?:-[cC]\s+\S+\s+)*(push|worktree\s+add)\b",
+    COMMAND_POSITION + r"(?:\S*/)?gh\s+(?:-R\s+\S+\s+|--repo\s+\S+\s+)?pr\s+(create|ready|merge)\b",
 )
 
 

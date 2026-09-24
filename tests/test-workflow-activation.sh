@@ -72,6 +72,22 @@ out=$(hook PreToolUse Bash '{"command":"git -C .worktrees/x push origin fix/x"}'
 assert_contains "$out" 'pending session acknowledgement' 'pending: git -C push is denied'
 out=$(hook PreToolUse Bash '{"command":"  git push origin fix/x"}')
 assert_contains "$out" 'pending session acknowledgement' 'pending: leading-whitespace git push is denied'
+# git/gh count as dispatch only in command position: at the start, after a shell operator, or after
+# a known wrapper (env, timeout, xargs, sudo, do/then). A command that merely prints the words is not.
+out=$(hook PreToolUse Bash '{"command":"echo git push origin main"}')
+assert_eq '{}' "$out" 'pending: echo of dispatch-shaped words is allowed'
+out=$(hook PreToolUse Bash '{"command":"printf %s git push origin main"}')
+assert_eq '{}' "$out" 'pending: printf of dispatch-shaped words is allowed'
+out=$(hook PreToolUse Bash '{"command":"env GIT_TERMINAL_PROMPT=0 git push origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: env-wrapped git push is denied'
+out=$(hook PreToolUse Bash '{"command":"GIT_TERMINAL_PROMPT=0 timeout 60 git push origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: assignment- and timeout-wrapped git push is denied'
+out=$(hook PreToolUse Bash '{"command":"printf %s fix/x | xargs git push origin"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: xargs git push is denied'
+out=$(hook PreToolUse Bash '{"command":"/usr/bin/git push origin fix/x"}')
+assert_contains "$out" 'pending session acknowledgement' 'pending: absolute-path git push is denied'
+out=$(hook PreToolUse Bash '{"command":"echo gh pr create --draft"}')
+assert_eq '{}' "$out" 'pending: echo of gh pr create words is allowed'
 loop_input=$(jq -nc --arg c $'for b in x; do git push origin $b; done' '{command:$c}')
 out=$(hook PreToolUse Bash "$loop_input")
 assert_contains "$out" 'pending session acknowledgement' 'pending: git push inside a for-loop body is denied'
