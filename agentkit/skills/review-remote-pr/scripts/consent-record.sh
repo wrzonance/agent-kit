@@ -516,6 +516,12 @@ has_ordered_authorization_words() {
         'help me understand' teach)
     local -a performative_tokens=(perform run 'do' execute conduct 'carry out' start \
         'kick off' 'give me' 'get me')
+    # Deferral or retrospective wording BEFORE the performative verb ("when we are
+    # ready, have codex ... perform", "last time we had codex ... perform") is not a
+    # present instruction; the same words after the verb ("perform a review tomorrow")
+    # still are (CodeRabbit, PR #898).
+    local -a deferral_tokens=(when whenever after once until till before later tomorrow \
+        tonight yesterday earlier previously wait eventually 'last time')
     local token model idx provider_idx=-1 model_idx=-1 purpose_idx=-1 performative_idx=-1 first_idx
     LOOSE_MATCH_REASON=''
     for token in "${inquiry_tokens[@]}"; do
@@ -560,6 +566,13 @@ has_ordered_authorization_words() {
         LOOSE_MATCH_REASON='no performative verb governs the review purpose'
         return 1
     fi
+    for token in "${deferral_tokens[@]}"; do
+        idx=$(word_index "$words" "$token")
+        if ((idx >= 0 && idx < performative_idx)); then
+            LOOSE_MATCH_REASON='instruction is conditional or not a present request'
+            return 1
+        fi
+    done
     return 0
 }
 has_authorized_relationship() {

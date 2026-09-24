@@ -274,6 +274,33 @@ assert_eq no \
         || -e $tmp/state/issue-896-not-affirmative.consent-paths ]] && printf yes || printf no)" \
     'the negated refusal creates no grant evidence'
 
+# CodeRabbit (PR #898): deferral or retrospective wording BEFORE the performative verb
+# is not a present instruction; a time reference AFTER the verb still is.
+deferred_rc=0
+deferred_out=$(bash "$consent" grant --state "$tmp/state/issue-896-deferred" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'when we are ready, have codex with gpt-6-astra perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || deferred_rc=$?
+assert_eq 2 "$deferred_rc" 'a deferred "when we are ready" turn refuses'
+assert_contains "$deferred_out" 'instruction is conditional or not a present request' \
+    'the deferred refusal names its cause'
+retro_rc=0
+retro_out=$(bash "$consent" grant --state "$tmp/state/issue-896-retro" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'last time we had codex with gpt-6-astra perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || retro_rc=$?
+assert_eq 2 "$retro_rc" 'a retrospective "last time" turn refuses'
+assert_contains "$retro_out" 'instruction is conditional or not a present request' \
+    'the retrospective refusal names its cause'
+assert_rc 0 'a present request with a time reference after the verb still grants' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896-tomorrow" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'have codex with gpt-6-astra perform an adversarial review tomorrow' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths"
+
 # The two prior #896 grants still hold with the performative-verb bound in place.
 assert_rc 0 'the doubled-"have" #896 turn still grants under the performative-verb bound' -- \
     bash "$consent" grant --state "$tmp/state/issue-896b-reverify" --provider codex \

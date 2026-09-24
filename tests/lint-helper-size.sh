@@ -70,7 +70,8 @@ declare -A KNOWN_OVERSIZE=(
     # governing the purpose and refuse any inquiry/explanation phrasing.
     # #896 round 4: distinct "not affirmative" message for a negated
     # instruction that still satisfies the ordered/performative checks.
-    [skills/review-remote-pr/scripts/consent-record.sh]="898:10649:800"
+    # PR #898 CodeRabbit: refuse deferral/retrospective wording before the performative verb.
+    [skills/review-remote-pr/scripts/consent-record.sh]="911:10831:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -220,7 +221,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
-readonly MAX_TREE_TOKENS=478970
+readonly MAX_TREE_TOKENS=479152
 
 violations=0
 checked=0
