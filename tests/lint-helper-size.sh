@@ -60,6 +60,18 @@ declare -A KNOWN_OVERSIZE=(
     [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
     # #728 separates optional CI outcomes from required acceptance execution.
     [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
+    # #896: tolerate ordinary filler words between provider/model/purpose in
+    # an operator-instruction authorization clause, and name an unparsed
+    # clause instead of misreporting it as a missing purpose.
+    # #896 fix round: the ordered check now runs over the whole instruction,
+    # not just a fixed-opener clause, so a doubled verb with no recognized
+    # opener at all still grants.
+    # #896 P1 review repair: bound the fallback to a performative verb
+    # governing the purpose and refuse any inquiry/explanation phrasing.
+    # #896 round 4: distinct "not affirmative" message for a negated
+    # instruction that still satisfies the ordered/performative checks.
+    # PR #898 CodeRabbit: refuse deferral/retrospective wording before the performative verb.
+    [skills/review-remote-pr/scripts/consent-record.sh]="911:10831:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     [skills/review-remote-pr/scripts/post-receipt.sh]="994:11350:800"
@@ -205,7 +217,11 @@ readonly MAX_HELPER_TOKENS=10000
 # activation-gate option B task 2: --activation-nonce flag folds the receipt
 # into agent-preflight.sh's first call; exact combined helper tree measurement.
 # final-review Minor #2: +67 tokens from agent-preflight.sh's usage-error guard.
-readonly MAX_TREE_TOKENS=477662
+# #896: consent-record.sh crosses into KNOWN_OVERSIZE; exact tree measurement.
+# #896 fix round: whole-instruction ordered check; exact tree measurement.
+# #896 P1 review repair: performative-verb bound; exact tree measurement.
+# #896 round 4: not-affirmative refusal message; exact tree measurement.
+readonly MAX_TREE_TOKENS=479152
 
 violations=0
 checked=0

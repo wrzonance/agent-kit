@@ -483,21 +483,117 @@ authorization_clause() {
         *) return 1 ;;
     esac
 }
-has_authorized_relationship() {
-    local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
-    clause=$(authorization_clause "$words") || return 1
+# Index (in characters) of the first standalone occurrence of `needle` inside
+# `haystack`, or -1 when absent. Used to check relative ordering of the
+# provider/model/purpose tokens within an authorization clause, independent
+# of whatever filler words the operator wrote between them.
+word_index() {
+    local haystack=" $1 " needle=$2 prefix
+    [[ $haystack == *" $needle "* ]] || { printf -- '-1'; return; }
+    prefix=${haystack%%" $needle "*}
+    printf '%s' "${#prefix}"
+}
+# General fallback for has_authorized_relationship: rather than requiring the
+# exact grammar `[provider] <model> [for] <purpose>` right after one of a
+# fixed set of opening phrases, require only that a provider token, the
+# model words, and a purpose phrase each appear somewhere in the WHOLE
+# instruction, in that relative order -- any words before, between, or
+# repeated verbs (a harness name, an effort level, "make sure you have ...
+# have ... perform") are tolerated. The leading-word requirement rejects a
+# bare label with nothing said about it (the provider/model span cannot be
+# the very first word of the instruction). Bounded per #896 review: naming
+# the harness/model in order is not itself an instruction, so the purpose
+# must be governed by a performative verb, and any inquiry/explanation
+# phrasing anywhere in the instruction refuses -- "explain how you would
+# review X" names every element without asking for the review to happen.
+# LOOSE_MATCH_REASON (global) carries the human-readable cause of a bounded
+# refusal so affirmation_refusal can name it instead of a generic message.
+has_ordered_authorization_words() {
+    local words=$1 provider=$2 model_words=$3 model_alias=$4
+    local -a provider_tokens purpose_tokens=('adversarial review' 'cross review' review)
+    local -a inquiry_tokens=(explain describe 'how to' 'how do' 'what is' 'what would' \
+        'tell me' 'show me' document summarize summarise 'walk me through' \
+        'help me understand' teach)
+    local -a performative_tokens=(perform run 'do' execute conduct 'carry out' start \
+        'kick off' 'give me' 'get me')
+    # Deferral or retrospective wording BEFORE the performative verb ("when we are
+    # ready, have codex ... perform", "last time we had codex ... perform") is not a
+    # present instruction; the same words after the verb ("perform a review tomorrow")
+    # still are (CodeRabbit, PR #898).
+    local -a deferral_tokens=(when whenever after once until till before later tomorrow \
+        tonight yesterday earlier previously wait eventually 'last time')
+    local token model idx provider_idx=-1 model_idx=-1 purpose_idx=-1 performative_idx=-1 first_idx
+    LOOSE_MATCH_REASON=''
+    for token in "${inquiry_tokens[@]}"; do
+        if has_words "$words" "$token"; then
+            LOOSE_MATCH_REASON='instruction asks for an explanation, not a review'
+            return 1
+        fi
+    done
     case $provider in
-        anthropic) lead='((claude|anthropic)( with)? )?' ;;
-        openai) lead='((codex|openai)( with)? )?' ;;
-        *) lead="($(normalize_words "$provider")( with)? )?" ;;
+        anthropic) provider_tokens=(claude anthropic opus sonnet haiku) ;;
+        openai) provider_tokens=(codex openai gpt) ;;
+        *) provider_tokens=("$(normalize_words "$provider")") ;;
     esac
-    scope='(of this (pr|pull request|diff)|for this pr|on this pr|on it|of (the|that) diff|of (pr|pull request) [0-9]+)'
-    tail="(for )?(adversarial review|cross review|review)( $scope)?( do not ask again)?"
+    for token in "${provider_tokens[@]}"; do
+        [[ -n $token ]] || continue
+        idx=$(word_index "$words" "$token")
+        ((idx < 0)) && continue
+        { ((provider_idx < 0)) || ((idx < provider_idx)); } && provider_idx=$idx
+    done
     for model in "$model_words" "$model_alias"; do
         [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
-        pattern="^${lead}${model} ${tail}$"
-        [[ $clause =~ $pattern ]] && return 0
-    done; return 1
+        idx=$(word_index "$words" "$model")
+        ((idx < 0)) && continue
+        { ((model_idx < 0)) || ((idx < model_idx)); } && model_idx=$idx
+    done
+    for token in "${purpose_tokens[@]}"; do
+        idx=$(word_index "$words" "$token")
+        ((idx < 0)) && continue
+        { ((purpose_idx < 0)) || ((idx < purpose_idx)); } && purpose_idx=$idx
+    done
+    ((model_idx >= 0 && purpose_idx >= 0 && model_idx < purpose_idx)) || return 1
+    ((provider_idx < 0)) || ((provider_idx < model_idx)) || return 1
+    first_idx=$model_idx
+    ((provider_idx < 0)) || first_idx=$provider_idx
+    ((first_idx > 0)) || return 1
+    for token in "${performative_tokens[@]}"; do
+        idx=$(word_index "$words" "$token")
+        ((idx < 0)) && continue
+        { ((performative_idx < 0)) || ((idx < performative_idx)); } && performative_idx=$idx
+    done
+    if ((performative_idx < 0 || performative_idx >= purpose_idx)); then
+        LOOSE_MATCH_REASON='no performative verb governs the review purpose'
+        return 1
+    fi
+    for token in "${deferral_tokens[@]}"; do
+        idx=$(word_index "$words" "$token")
+        if ((idx >= 0 && idx < performative_idx)); then
+            LOOSE_MATCH_REASON='instruction is conditional or not a present request'
+            return 1
+        fi
+    done
+    return 0
+}
+has_authorized_relationship() {
+    local words=$1 provider=$2 model_words=$3 model_alias=$4 clause lead scope tail pattern model
+    LOOSE_MATCH_REASON=''
+    if clause=$(authorization_clause "$words"); then
+        case $provider in
+            anthropic) lead='((claude|anthropic)( with)? )?' ;;
+            openai) lead='((codex|openai)( with)? )?' ;;
+            *) lead="($(normalize_words "$provider")( with)? )?" ;;
+        esac
+        scope='(of this (pr|pull request|diff)|for this pr|on this pr|on it|of (the|that) diff|of (pr|pull request) [0-9]+)'
+        tail="(for )?(adversarial review|cross review|review)( $scope)?( do not ask again)?"
+        for model in "$model_words" "$model_alias"; do
+            [[ -n $model && ! $model =~ ^[0-9]+$ ]] || continue
+            pattern="^${lead}${model} ${tail}$"
+            [[ $clause =~ $pattern ]] && return 0
+        done
+    fi
+    has_ordered_authorization_words "$words" "$provider" "$model_words" "$model_alias" && return 0
+    return 1
 }
 strip_quoted_segments() {
     local input=$1 output='' quote='' char close='' previous='' following='' i curly_open=$'\u2018' curly_close=$'\u2019'
@@ -525,10 +621,21 @@ strip_quoted_segments() {
 }
 affirmation_refusal() {
     local provider_found=$1 model_found=$2 purpose_found=$3 provider_spellings=$4 model_spellings=$5
+    local unparsed_clause=${6:-0} reason=${7:-} not_affirmative=${8:-0}
     record_refused_grant || die 'cannot persist refused-grant provenance'
     ((provider_found)) || printf '%s: operator instruction missing provider; accepted: %s\n' "$PROGNAME" "$provider_spellings" >&2
     ((model_found)) || printf '%s: operator instruction missing model; accepted: %s\n' "$PROGNAME" "$model_spellings" >&2
-    ((purpose_found)) || printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
+    if ((! purpose_found)); then
+        if ((provider_found && model_found && not_affirmative)); then
+            printf '%s: instruction is not affirmative\n' "$PROGNAME" >&2
+        elif ((provider_found && model_found && unparsed_clause)) && [[ -n $reason ]]; then
+            printf '%s: %s\n' "$PROGNAME" "$reason" >&2
+        elif ((provider_found && model_found && unparsed_clause)); then
+            printf '%s: could not parse an authorization clause; found provider, model and purpose\n' "$PROGNAME" >&2
+        else
+            printf '%s: operator instruction missing purpose; accepted: adversarial review, review, cross-review\n' "$PROGNAME" >&2
+        fi
+    fi
     exit 2
 }
 
@@ -536,6 +643,7 @@ validate_operator_affirmation() {
     local instruction=${OPERATOR_INSTRUCTION,,} destination=${DESTINATION,,} outside words full_words destination_words purpose_words
     local model_words model_alias model_spellings provider_spellings provider_found=0 model_found=0 purpose_found=0
     local affirmative=0 safe=1 payload_pr explicit_pr token purpose_pattern='^(one )?(adversarial review|cross review|review)( of (that|this) (diff|pr|pull request))?$'
+    local purpose_found_raw
     field_is_safe "$MODEL" || die_usage 'model must be non-empty and delimiter-free'
     outside=$(strip_quoted_segments "$instruction") || outside=''
     words=$(normalize_words "$outside")
@@ -579,6 +687,7 @@ validate_operator_affirmation() {
         purpose_found=1
     fi
     [[ $purpose_words =~ $purpose_pattern ]] || purpose_found=0
+    purpose_found_raw=$purpose_found
     has_authorized_relationship "$words" "$PROVIDER" "$model_words" "$model_alias" && affirmative=1
     full_words=${full_words%' do not ask again'}
     for token in no not never dont 'don t' cannot cant 'can t' refuse refused declines declined decline avoid without except forbid forbidden revoke revoked instead if unless rather; do
@@ -592,9 +701,13 @@ validate_operator_affirmation() {
         explicit_pr=${BASH_REMATCH[3]}
         [[ $explicit_pr == "$payload_pr" ]] || safe=0
     fi
+    local unparsed_clause=0 not_affirmative=0
+    ((provider_found && model_found && purpose_found_raw && safe && ! affirmative)) && unparsed_clause=1
+    ((provider_found && model_found && purpose_found_raw && ! safe)) && not_affirmative=1
     ((affirmative && safe)) || purpose_found=0
     ((provider_found && model_found && purpose_found)) ||
-        affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings"
+        affirmation_refusal "$provider_found" "$model_found" "$purpose_found" "$provider_spellings" "$model_spellings" \
+            "$unparsed_clause" "$LOOSE_MATCH_REASON" "$not_affirmative"
 }
 grant_command() {
     [[ $SOURCE == interactive || $SOURCE == auto-review-flag || $SOURCE == operator-instruction ]] ||

@@ -166,6 +166,155 @@ assert_contains "$missing_purpose_out" 'missing purpose' 'purpose refusal names 
 assert_contains "$missing_purpose_out" 'adversarial review, review, cross-review' \
     'purpose refusal gives accepted spellings'
 
+# #896: an imperative turn with ordinary filler words between provider, model
+# and purpose grants -- it must not be misdiagnosed as a missing purpose.
+issue896_state="$tmp/state/issue-896"
+issue896_out=$(bash "$consent" grant --state "$issue896_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+issue896_rc=$?
+assert_eq 0 "$issue896_rc" 'the #896 verbatim operator turn grants despite filler words'
+assert_contains "$issue896_out" 'source=operator-instruction' 'the #896 grant retains operator provenance'
+
+# The same sentence negated still refuses.
+issue896_negated_state="$tmp/state/issue-896-negated"
+issue896_negated_rc=0
+bash "$consent" grant --state "$issue896_negated_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort do not perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || issue896_negated_rc=$?
+assert_eq 2 "$issue896_negated_rc" 'a negated form of the #896 turn is still refused'
+assert_eq no \
+    "$([[ -e $issue896_negated_state || -e $issue896_negated_state.decision.json || -e $issue896_negated_state.consent-paths ]] && printf yes || printf no)" \
+    'the negated #896 turn creates no grant evidence'
+
+# #896 fix round: a second real operator turn, with a doubled "have" and no
+# clause opener the grammar recognizes at all, must also grant -- the ordered
+# check has to work over the whole instruction, not just a stripped clause.
+issue896b_state="$tmp/state/issue-896b"
+issue896b_out=$(bash "$consent" grant --state "$issue896b_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you have codex have gpt-6-astra xhigh perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+issue896b_rc=$?
+assert_eq 0 "$issue896b_rc" 'a real turn with a doubled "have" and no recognized opener still grants'
+assert_contains "$issue896b_out" 'source=operator-instruction' 'the #896 fix-round grant retains operator provenance'
+
+# The same sentence negated still refuses.
+issue896b_negated_state="$tmp/state/issue-896b-negated"
+issue896b_negated_rc=0
+bash "$consent" grant --state "$issue896b_negated_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you do not have codex have gpt-6-astra xhigh perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" >/dev/null 2>&1 || issue896b_negated_rc=$?
+assert_eq 2 "$issue896b_negated_rc" 'a negated form of the second #896 turn is still refused'
+assert_eq no \
+    "$([[ -e $issue896b_negated_state || -e $issue896b_negated_state.decision.json || -e $issue896b_negated_state.consent-paths ]] && printf yes || printf no)" \
+    'the negated second #896 turn creates no grant evidence'
+
+# When provider, model and purpose are all present but out of order, the
+# refusal names the real cause instead of misreporting a missing purpose.
+unparseable_out=$(bash "$consent" grant --state "$tmp/state/issue-896-unparseable" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Perform an adversarial review using gpt-6-astra hosted via codex' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1)
+assert_contains "$unparseable_out" 'could not parse an authorization clause; found provider, model and purpose' \
+    'an out-of-order but complete instruction names the real refusal cause'
+
+# #896 P1 (adversarial review): naming provider/model/purpose in order is not
+# itself an instruction -- an explanation request must still refuse even
+# though every element is present in order.
+explain_state="$tmp/state/issue-896-explain"
+explain_rc=0
+explain_out=$(bash "$consent" grant --state "$explain_state" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'Use codex with gpt-6-astra to explain how to request consent for an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || explain_rc=$?
+assert_eq 2 "$explain_rc" 'an explanation request is refused even with provider, model and purpose in order'
+assert_contains "$explain_out" 'instruction asks for an explanation, not a review' \
+    'the explanation refusal names its real cause'
+assert_eq no \
+    "$([[ -e $explain_state || -e $explain_state.decision.json || -e $explain_state.consent-paths ]] && printf yes || printf no)" \
+    'the explanation refusal creates no grant evidence'
+
+# A second explanation phrasing ("tell me how you would do X") also refuses
+# with the same message, even though it also contains the performative verb
+# "do" -- the inquiry check wins.
+tellme_rc=0
+tellme_out=$(bash "$consent" grant --state "$tmp/state/issue-896-tellme" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'codex with gpt-6-astra, tell me how you would do an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || tellme_rc=$?
+assert_eq 2 "$tellme_rc" '"tell me how you would do X" is still an explanation request, not an instruction'
+assert_contains "$tellme_out" 'instruction asks for an explanation, not a review' \
+    'the "tell me how you would do X" refusal names the same explanation cause'
+
+# A negated form of the doubled-"have" turn refuses with an affirmative-
+# specific message, not a misleading "missing purpose" -- ordering and the
+# performative verb ("perform") are still present, only the negation blocks it.
+not_affirmative_rc=0
+not_affirmative_out=$(bash "$consent" grant --state "$tmp/state/issue-896-not-affirmative" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'make sure you have codex have gpt-6-astra xhigh do not perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || not_affirmative_rc=$?
+assert_eq 2 "$not_affirmative_rc" 'a negated doubled-"have" turn refuses'
+assert_contains "$not_affirmative_out" 'instruction is not affirmative' \
+    'the negated refusal names its real cause instead of a missing purpose'
+assert_eq no \
+    "$([[ -e $tmp/state/issue-896-not-affirmative || -e $tmp/state/issue-896-not-affirmative.decision.json \
+        || -e $tmp/state/issue-896-not-affirmative.consent-paths ]] && printf yes || printf no)" \
+    'the negated refusal creates no grant evidence'
+
+# CodeRabbit (PR #898): deferral or retrospective wording BEFORE the performative verb
+# is not a present instruction; a time reference AFTER the verb still is.
+deferred_rc=0
+deferred_out=$(bash "$consent" grant --state "$tmp/state/issue-896-deferred" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'when we are ready, have codex with gpt-6-astra perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || deferred_rc=$?
+assert_eq 2 "$deferred_rc" 'a deferred "when we are ready" turn refuses'
+assert_contains "$deferred_out" 'instruction is conditional or not a present request' \
+    'the deferred refusal names its cause'
+retro_rc=0
+retro_out=$(bash "$consent" grant --state "$tmp/state/issue-896-retro" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'last time we had codex with gpt-6-astra perform an adversarial review' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths" 2>&1) || retro_rc=$?
+assert_eq 2 "$retro_rc" 'a retrospective "last time" turn refuses'
+assert_contains "$retro_out" 'instruction is conditional or not a present request' \
+    'the retrospective refusal names its cause'
+assert_rc 0 'a present request with a time reference after the verb still grants' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896-tomorrow" --provider codex \
+    --payload "$payload" --source operator-instruction \
+    --operator-instruction 'have codex with gpt-6-astra perform an adversarial review tomorrow' \
+    --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+    --purpose 'adversarial review' --paths-file "$tmp/paths"
+
+# The two prior #896 grants still hold with the performative-verb bound in place.
+assert_rc 0 'the doubled-"have" #896 turn still grants under the performative-verb bound' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896b-reverify" --provider codex \
+        --payload "$payload" --source operator-instruction \
+        --operator-instruction 'make sure you have codex have gpt-6-astra xhigh perform an adversarial review' \
+        --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+        --purpose 'adversarial review' --paths-file "$tmp/paths"
+assert_rc 0 'the original #896 turn still grants under the performative-verb bound' -- \
+    bash "$consent" grant --state "$tmp/state/issue-896-reverify" --provider codex \
+        --payload "$payload" --source operator-instruction \
+        --operator-instruction 'Have the local codex harness with gpt-6-astra at xhigh effort perform an adversarial review' \
+        --destination 'OpenAI via the local codex CLI (gpt-6-astra)' --model gpt-6-astra \
+        --purpose 'adversarial review' --paths-file "$tmp/paths"
+
 # Provider aliases and natural model spellings are token-bounded and provider-specific.
 for accepted in \
     'Each PR is authorized to have one anthropic Opus 5 xhigh review.' \
