@@ -615,7 +615,7 @@ assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, o
 # Issue #902 documents that completed snapshot review evidence survives CI
 # repair and that publication consumes a fresh final-head digest.
 # #903: document shared reviewer/native admission and standalone-run isolation.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 34070 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 34070 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 34564 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 34564 bytes'
 
 finish

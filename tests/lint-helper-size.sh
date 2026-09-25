@@ -59,9 +59,11 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/merge-gate.sh]="899:11809:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
+    # #902 review: persist cross-clone attempted spend before provider execution.
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1049:13325:800"
     # #728 separates optional CI outcomes from required acceptance execution.
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
+    # #902 review: preserve executable CQ/ICF classification availability.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1245:14867:800"
     # #896: tolerate ordinary filler words between provider/model/purpose in
     # an operator-instruction authorization clause, and name an unparsed
     # clause instead of misreporting it as a missing purpose.
@@ -77,10 +79,12 @@ declare -A KNOWN_OVERSIZE=(
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     # #902: compose final-head CI, acceptance, and all finding evidence before publication.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="1086:12728:800"
+    # #902 review: reject unavailable classification and complete remote attempts.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="1096:12909:800"
     # #727: independently validated remediation and repair resume.
     # #873: cover states its preconditions and binds fix:<id> via finding-ledger ids.
-    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10284:800"
+    # #902 review: distinguish attempted spend from completed coverage and upsert it.
+    [skills/review-remote-pr/scripts/review-ledger.sh]="874:10957:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -227,7 +231,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #903: shared reviewer/native admission and its durable inventory checks.
 # #903: shared review/worker capacity and proved-stopped liveness evidence.
 # #902: executable final-head and accepted-finding receipt gates.
-readonly MAX_TREE_TOKENS=483916
+# #902 review: cross-clone spend and classifier finalization boundaries.
+readonly MAX_TREE_TOKENS=485578
 
 violations=0
 checked=0

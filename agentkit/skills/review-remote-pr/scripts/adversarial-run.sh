@@ -669,8 +669,12 @@ try_reaffirm_if_covered() {
             --repo-root "$CONTRACT_ROOT" 2>/dev/null
     ) || status_rc=$?
     case $status_rc in
-        0) : ;;
+        0)
+            ((REAFFIRM_IF_COVERED)) ||
+                die 'existing completed review covers this PR; pass --reaffirm-if-covered to reuse it without another provider send'
+            ;;
         11) return 1 ;;
+        20) die 'remote review attempt has uncertain delivery; reconcile it before another provider send' ;;
         *) die 'existing or unreadable review ledger requires reconciliation; refusing another review' ;;
     esac
     [[ $status_out == covered-head || $status_out == covered-diff || $status_out == covered-lineage ]] ||
@@ -720,6 +724,33 @@ try_reaffirm_if_covered() {
     printf 'reaffirmed-from-ledger provider=%s verdict=%s head=%s\n' \
         "$PROVIDER" "$status_out" "$head_oid"
     return 0
+}
+
+# Persist the spend before executing the provider. The issue-comment ledger is
+# shared across clones, so an interrupted session cannot repurchase the review
+# merely because its local attempt registry is unavailable. This entry proves
+# only attempted execution; review-ledger status never treats it as coverage.
+record_remote_attempted_spend() {
+    local ledger_script="$SCRIPT_DIR/review-ledger.sh"
+    local entry_file="$RUN_DIR/state/review-ledger-attempted.json"
+    local head_oid
+    [[ -x $ledger_script ]] || die "review-ledger.sh is unavailable: $ledger_script"
+    [[ -f $LEDGER_COMMENTS && ! -L $LEDGER_COMMENTS && -r $LEDGER_COMMENTS ]] ||
+        die "fresh PR comments artifact is unavailable for remote spend accounting: $LEDGER_COMMENTS"
+    head_oid=$(git rev-parse HEAD 2>/dev/null) ||
+        die 'could not resolve checkout HEAD for remote spend accounting'
+    jq -cn --arg provider "$PROVIDER" --arg head "$head_oid" --arg payload "$PAYLOAD" \
+        --arg attempt_id "$ATTEMPT_ID" --arg model "$MODEL" --arg effort "$EFFORT" \
+        --arg mode "$MODE" --arg attempted_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{kind:"adversarial",provider:$provider,head_sha:$head,diff_payload:$payload,
+          attemptId:$attempt_id,executionState:"attempted",model:$model,effort:$effort,
+          mode:$mode,attempted_at:$attempted_at}' >"$entry_file" ||
+        die 'could not encode remote attempted-spend entry'
+    chmod 600 -- "$entry_file" || die 'could not secure remote attempted-spend entry'
+    "$ledger_script" append --repo "$REPO" --pr "$PR" --comments "$LEDGER_COMMENTS" \
+        --entry-file "$entry_file" --agent-identity "$HARNESS_NAME" \
+        --repo-root "$CONTRACT_ROOT" >&2 ||
+        die 'remote attempted-spend marker was not byte-verified; provider was not executed and the attempt requires reconciliation'
 }
 
 # write_launch_attempted -- the pre-send marker (issue #473), written in
@@ -927,6 +958,7 @@ run_provider() {
     # follow-up F2) -- this is the pre-send marker, not a post-hoc log, and a
     # purely local abort must never leave one behind.
     write_launch_attempted
+    record_remote_attempted_spend
     AGENTKIT_REVIEW_ATTEMPT_ID="$ATTEMPT_ID" CONSENT_WORKTREE="$CONTRACT_ROOT" \
         AGENTKIT_REVIEW_BASE_SHA="$pinned_review_base" \
         AGENTKIT_REVIEW_PR_BASE_SHA="$PR_BASE_SHA" \
@@ -968,6 +1000,7 @@ main() {
     private_dir_ensure "$RUN_DIR" '--run-dir'
     RUN_DIR=$(cd -- "$RUN_DIR" && pwd -P) || die 'could not resolve run directory'
     private_dir_ensure "$RUN_DIR/state" '--run-dir/state'
+    [[ -n $LEDGER_COMMENTS ]] || LEDGER_COMMENTS="$RUN_DIR/state/pr_${PR}_issue_comments.json"
     # Serializes this whole invocation against any concurrent one sharing the
     # same RUN_DIR before either the marker or the result is ever inspected --
     # including the reaffirm short-circuit below, so two concurrent
@@ -996,7 +1029,7 @@ main() {
     # guard_prior_launch_attempt -- a stale local launch marker must never block
     # a run the durable ledger proves covered. A reaffirmed run returns here and
     # records no launch provenance because it launches nothing.
-    if ((REAFFIRM_IF_COVERED)) && try_reaffirm_if_covered; then
+    if try_reaffirm_if_covered; then
         return 0
     fi
     write_provenance_record

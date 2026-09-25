@@ -657,7 +657,7 @@ that terminal result. It never remains active while root launches its reviewer o
 Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
 `origin/${base_branch}`, and chains pass `--materiality-base`.
 
-Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ...`. Never forward the consent,
+Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ... --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" --reaffirm-if-covered`. Never forward the consent,
 auto-review flag, or launch to a child. After launch-ready setup results arrive, launch all currently eligible reviews without waiting for an earlier review result. A stacked successor is eligible once
 its own pushed snapshot is fixed; its predecessor's review may still be running. Give every PR its
 own `RUN_DIR`; collect review completions independently and preserve every returned attempt/result
@@ -723,7 +723,8 @@ the pre-launch gate above, and the precheck must never fall through to a placeho
 Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
 format to `$RUN_DIR/accepted-findings.ndjson`; create it explicitly empty only after accepting none.
 Reuse it for repair and terminal evidence. Missing, open, legacy-terminal, or stale evidence blocks
-publication, while raw untriaged thread counts remain non-gating:
+publication. An unavailable `finding-classification: cq=... icf=...` digest result blocks publication
+without delaying the earlier immutable review launch; raw untriaged thread counts remain non-gating:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
@@ -731,9 +732,22 @@ publication, while raw untriaged thread counts remain non-gating:
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
-# After the runner returns 0, run the ledger command once per outcome:
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
+# After the runner returns 0, produce terminal proof before each disposition:
+fixed_evidence="$RUN_DIR/evidence-fixed.json"
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE' \
+  --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
+  --repair-sha REPAIR_SHA >"$fixed_evidence" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
+  --title 'SHORT_TITLE' --severity P1 --verdict fixed \
+  --sha "$(jq -r .repairSha "$fixed_evidence")" --evidence "$fixed_evidence" \
+  --repo-root "$worktree" --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
+decline_evidence="$RUN_DIR/evidence-declined.json"
+jq -cn --arg finding 'OTHER_TITLE' --arg rationale 'RATIONALE' \
+  '{finding:$finding,decision:"rejected",rationale:$rationale}' >"$decline_evidence" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
+  --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE' \
+  --evidence "$decline_evidence" --repo-root "$worktree" \
+  --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
 acceptance_args=()
 if [[ -f "$worktree/.agent/acceptance.txt" && ! -L "$worktree/.agent/acceptance.txt" ]]; then
   while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do

@@ -50,6 +50,7 @@ Trusted author (in order): --trusted-author; AGENT_LEDGER_AUTHOR from .agent/con
 comment by anyone else is ignored (stderr warning); no identity at all fails closed.
 status verdicts: covered-head 0, covered-lineage 0, covered-diff 0 (needs --diff-payload
 and a proven-ancestor entry with the same diff_payload), stale 10, absent 11,
+attempted 20 (a provider send was reserved but has no completed receipt),
 unparseable ledger 1 (blocks, never read as absent).
 Exit status (all subcommands): 0 success; 1 evidence unavailable or unparseable
 ledger; 2 usage; 10 status: stale; 11 read/status/cover: absent; 12 cover: --head is
@@ -134,6 +135,9 @@ readonly LEDGER_SCHEMA_JQ='
     (.kind == "adversarial" or .kind == "bot") and
     (.head_sha | type) == "string" and (.head_sha | test("^[0-9a-f]{7,40}$")) and
     (.provider | type) == "string" and (.provider | length) > 0 and
+    ((has("attemptId") | not) or ((.attemptId | type) == "string" and (.attemptId | length) > 0)) and
+    ((has("executionState") | not) or
+      ((.executionState == "attempted" or .executionState == "completed") and has("attemptId"))) and
     ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
     ((has("covered_heads") | not) or
       ((.covered_heads | type) == "array") and
@@ -145,7 +149,9 @@ readonly LEDGER_SCHEMA_JQ='
         (.sha | type) == "string" and (.sha | test("^[0-9a-f]{7,40}$")) and
         (.reason | type) == "string" and
         (.reason | test("^(fix|merge-down|retarget):[A-Za-z0-9._/-]+$")) and
-        (.covered_at | type) == "string" and (.covered_at | length) > 0)))
+        (.covered_at | type) == "string" and (.covered_at | length) > 0))) and
+  (([.reviews[] | .attemptId? // empty] | length) ==
+   ([.reviews[] | .attemptId? // empty] | unique | length))
 '
 
 # jq filter validating one NEW entry (a single object, same per-entry shape
@@ -156,6 +162,9 @@ readonly ENTRY_SCHEMA_JQ='
   (.kind == "adversarial" or .kind == "bot") and
   (.head_sha | type) == "string" and (.head_sha | test("^[0-9a-f]{7,40}$")) and
   (.provider | type) == "string" and (.provider | length) > 0 and
+  ((has("attemptId") | not) or ((.attemptId | type) == "string" and (.attemptId | length) > 0)) and
+  ((has("executionState") | not) or
+    ((.executionState == "attempted" or .executionState == "completed") and has("attemptId"))) and
   ((has("diff_payload") | not) or (.diff_payload | type) == "string") and
   ((has("covered_heads") | not) or
     ((.covered_heads | type) == "array") and
@@ -413,6 +422,14 @@ cmd_status() {
         exit 11
     fi
 
+    # Provider spend is PR-wide while review coverage remains head-specific.
+    # A pre-send marker therefore blocks every later send, including one for a
+    # changed head, until the matching final receipt reconciles that attempt.
+    if jq -e 'any(.[]; .executionState? == "attempted")' <<<"$candidates" >/dev/null 2>&1; then
+        printf 'attempted\n'
+        exit 20
+    fi
+
     if [[ ${REMEDIATION_MODE:-0} == 1 ]]; then
         local findings_file state
         jq -e 'all(.[]; (has("findings")|not) or (.findings|type)=="array")' <<<"$candidates" >/dev/null ||
@@ -622,7 +639,35 @@ cmd_append() {
         IFS=$'\t' read -r comment_id ledger_json <<<"$out"
         [[ $(jq -r '.repo' <<<"$ledger_json") == "$repo" && $(jq -r '.pr' <<<"$ledger_json") == "$pr" ]] ||
             evidence_unavailable 'existing ledger repo/pr does not match this call'
-        ledger_json=$(jq -c --argjson entry "$entry" '.reviews += [$entry]' <<<"$ledger_json")
+        local attempt_id match_count
+        attempt_id=$(jq -r '.attemptId // ""' <<<"$entry")
+        match_count=0
+        if [[ -n $attempt_id ]]; then
+            match_count=$(jq --arg id "$attempt_id" '[.reviews[] | select(.attemptId? == $id)] | length' \
+                <<<"$ledger_json") || evidence_unavailable 'could not inspect existing attempt entries'
+        fi
+        if ((match_count > 1)); then
+            evidence_unavailable "existing ledger contains duplicate attemptId: $attempt_id"
+        elif ((match_count == 1)); then
+            jq -e --arg id "$attempt_id" --argjson entry "$entry" '
+              .reviews[] | select(.attemptId? == $id) |
+              .kind == $entry.kind and .provider == $entry.provider and
+              .head_sha == $entry.head_sha and
+              ((.diff_payload // "") == ($entry.diff_payload // ""))
+            ' <<<"$ledger_json" >/dev/null 2>&1 ||
+                evidence_unavailable "attemptId $attempt_id conflicts with existing review identity"
+            ledger_json=$(jq -c --arg id "$attempt_id" --argjson entry "$entry" '
+              .reviews |= map(
+                if .attemptId? != $id then .
+                elif (.executionState? == "completed" and $entry.executionState? == "attempted") then .
+                else . as $prior |
+                  $entry + (if ($entry | has("attempted_at")) or ($prior | has("attempted_at") | not)
+                            then {} else {attempted_at:$prior.attempted_at} end)
+                end)
+            ' <<<"$ledger_json") || evidence_unavailable 'could not reconcile review attempt entry'
+        else
+            ledger_json=$(jq -c --argjson entry "$entry" '.reviews += [$entry]' <<<"$ledger_json")
+        fi
     else
         exit 1
     fi
