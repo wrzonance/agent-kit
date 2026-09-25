@@ -360,8 +360,146 @@ assert_contains "$recreate_out" "worktree=$pruned_worktree branch=feat/issue-49"
 assert_eq 'yes' "$([[ -d $pruned_worktree ]] && printf yes || printf no)" \
     '--resume recreates the worktree directory on disk'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 332 ]] && printf yes || printf no)" \
-    'create-issue-worktree.sh stays at or under 332 lines'
+# --- complete join bases come from the saved plan and accepted publications -
+join_repo="$tmp/join-repo"
+mkdir -p "$join_repo"
+make_repo "$join_repo" >/dev/null
+"$preflight_sh" --worktree "$join_repo" >/dev/null 2>&1
+
+make_predecessor() {
+    local repo=$1 issue=$2 path=$3 content=$4 branch head
+    branch="feat/issue-$issue"
+    git -C "$repo" checkout -qb "$branch" main
+    printf '%s\n' "$content" >"$repo/$path"
+    git -C "$repo" add -- "$path"
+    git -C "$repo" commit -qm "issue $issue"
+    head=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" push -q origin "$branch"
+    git -C "$repo" checkout -q main
+    printf '%s\n' "$head"
+}
+
+join_a=$(make_predecessor "$join_repo" 61 a.txt alpha)
+join_b=$(make_predecessor "$join_repo" 62 b.txt beta)
+join_c=$(make_predecessor "$join_repo" 63 c.txt gamma)
+conflict_left=$(make_predecessor "$join_repo" 81 seed.txt left)
+conflict_right=$(make_predecessor "$join_repo" 82 seed.txt right)
+join_run=join-run
+for record in "61:$join_a" "62:$join_b" "63:$join_c" \
+    "81:$conflict_left" "82:$conflict_right"; do
+    predecessor=${record%%:*}
+    predecessor_head=${record#*:}
+    publication=$(jq -nc --arg attempt "attempt-$predecessor" \
+        --arg branch "feat/issue-$predecessor" --arg headSha "$predecessor_head" \
+        '{attempt:$attempt,branch:$branch,headSha:$headSha}')
+    "$run_state_sh" set --run-id "$join_run" --repo-root "$join_repo" \
+        --path "initialPublications.$predecessor" --json "$publication"
+done
+
+join_plan="$tmp/join-plan.json"
+jq -n '{schemaVersion:1,entries:[
+    {issue:70,publicationTarget:"main",expectedPredecessors:[61,62,63],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:71,publicationTarget:"main",expectedPredecessors:[61,99],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:72,publicationTarget:"main",expectedPredecessors:[61,62],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:73,publicationTarget:"main",expectedPredecessors:[61,62],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:80,publicationTarget:"main",expectedPredecessors:[81,82],integrationBaseSha:null,predictedWriteSet:["seed.txt"]}
+],conflictMap:{pairs:[],revisions:[]}}' >"$join_plan"
+
+missing_rc=0
+missing_out=$("$create_sh" --repo-root "$join_repo" --issue 71 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" 2>&1) || missing_rc=$?
+assert_eq 1 "$missing_rc" 'a join with an unpublished planned predecessor stays queued'
+assert_contains "$missing_out" 'missing initial publication for predecessor #99' \
+    'the queued join names the missing planned predecessor'
+assert_eq no "$(git -C "$join_repo" show-ref --verify --quiet refs/heads/feat/issue-71 && printf yes || printf no)" \
+    'an incomplete join creates no implementation branch'
+
+join_out=$("$create_sh" --repo-root "$join_repo" --issue 70 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" 2>&1)
+join_worktree="$join_repo/.fleet/feat/issue-70"
+join_head=$(git -C "$join_worktree" rev-parse HEAD)
+assert_contains "$join_out" "join-base=$join_head predecessors=61,62,63" \
+    'three-parent assembly reports its exact complete integration base'
+for predecessor_head in "$join_a" "$join_b" "$join_c"; do
+    assert_rc 0 "published join contains predecessor $predecessor_head" -- \
+        git -C "$join_worktree" merge-base --is-ancestor "$predecessor_head" "$join_head"
+done
+assert_eq "$join_head" "$(git -C "$join_repo" ls-remote --refs origin refs/heads/feat/issue-70 | awk '{print $1}')" \
+    'implementation receives the exact published integration base'
+assert_eq "$join_head" "$(jq -r '.entries[] | select(.issue == 70) | .integrationBaseSha' "$join_plan")" \
+    'saved plan records the integration base separately from publicationTarget'
+assert_eq main "$(jq -r '.entries[] | select(.issue == 70) | .publicationTarget' "$join_plan")" \
+    'join assembly preserves the PR publication target'
+
+resume_head_before=$join_head
+resume_out=$("$create_sh" --repo-root "$join_repo" --issue 70 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1)
+assert_eq "$resume_head_before" "$(git -C "$join_worktree" rev-parse HEAD)" \
+    'repeat setup resumes without recreating merge commits'
+assert_contains "$resume_out" "join-base=$resume_head_before predecessors=61,62,63" \
+    'repeat setup reuses the recorded complete join'
+
+# A caller-supplied first predecessor is only a candidate starting point; it
+# cannot narrow the expected set saved in the plan.
+candidate_out=$("$create_sh" --repo-root "$join_repo" --issue 72 --base main \
+    --chain-base "$join_a" --dispatch-plan "$join_plan" --run-id "$join_run" 2>&1)
+candidate_worktree="$join_repo/.fleet/feat/issue-72"
+candidate_head=$(git -C "$candidate_worktree" rev-parse HEAD)
+assert_contains "$candidate_out" 'predecessors=61,62' \
+    'a supplied single-parent base still assembles every planned predecessor'
+assert_rc 0 'the remaining predecessor is present above the supplied candidate' -- \
+    git -C "$candidate_worktree" merge-base --is-ancestor "$join_b" "$candidate_head"
+
+# A pushed single-parent partial branch is resumable progress, never proof of
+# a complete join. Resume adds only the missing planned predecessor.
+partial_worktree="$join_repo/.fleet/feat/issue-73"
+git -C "$join_repo" worktree add "$partial_worktree" -b feat/issue-73 "$join_a" >/dev/null 2>&1
+git -C "$partial_worktree" push -q --set-upstream origin feat/issue-73
+partial_before=$(git -C "$partial_worktree" rev-parse HEAD)
+partial_out=$("$create_sh" --repo-root "$join_repo" --issue 73 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1)
+partial_after=$(git -C "$partial_worktree" rev-parse HEAD)
+assert_eq no "$([[ $partial_before == "$partial_after" ]] && printf yes || printf no)" \
+    'resume advances a partially published join'
+assert_contains "$partial_out" "join-base=$partial_after predecessors=61,62" \
+    'partial resume publishes the completed join identity'
+assert_rc 0 'partial resume includes the missing second predecessor' -- \
+    git -C "$partial_worktree" merge-base --is-ancestor "$join_b" "$partial_after"
+
+# Conflicts remain in the same sole-writer worktree for automatic resolution.
+# No implementation branch is published until a resolution preserves both
+# behaviors and resume proves the combined result.
+conflict_rc=0
+conflict_out=$("$create_sh" --repo-root "$join_repo" --issue 80 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" 2>&1) || conflict_rc=$?
+conflict_worktree="$join_repo/.fleet/feat/issue-80"
+assert_eq 3 "$conflict_rc" 'a content conflict requests the resolution-only worker path'
+assert_contains "$conflict_out" 'next=resolution-worker-then-resume' \
+    'conflict output names the automatic resolution continuation'
+assert_eq conflict "$("$run_state_sh" get --run-id "$join_run" --repo-root "$join_repo" \
+    --path joins.80.status)" 'conflict state is durable for resume'
+assert_rc 0 'the unresolved join preserves MERGE_HEAD for the sole writer' -- \
+    git -C "$conflict_worktree" rev-parse -q --verify MERGE_HEAD
+assert_eq no "$(git -C "$join_repo" show-ref --verify --quiet refs/remotes/origin/feat/issue-80 && printf yes || printf no)" \
+    'a conflicted partial join is not published as an implementation base'
+printf 'left\nright\n' >"$conflict_worktree/seed.txt"
+git -C "$conflict_worktree" add -- seed.txt
+git -C "$conflict_worktree" commit -qm 'resolve both predecessor behaviors'
+resolved_out=$("$create_sh" --repo-root "$join_repo" --issue 80 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1)
+resolved_head=$(git -C "$conflict_worktree" rev-parse HEAD)
+assert_contains "$resolved_out" "join-base=$resolved_head predecessors=81,82" \
+    'resume publishes the behavior-preserving conflict resolution'
+assert_eq $'left\nright' "$(cat "$conflict_worktree/seed.txt")" \
+    'combined join preserves both predecessor behaviors'
+assert_rc 0 'resolved join contains the left predecessor' -- \
+    git -C "$conflict_worktree" merge-base --is-ancestor "$conflict_left" "$resolved_head"
+assert_rc 0 'resolved join contains the right predecessor' -- \
+    git -C "$conflict_worktree" merge-base --is-ancestor "$conflict_right" "$resolved_head"
+
+# Issue #910: join-plan/run-state wiring adds only the public options and one
+# call into the focused join helper; hold the setup script at its new boundary.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 341 ]] && printf yes || printf no)" \
+    'create-issue-worktree.sh stays at or under 341 lines'
 
 finish
