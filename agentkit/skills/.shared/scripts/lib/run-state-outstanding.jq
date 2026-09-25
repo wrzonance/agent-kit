@@ -51,12 +51,15 @@ def accepted_publication($issue):
         {id:("result:"+$attempt+":open-draft-pr"),kind:"result",issue:$owner.issue,
          next_action:"open-draft-pr",actionable:true}
     else empty end]) as $result_work |
-([$opened[] | select(($receipts | index(.)) == null and ($skipped | index(.)) == null) |
-    {id:("pr:"+(tostring)+":publish-receipt"),kind:"pr",issue:null,
+([$opened[] as $pr | select(($receipts | index($pr)) == null and ($skipped | index($pr)) == null) |
+    {id:("pr:"+($pr|tostring)+":publish-receipt"),kind:"pr",issue:null,
      next_action:"publish-receipt",actionable:true}]) as $pr_work |
 ([$queued[] as $issue | ($plan.entries | map(select(.issue == $issue))) as $entries |
     ($entries[0] // null) as $entry |
-    if ($entries | length) != 1 or ($entry | type) != "object" or
+    if any($live[]; .issue == $issue) then
+        {id:("queued:"+($issue|tostring)+":reconcile-active-owner"),kind:"queue",issue:$issue,
+         next_action:"reconcile-active-owner",actionable:false}
+    elif ($entries | length) != 1 or ($entry | type) != "object" or
        ($entry.expectedPredecessors | type) != "array" or
        any($entry.expectedPredecessors[]; uint | not) or
        (($entry.expectedPredecessors | length) != ($entry.expectedPredecessors | unique | length)) then

@@ -250,17 +250,45 @@ outstanding=$("$script" outstanding --file "$state" \
 assert_eq 0 "$(jq -r .outstanding <<<"$outstanding")" \
     'mapped opened result plus receipt leaves no durable publication obligation'
 
+# A receipt for another opened PR cannot suppress the exact missing receipt.
+"$script" set --file "$state" --path results --json '{}'
+"$script" set --file "$state" --path opened_prs --json '[604,605]'
+"$script" set --file "$state" --path receipt_prs --json '[605]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 1 "$(jq -r .outstanding <<<"$outstanding")" \
+    'one opened PR without its own receipt stays outstanding'
+assert_eq '["pr:604:publish-receipt"]' "$(jq -c .actionable_work <<<"$outstanding")" \
+    'the missing PR receipt is directly actionable'
+"$script" set --file "$state" --path receipt_prs --json '[604,605]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 0 "$(jq -r .outstanding <<<"$outstanding")" \
+    'receipts for both opened PRs discharge the publication obligations'
+
 # A current-run nonterminal owner is a first-class operation even when the
-# caller supplies no operation. The durable source scan selects collection.
+# caller supplies no operation. A stale queued row for that same issue cannot
+# dispatch a duplicate, while an independent queued issue remains actionable.
 printf '%s\n' \
     '{"version":2,"runId":"wave","attempt":"attempt607","workerId":"worker607","issue":607,"worktree":"/repo/.worktrees/607","branch":"fix/607","state":"active","disposition":"returned","evidence":"","heartbeatEpoch":2}' \
     >>"$worker_ledger"
+"$script" set --file "$state" --path queued --json '[607,608]'
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":607,"predictedWriteSet":["a/**"],"expectedPredecessors":[]},{"issue":608,"predictedWriteSet":["b/**"],"expectedPredecessors":[]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq '["queued:608:dispatch-successor"]' "$(jq -c .actionable_work <<<"$outstanding")" \
+    'same-issue active ownership blocks only its stale queued dispatch'
+assert_eq 'reconcile-active-owner' \
+    "$(jq -r '.obligations[] | select(.issue == 607 and .kind == "queue") | .next_action' <<<"$outstanding")" \
+    'the stale same-issue queue row remains concrete reconciliation'
 decision=$("$script" next-action --after-steer --file "$state" \
     --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" --json "$drained")
-assert_eq 'collect' "$(jq -r .next_action <<<"$decision")" \
-    'a source-derived nonterminal worker selects collection'
-assert_eq 1 "$(jq -r .outstanding <<<"$decision")" \
-    'the nonterminal worker is counted as one outstanding operation'
+assert_eq 'dispatch' "$(jq -r .next_action <<<"$decision")" \
+    'independent durable work dispatches beside a same-issue active owner'
+assert_eq 3 "$(jq -r .outstanding <<<"$decision")" \
+    'the active owner, stale queue row, and independent queue row all remain visible'
 assert_eq 'active' "$(jq -r '.orchestration.snapshot.operations[0].status' "$state")" \
     'the saved operation preserves the worker ledger state'
 
