@@ -1,10 +1,7 @@
 # Verification cache and suite cadence
 
-Read this when deciding how often to re-run verification during red/green iteration; `SKILL.md` keeps
-the pinned rule sentences. (The command-approval fence was removed 2026-08-19: `agent-run.sh --cmd NAME`
-runs a declared command directly, with no approval or trust record.)
-
-## Verification cache and suite cadence
+`SKILL.md` pins verification rules. `agent-run.sh --cmd NAME` runs declared commands
+directly, without approval or trust records.
 
 Reuse requires `AGENT_VERIFY_<NAME>_MODE=local` and a nonempty
 `AGENT_VERIFY_<NAME>_TOOLCHAIN` list of executable names, including interpreters and transitive
