@@ -1989,7 +1989,9 @@ assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
 # #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2321 ]] && printf yes || printf no)" \
+# #907: the one-call startup/resume binding recipe replaces remembered run,
+# session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
+assert_eq yes "$([[ $prose_lines -le 2320 ]] && printf yes || printf no)" \
     'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

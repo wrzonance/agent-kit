@@ -23,6 +23,8 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2288:24898:800"
+    # #906 review: complete next-action help and inventory-safe dispatch.
+    [skills/.shared/scripts/run-state.sh]="687:10089:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
@@ -231,15 +233,18 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
-# #907: durable run binding and stall-output ledger alias protection.
-# #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #903: shared reviewer/native admission and its durable inventory checks.
 # #903: shared review/worker capacity and proved-stopped liveness evidence.
 # #902: executable final-head and accepted-finding receipt gates.
 # #902 review: cross-clone spend and classifier finalization boundaries.
 # #901: deferred chain finalization reuses run-state and exact pushed evidence.
-# #907 landing combines the existing reviewed helper implementations.
-readonly MAX_TREE_TOKENS=493153
+# #907: durable run binding and stall-output ledger alias protection.
+# #906: validated durable next-action boundary prevents operator-only wait loops.
+# #907 review: exact-run rebind validates fresh authority without losing durable state.
+# #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
+# #906 review: complete next-action help and inventory-safe dispatch.
+# #906 landing: measured combined helper implementations.
+readonly MAX_TREE_TOKENS=494819
 
 violations=0
 checked=0
