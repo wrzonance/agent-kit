@@ -626,7 +626,7 @@ obtains interactive approval in the consent-holding context. Do not forward the 
 loop: a relayed grant manufactures child-context consent. The loop prechecks, hands launch-ready
 state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
-### Step 3b: Dispatch review-remote-pr agents (parallel)
+### Step 3b: Dispatch concurrent reviews and approved fix batches
 
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
 cap includes the root and active issue leads; reserve those before deriving child capacity. The
@@ -646,12 +646,40 @@ printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
     "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
 
-Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill after
-prior loop reaches completion marker. Do not reserve nested-worker slots; the loop uses
-the documented spawn-unavailable path for root-approved fix batches. This dispatch-time counter
-enforces the cap.
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill
+after a prior loop reaches its completion marker. A setup loop releases its slot when root accepts
+that terminal result. It never remains active while root launches its reviewer or fix worker.
 Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
 `origin/${base_branch}`, and chains pass `--materiality-base`.
+
+Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ...`. Never forward the consent,
+auto-review flag, or launch to a child. After launch-ready setup results arrive, launch all currently eligible reviews without waiting for an earlier review result. A stacked successor is eligible once
+its own pushed snapshot is fixed; its predecessor's review may still be running. Give every PR its
+own `RUN_DIR`; collect review completions independently and preserve every returned attempt/result
+identity when another launch fails or has an unknown outcome. An existing or uncertain attempt is
+never resent. Queue a capacity refusal and refill it only after a confirmed terminal release.
+
+The executable boundary is shared: review attempts and native worker reservations share the same atomic admission lock.
+Both call `concurrency-cap.sh` against root, outstanding version-2 reservations from the bound run,
+other-run reservations with a nonfuture heartbeat inside the standard two-hour freshness window,
+and reserved/running/unreconciled unknown review attempts. This is the existing total cap, never a
+review-only budget. The lock covers admission and its durable state write only; provider execution
+and worker work run without it. Standalone review remains valid when there is no current worker
+reservation; an old run's stale row does not consume capacity even when its worktree remains registered. A
+validated `attempt confirm-stopped` proof releases capacity while preserving unknown spend state.
+
+Once root approves findings, reserve `pr-fix-batch` with `$agentkit/parallel-issues/scripts/named-active-state.sh` before submission,
+record its returned worker ID, and release it only with confirmed terminal evidence. Dispatch
+approved batches for different worktrees immediately, even while other reviews or fixes run.
+A second fix worker, root edit, or merge-down targeting an occupied worktree waits for confirmed
+terminal release; requesting an interrupt is not release evidence. At batch composition, include
+available upstream findings and fix evidence from predecessor work that has already completed.
+Missing future findings never delay dispatch. Reconcile independently completed fixes against the
+integrated tree in dependency order.
+
+Review and fix completion may arrive in any order. Publish one root-owned receipt at a time, and
+serialize every other shared-state or forge publication. Neither a review result nor a fix result
+alone makes a draft ready.
 
 ### Adversarial-review receipt:
 

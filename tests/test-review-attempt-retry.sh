@@ -7,6 +7,9 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$here/lib/assert.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export CODEX_HOME="$tmp/codex-home"
+mkdir -p "$CODEX_HOME"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 repo="$tmp/repo"
 git init -q "$repo"
 git -C "$repo" config user.email test@example.invalid
@@ -136,6 +139,7 @@ unknown=$(attempt read "$timeout_entry")
 make_entry "$tmp/recovered" "$new_head" recoveredpayload 10 40000 770
 recovery_entry="$tmp/recovered/state/review-attempt.json"
 proof="$tmp/stopped-timeout.json"
+capacity_proof="$tmp/stopped-capacity.json"
 result_hash=$(sha256sum "$tmp/timed-out/adversarial.result.json" | cut -d' ' -f1)
 transcript_hash=$(sha256sum "$tmp/timed-out/claude.ndjson" | cut -d' ' -f1)
 jq -n --arg id "$unknown_id" --arg head "$new_head" --arg auth "$authorization" \
@@ -145,10 +149,54 @@ jq -n --arg id "$unknown_id" --arg head "$new_head" --arg auth "$authorization" 
       timeoutSeconds:900,resultSha256:$result,transcriptSha256:$transcript,
       helperProcess:$old.helperProcess,providerProcess:$old.providerProcess}' >"$proof"
 chmod 600 "$proof"
+jq -n --arg id "$unknown_id" --arg head "$old_head" --argjson old "$unknown" \
+    '{schemaVersion:1,repo:"acme/widget",pr:770,attemptId:$id,
+      head:$head,payload:"oldpayload",authorization:"",reason:"operator-confirmed-timeout",
+      timeoutSeconds:900,helperProcess:$old.helperProcess,providerProcess:$old.providerProcess}' \
+    >"$capacity_proof"
+chmod 600 "$capacity_proof"
+assert_rc 1 'capacity release refuses while any recorded review process remains live' -- \
+    attempt confirm-stopped "$timeout_entry" --id "$unknown_id" --stopped-timeout-proof "$capacity_proof"
 assert_rc 1 'live timeout processes cannot be recovered' -- attempt retry "$recovery_entry" \
     --id "$unknown_id" --authorization "$authorization" --stopped-timeout-proof "$proof"
 kill "$launcher_pid" "$helper_pid" "$provider_pid"
 wait "$launcher_pid" "$helper_pid" "$provider_pid" 2>/dev/null || true
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 6' >"$CODEX_HOME/config.toml"
+make_entry "$tmp/capacity-contender" "$new_head" contender 5 20000 771
+capacity_entry="$tmp/capacity-contender/state/review-attempt.json"
+assert_rc 1 'stopped but unproved unknown attempt still consumes reviewer capacity' -- \
+    attempt reserve "$capacity_entry"
+jq '.payload="different"' "$timeout_entry" >"$tmp/mismatched-stop-entry"
+assert_rc 1 'capacity release proof cannot bind a substituted attempt entry' -- \
+    attempt confirm-stopped "$tmp/mismatched-stop-entry" --id "$unknown_id" \
+    --stopped-timeout-proof "$capacity_proof"
+confirmed=$(attempt confirm-stopped "$timeout_entry" --id "$unknown_id" \
+    --stopped-timeout-proof "$capacity_proof")
+assert_eq unknown-outcome "$(jq -r .state <<<"$confirmed")" \
+    'stopped-process proof preserves uncertain spend state'
+assert_eq "$unknown_id" "$(jq -r .id <<<"$confirmed")" \
+    'stopped-process proof preserves the original attempt identity'
+assert_eq confirm-stopped "$(jq -r '.events[-1].operation' <<<"$confirmed")" \
+    'capacity release is a durable event, not an inferred liveness transition'
+assert_eq "$(sha256sum "$capacity_proof" | cut -d' ' -f1)" \
+    "$(jq -r .stoppedTimeoutProofSha256 <<<"$confirmed")" \
+    'capacity release binds the validated stopped-process proof'
+assert_eq "$(jq -cS . "$capacity_proof" | sha256sum | cut -d' ' -f1)" \
+    "$(jq -r .capacityReleaseProofSha256 <<<"$confirmed")" \
+    'capacity release stores a reader-verifiable canonical proof digest'
+assert_rc 20 'capacity release never resets the spent repo/PR review budget' -- \
+    attempt reserve "$timeout_entry"
+timeout_record="$repo/.git/agentkit-review-attempts/$(printf 'acme/widget:770' | sha256sum | cut -d' ' -f1).json"
+cp "$timeout_record" "$tmp/confirmed-record"
+jq '.stoppedTimeoutProof.payload="tampered"' "$timeout_record" >"$tmp/tampered-record"
+mv "$tmp/tampered-record" "$timeout_record"
+assert_rc 1 'capacity inventory refuses a stopped proof whose binding was altered' -- \
+    attempt reserve "$capacity_entry"
+cp "$tmp/confirmed-record" "$timeout_record"
+capacity_refill=$(attempt reserve "$capacity_entry")
+assert_eq reserved "$(jq -r .state <<<"$capacity_refill")" \
+    'proved-stopped unknown attempt releases capacity for a distinct review'
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 assert_rc 1 'stopped unknown attempt still requires explicit proof' -- attempt retry "$recovery_entry" \
     --id "$unknown_id" --authorization "$authorization"
 assert_rc 1 'proof alone never supplies operator authorization' -- attempt retry "$recovery_entry" \

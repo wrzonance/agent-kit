@@ -3,6 +3,8 @@ set -uo pipefail
 
 readonly PROGRAM=${0##*/}
 readonly MAX=10
+# Codex Multi-Agent V2's root-inclusive default when no override is configured.
+readonly RUNTIME_DEFAULT=4
 cap_source=${BASH_SOURCE[0]}
 [[ $cap_source == */* ]] || cap_source=./$cap_source
 cap_dir=$(cd -P -- "${cap_source%/*}" && pwd -P)
@@ -81,7 +83,15 @@ if [[ $spawn_mode == no ]]; then
 fi
 
 command -v awk >/dev/null 2>&1 || die 'Unable to advertise concurrency: awk is missing; cannot inspect runtime concurrency'
-[[ -e $config_file ]] || die "Unable to advertise concurrency: runtime config is absent: $config_file"
+if [[ ! -e $config_file ]]; then
+    if [[ $count_set == yes ]]; then
+        ((10#$count <= RUNTIME_DEFAULT)) ||
+            die "spawn refused: cap=$RUNTIME_DEFAULT observed=$count agent-kind=$kind helper=$PROGRAM"
+        printf 'effective concurrency cap: %s total threads, including the root (runtime default; config absent)\n' "$RUNTIME_DEFAULT"
+        exit 0
+    fi
+    die "Unable to advertise concurrency: runtime config is absent: $config_file"
+fi
 [[ -f $config_file && -r $config_file ]] ||
     die "Unable to advertise concurrency: runtime config is unreadable or not a regular file: $config_file"
 
