@@ -34,6 +34,9 @@ declare -A KNOWN_OVERSIZE=(
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
     [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
+    # #908: typed PR-create mutation outcome separates safe pre-mutation retry
+    # from exact-head recovery after an accepted but unverified create.
+    [skills/.shared/scripts/gh-body.sh]="856:9515:800"
     # #903: atomically admit reviews and release proved-stopped external capacity.
     [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
@@ -234,8 +237,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #903: shared reviewer/native admission and stopped-proof liveness evidence.
 # #902: final-head, accepted-finding, cross-clone spend, and classifier gates.
 # #908 assembly: #902 and #909/#907 combined helper tree; exact measurement.
-# #908: resumable stages plus finalization/recovery identity proofs remove 8-12 root calls; exact tree measurement.
-readonly MAX_TREE_TOKENS=490139
+# #908: resumable stages plus typed create/finalization identity proofs remove 8-12 root calls; exact tree measurement.
+readonly MAX_TREE_TOKENS=496924
 
 violations=0
 checked=0

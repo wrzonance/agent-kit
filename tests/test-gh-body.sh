@@ -812,9 +812,22 @@ assert_contains "$(cat "$json_err")" 'https://github.com/owner/repo/pull/41' \
 # to stderr and leave stdout empty, the same way mutation.err already does.
 export GH_MUTATION_FAILURE=1
 mutation_failure_err="$tmp/mutation-failure.err"
+outcome_run_dir=$(bash "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh" \
+    --run-id "$run_id" --repo-root "$run_state_repo")
+protected_outcome_target="$outcome_run_dir/run-state.json"
+protected_before=$(sha256sum -- "$protected_outcome_target")
+protected_before=${protected_before%% *}
+protected_outcome_rc=0
+run_body pr create --repo owner/repo --body-file "$body" --json \
+    --mutation-outcome-file "$protected_outcome_target" \
+    >"$tmp/protected-outcome.out" 2>"$tmp/protected-outcome.err" || protected_outcome_rc=$?
+assert_eq 1 "$protected_outcome_rc" 'mutation outcome cannot target another run artifact'
+assert_eq "$protected_before" "$(sha256sum -- "$protected_outcome_target" | cut -d ' ' -f 1)" \
+    'refused mutation outcome leaves run-state bytes unchanged'
+mutation_failure_outcome="$outcome_run_dir/pr-stage-$publication_issue-create-outcome.json"
 set +e
 mutation_failure_output=$(run_body pr create --repo owner/repo --body-file "$body" --json \
-    2>"$mutation_failure_err")
+    --mutation-outcome-file "$mutation_failure_outcome" 2>"$mutation_failure_err")
 mutation_failure_rc=$?
 set -e
 unset GH_MUTATION_FAILURE
@@ -826,6 +839,35 @@ assert_contains "$(cat "$mutation_failure_err")" 'gh mutation failed midstream' 
     '--json routes the raw gh mutation output to stderr instead of stdout'
 assert_contains "$(cat "$mutation_failure_err")" 'body was not verified' \
     '--json mutation failure still reports the die diagnosis on stderr'
+assert_eq uncertain "$(jq -r '.mutation' "$mutation_failure_outcome")" \
+    'a raw gh failure stays uncertain because server acceptance is unknowable'
+
+local_refusal_outcome="$outcome_run_dir/pr-stage-$publication_issue-create-outcome.json"
+set +e
+local_refusal_output=$(run_body pr create --repo owner/repo --body-file "$invalid" --json \
+    --mutation-outcome-file "$local_refusal_outcome" 2>"$tmp/local-refusal.err")
+local_refusal_rc=$?
+set -e
+assert_eq 1 "$local_refusal_rc" 'local body validation refusal remains visible'
+assert_eq '' "$local_refusal_output" 'local validation refusal emits no PR JSON'
+assert_eq not-attempted "$(jq -r '.mutation' "$local_refusal_outcome")" \
+    'only a refusal before gh starts is typed safe for retry'
+
+# Successful creation followed by byte-verification failure has the same empty
+# JSON stdout shape, but its typed outcome must remain created so callers never
+# infer absence or retry from an empty response.
+export GH_MISMATCH=1
+postcreate_outcome="$outcome_run_dir/pr-stage-$publication_issue-create-outcome.json"
+set +e
+postcreate_output=$(run_body pr create --repo owner/repo --body-file "$body" --json \
+    --mutation-outcome-file "$postcreate_outcome" 2>"$tmp/postcreate.err")
+postcreate_rc=$?
+set -e
+unset GH_MISMATCH
+assert_eq 1 "$postcreate_rc" 'post-create byte verification failure remains visible'
+assert_eq '' "$postcreate_output" 'post-create failure can return no PR JSON'
+assert_eq created "$(jq -r '.mutation' "$postcreate_outcome")" \
+    'the typed outcome preserves a real mutation across post-create failure'
 
 # Text mode is unaffected: gh's raw stdout still reaches stdout on failure --
 # main()'s only path to surface a create's partial output before dying.

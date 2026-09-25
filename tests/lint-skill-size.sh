@@ -55,7 +55,8 @@ declare -A KNOWN_OVERSIZE=(
     # #903: concurrent admission, cross-run freshness, and stopped proof contract.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
     # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
-    [parallel-issues]="824:17755:500"
+    # #908 final parent integration: exact combined one-call finalization measurement.
+    [parallel-issues]="827:17766:500"
 )
 
 readonly MAX_BODY_LINES=500

@@ -365,9 +365,11 @@ closing_issue_args=()
 [[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
-"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
-    --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
+if ! grep -qxF 'Diff-size disclosure:' "$pr_decisions_file"; then
+  printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
+  "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
+      --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
+fi
 # A baseline-red declared-verification outcome (review-remote-pr Step 2) writes
 # $RUN_DIR/baseline-evidence.md; when present, fold it in as --baseline-file.
 baseline_args=()
@@ -378,6 +380,7 @@ baseline_exclusion_args=()
     baseline_exclusion_args+=(--baseline-exclusion-file "$worktree/.agent/baseline-exclusion.md")
 "$agentkit/parallel-issues/scripts/pr-stage.sh" open --run-id "$RUN_ID" \
   --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --issue "$issue_number" \
+  --default-branch "$base" \
   --repo "$REPO" --head "$branch" --title "$pr_title" --why-file "$pr_why_file" \
   --what-file "$pr_what_file" --decisions-file "$pr_decisions_file" \
   --testing-file "$pr_testing_file" "${baseline_args[@]}" --agent "$agent_identity" \

@@ -1367,6 +1367,8 @@ assert_contains "$publication_section" '--run-id "$RUN_ID"' \
     'draft PR publication attributes the created PR to the invocation run'
 assert_contains "$publication_section" '--repo-root "$repository_root"' \
     'draft PR publication binds run state to the repository root'
+assert_contains "$publication_section" '--default-branch "$base"' \
+    'draft PR publication binds closing verification to the environment default branch'
 assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --issue "$issue_number"' \
     'draft PR publication binds its target to the current issue saved in the dispatch plan'
 assert_contains "$publication_section" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
@@ -1696,6 +1698,8 @@ assert_contains "$worker_prompts_text" '"$agentkit/.shared/scripts/diff-facts.sh
     'the disclosure recipe runs diff-facts.sh against the worktree'
 assert_contains "$worker_prompts_text" "'Diff-size disclosure:' >> \"\$pr_decisions_file\"" \
     'the disclosure recipe labels machine-readable facts as Decisions prose'
+assert_contains "$publication_section" "if ! grep -qxF 'Diff-size disclosure:' \"\$pr_decisions_file\"; then" \
+    'the disclosure recipe guards its in-place append for resumable publication'
 assert_contains "$worker_prompts_text" '--base "${chain_base_sha:-origin/$base}"' \
     'the disclosure recipe pins the chain base for a chained issue'
 assert_contains "$worker_prompts_text" '>> "$pr_decisions_file"' \
@@ -1704,6 +1708,32 @@ assert_contains "$worker_prompts_text" 'still gets the same draft PR a small one
     'the disclosure recipe states parity between over-guideline and small packets'
 assert_contains "$worker_prompts_text" 'is never an unattended default' \
     'the disclosure recipe states trimming is attended-only, never automatic'
+
+disclosure_recipe=$(sed -n "/^if ! grep -qxF 'Diff-size disclosure:'/,/^fi$/p" <<<"$publication_section")
+if [[ -n $disclosure_recipe ]]; then
+    disclosure_agentkit="$tmp/disclosure-agentkit"
+    disclosure_calls="$tmp/disclosure-calls"
+    disclosure_decisions="$tmp/disclosure-decisions.md"
+    mkdir -p "$disclosure_agentkit/.shared/scripts"
+    cat >"$disclosure_agentkit/.shared/scripts/diff-facts.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'diff-facts\n' >>"$DISCLOSURE_CALLS"
+printf 'base=origin/main\nfiles=1\n'
+EOF
+    chmod +x "$disclosure_agentkit/.shared/scripts/diff-facts.sh"
+    printf 'root-approved decision\n' >"$disclosure_decisions"
+    for _retry in 1 2; do
+        DISCLOSURE_CALLS="$disclosure_calls" agentkit="$disclosure_agentkit" \
+            pr_decisions_file="$disclosure_decisions" worktree="$tmp" base=main \
+            bash -c "$disclosure_recipe"
+    done
+    assert_eq 1 "$(grep -c '^Diff-size disclosure:$' "$disclosure_decisions")" \
+        're-running the actual disclosure recipe preserves one body section'
+    assert_eq 1 "$(grep -c '^diff-facts$' "$disclosure_calls")" \
+        're-running the actual disclosure recipe computes facts only once'
+else
+    assert_eq present missing 'the publication section exposes an executable disclosure guard'
+fi
 
 # The end-of-draft adversarial review on PR #280 confirmed a P2: the first
 # draft of the disclosure recipe stood alone as its own code fence, ahead of
@@ -1984,7 +2014,9 @@ prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$wo
 # session, ledger, and explicit rebind operands; 20 lines keep those boundaries visible.
 # #909: eight review-repair lines pin the saved-target lookup and default-target
 # closing-linkage condition before PR body composition.
-assert_eq yes "$([[ $prose_lines -le 2277 ]] && printf yes || printf no)" \
+# #908: eleven publication lines make the diff disclosure retry-idempotent and
+# bind the saved publication target to the environment default branch.
+assert_eq yes "$([[ $prose_lines -le 2288 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

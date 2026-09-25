@@ -30,6 +30,7 @@ PR=''
 REPO=''
 HEAD_REF=''
 EXPECT_CLOSING_ISSUE=''
+DEFAULT_BRANCH=''
 TITLE=''
 WHY_FILE=''
 WHAT_FILE=''
@@ -53,7 +54,8 @@ usage() {
 Usage: $PROGNAME open --run-id ID --repo-root DIR --dispatch-plan FILE --issue N \\
        --repo OWNER/REPO --head BRANCH --title TITLE --why-file FILE --what-file FILE \\
        --decisions-file FILE --testing-file FILE --agent ID [--baseline-file FILE] \\
-       [--baseline-exclusion-file FILE] [--blocker-file FILE] [--expect-closing-issue N]
+       --default-branch BRANCH [--baseline-exclusion-file FILE] [--blocker-file FILE] \
+       [--expect-closing-issue N]
        $PROGNAME finalize [--run-id ID --run-repo-root DIR] --repo-root DIR --pr N --repo OWNER/REPO \\
        --agent-identity ID [--provider S --model S --effort S --mode S] \\
        [--mode-reason S] [--skip-rationale S --oracle S]
@@ -82,13 +84,14 @@ parse_args() {
     while (($#)); do
         case $1 in
             --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; break ;;
-            --run-id|--repo-root|--run-repo-root|--dispatch-plan|--issue|--pr|--repo|--head|--expect-closing-issue|--title|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker-file|--agent|--agent-identity|--skip-rationale|--oracle|--mode-reason|--provider|--model|--effort|--mode)
+            --run-id|--repo-root|--run-repo-root|--dispatch-plan|--issue|--pr|--repo|--head|--expect-closing-issue|--default-branch|--title|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker-file|--agent|--agent-identity|--skip-rationale|--oracle|--mode-reason|--provider|--model|--effort|--mode)
                 require_value "$1" "${2-}"
                 case $1 in
                     --run-id) RUN_ID=$2 ;; --repo-root) REPO_ROOT=$2 ;; --run-repo-root) RUN_REPO_ROOT=$2 ;;
                     --dispatch-plan) DISPATCH_PLAN=$2 ;;
                     --issue) ISSUE=$2 ;; --pr) PR=$2 ;; --repo) REPO=$2 ;; --head) HEAD_REF=$2 ;;
                     --expect-closing-issue) EXPECT_CLOSING_ISSUE=$2 ;;
+                    --default-branch) DEFAULT_BRANCH=$2 ;;
                     --title) TITLE=$2 ;; --why-file) WHY_FILE=$2 ;; --what-file) WHAT_FILE=$2 ;;
                     --decisions-file) DECISIONS_FILE=$2 ;; --testing-file) TESTING_FILE=$2 ;;
                     --baseline-file) BASELINE_FILE=$2 ;; --baseline-exclusion-file) BASELINE_EXCLUSION_FILE=$2 ;;
@@ -177,6 +180,7 @@ open_stage() {
     [[ -n $RUN_ID ]] || die_usage 'open requires --run-id'
     [[ $ISSUE =~ $UINT_RE ]] || die_usage 'open requires a positive --issue'
     [[ -n $HEAD_REF && -n $TITLE && -n $AGENT ]] || die_usage 'open requires --head, --title, and --agent'
+    [[ -n $DEFAULT_BRANCH ]] || die_usage 'open requires --default-branch'
     [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE == "$ISSUE" ]] ||
         die_usage '--expect-closing-issue must equal --issue'
     [[ -f $DISPATCH_PLAN && ! -L $DISPATCH_PLAN && -O $DISPATCH_PLAN ]] ||
@@ -185,17 +189,27 @@ open_stage() {
     [[ -z $RUN_REPO_ROOT ]] || die_usage 'open does not accept --run-repo-root'
     RUN_REPO_ROOT=$REPO_ROOT
 
-    local run_dir body candidate body_sha key saved='' get_rc=0 had_intent=0 intent pr_json='' pr_number source=create
-    local base head_sha preexisting='[]' listed
+    local run_dir body candidate outcome body_sha key saved='' get_rc=0 had_intent=0 intent pr_json='' pr_number source=create
+    local base head_sha preexisting='[]' listed delivery
     run_dir=$($RUN_DIR_SH --run-id "$RUN_ID" --repo-root "$REPO_ROOT") || die 'could not resolve run directory'
     body=$run_dir/pr-stage-$ISSUE-body.md
     candidate=$run_dir/pr-stage-$ISSUE-candidate.md
+    outcome=$run_dir/pr-stage-$ISSUE-create-outcome.json
     compose_body "$candidate"
     body_sha=$(sha256sum -- "$candidate" | cut -d ' ' -f 1)
     base=$(jq -er --argjson issue "$ISSUE" \
         '[.entries[] | select(.issue == $issue) | .publicationTarget] |
          select(length == 1) | .[0] | select(type == "string" and length > 0)' "$DISPATCH_PLAN") ||
         { rm -f -- "$candidate"; die 'dispatch plan has no unique publication target for this issue'; }
+    if [[ $base == "$DEFAULT_BRANCH" ]]; then
+        [[ $EXPECT_CLOSING_ISSUE == "$ISSUE" ]] || {
+            rm -f -- "$candidate"; die_usage 'default-target open requires --expect-closing-issue matching --issue'
+        }
+    else
+        [[ -z $EXPECT_CLOSING_ISSUE ]] || {
+            rm -f -- "$candidate"; die_usage 'stacked-target open must omit --expect-closing-issue'
+        }
+    fi
     head_sha=$(git -C "$REPO_ROOT" rev-parse --verify "refs/heads/$HEAD_REF^{commit}" 2>/dev/null) ||
         { rm -f -- "$candidate"; die 'could not resolve the intended branch head commit'; }
     key=pr_stage.issue_$ISSUE.open
@@ -204,10 +218,12 @@ open_stage() {
         0)
             had_intent=1
             jq -e --arg repo "$REPO" --arg head "$HEAD_REF" --arg head_sha "$head_sha" \
-                --arg base "$base" --arg title "$TITLE" --arg closing "$EXPECT_CLOSING_ISSUE" \
+                --arg base "$base" --arg default_branch "$DEFAULT_BRANCH" --arg title "$TITLE" \
+                --arg closing "$EXPECT_CLOSING_ISSUE" \
                 --arg body_sha256 "$body_sha" '
                 .intent.repo == $repo and .intent.head == $head and .intent.head_sha == $head_sha
-                and .intent.base == $base and .intent.title == $title
+                and .intent.base == $base and .intent.default_branch == $default_branch
+                and .intent.title == $title
                 and .intent.expect_closing_issue == $closing
                 and .intent.body_sha256 == $body_sha256' <<<"$saved" >/dev/null || {
                     rm -f -- "$candidate"
@@ -229,14 +245,15 @@ open_stage() {
             preexisting=$(jq -ce '[.[] | .number | select(type == "number" and . > 0 and floor == .)] | unique' \
                 <<<"$listed") || { rm -f -- "$candidate"; die 'could not classify pre-existing exact-head PRs'; }
             intent=$(jq -nc --arg repo "$REPO" --arg head "$HEAD_REF" --arg head_sha "$head_sha" \
-                --arg base "$base" --arg title "$TITLE" --arg closing "$EXPECT_CLOSING_ISSUE" \
+                --arg base "$base" --arg default_branch "$DEFAULT_BRANCH" --arg title "$TITLE" \
+                --arg closing "$EXPECT_CLOSING_ISSUE" \
                 --arg body_sha256 "$body_sha" \
                 --argjson preexisting "$preexisting" \
-                '{repo:$repo,head:$head,head_sha:$head_sha,base:$base,title:$title,
+                '{repo:$repo,head:$head,head_sha:$head_sha,base:$base,default_branch:$default_branch,title:$title,
                   expect_closing_issue:$closing,body_sha256:$body_sha256,
                   preexisting_prs:$preexisting}')
             mv -f -- "$candidate" "$body"
-            saved=$(jq -nc --argjson intent "$intent" '{intent:$intent}')
+            saved=$(jq -nc --argjson intent "$intent" '{intent:$intent,create_delivery:"not-started"}')
             state_set_json "$key" "$saved"
             ;;
         *) rm -f -- "$candidate"; die 'open-stage run state is unavailable' ;;
@@ -244,7 +261,10 @@ open_stage() {
 
     if jq -e '.create_failure == true' <<<"$saved" >/dev/null 2>&1; then
         pr_number=$(jq -er '.pr | select(type=="number" and .>0)' <<<"$saved") || die 'failed open state has no PR identity'
-        die "PR #$pr_number was created but closing-link verification failed; return to PR-open handling"
+        if [[ $(jq -r '.create_failure_kind // "verification"' <<<"$saved") == closing-link ]]; then
+            die "PR #$pr_number was created but closing-link verification failed; return to PR-open handling"
+        fi
+        die "PR #$pr_number was created but create verification failed; return to PR-open handling"
     fi
     if jq -e '.board == true' <<<"$saved" >/dev/null 2>&1; then
         pr_number=$(jq -er '.pr | select(type=="number" and .>0)' <<<"$saved") || die 'completed open state has no PR identity'
@@ -255,25 +275,43 @@ open_stage() {
         pr_number=$(jq -r '.pr' <<<"$saved")
         source=$(jq -r '.identity_source // "create"' <<<"$saved")
     else
-        if ((had_intent)); then
+        delivery=$(jq -r '.create_delivery // "uncertain"' <<<"$saved")
+        if ((had_intent)) && [[ $delivery != not-started && $delivery != not-attempted ]]; then
             source=recover
             pr_json=$(recover_created_pr "$body" "$base" "$head_sha" "$preexisting")
         else
             local create_rc=0
             local -a create_args=(pr create --json --run-id "$RUN_ID" --repo-root "$REPO_ROOT" \
                 --dispatch-plan "$DISPATCH_PLAN" --plan-issue "$ISSUE" --body-file "$body" \
-                --repo "$REPO" --head "$HEAD_REF" --title "$TITLE")
+                --repo "$REPO" --head "$HEAD_REF" --title "$TITLE" \
+                --mutation-outcome-file "$outcome")
             [[ -z $EXPECT_CLOSING_ISSUE ]] || create_args+=(--expect-closing-issue "$ISSUE")
+            saved=$(jq -c '.create_delivery = "uncertain"' <<<"$saved")
+            state_set_json "$key" "$saved"
+            rm -f -- "$outcome" || die 'could not reset stale create-outcome evidence'
             pr_json=$($GH_BODY_SH "${create_args[@]}") || create_rc=$?
             if ((create_rc != 0)); then
                 if jq -e '.number | type=="number" and .>0' <<<"$pr_json" >/dev/null 2>&1; then
+                    pr_number=$(jq -r '.number' <<<"$pr_json")
+                    local failure_kind=verification
                     if jq -e '.closing_issue.state == "failed"' <<<"$pr_json" >/dev/null 2>&1; then
-                        pr_number=$(jq -r '.number' <<<"$pr_json")
-                        saved=$(jq -c --argjson pr "$pr_number" '. + {pr:$pr,identity_source:"create",create_failure:true}' <<<"$saved")
-                        state_set_json "$key" "$saved"
+                        failure_kind=closing-link
+                    fi
+                    saved=$(jq -c --argjson pr "$pr_number" --arg kind "$failure_kind" \
+                        '. + {pr:$pr,identity_source:"create",create_delivery:"created",
+                              create_failure:true,create_failure_kind:$kind}' <<<"$saved")
+                    state_set_json "$key" "$saved"
+                    if [[ $failure_kind == closing-link ]]; then
                         die "PR #$pr_number was created but closing-link verification failed; return to PR-open handling"
                     fi
+                    die "PR #$pr_number was created but create verification failed (rc=$create_rc); return to PR-open handling"
                 else
+                    if jq -e '.schemaVersion == 1 and .mutation == "not-attempted"' \
+                        "$outcome" >/dev/null 2>&1; then
+                        saved=$(jq -c '.create_delivery = "not-attempted"' <<<"$saved")
+                        state_set_json "$key" "$saved"
+                        die 'PR creation was not attempted; fix the reported local refusal and re-run this stage'
+                    fi
                     source=recover
                     pr_json=$(recover_created_pr "$body" "$base" "$head_sha" "$preexisting")
                 fi
@@ -282,7 +320,7 @@ open_stage() {
         pr_number=$(jq -er '.number | select(type=="number" and .>0 and floor==.)' <<<"$pr_json") ||
             die 'PR creation/recovery returned no positive PR number'
         saved=$(jq -c --argjson pr "$pr_number" --arg source "$source" \
-            '. + {pr:$pr,identity_source:$source}' <<<"$saved")
+            '. + {pr:$pr,identity_source:$source,create_delivery:"created"}' <<<"$saved")
         state_set_json "$key" "$saved"
     fi
 
@@ -302,9 +340,13 @@ load_attempt() {
     local attempt=$1
     [[ -f $attempt && ! -L $attempt && -O $attempt && -r $attempt ]] ||
         die 'review attempt evidence is unavailable; return to the review phase'
-    IFS=$'\t' read -r PROVIDER MODEL EFFORT MODE HEAD_REF payload substituted < <(
-        jq -er '[.provider,.model,.effort,.mode,.head,.payload,(.modelSubstitutedFrom // "")] |
-            select((.[0:6] | all(.[]; type=="string" and length>0)) and (.[6] | type=="string")) | @tsv' "$attempt") ||
+    IFS=$'\x1f' read -r PROVIDER MODEL EFFORT MODE HEAD_REF payload substituted < <(
+        jq -er 'select((.canonical // false) != true or
+                       (.payload | type=="string" and length>0)) |
+            [.provider,.model,.effort,.mode,.head,(.payload // ""),(.modelSubstitutedFrom // "")] |
+            select((.[0:5] | all(.[]; type=="string" and length>0)) and
+                   (.[5:7] | all(.[]; type=="string")) and
+                   all(.[]; contains("\u001f") | not)) | join("\u001f")' "$attempt") ||
         die 'review attempt evidence is incomplete; return to the review phase'
     REVIEW_PAYLOAD=$payload
     MODEL_SUBSTITUTED_FROM=$substituted
@@ -314,6 +356,7 @@ finalize_stage() {
     require_common
     [[ $PR =~ $UINT_RE ]] || die_usage 'finalize requires a positive --pr'
     [[ -z $EXPECT_CLOSING_ISSUE ]] || die_usage '--expect-closing-issue is valid only for open'
+    [[ -z $DEFAULT_BRANCH ]] || die_usage '--default-branch is valid only for open'
     [[ -n $AGENT_IDENTITY ]] || die_usage 'finalize requires --agent-identity'
     if [[ -n $RUN_ID ]]; then
         [[ -n $RUN_REPO_ROOT ]] || die_usage 'finalize with --run-id requires --run-repo-root'

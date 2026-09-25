@@ -137,10 +137,35 @@ cat >"$tmp/bin/gh-body" <<'EOF'
 set -euo pipefail
 printf 'gh-body\n' >>"$TEST_CALLS"
 printf 'gh-body-args %s\n' "$*" >>"$TEST_CALLS"
-if [[ ${TEST_GH_BODY_MODE:-success} == lost ]]; then
-    printf 'response lost\n' >&2
-    exit 1
-fi
+outcome=''
+while (($#)); do
+    case $1 in
+        --mutation-outcome-file) outcome=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case ${TEST_GH_BODY_MODE:-success} in
+    precreate-fail)
+        jq -nc '{schemaVersion:1,mutation:"not-attempted"}' >"$outcome"
+        printf 'local validation refused before mutation\n' >&2
+        exit 1
+        ;;
+    postcreate-fail)
+        jq -nc '{schemaVersion:1,mutation:"created"}' >"$outcome"
+        printf 'stored-body verification failed after creation\n' >&2
+        exit 1
+        ;;
+    no-outcome-fail)
+        printf 'helper refused before publishing a current outcome\n' >&2
+        exit 1
+        ;;
+    failed-number)
+        jq -nc '{schemaVersion:1,mutation:"created"}' >"$outcome"
+        printf '%s\n' '{"number":44,"html_url":"https://github.com/owner/repo/pull/44","closing_issue":{"issue":908,"state":"deferred","reason":"unverified"}}'
+        exit 1
+        ;;
+esac
+jq -nc '{schemaVersion:1,mutation:"created"}' >"$outcome"
 printf '%s\n' '{"number":44,"html_url":"https://github.com/owner/repo/pull/44","closing_issue":{"issue":908,"state":"deferred","reason":"stacked"}}'
 EOF
 
@@ -252,7 +277,7 @@ common_env=(
 )
 
 open_args=(open --run-id wave --repo-root "$tmp/repo" --dispatch-plan "$tmp/plan.json"
-    --issue 908 --repo owner/repo --head fix/issue-908 --title 'Fix publication'
+    --issue 908 --default-branch main --repo owner/repo --head fix/issue-908 --title 'Fix publication'
     --why-file "$tmp/why.md" --what-file "$tmp/what.md"
     --decisions-file "$tmp/decisions.md" --testing-file "$tmp/testing.md"
     --agent Codex)
@@ -288,11 +313,17 @@ assert_eq 1 "$(grep -c '^board$' "$tmp/calls")" 'completed open does not repeat 
 default_args=("${open_args[@]}")
 for ((i = 0; i < ${#default_args[@]}; i++)); do
     case ${default_args[$i]} in
-        --dispatch-plan) default_args[$((i + 1))]="$tmp/plan-main.json" ;;
-        --issue) default_args[$((i + 1))]=909 ;;
+        --dispatch-plan) default_args[i + 1]="$tmp/plan-main.json" ;;
+        --issue) default_args[i + 1]=909 ;;
     esac
 done
 rm -f "$tmp/lookup.count"
+missing_closing_rc=0
+env "${common_env[@]}" "$helper" "${default_args[@]}" \
+    >"$tmp/missing-closing.out" 2>"$tmp/missing-closing.err" || missing_closing_rc=$?
+assert_eq 2 "$missing_closing_rc" 'default-target open refuses without closing-link verification'
+assert_eq 1 "$(grep -c '^gh-body$' "$tmp/calls")" \
+    'default-target closing refusal happens before another create mutation'
 default_output=$(env "${common_env[@]}" "$helper" "${default_args[@]}" --expect-closing-issue 909)
 assert_contains "$default_output" 'stage=open pr=44' 'default-target open completes through the same stage'
 assert_contains "$(grep '^gh-body-args ' "$tmp/calls" | tail -n1)" '--expect-closing-issue 909' \
@@ -335,8 +366,41 @@ assert_contains "$board_resume" 'outstanding=none' 'board interruption resumes t
 assert_eq 1 "$(grep -c '^gh-body$' "$tmp/calls")" 'board resume does not recreate the PR'
 assert_eq 2 "$(grep -c '^board$' "$tmp/calls")" 'board resume retries only the idempotent failed move'
 
-# A lost create response adopts only the one PR whose exact head and body match
-# the durable pre-mutation intent.
+# Only a typed local refusal before the transport starts is safe to retry. The
+# failed call remains visible, but its durable classification lets a later
+# invocation retry after the local input cause is fixed.
+rm -f "$tmp/state.json" "$tmp/lookup.count"
+: >"$tmp/calls"
+precreate_rc=0
+env "${common_env[@]}" TEST_GH_BODY_MODE=precreate-fail \
+    "$helper" "${open_args[@]}" >"$tmp/precreate.out" 2>"$tmp/precreate.err" || precreate_rc=$?
+assert_eq 1 "$precreate_rc" 'a proved pre-mutation create failure remains visible'
+assert_eq not-attempted "$(jq -r '.pr_stage.issue_908.open.create_delivery' "$tmp/state.json")" \
+    'the typed local refusal is durably classified as not attempted'
+precreate_resume=$(env "${common_env[@]}" "$helper" "${open_args[@]}")
+assert_contains "$precreate_resume" 'completed=compose,create,register,board' \
+    'a proved not-attempted create can retry after its local cause is fixed'
+assert_eq 2 "$(grep -c '^gh-body$' "$tmp/calls")" 'the safe retry performs exactly one later create call'
+
+# A nonzero helper result with an assigned number is a failed mutation outcome
+# even when the nested closing state is not literally "failed". Preserve its
+# identity, refuse downstream registration/board work, and never swallow rc.
+rm -f "$tmp/state.json" "$tmp/lookup.count"
+: >"$tmp/calls"
+failed_number_rc=0
+env "${common_env[@]}" TEST_GH_BODY_MODE=failed-number \
+    "$helper" "${open_args[@]}" >"$tmp/failed-number.out" 2>"$tmp/failed-number.err" || failed_number_rc=$?
+assert_eq 1 "$failed_number_rc" 'every nonzero create result remains a stage failure'
+assert_eq 44 "$(jq -r '.pr_stage.issue_908.open.pr' "$tmp/state.json")" \
+    'a failed create result preserves its assigned PR identity'
+assert_eq 0 "$(grep -c '^board$' "$tmp/calls" || true)" \
+    'a failed create result never advances the board'
+assert_eq 0 "$(grep -c 'record-summary opened_prs' "$tmp/calls" || true)" \
+    'a failed create result never registers completion'
+
+# An interrupted caller can leave an uncertain delivery marker without ever
+# seeing gh-body's supported result. Recovery adopts only the one PR whose exact
+# head and body match the durable pre-mutation intent.
 rm -f "$tmp/state.json" "$tmp/lookup.count"
 : >"$tmp/calls"
 head_sha=$(git -C "$tmp/worker" rev-parse HEAD)
@@ -348,9 +412,9 @@ pr_list=$(jq -nc --arg sha "$head_sha" --rawfile body "$tmp/run/pr-stage-908-bod
       {number:51,url:"https://github.com/owner/repo/pull/51",state:"OPEN",isDraft:false,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body},
       {number:52,url:"https://github.com/owner/repo/pull/52",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"main",headRefName:"fix/issue-908",headRefOid:$sha,body:$body},
       {number:53,url:"https://github.com/owner/repo/pull/53",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:"0000000000000000000000000000000000000000",body:$body},
-      {number:54,url:"https://github.com/owner/repo/pull/54",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body},
-      {number:55,url:"https://github.com/owner/repo/pull/55",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body}]')
-lost_output=$(env "${common_env[@]}" TEST_GH_BODY_MODE=lost \
+	      {number:54,url:"https://github.com/owner/repo/pull/54",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body},
+	      {number:55,url:"https://github.com/owner/repo/pull/55",state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body}]')
+lost_output=$(env "${common_env[@]}" TEST_GH_BODY_MODE=postcreate-fail \
     TEST_PR_LIST_BEFORE="$preexisting" TEST_PR_LIST_AFTER="$pr_list" \
     "$helper" "${open_args[@]}")
 assert_contains "$lost_output" 'stage=open pr=55 completed=compose,recover,register,board outstanding=none' \
@@ -366,11 +430,34 @@ rm -f "$tmp/state.json" "$tmp/lookup.count"
 ambiguous=$(jq -nc --arg sha "$head_sha" --rawfile body "$tmp/run/pr-stage-908-body.md" \
     '[61,62] | map({number:.,url:("https://github.com/owner/repo/pull/" + tostring),state:"OPEN",isDraft:true,title:"Fix publication",baseRefName:"fix/issue-909",headRefName:"fix/issue-908",headRefOid:$sha,body:$body})')
 ambiguous_rc=0
-env "${common_env[@]}" TEST_GH_BODY_MODE=lost TEST_PR_LIST_BEFORE='[]' TEST_PR_LIST_AFTER="$ambiguous" \
+env "${common_env[@]}" TEST_GH_BODY_MODE=postcreate-fail TEST_PR_LIST_BEFORE='[]' TEST_PR_LIST_AFTER="$ambiguous" \
     "$helper" "${open_args[@]}" >"$tmp/ambiguous.out" 2>"$tmp/ambiguous.err" || ambiguous_rc=$?
 assert_eq 1 "$ambiguous_rc" 'ambiguous lost-response recovery refuses'
 assert_contains "$(cat "$tmp/ambiguous.err")" 'ambiguous' 'ambiguous recovery names its cause'
 assert_eq 0 "$(grep -c '^board$' "$tmp/calls" || true)" 'ambiguous recovery never moves the board'
+
+rm -f "$tmp/state.json" "$tmp/lookup.count"
+: >"$tmp/calls"
+empty_recovery_rc=0
+env "${common_env[@]}" TEST_GH_BODY_MODE=postcreate-fail TEST_PR_LIST_BEFORE='[]' TEST_PR_LIST_AFTER='[]' \
+    "$helper" "${open_args[@]}" >"$tmp/empty-recovery.out" 2>"$tmp/empty-recovery.err" || empty_recovery_rc=$?
+assert_eq 1 "$empty_recovery_rc" 'an empty lookup cannot prove an uncertain mutation absent'
+assert_contains "$(cat "$tmp/empty-recovery.err")" 'remote state is uncertain, do not retry' \
+    'empty uncertain recovery preserves the hard refusal'
+assert_eq 1 "$(grep -c '^gh-body$' "$tmp/calls")" \
+    'empty uncertain recovery never retries the create mutation'
+
+rm -f "$tmp/state.json" "$tmp/lookup.count"
+: >"$tmp/calls"
+jq -nc '{schemaVersion:1,mutation:"not-attempted"}' >"$tmp/run/pr-stage-908-create-outcome.json"
+stale_outcome_rc=0
+env "${common_env[@]}" TEST_GH_BODY_MODE=no-outcome-fail TEST_PR_LIST_BEFORE='[]' TEST_PR_LIST_AFTER='[]' \
+    "$helper" "${open_args[@]}" >"$tmp/stale-outcome.out" 2>"$tmp/stale-outcome.err" || stale_outcome_rc=$?
+assert_eq 1 "$stale_outcome_rc" 'missing current-call outcome remains uncertain'
+assert_eq uncertain "$(jq -r '.pr_stage.issue_908.open.create_delivery' "$tmp/state.json")" \
+    'a stale not-attempted marker cannot authorize retry for a later failed call'
+assert_eq no "$( [[ -e $tmp/run/pr-stage-908-create-outcome.json ]] && printf yes || printf no )" \
+    'the stage clears stale outcome bytes before invoking the helper'
 
 # Finalization derives review metadata and counts from existing evidence, takes
 # one fresh PR-state digest, publishes, classifies, and records the summary.
@@ -476,5 +563,36 @@ summary_resume=$(env "${common_env[@]}" TEST_POST_ONCE=1 TEST_POST_MARKER="$tmp/
 assert_contains "$summary_resume" 'outstanding=none' 'summary interruption resumes to completion'
 assert_eq 1 "$(grep -c '^post-mutation$' "$tmp/calls")" \
     'summary resume relies on receipt reconciliation and does not duplicate the remote post'
+
+# Current canonical attempt producers always bind a nonempty payload. Preserve
+# the former recipe's supported legacy shape without weakening that canonical
+# identity: noncanonical records may omit payload; canonical records may not.
+printf '%s\n' '{"provider":"claude","model":"fable","effort":"high","mode":"cross-provider","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","modelSubstitutedFrom":"legacy-model"}' \
+    >"$tmp/run/state/review-attempt.json"
+rm -f "$tmp/state.json" "$tmp/remote-comments.json"
+printf '%s\n' "$binding" >"$tmp/state.json"
+printf '[]\n' >"$tmp/remote-comments.json"
+: >"$tmp/run/accepted-findings.ndjson"
+: >"$tmp/calls"
+legacy_output=$(env "${common_env[@]}" "$helper" finalize --run-id wave --run-repo-root "$tmp/repo" \
+    --repo-root "$tmp/worker" --pr 44 --repo owner/repo --agent-identity Codex)
+assert_contains "$legacy_output" 'outstanding=none' 'legacy review attempts without payload remain publishable'
+assert_not_contains "$(grep '^post-args ' "$tmp/calls" | head -n1)" '--diff-payload' \
+    'legacy payload absence is passed through explicitly rather than invented'
+assert_contains "$(grep '^post-args ' "$tmp/calls" | head -n1)" '--model-substituted-from legacy-model' \
+    'an empty legacy payload does not shift the following provenance field'
+
+printf '%s\n' '{"canonical":true,"provider":"claude","model":"fable","effort":"high","mode":"cross-provider","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+    >"$tmp/run/state/review-attempt.json"
+rm -f "$tmp/state.json"
+printf '%s\n' "$binding" >"$tmp/state.json"
+: >"$tmp/calls"
+canonical_missing_rc=0
+env "${common_env[@]}" "$helper" finalize --run-id wave --run-repo-root "$tmp/repo" \
+    --repo-root "$tmp/worker" --pr 44 --repo owner/repo --agent-identity Codex \
+    >"$tmp/canonical-missing.out" 2>"$tmp/canonical-missing.err" || canonical_missing_rc=$?
+assert_eq 1 "$canonical_missing_rc" 'canonical review attempts still require their immutable payload'
+assert_eq 0 "$(grep -c '^gh-pr-state$' "$tmp/calls" || true)" \
+    'missing canonical payload stops before fresh finalization evidence'
 
 finish
