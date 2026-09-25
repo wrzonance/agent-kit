@@ -207,6 +207,12 @@ wrong_explicit_err=$("$script" bind --run-id resume-run --repo-root "$binding_re
 assert_eq 1 "$wrong_explicit_rc" 'an acknowledged different session cannot overwrite an existing binding'
 assert_contains "$wrong_explicit_err" 'belongs to a different activation session' \
     'wrong-session explicit selection explains the identity mismatch'
+assert_contains "$wrong_explicit_err" '--rebind' \
+    'wrong-session explicit selection names the explicit recovery flag'
+assert_contains "$wrong_explicit_err" 'bind --run-id resume-run' \
+    'wrong-session explicit selection prints the exact selected run in its recovery command'
+assert_contains "$wrong_explicit_err" '--activation-session fresh-session' \
+    'wrong-session explicit selection prints the independently authorized session in its recovery command'
 assert_eq 'actual-session' "$(jq -r '.binding.activation_session' \
     "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
     'wrong-session explicit selection leaves the saved activation identity unchanged'
@@ -214,6 +220,41 @@ assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
     'wrong-session explicit selection leaves recorded operator decisions unchanged'
 assert_eq 'true' "$(jq -c '.redrive["17"]' "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
     'wrong-session explicit selection leaves bounded retry state unchanged'
+
+resume_state="$binding_repo/.agent/evidence/run-resume-run/run-state.json"
+old_activation="$binding_repo/.agent/activation/$(printf '%s' actual-session | sha256sum | cut -d' ' -f1).json"
+fresh_activation="$binding_repo/.agent/activation/$(printf '%s' fresh-session | sha256sum | cut -d' ' -f1).json"
+state_payload_before=$(jq -cS 'del(.binding)' "$resume_state")
+old_activation_before=$(sha256sum "$old_activation")
+rebind_json=$("$script" bind --run-id resume-run --repo-root "$binding_repo" \
+    --activation-session fresh-session --rebind)
+assert_eq 'fresh-session' "$(jq -r '.activation_session' <<<"$rebind_json")" \
+    'an exact run selection can explicitly adopt an independently authorized new session'
+assert_eq "$state_payload_before" "$(jq -cS 'del(.binding)' "$resume_state")" \
+    'explicit rebind preserves every non-binding run-state byte value'
+assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
+    'explicit rebind leaves recorded operator decisions byte-for-byte unchanged'
+assert_eq "$old_activation_before" "$(sha256sum "$old_activation")" \
+    'explicit rebind never rewrites the old activation receipt'
+assert_eq 'fresh-session' "$(jq -r '.session' "$fresh_activation")" \
+    'explicit rebind relies on the new session own activation receipt'
+
+rebound_state_before=$(sha256sum "$resume_state")
+unacknowledged_rebind_rc=0
+unacknowledged_rebind_err=$("$script" bind --run-id resume-run --repo-root "$binding_repo" \
+    --activation-session never-authorized-rebind --rebind 2>&1 >/dev/null) || unacknowledged_rebind_rc=$?
+assert_eq 1 "$unacknowledged_rebind_rc" 'explicit rebind refuses an unacknowledged new session'
+assert_contains "$unacknowledged_rebind_err" 'no receipt at activation origin for session' \
+    'unacknowledged rebind names the missing independent receipt'
+assert_eq "$rebound_state_before" "$(sha256sum "$resume_state")" \
+    'unacknowledged rebind leaves the complete saved run state byte-for-byte unchanged'
+assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
+    'unacknowledged rebind leaves recorded operator decisions byte-for-byte unchanged'
+
+rebind_without_run_rc=0
+"$script" bind --repo-root "$binding_repo" --activation-session fresh-session --rebind \
+    >/dev/null 2>&1 || rebind_without_run_rc=$?
+assert_eq 2 "$rebind_without_run_rc" '--rebind requires an exact --run-id selection'
 
 assert_rc 0 'unacknowledged legacy fixture has ordinary state' -- \
     "$script" set --run-id unacknowledged-run --repo-root "$binding_repo" --path redrive.23
