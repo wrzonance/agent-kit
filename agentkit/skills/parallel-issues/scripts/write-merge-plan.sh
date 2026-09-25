@@ -300,14 +300,6 @@ protected_paths_lib=$script_dir/../../.shared/scripts/lib/protected-paths.sh
 # shellcheck source=../../.shared/scripts/lib/protected-paths.sh
 source "$protected_paths_lib"
 
-# True (rc 0) when $1 is path-component-equal to, or a component-wise
-# ancestor directory of, $2. Never a bare string-prefix test: that would
-# false-positive ".github/workflows-extra" against ".github/workflows".
-path_is_ancestor_or_equal() {
-    local a=${1%/} b=${2%/}
-    [[ $a == "$b" || $b == "$a"/* ]]
-}
-
 # --- dependency-manifest completion (issue #610) ----------------------------
 # A predicted manifest drags its lockfile and the generated files whose CI
 # freshness workflow triggers on that lockfile: two of five workers in the
@@ -575,34 +567,6 @@ manifest_companions_missing() {
 # takes (SKILL.md predicts literals and "**" directory globs); other glob
 # shapes (mid-path "*", "?", character classes) are not evaluated here, to
 # avoid false positives no dispatcher could safely act on.
-protected_write_set_collision() {
-    local write_pattern=$1 candidate pattern base
-    shift
-    if [[ $write_pattern == *'/**' ]]; then
-        candidate=${write_pattern%'/**'}
-    elif [[ $write_pattern != *[\*\?\[]* ]]; then
-        candidate=$write_pattern
-    else
-        return 1
-    fi
-    # Normalize a leading "./" the same way worktree-commit.sh and
-    # shared_protected_pattern already do for both the file path being
-    # checked and every protected pattern -- without this, a "./"-prefixed
-    # value here could compare unequal to its own un-prefixed form there,
-    # passing plan validation only to be refused later at commit time.
-    candidate=${candidate#./}
-    for pattern in "$@"; do
-        base=${pattern%/}
-        base=${base#./}
-        [[ -n $base ]] || continue
-        if path_is_ancestor_or_equal "$base" "$candidate" || path_is_ancestor_or_equal "$candidate" "$base"; then
-            printf '%s' "$pattern"
-            return 0
-        fi
-    done
-    return 1
-}
-
 if ((validate_only)); then
     jq -e '
       def uint: type == "number" and . > 0 and floor == .;
@@ -707,6 +671,7 @@ if ((validate_only)); then
     declare -A missing_companions_by_issue=()
     declare -a companion_issue_order=()
     declare -a protected_entries=()
+    declare -a proposal_entries=()
 
     # --- protected-path collision check: runs unconditionally, independent
     # of --chain-base, because it is pure pattern matching over the plan's
@@ -744,8 +709,11 @@ if ((validate_only)); then
             prediction_patterns+=("$(base64 -d <<< "$encoded")")
         done
         for pattern in "${prediction_patterns[@]}"; do
-            protected_write_set_collision "$pattern" "${protected_patterns[@]}" >/dev/null || continue
+            shared_write_set_collision "$pattern" "${protected_patterns[@]}" >/dev/null || continue
             protected_entries+=("issue#$issue:$pattern")
+            shared_write_set_collision "$pattern" \
+                "${SHARED_PREPARATION_RESTRICTED_PATTERNS[@]}" >/dev/null || continue
+            proposal_entries+=("issue#$issue:$pattern")
         done
     done < <(jq -r '
       .entries[] | [
@@ -920,9 +888,13 @@ if ((validate_only)); then
     protected_summary=''
     ((${#protected_entries[@]} == 0)) ||
         protected_summary=$(printf '%s\n' "${protected_entries[@]}" | LC_ALL=C sort -u | paste -sd, -)
-    printf 'dispatch-plan=%s schemaVersion=1 valid create=%s protected=%s%s\n' \
+    proposal_summary=''
+    ((${#proposal_entries[@]} == 0)) ||
+        proposal_summary=$(printf '%s\n' "${proposal_entries[@]}" | LC_ALL=C sort -u | paste -sd, -)
+    printf 'dispatch-plan=%s schemaVersion=1 valid create=%s protected=%s%s proposal=%s%s\n' \
         "$dispatch_plan" "$create_summary" "${#protected_entries[@]}" \
-        "${protected_summary:+[$protected_summary]}"
+        "${protected_summary:+[$protected_summary]}" "${#proposal_entries[@]}" \
+        "${proposal_summary:+[$proposal_summary]}"
     exit 0
 fi
 

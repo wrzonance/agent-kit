@@ -33,15 +33,18 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    # #905: retain native execution identity, terminal records, and cache-declaration provenance.
-    [skills/.shared/scripts/agent-run.sh]="2094:22851:800"
+    # #905 review: split HEAD-bound evidence from its HEAD-independent exclusion lease.
+    [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
+    # #905 final recovery binding plus #910 immutable accepted-publication projection.
+    [skills/.shared/scripts/worker-result.sh]="678:10258:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
     # #911: exact staged-tree ledger grants authorize prepared protected commits.
-    [skills/.shared/scripts/worktree-commit.sh]="879:9400:800"
+    # #911 review: classify an unresolved index before protected-tree scope derivation.
+    [skills/.shared/scripts/worktree-commit.sh]="891:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
@@ -230,10 +233,15 @@ readonly MAX_HELPER_TOKENS=10000
 # #906 review: complete next-action help and inventory-safe dispatch.
 # #905: native-log validation and one durable missing-evidence recovery add measured helper code.
 # #911: exact staged-tree authorization plus protected-path preparation handback.
+# #907 review: exact-run rebind validates fresh authority without losing durable state.
+# #905 review: validate lease liveness and persist recovery trust provenance.
+# #905 final review: bind root recovery trust to its captured terminal summary.
+# #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
 # #910: complete resumable join assembly and resolution-worker composition.
 # #914 integration: #906 and #910 combined helper tree; exact measurement.
 # #914: durable-source obligations consume the joined publication projection.
-readonly MAX_TREE_TOKENS=491205
+# #910 review: distinguish fresh publication equality from recorded-base reachability.
+readonly MAX_TREE_TOKENS=497146
 
 violations=0
 checked=0

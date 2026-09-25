@@ -30,6 +30,21 @@ readonly SHARED_CI_WORKFLOW_PATTERNS=(
     'Jenkinsfile'
 )
 
+# These paths may change agent or Git behavior as soon as they are written, or
+# may execute during the commit that publishes them. Before a concrete grant,
+# prepare them through a detached patch/index proposal instead of touching the
+# live worktree. Unlike .git metadata, the committable subset can still be
+# applied and published after that exact proposed tree is approved.
+readonly SHARED_PREPARATION_RESTRICTED_PATTERNS=(
+    '.githooks/'
+    '.git/hooks/'
+    '.git/config'
+    '.pre-commit-config.yaml'
+    '.codex/config.toml'
+    '.claude/settings.json'
+    '.claude/settings.local.json'
+)
+
 # A concrete protected commit is approved by its complete staged tree, not by
 # path names alone. The fixed decision token prevents callers from substituting
 # a broader decision; the scope binds unchanged bytes across resume.
@@ -96,4 +111,43 @@ shared_ci_workflow_pattern() {
     candidate=${candidate#./}
     [[ -z $root || $candidate != "$root"/* ]] || candidate=${candidate#"$root"/}
     _shared_pattern_match "$candidate" "$nested" "${SHARED_CI_WORKFLOW_PATTERNS[@]}"
+}
+
+shared_preparation_restricted_pattern() {
+    local candidate=${1//\\//} root=${2:-} nested=${3:-1}
+    candidate=${candidate#./}
+    [[ -z $root || $candidate != "$root"/* ]] || candidate=${candidate#"$root"/}
+    _shared_pattern_match "$candidate" "$nested" "${SHARED_PREPARATION_RESTRICTED_PATTERNS[@]}"
+}
+
+shared_path_is_ancestor_or_equal() {
+    local ancestor=${1%/} path=${2%/}
+    [[ $ancestor == "$path" || $path == "$ancestor"/* ]]
+}
+
+# True when a literal or dir/** predicted write set intersects one of the
+# remaining policy patterns. Other glob shapes stay unclassified rather than
+# inventing a false-positive boundary no dispatcher can act on safely.
+shared_write_set_collision() {
+    local write_pattern=$1 candidate pattern base
+    shift
+    if [[ $write_pattern == *'/**' ]]; then
+        candidate=${write_pattern%'/**'}
+    elif [[ $write_pattern != *[\*\?\[]* ]]; then
+        candidate=$write_pattern
+    else
+        return 1
+    fi
+    candidate=${candidate#./}
+    for pattern in "$@"; do
+        base=${pattern%/}
+        base=${base#./}
+        [[ -n $base ]] || continue
+        if shared_path_is_ancestor_or_equal "$base" "$candidate" ||
+            shared_path_is_ancestor_or_equal "$candidate" "$base"; then
+            printf '%s' "$pattern"
+            return 0
+        fi
+    done
+    return 1
 }

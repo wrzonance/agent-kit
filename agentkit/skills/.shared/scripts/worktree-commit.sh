@@ -767,6 +767,17 @@ check_staged() {
         "git diff --cached --check reported whitespace or conflict-marker problems (rc=$rc); fix them and re-run"
 }
 
+require_resolved_index() {
+    local unmerged
+    unmerged=$(git ls-files --unmerged) || die 1 'could not inspect the Git index for unresolved entries'
+    [[ -z $unmerged ]] || {
+        failure_class=content-conflict
+        failure_state='unmerged-index'
+        failure_action=resolve-index-conflicts-before-protected-approval
+        die 1 'Git index has unresolved entries; resolve them before deriving a protected approval scope'
+    }
+}
+
 build_message_args() {
     MESSAGE_ARGS=(--message "$SUBJECT")
     if [[ -n "$BODY" ]]; then
@@ -864,6 +875,7 @@ main() {
     acquire_transaction_lock
     refuse_unrequested_config
     refuse_staged_outside_operands
+    require_resolved_index
     stage_files
     refuse_unrequested_config
     guard_exact_operand_scope

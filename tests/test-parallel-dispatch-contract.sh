@@ -1939,13 +1939,13 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
-# session, ledger, and explicit rebind operands; 20 lines keep those boundaries visible.
+# session, ledger, and explicit rebind operands; keep those boundaries visible.
 # #911 adds the protected preparation/approval/resume contract at the worker
 # and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
 # #910 adds the complete join/resolution recipe that prevents partial-base
 # dispatch and repeated recovery turns; ratchet the exact combined boundary.
 # #914 integration preserves both complete source contracts.
-assert_eq yes "$([[ $prose_lines -le 2323 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2326 ]] && printf yes || printf no)" \
     'issue #914 prose files stay below their combined workflow line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

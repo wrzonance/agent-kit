@@ -407,9 +407,12 @@ join_b=$(make_predecessor "$join_repo" 62 b.txt beta)
 join_c=$(make_predecessor "$join_repo" 63 c.txt gamma)
 conflict_left=$(make_predecessor "$join_repo" 81 seed.txt left)
 conflict_right=$(make_predecessor "$join_repo" 82 seed.txt right)
+identical_left=$(make_predecessor "$join_repo" 83 seed.txt identical)
+identical_right=$(make_predecessor "$join_repo" 84 seed.txt identical)
 join_run=join-run
 for record in "61:$join_a" "62:$join_b" "63:$join_c" \
-    "81:$conflict_left" "82:$conflict_right"; do
+    "81:$conflict_left" "82:$conflict_right" \
+    "83:$identical_left" "84:$identical_right"; do
     predecessor=${record%%:*}
     predecessor_head=${record#*:}
     publication=$(jq -nc --arg attempt "attempt-$predecessor" \
@@ -425,6 +428,8 @@ jq -n '{schemaVersion:1,entries:[
     {issue:71,publicationTarget:"main",expectedPredecessors:[61,99],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
     {issue:72,publicationTarget:"main",expectedPredecessors:[61,62],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
     {issue:73,publicationTarget:"main",expectedPredecessors:[61,62],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:74,publicationTarget:"main",expectedPredecessors:[83,84],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
+    {issue:75,publicationTarget:"main",expectedPredecessors:[61,62],integrationBaseSha:null,predictedWriteSet:["seed.txt"]},
     {issue:80,publicationTarget:"main",expectedPredecessors:[81,82],integrationBaseSha:null,predictedWriteSet:["seed.txt"]}
 ],conflictMap:{pairs:[],revisions:[]}}' >"$join_plan"
 
@@ -462,6 +467,22 @@ assert_eq "$resume_head_before" "$(git -C "$join_worktree" rev-parse HEAD)" \
 assert_contains "$resume_out" "join-base=$resume_head_before predecessors=61,62,63" \
     'repeat setup reuses the recorded complete join'
 
+# The recorded integration base remains immutable after implementation or
+# review commits advance both the local and published branch.
+printf 'implementation\n' >"$join_worktree/implementation.txt"
+git -C "$join_worktree" add -- implementation.txt
+git -C "$join_worktree" commit -qm 'implementation after join base'
+git -C "$join_worktree" push -q
+advanced_head=$(git -C "$join_worktree" rev-parse HEAD)
+advanced_rc=0
+advanced_out=$("$create_sh" --repo-root "$join_repo" --issue 70 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1) || advanced_rc=$?
+assert_eq 0 "$advanced_rc" 'resume accepts an advanced branch above its immutable integration base'
+assert_eq "$advanced_head" "$(git -C "$join_worktree" rev-parse HEAD)" \
+    'resume preserves implementation commits above the recorded integration base'
+assert_contains "$advanced_out" "join-base=$resume_head_before predecessors=61,62,63" \
+    'resume accepts a recorded integration base reachable from an advanced remote tip'
+
 # A caller-supplied first predecessor is only a candidate starting point; it
 # cannot narrow the expected set saved in the plan.
 candidate_out=$("$create_sh" --repo-root "$join_repo" --issue 72 --base main \
@@ -488,6 +509,37 @@ assert_contains "$partial_out" "join-base=$partial_after predecessors=61,62" \
     'partial resume publishes the completed join identity'
 assert_rc 0 'partial resume includes the missing second predecessor' -- \
     git -C "$partial_worktree" merge-base --is-ancestor "$join_b" "$partial_after"
+
+# A stale local branch must never make setup hand a trunk checkout to the
+# implementation worker merely because the recorded remote base is complete.
+"$create_sh" --repo-root "$join_repo" --issue 75 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" >/dev/null 2>&1
+stale_base=$(git -C "$join_repo/.fleet/feat/issue-75" rev-parse HEAD)
+git -C "$join_repo" worktree remove --force "$join_repo/.fleet/feat/issue-75" >/dev/null 2>&1
+git -C "$join_repo" branch -f feat/issue-75 main >/dev/null
+stale_resume_rc=0
+stale_resume_out=$("$create_sh" --repo-root "$join_repo" --issue 75 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1) || stale_resume_rc=$?
+assert_eq 1 "$stale_resume_rc" 'resume refuses a checkout that omits the recorded integration base'
+assert_contains "$stale_resume_out" "worktree does not contain recorded integration base $stale_base" \
+    'the stale-checkout refusal names the missing recorded base'
+assert_not_contains "$stale_resume_out" 'join-base=' \
+    'a stale local checkout cannot dispatch implementation'
+
+# Distinct predecessor commits may have identical trees. The second merge is
+# still recorded so ancestry, not staged-path count, proves complete assembly.
+identical_out=$("$create_sh" --repo-root "$join_repo" --issue 74 --base main \
+    --dispatch-plan "$join_plan" --run-id "$join_run" 2>&1)
+identical_worktree="$join_repo/.fleet/feat/issue-74"
+identical_head=$(git -C "$identical_worktree" rev-parse HEAD)
+assert_contains "$identical_out" "join-base=$identical_head predecessors=83,84" \
+    'an empty-tree second merge still publishes a complete join base'
+assert_rc 0 'identical-change join contains the first predecessor' -- \
+    git -C "$identical_worktree" merge-base --is-ancestor "$identical_left" "$identical_head"
+assert_rc 0 'identical-change join contains the second predecessor' -- \
+    git -C "$identical_worktree" merge-base --is-ancestor "$identical_right" "$identical_head"
+assert_eq 3 "$(git -C "$identical_worktree" rev-list --parents -n 1 "$identical_head" | awk '{print NF}')" \
+    'the protected commit helper records the empty-tree predecessor as a merge parent'
 
 # Conflicts remain in the same sole-writer worktree for automatic resolution.
 # No implementation branch is published until a resolution preserves both
@@ -556,7 +608,7 @@ assert_rc 0 'resolved join contains the right predecessor' -- \
 # call into the focused join helper; hold the setup script at its new boundary.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 347 ]] && printf yes || printf no)" \
     'create-issue-worktree.sh stays at or under 347 lines'
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/lib/join-base.sh") -le 215 ]] && printf yes || printf no)" \
-    'the private join assembly library stays at or under 215 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/lib/join-base.sh") -le 219 ]] && printf yes || printf no)" \
+    'the private join assembly library stays at or under 219 lines'
 
 finish

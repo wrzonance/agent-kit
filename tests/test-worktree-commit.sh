@@ -239,6 +239,36 @@ assert_contains "$changed_scope_out" 'approval_scope=protected-tree:' \
 assert_not_contains "$changed_scope_out" "approval_scope=$ordinary_scope" \
     'the changed staged tree has a distinct scope'
 
+# An unresolved index cannot form a Git tree, so it is a content conflict to
+# resolve before any protected approval scope can truthfully be derived.
+unmerged_repo="$tmp/unmerged-protected-repo"
+git init -q -b main "$unmerged_repo"
+git -C "$unmerged_repo" config user.name test
+git -C "$unmerged_repo" config user.email test@example.invalid
+mkdir -p "$unmerged_repo/.github/workflows"
+printf 'base\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" add -- .
+git -C "$unmerged_repo" commit -qm base
+git -C "$unmerged_repo" checkout -qb feature
+printf 'feature\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" commit -qam feature
+git -C "$unmerged_repo" checkout -q main
+printf 'main\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" commit -qam main
+git -C "$unmerged_repo" checkout -q feature
+git -C "$unmerged_repo" merge --no-commit main >/dev/null 2>&1 || true
+unmerged_rc=0
+unmerged_out=$(cd "$unmerged_repo" && "$script" --include-staged \
+    --message 'fix: unresolved protected merge' --trailer "$TEST_TRAILER" \
+    -- .github/workflows/ci.yml 2>&1) || unmerged_rc=$?
+assert_eq '1' "$unmerged_rc" 'an unresolved protected index is a resolvable content failure'
+assert_contains "$unmerged_out" 'failure-v1 class=content-conflict' \
+    'the unresolved index has a truthful machine-readable classification'
+assert_contains "$unmerged_out" 'resolve-index-conflicts-before-protected-approval' \
+    'the unresolved index names the action required before deriving a tree scope'
+assert_not_contains "$unmerged_out" 'approval_scope=' \
+    'an unusable index never advertises an empty or impossible approval scope'
+
 # A pre-existing broad workflow grant remains reusable for fresh CI changes;
 # it does not require the concrete grant introduced above.
 "$ledger_bin" append --ledger "$ordinary_ledger" --run-id issue-911-run \
@@ -1207,9 +1237,9 @@ assert_eq '2' "$(wc -l < "$mode_ledger" 2>/dev/null | tr -d '[:space:]')" \
 assert_eq 'base.txt' "$(tail -n 1 -- "$mode_ledger" | jq -r '.paths_touched[]' 2>/dev/null)" \
     'the newly appended record lists the changed path'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-# issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 879 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 879 lines (#911 scoped protected-commit authorization)'
+# #911 review: the usable-index precondition preserves a truthful conflict
+# classification before exact protected-tree scope derivation.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 891 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 891 lines (#911 protected proposal boundary)'
 
 finish

@@ -123,12 +123,12 @@ join_plan_load() {
 join_commit_active_merge() {
     local predecessor=$1 head=$2 path
     local -a paths=()
+    local -a commit_args=(--include-staged --message "chore(chains): integrate issue $predecessor"
+        --allow-base-inherited "$head" --yolo)
     while IFS= read -r -d '' path; do paths+=("$path"); done < <(
         git -C "$JOIN_WORKTREE" diff --cached --name-only --no-renames -z)
-    ((${#paths[@]})) || { join_fail "merge for predecessor #$predecessor staged no paths"; return 1; }
-    (cd "$JOIN_WORKTREE" && "$JOIN_COMMIT" --include-staged \
-        --message "chore(chains): integrate issue $predecessor" \
-        --allow-base-inherited "$head" --yolo -- "${paths[@]}") >/dev/null || {
+    if ((${#paths[@]})); then commit_args+=(-- "${paths[@]}"); else commit_args+=(--allow-empty); fi
+    (cd "$JOIN_WORKTREE" && "$JOIN_COMMIT" "${commit_args[@]}") >/dev/null || {
         join_fail "could not commit predecessor #$predecessor; preserve the active merge for the sole writer"
         return 1
     }
@@ -152,7 +152,7 @@ join_prove_complete() {
         git -C "$JOIN_WORKTREE" merge-base --is-ancestor "$predecessor_head" "$integration" || return 1
     done
     remote=$(git -C "$JOIN_WORKTREE" ls-remote --refs origin "refs/heads/$JOIN_BRANCH" | awk 'NR == 1 {print $1}')
-    [[ $remote == "$integration" ]] || return 1
+    [[ -n $remote ]] && git -C "$JOIN_WORKTREE" merge-base --is-ancestor "$integration" "$remote"
 }
 
 join_assemble() {
@@ -164,6 +164,10 @@ join_assemble() {
     if [[ -n $JOIN_RECORDED_BASE ]]; then
         join_prove_complete "$JOIN_RECORDED_BASE" || {
             join_fail "recorded integration base $JOIN_RECORDED_BASE lacks complete published join evidence"
+            return 1
+        }
+        git -C "$worktree" merge-base --is-ancestor "$JOIN_RECORDED_BASE" HEAD || {
+            join_fail "worktree does not contain recorded integration base $JOIN_RECORDED_BASE"
             return 1
         }
         printf 'join-base=%s predecessors=%s\n' "$JOIN_RECORDED_BASE" "$(IFS=,; printf '%s' "${JOIN_EXPECTED[*]}")"
