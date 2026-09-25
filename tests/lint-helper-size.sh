@@ -243,8 +243,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
 # #906 review: complete next-action help and inventory-safe dispatch.
-# #906 landing: measured combined helper implementations.
-readonly MAX_TREE_TOKENS=494819
+# #909: one-pass draft and saved publication-target enforcement in gh-body.sh.
+# #909 landing: measured combined helper implementations.
+readonly MAX_TREE_TOKENS=496157
 
 violations=0
 checked=0
