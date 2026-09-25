@@ -50,8 +50,9 @@ declare -A KNOWN_OVERSIZE=(
     # #875 review: preserve summary evidence and persist an invocation-derived review mode.
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
+    # #903: concurrent admission, cross-run freshness, and stopped proof contract.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    [parallel-issues]="782:16864:500"
+    [parallel-issues]="810:17501:500"
 )
 
 readonly MAX_BODY_LINES=500
