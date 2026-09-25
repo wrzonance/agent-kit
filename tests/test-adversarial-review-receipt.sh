@@ -17,8 +17,12 @@ source "$here/lib/assert.sh"
 
 review="$root/agentkit/skills/review-remote-pr/SKILL.md"
 parallel="$root/agentkit/skills/parallel-issues/SKILL.md"
+pr_stage="$root/agentkit/skills/parallel-issues/scripts/pr-stage.sh"
+post_receipt="$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh"
 review_text=$(<"$review")
 parallel_text=$(<"$parallel")
+pr_stage_text=$(<"$pr_stage")
+post_receipt_text=$(<"$post_receipt")
 
 assert_receipt_contract() {
     local text=$1 label=$2 section normalized
@@ -30,6 +34,7 @@ assert_receipt_contract() {
     ' <<<"$text")
     normalized=$(tr '\n' ' ' <<<"$section" | tr -s '[:space:]' ' ')
 
+    assert_contains "$section" 'pr-stage.sh' "$label delegates the final publication stage"
     assert_contains "$section" 'post-receipt.sh' "$label delegates rendering/posting to post-receipt.sh"
     assert_contains "$section" 'provider' "$label records the reviewer provider"
     assert_contains "$section" 'model' "$label records the reviewer model"
@@ -42,10 +47,13 @@ assert_receipt_contract() {
     assert_contains "$section" 'decline rationale' "$label records decline rationale"
     assert_contains "$section" 'verified-skip rationale' "$label records verified skip rationale"
     assert_contains "$section" 'finding-ledger.sh add' "$label records ledger-first disposition capture"
-    assert_contains "$section" '--findings-file' "$label publishes from the findings ledger"
-    assert_contains "$section" '--require-pushed' "$label enforces pushed fixes at publication"
-    assert_contains "$section" '--pr-state-digest' "$label binds publication to final-head CI evidence"
-    assert_contains "$section" '--digest-out' "$label refreshes the final digest exactly at publication"
+    assert_contains "$pr_stage_text" 'findings=$run_dir/findings.ndjson' \
+        "$label finalizer consumes the run findings ledger"
+    assert_contains "$pr_stage_text" '--require-pushed' "$label finalizer enforces pushed fixes"
+    assert_contains "$pr_stage_text" '--pr-state-digest' \
+        "$label finalizer binds publication to final-head CI evidence"
+    assert_contains "$pr_stage_text" '--digest-out' \
+        "$label finalizer refreshes the final digest exactly at publication"
     assert_contains "$section" '$RUN_DIR/accepted-findings.ndjson' \
         "$label names the canonical accepted non-adversarial findings artifact"
     assert_contains "$section" 'explicitly empty' \
@@ -82,7 +90,7 @@ assert_contains "$review_text" 'do not rerun' \
     'review-remote-pr marker precheck prevents double spend'
 assert_contains "$review_text" 'no-silent-skip' \
     'review-remote-pr receipt contract rejects silent skips'
-assert_contains "$review_text" 'fresh live comments' \
+assert_contains "$post_receipt_text" 'fresh live comments' \
     'review-remote-pr requires fresh recovery evidence before retry'
 assert_contains "$review_text" 'consent-record.sh" payload' \
     'review-remote-pr derives the current canonical diff payload before precheck'
@@ -97,7 +105,7 @@ assert_contains "$parallel_text" 'do not rerun' \
     'parallel-issues marker precheck prevents double spend'
 assert_contains "$parallel_text" 'no-silent-skip' \
     'parallel-issues receipt contract rejects silent skips'
-assert_contains "$parallel_text" 'fresh live comments' \
+assert_contains "$post_receipt_text" 'fresh live comments' \
     'parallel-issues requires fresh recovery evidence before retry'
 assert_contains "$parallel_text" 'consent-record.sh" payload' \
     'parallel-issues derives the current canonical diff payload before precheck'
