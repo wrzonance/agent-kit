@@ -690,10 +690,10 @@ assert_contains "$setup_prompt" 'PR-loop setup worker' \
     'pr-loop-setup identifies its read-only phase'
 assert_contains "$setup_prompt" 'launch-ready' \
     'pr-loop-setup has a launch-ready terminal marker'
-assert_contains "$setup_prompt" 'ci-red: <check>' \
-    'pr-loop-setup has a CI-red terminal marker'
-assert_contains "$setup_prompt" 'cq-open: N' \
-    'pr-loop-setup has a Code Quality terminal marker'
+assert_contains "$setup_prompt" 'ci-observed=' \
+    'pr-loop-setup reports CI independently of review launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' \
+    'pr-loop-setup preserves the Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_136_code_quality_comments.json' \
     'pr-loop-setup names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -707,7 +707,7 @@ assert_contains "$setup_prompt" '--repo-root ' \
 assert_contains "$setup_prompt" "if ! cq_state=\$(" \
     'pr-loop-setup fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'pr-loop-setup names the unavailable Code Quality terminal marker'
+    'pr-loop-setup names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acceptance_command\")" \
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
@@ -736,62 +736,103 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'pr-loop setup receives stable failing-check names'
 assert_contains "$setup_prompt" "ci_failing_checks=\$(sed -n" \
     'pr-loop setup parses stable failing-check names'
-assert_contains "$setup_prompt" "setup_terminal=\"ci-red: \$ci_failing_checks\"" \
-    'pr-loop setup names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'pr-loop setup preserves a failing CI terminal result'
+assert_contains "$setup_prompt" "ci_observed=\"red: \$ci_failing_checks\"" \
+    'pr-loop setup retains the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'pr-loop setup appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" "Rebuild \`acceptance_args\` inside this root block" \
     'pr-loop setup rebuilds acceptance arguments during root recovery'
 
 # Execute the rendered CI parser with a helper-shaped failing digest. This
-# crosses the prompt boundary and proves the named check reaches both durable
-# setup.result text and the completion line the root consumes.
+# crosses the prompt boundary and proves CI remains visible without changing
+# the review-launch terminal result.
 ci_parser=$(printf '%s\n' "$setup_prompt" | awk '
     /^ci_line=\$\(sed -n/ { capture=1 }
     capture { print }
-    capture && /^fi$/ { exit }
+    capture && /printf .ci-observed=%s/ { exit }
 ')
 ci_parser_script="$tmp/ci-parser.sh"
 {
     printf '%s\n' 'set -euo pipefail'
     printf '%s\n' "ci_digest=\$1"
-    printf '%s\n' "setup_terminal='launch-ready'" 'ci_red=0'
+    printf '%s\n' "setup_terminal='launch-ready'" "ci_observed='green'"
     printf '%s\n' "$ci_parser"
     printf '%s\n' "setup_result=\$(printf 'setup.result status=complete result=%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "completion=\$(printf '%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "printf '%s\\n%s\\n' \"\$setup_result\" \"\$completion\""
 } > "$ci_parser_script"
 ci_e2e_output=$(bash "$ci_parser_script" 'ci=1/3 failing pending=1 failing=1 failing-checks=lint')
-assert_contains "$ci_e2e_output" 'result=ci-red: lint run-dir=/tmp/run' \
-    'named failing CI survives into setup.result'
-assert_contains "$ci_e2e_output" 'ci-red: lint run-dir=/tmp/run' \
-    'named failing CI survives into completion output'
+assert_contains "$ci_e2e_output" 'result=launch-ready run-dir=/tmp/run' \
+    'failing CI leaves snapshot review launch-ready'
+assert_contains "$ci_e2e_output" 'ci-observed=red: lint' \
+    'failing CI retains the failing check identity beside launch eligibility'
 ci_pending_output=$(bash "$ci_parser_script" 'ci=1/2 pending pending=1 failing=0')
-assert_contains "$ci_pending_output" 'result=ci-pending run-dir=/tmp/run' \
-    'pending CI cannot produce a launch-ready setup result'
+assert_contains "$ci_pending_output" 'result=launch-ready run-dir=/tmp/run' \
+    'pending CI leaves snapshot review launch-ready'
 ci_green_output=$(bash "$ci_parser_script" 'ci=2/2 green pending=0 failing=0')
 assert_contains "$ci_green_output" 'result=launch-ready run-dir=/tmp/run' \
     'settled passing CI retains the launch-ready result'
-ci_priority=$(printf '%s\n' "$setup_prompt" | awk '
-    /^if \(\(ci_red\)\); then$/ { capture=1 }
+assert_not_contains "$setup_prompt" "setup_terminal='ci-pending'" \
+    'pending CI does not replace review launch eligibility'
+assert_contains "$setup_prompt" 'Continue CI diagnosis independently after launch' \
+    'setup contract keeps CI repair active after snapshot review launch'
+
+# Execute both finding classifiers from the rendered prompt. Their actionable
+# evidence must survive while the immutable review remains launch-ready.
+finding_agentkit="$tmp/finding-agentkit"
+mkdir -p "$finding_agentkit/review-remote-pr/scripts" "$tmp/finding-state"
+cat >"$finding_agentkit/review-remote-pr/scripts/code-quality-state.sh" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *' --probe '*) printf '%s\n' 'state=enabled' ;;
+  *) printf '%s\n' 'cq-repo: 0' 'cq-open: 2 source=pr_136_code_quality_comments.json' ;;
+esac
+EOF
+cat >"$finding_agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'open=3 total=3'
+EOF
+chmod +x "$finding_agentkit"/review-remote-pr/scripts/*.sh
+cq_parser=$(printf '%s\n' "$setup_prompt" | awk '
+    /^cq_probe=\$/ { capture=1 }
+    /^Classify issue-comment findings once/ { exit }
     capture { print }
-    capture && /^fi$/ { exit }
 ')
-ci_priority_output=$(ci_digest='ci=1/2 pending pending=1 failing=0' bash -c "ci_red=0
-$ci_parser
-setup_terminal='cq-open: findings'
-$ci_priority
-printf '%s\n' \"\$setup_terminal\"")
-assert_eq 'ci-pending' "$ci_priority_output" 'pending terminal survives subsequent finding classification'
-ci_priority_output=$(ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint' bash -c "ci_red=0
-$ci_parser
-setup_terminal='cq-open: findings'
-$ci_priority
-printf '%s\n' \"\$setup_terminal\"")
-assert_eq 'ci-red: lint' "$ci_priority_output" 'failing CI takes precedence over pending CI and findings'
-assert_contains "$setup_prompt" 'ci-pending' 'setup contract documents pending terminal state'
+cq_parser=${cq_parser//"$root/agentkit/skills"/$finding_agentkit}
+cq_output=$(agentkit="$finding_agentkit" state_dir="$tmp/finding-state" \
+    setup_terminal=launch-ready bash -c "$cq_parser
+printf 'terminal=%s\n' \"\$setup_terminal\"")
+assert_contains "$cq_output" 'cq-open: 2 source=pr_136_code_quality_comments.json' \
+    'open Code Quality evidence retains its count and source'
+assert_contains "$cq_output" 'findings-observed=cq-open:2' \
+    'open Code Quality evidence is explicitly actionable'
+assert_contains "$cq_output" 'terminal=launch-ready' \
+    'open Code Quality findings leave snapshot review launch-ready'
+icf_parser=$(printf '%s\n' "$setup_prompt" | awk '
+    /^icf_answered=/ { capture=1 }
+    /^Run the materiality precheck/ { exit }
+    capture { print }
+')
+icf_parser=${icf_parser//"$root/agentkit/skills"/$finding_agentkit}
+icf_output=$(agentkit="$finding_agentkit" state_dir="$tmp/finding-state" \
+    setup_terminal=launch-ready bash -c "$icf_parser
+printf 'terminal=%s\n' \"\$setup_terminal\"")
+assert_contains "$icf_output" 'icf-open: 3 source=pr_136_issue_comments.json' \
+    'open issue-comment evidence retains its count and source'
+assert_contains "$icf_output" 'findings-observed=icf-open:3' \
+    'open issue-comment evidence is explicitly actionable'
+assert_contains "$icf_output" 'terminal=launch-ready' \
+    'open issue-comment findings leave snapshot review launch-ready'
 assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
     'pr-loop setup does not discard state from a temporary evidence directory'
 assert_not_contains "$setup_prompt" 'cq_evidence_dir' \

@@ -424,14 +424,16 @@ and drop false positives. Confirmed findings flow through the same assess → fi
 as automated-review items (Step 5). Record confirmed unfixed findings as `open`, with a next repair
 action in `--rationale`; never decline a confirmed finding merely because its repair is pending.
 Execution, adjudication, and remediation are separate facts. Publishing execution evidence with
-open findings spends the review budget while leaving remediation incomplete.
+open findings is refused at the completion boundary; the validated runner result records the
+review while repair continues without another reviewer spend.
 
 Use `scripts/finding-ledger.sh add --verdict open --title TITLE --severity P1 --rationale NEXT_REPAIR`
-for each confirmed obligation, then
-`scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed`.
+for each confirmed obligation, repair or adjudicate every open record with current evidence, then
+run the skill's fresh `gh-pr-state.sh --digest-out` finalization refresh and
+`scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed --pr-state-digest "$final_digest"`.
 The runner's successful exit is the ledger prerequisite; the ledger is the receipt's only finding
-input, so the renderer retains open findings transparently. Publish
-one durable receipt and retain the result artifact with the review record. If publication is
+input. Publish one durable receipt only after final-head CI is green and retain the result artifact
+with the review record. If publication is
 nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
 marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
 the adversarial review after fixes — including a fix, merge-down, or retarget that lands AFTER
