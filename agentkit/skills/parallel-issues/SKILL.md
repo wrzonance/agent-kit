@@ -193,7 +193,7 @@ Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
-| `protected= patterns=` | Check every planned write set and accepted review finding against the repository's actual protected patterns. Keep collisions selected. A validator `proposal=N[...]` entry uses the generated proposal-only boundary: derive the concrete tree with `$agentkit/.shared/scripts/protected-patch.sh` without touching live Git/harness config, then apply it only after that exact grant. Continue unrelated work and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` publishes the approved commit. |
+| `protected= patterns=` | Check planned write sets and accepted findings against actual patterns; keep collisions selected. For `proposal=N[...]`, use `$agentkit/.shared/scripts/protected-patch.sh` without changing live Git/harness config, apply only under the exact grant, and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` pushes the approved commit; unrelated work continues. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
@@ -378,16 +378,8 @@ setup_rc=0
 
 The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
 
-Exit 3 with `join-conflict ... next=resolution-worker-then-resume` is an automatic
-continuation, not an operator checkpoint. Dispatch a resolution-only worker as the named
-active sole writer in that same worktree. It verifies `MERGE_HEAD`, compares both complete
-blobs and predecessor intent, combines independent behavior, runs the affected declared
-checks, and commits through `worktree-commit.sh`; it must not start issue implementation.
-Then rerun the same setup arguments with `--resume`. A failed resolver returns the existing
-structured BLOCKED handback; classify it with
-`$agentkit/.shared/scripts/validate-handback.sh --classify-completion`,
-preserve `partial-blockers.list`, keep this issue queued, and continue independent work.
-Only `setup_rc=0` with the printed `join-base=` may proceed to implementation dispatch.
+On exit 3 with `next=resolution-worker-then-resume`, dispatch the [resolution-only prompt](references/worker-prompts.md#join-resolution-worker-prompt) as the same worktree's sole writer, then rerun setup with `--resume`.
+Classify a BLOCKED handback, preserve `partial-blockers.list`, keep the issue queued, and continue unrelated work. Dispatch implementation only after exit 0 prints `join-base=`.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -623,7 +615,7 @@ root handles CI state/verification, forge conflicts, adversarial review, consent
 ### Polling discipline (applies to every wait in this skill)
 
 Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
-After handling any operator message, reconcile actual ledgers/results, dispatch plan/cache, publication records, and live worker/reviewer/test handles, then call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"`. Follow `resume_required=true` in the same turn: accept pushed results, dispatch proven-ready successors, publish missing drafts/receipts, or reconcile incomplete mappings. Only `end-turn` or `complete` may stop; on `end-turn`, report saved progress and stop without waiting.
+After an operator message, call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"` with fresh evidence; follow its result that turn. `resume_required=true` requires continuation; only `end-turn` or `complete` may stop.
 
 Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
 

@@ -2070,7 +2070,7 @@ prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$wo
 # #914 integration preserves both complete source contracts.
 # #908: eleven publication lines make the diff disclosure retry-idempotent and
 # bind the saved publication target to the environment default branch.
-assert_eq yes "$([[ $prose_lines -le 2388 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2377 ]] && printf yes || printf no)" \
     'combined workflow prose stays below its measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
