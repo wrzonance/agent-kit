@@ -191,7 +191,7 @@ emit_preparation_boundary() {
     printf '\n## Protected proposal-only preparation boundary\n'
     printf 'These write-set entries may change Git or agent behavior while written, or execute during commit:\n'
     for glob in "${preparation_restricted_globs[@]}"; do printf -- '- %s\n' "$glob"; done
-    printf 'Before a covering concrete grant, do not write, stage, or execute these paths. Write proposed content under `.agent/`; never hand-author a diff. Generate and scope the review patch without touching the live index or protected path:\n'
+    printf 'Before a covering concrete grant, do not write, stage, or execute these paths. Write proposed content under `.agent/`; never hand-author a diff. Pass absolute CONTENT and PATCH paths, with PATCH outside every protected path. Generate and scope the review patch without touching the live index or protected path:\n'
     printf '%s draft --path REPO_PATH --content CONTENT --output PATCH\n' "$helper_path"
     printf '%s scope --patch PATCH\n' "$helper_path"
     printf 'Return the patch, `approval_scope=protected-tree:<base>:<tree>`, affected paths, rationale, permitted check results, and any checks withheld because they would execute the proposal. Dependents remain queued.\n'

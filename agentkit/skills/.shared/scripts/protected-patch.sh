@@ -28,7 +28,7 @@ failure_action=correct-arguments
 usage() {
     cat <<EOF
 Usage:
-  $PROGRAM draft --path REPO_PATH --content FILE --output PATCH
+  $PROGRAM draft --path REPO_PATH --content ABSOLUTE_FILE --output ABSOLUTE_PATCH
   $PROGRAM scope --patch FILE
   $PROGRAM apply --patch FILE --ledger FILE --run-id ID --ledger-scope SCOPE
 
@@ -74,6 +74,7 @@ parse_args() {
             --ledger) need_value "$@"; ledger=$2; shift 2 ;;
             --run-id) need_value "$@"; run_id=$2; shift 2 ;;
             --ledger-scope) need_value "$@"; ledger_scope=$2; shift 2 ;;
+            --) shift; (($# == 0)) || die 2 "unexpected argument after --: $1"; break ;;
             -h|--help) usage; exit 0 ;;
             *) die 2 "unknown argument: $1" ;;
         esac
@@ -86,6 +87,8 @@ validate_args() {
     if [[ $command == draft ]]; then
         [[ -n $proposal_path && -n $content_file && -n $output_file ]] ||
             die 2 'draft requires --path, --content, and --output together'
+        [[ $content_file == /* && $output_file == /* ]] ||
+            die 2 '--content and --output must be absolute paths'
         [[ $proposal_path != /* && $proposal_path != *[[:cntrl:]]* && $proposal_path != *\\* ]] ||
             die 2 '--path must be a safe repository-relative path'
         case /$proposal_path/ in *'/../'*|*'/./'*|*'//'*) die 2 '--path contains unsafe components' ;; esac
@@ -108,8 +111,9 @@ validate_args() {
 }
 
 draft_proposal() {
-    local root output_parent old_file diff_rc=0
+    local root output_parent output_name output_relative declared old_file diff_rc=0
     root=$(git rev-parse --show-toplevel 2>/dev/null) || die 1 'not inside a Git worktree'
+    root=$(cd -- "$root" && pwd -P) || die 1 'could not resolve the repository root'
     cd -- "$root" || die 1 'could not enter the repository root'
     shared_preparation_restricted_pattern "$proposal_path" "$root" 0 >/dev/null ||
         die 2 "proposal path is not preparation-restricted: $proposal_path"
@@ -121,8 +125,22 @@ draft_proposal() {
     }
     content_file=$(readlink -f -- "$content_file" 2>/dev/null) || die 1 'could not resolve proposed content'
     output_parent=$(dirname -- "$output_file")
-    [[ -d $output_parent && ! -L $output_parent && -O $output_parent ]] ||
+    [[ -d $output_parent && -O $output_parent ]] ||
         die 2 '--output parent must be an owned, existing directory'
+    output_parent=$(cd -- "$output_parent" && pwd -P) || die 1 'could not resolve the output parent'
+    output_name=$(basename -- "$output_file")
+    output_file=$output_parent/$output_name
+    [[ ! -e $output_file && ! -L $output_file ]] || die 2 '--output must not already exist'
+    if [[ $output_file == "$root"/* ]]; then
+        output_relative=${output_file#"$root"/}
+        declared=''
+        if [[ -x $SCRIPT_DIR/repo-config.sh ]]; then
+            declared=$("$SCRIPT_DIR/repo-config.sh" --repo-root "$root" \
+                --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+        fi
+        shared_protected_pattern "$output_relative" "$root" "$declared" 0 >/dev/null &&
+            die 2 '--output must be outside protected paths'
+    fi
     temp_output=$(mktemp "$output_parent/.protected-patch.XXXXXX") || die 1 'could not allocate patch output'
     old_file=$proposal_path
     [[ -e $old_file ]] || old_file=/dev/null
@@ -133,7 +151,8 @@ draft_proposal() {
         die 1 'could not generate the protected patch'
     }
     chmod 600 -- "$temp_output" || die 1 'could not secure the protected patch'
-    mv -- "$temp_output" "$output_file" || die 1 'could not publish the protected patch'
+    ln -- "$temp_output" "$output_file" || die 1 'could not publish the protected patch'
+    rm -f -- "$temp_output"
     temp_output=''
     printf 'patch=%s path=%s\n' "$output_file" "$proposal_path"
 }

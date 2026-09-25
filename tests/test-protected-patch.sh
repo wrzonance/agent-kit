@@ -19,6 +19,8 @@ git init -q -b main "$repo"
 git -C "$repo" config user.name test
 git -C "$repo" config user.email test@example.invalid
 mkdir -p "$repo/.claude" "$repo/.agent"
+mkdir -p "$repo/.githooks"
+mkdir -p "$repo/review-artifacts"
 printf '{"mode":"base"}\n' > "$repo/.claude/settings.json"
 printf 'seed\n' > "$repo/seed.txt"
 git -C "$repo" add -- .claude/settings.json seed.txt
@@ -28,6 +30,50 @@ git -C "$repo" checkout -qb feature
 patch="$tmp/settings.patch"
 content="$repo/.agent/settings.proposed"
 printf '{"mode":"approved"}\n' >"$content"
+
+unsafe_output_rc=0
+unsafe_output=$(cd "$repo" && "$helper" draft --path .claude/settings.json \
+    --content "$content" --output "$repo/.githooks/new-hook" 2>&1) || unsafe_output_rc=$?
+assert_eq '2' "$unsafe_output_rc" 'draft refuses a patch output at a protected destination'
+assert_contains "$unsafe_output" '--output must be outside protected paths' \
+    'the protected output refusal names the safe proposal boundary'
+assert_rc 1 \
+    'draft cannot create a previously absent protected hook through --output' \
+    -- test -e "$repo/.githooks/new-hook"
+
+ln -s "$repo" "$tmp/repo-alias"
+alias_output_rc=0
+alias_output=$(cd "$repo" && "$helper" draft --path .claude/settings.json \
+    --content "$content" --output "$tmp/repo-alias/.githooks/aliased-hook" 2>&1) || alias_output_rc=$?
+assert_eq '2' "$alias_output_rc" 'draft resolves parent aliases before checking its output destination'
+assert_contains "$alias_output" '--output must be outside protected paths' \
+    'a symlink parent cannot disguise a protected output destination'
+assert_rc 1 \
+    'the canonical output check runs before any protected-path write' \
+    -- test -e "$repo/.githooks/aliased-hook"
+
+printf 'AGENT_PROTECTED_PATHS=review-artifacts/\n' >"$repo/.agent/config.env"
+declared_output_rc=0
+declared_output=$(cd "$repo" && "$helper" draft --path .claude/settings.json \
+    --content "$content" --output "$repo/review-artifacts/proposal.patch" 2>&1) || \
+    declared_output_rc=$?
+assert_eq '2' "$declared_output_rc" 'draft honors repository-declared protected output paths'
+assert_contains "$declared_output" '--output must be outside protected paths' \
+    'the output boundary uses the repository protected-path definition'
+assert_rc 1 \
+    'a repository declaration prevents the proposed patch write' \
+    -- test -e "$repo/review-artifacts/proposal.patch"
+
+relative_rc=0
+relative_out=$(cd "$repo/.agent" && "$helper" draft --path .claude/settings.json \
+    --content settings.proposed --output proposal.patch 2>&1) || relative_rc=$?
+assert_eq '2' "$relative_rc" 'draft requires absolute content and output paths'
+assert_contains "$relative_out" '--content and --output must be absolute paths' \
+    'draft makes invocation-relative path semantics explicit'
+assert_rc 1 \
+    'a relative output is refused without writing in either working directory' \
+    -- test -e "$repo/.agent/proposal.patch"
+
 draft_out=$(cd "$repo" && "$helper" draft --path .claude/settings.json \
     --content "$content" --output "$patch")
 assert_contains "$draft_out" 'path=.claude/settings.json' \

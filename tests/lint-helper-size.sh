@@ -224,8 +224,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #911: exact staged-tree authorization plus protected-path preparation handback.
-# #911 review: protected-patch.sh safely scopes and applies approved hook/harness proposals.
-readonly MAX_TREE_TOKENS=482885
+# #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
+readonly MAX_TREE_TOKENS=483183
 
 violations=0
 checked=0

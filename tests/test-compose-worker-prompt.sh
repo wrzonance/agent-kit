@@ -1408,6 +1408,10 @@ assert_contains "$proposal_prompt" 'protected-patch.sh' \
     'the worker derives a concrete tree scope without writing the protected path'
 assert_contains "$proposal_prompt" 'draft --path REPO_PATH' \
     'the worker generates its patch without hand-authoring unified diff bytes'
+assert_contains "$proposal_prompt" 'absolute CONTENT and PATCH paths' \
+    'the worker cannot reinterpret draft inputs after changing directories'
+assert_contains "$proposal_prompt" 'PATCH outside every protected path' \
+    'the worker keeps the review artifact outside the protected write boundary'
 assert_contains "$proposal_prompt" 'scope --patch PATCH' \
     'the worker receives the non-mutating proposal-scope invocation'
 assert_contains "$proposal_prompt" 'apply --patch PATCH' \
