@@ -23,8 +23,6 @@ plugin_dir=${1:?usage: lint-helper-size.sh PLUGIN_DIR}
 declare -A KNOWN_OVERSIZE=(
     # LINES:TOKENS:TARGET
     [hooks/lib/guard-lib.sh]="2288:24898:800"
-    # #906 review: complete next-action help and inventory-safe dispatch.
-    [skills/.shared/scripts/run-state.sh]="687:10089:800"
     # #777: complete Step 0 recipe moved from injected prose into --help.
     # #777 absolute-path guard + #778 harness-bound runtime-tool record.
     # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
@@ -234,7 +232,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #911: exact staged-tree authorization plus protected-path preparation handback.
 # #910: complete resumable join assembly and resolution-worker composition.
 # #914 integration: #906 and #910 combined helper tree; exact measurement.
-readonly MAX_TREE_TOKENS=490043
+# #914: durable-source obligations consume the joined publication projection.
+readonly MAX_TREE_TOKENS=491205
 
 violations=0
 checked=0
