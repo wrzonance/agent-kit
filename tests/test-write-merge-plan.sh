@@ -335,7 +335,7 @@ assert_eq '103' "$(jq -r '.independent[0].pr' "$plan")" \
 assert_eq 'src/a' "$(jq -r '.entries[0].predictedWriteSet[0]' "$plan")" \
     'writer preserves the existing dispatch audit record'
 assert_eq 'feat/root' "$(jq -r '.entries[] | select(.issue == 12) | .publicationTarget' "$plan")" \
-    'schema-2 upgrade preserves the PR publication target'
+    'schema-2 upgrade preserves each recorded PR publication target'
 assert_eq '[11]' "$(jq -c '.entries[] | select(.issue == 12) | .expectedPredecessors' "$plan")" \
     'schema-2 upgrade preserves the ordered predecessor set'
 assert_eq 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \

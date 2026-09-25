@@ -41,6 +41,10 @@ with tempfile.TemporaryDirectory() as temp:
         assert not counter.exists(), 'capability query executed the declared command'
         assert all(fragment in p.stderr for fragment in fragments),(p.stderr,fragments)
     first=query(); assert query()==first
+    git('commit','--allow-empty','-qm','candidate checkpoint')
+    committed=query()
+    assert committed!=first, 'a new committed HEAD cannot inherit proof from an identical tree'
+    first=committed
     assert list(agent.iterdir())==[config], 'query created durable directories'
     before=snapshot()
     lease=subprocess.run([str(helper),'--dir',str(repo),'--cmd','test','--execution-lease-key'],

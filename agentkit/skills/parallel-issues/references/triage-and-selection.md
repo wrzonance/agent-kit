@@ -328,6 +328,10 @@ in `predictedWriteSet` or `testRootExclusions`; it reports all violations and `-
 temporary-index patch boundary before writing Git/harness config. Continue unrelated work, and queue
 dependents until the exact approved commit is pushed.
 
+Every implementation entry records one `publicationTarget` before dispatch: the normal base,
+linear predecessor branch, or single join publication branch. It is distinct from a join's
+integrated start/review commit and is never inferred from prose, `chainBaseSha`, or predecessors; `no-code` omits it.
+
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with
 no `holdReason`) or `no-code` (with a non-empty `holdReason`) -- see
