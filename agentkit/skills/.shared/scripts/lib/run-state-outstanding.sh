@@ -32,7 +32,7 @@ merge_outstanding() {
     jq -ec --argjson derived "$derived" '
         .evidence.id = $derived.evidence_id |
         .actionable_work = (.actionable_work + $derived.actionable_work | unique) |
-        .operations = (.operations + $derived.operations | unique_by(.id)) |
+        .operations = ($derived.operations + .operations | unique_by(.id)) |
         .remaining_work = (.remaining_work + $derived.remaining_work | unique) |
         .completed_work -= $derived.remaining_work
     ' <<<"$snapshot" 2>/dev/null || die 'could not merge durable outstanding obligations'

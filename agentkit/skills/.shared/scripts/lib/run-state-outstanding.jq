@@ -4,7 +4,8 @@ def v2: type == "object" and .version == 2 and (.runId | type) == "string" and
     (.attempt | type) == "string" and (.attempt | length) > 0 and (.issue | uint) and
     (.worktree | type) == "string" and (.branch | type) == "string" and
     (.state == "active" or .state == "unknown" or .state == "terminal");
-if all($workers[]; (type == "object") and (.version == 1 or v2)) | not
+if all($workers[]; (type == "object") and
+   (v2 or (.version == 1 and (.runId | type) == "string" and .runId != $run))) | not
 then error("invalid worker ledger row") else . end |
 (.results // {}) as $results | (.opened_prs // []) as $opened |
 (.receipt_prs // []) as $receipts | (.skipped_prs // []) as $skipped |
@@ -27,6 +28,11 @@ def accepted_publication($issue):
     ($owners[$p.attempt].branch == $p.branch) and
     ($results[$p.attempt].status == "accepted") and
     ($results[$p.attempt].claims.push == "valid");
+def accepted_result($issue):
+    any($results | to_entries[] | select(.value | type == "object" and has("status"));
+        .key as $attempt | .value as $receipt |
+        ($receipt.status == "accepted") and ($receipt.claims.push == "valid") and
+        ($owners[$attempt].runId == $run) and ($owners[$attempt].issue == $issue));
 ([$results | to_entries[] | select(.value | type == "object" and has("status")) |
     .key as $attempt | .value as $receipt | ($owners[$attempt] // null) as $owner |
     ($prs_by_issue[$owner.issue | tostring] // null) as $pr |
@@ -64,6 +70,9 @@ def accepted_publication($issue):
     if any($live[]; .issue == $issue) then
         {id:("queued:"+($issue|tostring)+":reconcile-active-owner"),kind:"queue",issue:$issue,
          next_action:"reconcile-active-owner",actionable:false}
+    elif accepted_result($issue) then
+        {id:("queued:"+($issue|tostring)+":reconcile-dispatch-readiness"),kind:"queue",issue:$issue,
+         next_action:"reconcile-dispatch-readiness",actionable:false}
     elif ($entries | length) != 1 or ($entry | type) != "object" or
        ($entry.expectedPredecessors | type) != "array" or
        any($entry.expectedPredecessors[]; uint | not) or
