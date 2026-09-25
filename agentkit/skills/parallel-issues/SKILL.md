@@ -623,7 +623,7 @@ root handles CI state/verification, forge conflicts, adversarial review, consent
 ### Polling discipline (applies to every wait in this skill)
 
 Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
-After handling any operator message, reconcile actual ledgers/results, dispatch plan/cache, publication records, and live worker/reviewer/test handles, then call `next-action --after-steer`. Follow `resume_required=true` in the same turn: accept pushed results, dispatch proven-ready successors, publish missing drafts/receipts, or reconcile incomplete mappings. Only `end-turn` or `complete` may stop; on `end-turn`, report saved progress and stop without waiting.
+After handling any operator message, reconcile actual ledgers/results, dispatch plan/cache, publication records, and live worker/reviewer/test handles, then call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"`. Follow `resume_required=true` in the same turn: accept pushed results, dispatch proven-ready successors, publish missing drafts/receipts, or reconcile incomplete mappings. Only `end-turn` or `complete` may stop; on `end-turn`, report saved progress and stop without waiting.
 
 Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
 

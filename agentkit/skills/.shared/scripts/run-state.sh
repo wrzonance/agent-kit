@@ -14,7 +14,10 @@ readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
         else {p: false, c: null} end)
     | .p;'
 ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''; REBIND=0; AFTER_STEER=0
+WORKER_LEDGER_SOURCE=''; DISPATCH_PLAN=''
 ACTIVATION_SESSION=''; DECISION_LEDGER=''; WORKER_LEDGER=''
+# shellcheck disable=SC1091  # sibling library is resolved at runtime
+source "$SCRIPT_DIR/lib/run-state-outstanding.sh"
 
 usage() {
     cat <<EOF
@@ -24,7 +27,8 @@ Usage: $PROGNAME get|set|append|append-unique|unset (--file FILE | --run-id ID [
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
        $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
-       $PROGNAME next-action [--after-steer] (--file FILE | --run-id ID [--repo-root DIR]) --json SNAPSHOT
+       $PROGNAME outstanding (--file FILE | --run-id ID [--repo-root DIR]) --worker-ledger FILE --dispatch-plan FILE
+       $PROGNAME next-action [--after-steer] (--file FILE | --run-id ID [--repo-root DIR]) [--worker-ledger FILE --dispatch-plan FILE] --json SNAPSHOT
        $PROGNAME summary --run-id ID [--repo-root DIR] [--reports-dir DIR]
 get     print the value at --path (scalars raw, objects/arrays compact JSON, null as "null");
         exit 11 when the key is absent -- a key explicitly set to JSON null is present, not absent
@@ -42,7 +46,8 @@ summary print handoff coverage from durable run state and active-worker lifecycl
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
 dequeue-summary remove one queued issue identity when its dispatch starts (absent is success)
-next-action validate/save evidence, actionable_work, operations, operator_dependencies, completed_work, and remaining_work; evidence requires id, observed_at (YYYY-MM-DDThh:mm:ss[.fff]Z), actionable_complete, operations_complete; operations require id, kind (worker|reviewer|test|other), status (active|unknown), and affected IDs; operator_dependencies require question and affected IDs; --after-steer refuses exact replay of the prior evidence observation; print the saved decision with outstanding and resume_required
+outstanding derive unfinished worker/result/queue/PR obligations from bound durable sources
+next-action validate/save evidence, actionable_work, operations, operator_dependencies, completed_work, and remaining_work; evidence requires id, observed_at (YYYY-MM-DDThh:mm:ss[.fff]Z), actionable_complete, operations_complete; operations require id, kind (worker|reviewer|test|other), status (active|unknown), and affected IDs; operator_dependencies require question and affected IDs; merge supplied durable sources; --after-steer requires both source paths; print the saved decision with outstanding and resume_required
 Example: {"evidence":{"id":"e","observed_at":"2026-09-24T12:00:00Z","actionable_complete":true,"operations_complete":true},"actionable_work":["B"],"operations":[{"id":"o","kind":"reviewer","status":"unknown","affected":["A"]}],"operator_dependencies":[{"question":"q","affected":["A"]}],"completed_work":[],"remaining_work":["A","B"]}
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
@@ -57,7 +62,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|append-unique|unset|latest|bind|init-summary|record-summary|dequeue-summary|next-action|summary) ACTION=$1; shift ;;
+        get|set|append|append-unique|unset|latest|bind|init-summary|record-summary|dequeue-summary|outstanding|next-action|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -72,6 +77,8 @@ parse_args() {
             --activation-session) require_value "$1" "${2:-}"; ACTIVATION_SESSION=$2; shift 2 ;;
             --rebind) REBIND=1; shift ;;
             --after-steer) AFTER_STEER=1; shift ;;
+            --worker-ledger) require_value "$1" "${2:-}"; WORKER_LEDGER_SOURCE=$2; shift 2 ;;
+            --dispatch-plan) require_value "$1" "${2:-}"; DISPATCH_PLAN=$2; shift 2 ;;
             --path) require_value "$1" "${2:-}"; KEY_PATH=$2; shift 2 ;;
             --value) require_value "$1" "${2:-}"; VALUE=$2; VALUE_SET=1; shift 2 ;;
             --json) require_value "$1" "${2:-}"; JSON_VALUE=$2; VALUE_SET=1; shift 2 ;;
@@ -116,11 +123,21 @@ parse_args() {
         [[ -z $KEY_PATH && -z $REPORTS_DIR ]] || die_usage 'dequeue-summary takes no --path/--reports-dir'
         [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'dequeue-summary requires --json POSITIVE_INTEGER'
         KEY_PATH=queued
+    elif [[ $ACTION == outstanding ]]; then
+        [[ -z $KEY_PATH && -z $REPORTS_DIR && $VALUE_SET == 0 ]] || die_usage 'outstanding takes no --path/--reports-dir/--value/--json'
+        [[ -n $WORKER_LEDGER_SOURCE && -n $DISPATCH_PLAN ]] || die_usage 'outstanding requires --worker-ledger and --dispatch-plan'
+        if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
+        [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
     elif [[ $ACTION == next-action ]]; then
         [[ -z $KEY_PATH && -z $REPORTS_DIR ]] || die_usage 'next-action takes no --path/--reports-dir'
         [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'next-action requires --json SNAPSHOT'
         if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
         [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
+        [[ (-z $WORKER_LEDGER_SOURCE && -z $DISPATCH_PLAN) ||
+           (-n $WORKER_LEDGER_SOURCE && -n $DISPATCH_PLAN) ]] ||
+            die_usage '--worker-ledger and --dispatch-plan must be supplied together'
+        ((AFTER_STEER == 0)) || [[ -n $WORKER_LEDGER_SOURCE ]] ||
+            die_usage '--after-steer requires --worker-ledger and --dispatch-plan'
     else
         [[ -z $REPORTS_DIR ]] || die_usage "$ACTION takes no --reports-dir"
         [[ -n $KEY_PATH ]] || die_usage '--path is required'
@@ -132,6 +149,8 @@ parse_args() {
     [[ $ACTION == bind || -z $ACTIVATION_SESSION ]] || die_usage '--activation-session is valid only with bind'
     [[ $ACTION == bind || $REBIND -eq 0 ]] || die_usage '--rebind is valid only with bind'
     [[ $ACTION == next-action || $AFTER_STEER == 0 ]] || die_usage '--after-steer is valid only with next-action'
+    [[ $ACTION == next-action || $ACTION == outstanding || (-z $WORKER_LEDGER_SOURCE && -z $DISPATCH_PLAN) ]] ||
+        die_usage '--worker-ledger and --dispatch-plan are valid only with outstanding/next-action'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
 }
 
@@ -431,60 +450,6 @@ validate_next_action_snapshot() {
     ' <<<"$1" 2>/dev/null
 }
 
-next_action_ownership_overlaps() {
-    jq -r '
-        ([.operations[].affected[]] | unique) as $owned |
-        any(.actionable_work[]; . as $id | $owned | index($id) != null)
-    ' <<<"$1"
-}
-
-select_next_action() {
-    jq -ec '
-        . as $snapshot |
-        ($snapshot.operations | map(select(.status == "active")) | length) as $active |
-        ($snapshot.operations | map(select(.status == "unknown")) | length) as $unknown |
-        ([$snapshot.operator_dependencies[].affected[]] | unique) as $operator_affected |
-        (if ($snapshot.actionable_work | length) > 0 and $snapshot.evidence.operations_complete then "dispatch"
-         elif $unknown > 0 then "reconcile"
-         elif $active > 0 then "collect"
-         elif (($snapshot.evidence.actionable_complete and $snapshot.evidence.operations_complete) | not)
-            then "reconcile"
-         elif ($snapshot.remaining_work | length) == 0 then "complete"
-         elif ($snapshot.operator_dependencies | length) > 0 and
-              (($snapshot.remaining_work - $operator_affected) | length) == 0 then "end-turn"
-         else "reconcile" end) as $action |
-        {snapshot:$snapshot,
-         decision:{next_action:$action,
-                   actionable_count:($snapshot.actionable_work | length),
-                   active_operations:$active,unknown_operations:$unknown,
-                   operator_dependencies:($snapshot.operator_dependencies | length),
-                   remaining_count:($snapshot.remaining_work | length),
-                   outstanding:($snapshot.remaining_work | length),
-                   evidence_id:$snapshot.evidence.id,observed_at:$snapshot.evidence.observed_at,
-                   wait_allowed:($action == "collect"),task_complete:($action == "complete"),
-                   resume_required:($action != "end-turn" and $action != "complete"),
-                   ownership_released:false}}
-    ' <<<"$1" 2>/dev/null
-}
-
-record_next_action() {
-    local snapshot=$1 overlap record next
-    snapshot=$(validate_next_action_snapshot "$snapshot") ||
-        die 'invalid next-action snapshot; every evidence and work field is required'
-    if ((AFTER_STEER)) && jq -e --argjson snapshot "$snapshot" '
-        .orchestration.snapshot.evidence? == $snapshot.evidence
-    ' <<<"$STATE" >/dev/null; then
-        die 'after-steer requires a newly observed snapshot; reconcile current source records'
-    fi
-    overlap=$(next_action_ownership_overlaps "$snapshot") || die 'could not compare next-action ownership'
-    [[ $overlap == false ]] || die 'actionable work overlaps an outstanding operation'
-    record=$(select_next_action "$snapshot") || die 'could not select next action'
-    next=$(jq -c --argjson record "$record" '.orchestration=$record' <<<"$STATE") ||
-        die 'could not record next action'
-    write_state "$next"
-    jq -c '.decision' <<<"$record"
-}
-
 print_summary() {
     local counts ledger_mode parked_rows parked_count
     counts=$(jq -er '
@@ -620,7 +585,7 @@ main() {
     fi
     read_state
     local path='' next present value=''
-    [[ $ACTION == bind || $ACTION == summary || $ACTION == init-summary || $ACTION == next-action ]] || path=$(jq_path)
+    [[ $ACTION == bind || $ACTION == summary || $ACTION == init-summary || $ACTION == outstanding || $ACTION == next-action ]] || path=$(jq_path)
     if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique ||
         $ACTION == record-summary || $ACTION == dequeue-summary || $ACTION == next-action ]]; then
         value=$(value_json) || exit $?
@@ -686,6 +651,9 @@ main() {
             ;;
         next-action)
             record_next_action "$value"
+            ;;
+        outstanding)
+            derive_outstanding
             ;;
         summary)
             print_summary
