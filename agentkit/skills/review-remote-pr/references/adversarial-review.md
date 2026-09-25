@@ -109,7 +109,8 @@ The rest of the gate stands unchanged:
   provenance="RUN_ID=${RUN_ID}; consent=${consent_record}; invocation=${invocation_quote}"
   AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" \
   "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME \
-      --run-dir "$RUN_DIR" --provenance "$provenance"
+      --run-dir "$RUN_DIR" --comments "$RUN_DIR/state/pr_N_issue_comments.json" \
+      --reaffirm-if-covered --provenance "$provenance"
   ```
 
   `adversarial-run.sh` takes the value as one argv element — never eval'd, never re-parsed — so
@@ -178,7 +179,8 @@ scripts/consent-record.sh disclose --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
 scripts/consent-record.sh grant --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
     --provider anthropic --payload "$PAYLOAD" --source interactive
 scripts/adversarial-run.sh --worktree "$WORKTREE" --pr "$PR" --repo "$REPO" \
-    --run-dir "$RUN_DIR"
+    --run-dir "$RUN_DIR" --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" \
+    --reaffirm-if-covered
 ```
 
 For `--auto-review`, add `--emit-paths FILE` to the `payload` call and grant with
@@ -295,6 +297,7 @@ Claude Code OAuth availability or effort levels.
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                               [--comments FILE --reaffirm-if-covered]
                                [--provenance TEXT]
                                [--review-base-sha SHA]
                                [--reviewer MODEL-EFFORT --override-authorization TEXT]
@@ -303,7 +306,10 @@ The one-shot blocking entry point is:
                                [--retry-attempt ID --retry-authorization TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
-publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
+publication of adversarial.diff and adversarial.result.json. `--comments` names the fresh
+`gh-pr-state --full --no-cache` issue-comments artifact; when omitted the runner resolves
+`RUN_DIR/state/pr_N_issue_comments.json`. That evidence is required to byte-verify remote attempted
+spend before the provider executes. Its stdout receipt line is shaped for
 post-receipt.sh publish. A provider failure, missing provider, or unparseable verdict is blocked
 and is never clean. The legacy invocation `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR`
 remains accepted for callers that already enter the PR worktree before launching.
@@ -444,14 +450,16 @@ and drop false positives. Confirmed findings flow through the same assess → fi
 as automated-review items (Step 5). Record confirmed unfixed findings as `open`, with a next repair
 action in `--rationale`; never decline a confirmed finding merely because its repair is pending.
 Execution, adjudication, and remediation are separate facts. Publishing execution evidence with
-open findings spends the review budget while leaving remediation incomplete.
+open findings is refused at the completion boundary; the validated runner result records the
+review while repair continues without another reviewer spend.
 
 Use `scripts/finding-ledger.sh add --verdict open --title TITLE --severity P1 --rationale NEXT_REPAIR`
-for each confirmed obligation, then
-`scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed`.
+for each confirmed obligation, repair or adjudicate every open record with current evidence, then
+run the skill's fresh `gh-pr-state.sh --digest-out` finalization refresh and
+`scripts/post-receipt.sh publish --findings-file "$RUN_DIR/findings.ndjson" --require-pushed --pr-state-digest "$final_digest"`.
 The runner's successful exit is the ledger prerequisite; the ledger is the receipt's only finding
-input, so the renderer retains open findings transparently. Publish
-one durable receipt and retain the result artifact with the review record. If publication is
+input. Publish one durable receipt only after final-head CI is green and retain the result artifact
+with the review record. If publication is
 nonzero, post-receipt.sh re-fetches live comments after the failed transport; inspect that fresh
 marker evidence before any retry and never retry from the cached comments artifact. Do not rerun
 the adversarial review after fixes — including a fix, merge-down, or retarget that lands AFTER

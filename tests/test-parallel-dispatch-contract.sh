@@ -1062,8 +1062,8 @@ assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs ma
 assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
     'setup prompt treats a zero-finding loop as success'
 assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
-assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
-assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'ci-observed=' 'setup prompt preserves actual CI beside launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' 'setup prompt names its Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_NNN_code_quality_comments.json' \
     'setup prompt names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -1077,7 +1077,7 @@ assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
 assert_contains "$setup_prompt" 'if ! cq_state=' \
     'setup prompt fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'setup prompt names the unavailable Code Quality terminal marker'
+    'setup prompt names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
@@ -1102,10 +1102,18 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'setup prompt receives stable failing-check names'
 assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
     'setup prompt parses stable failing-check names'
-assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
-    'setup prompt names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'setup prompt preserves a failing CI terminal result'
+assert_contains "$setup_prompt" 'ci_observed="red: $ci_failing_checks"' \
+    'setup prompt names the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'setup prompt appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" 'Rebuild `acceptance_args` inside this root block' \
@@ -1929,10 +1937,13 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
 call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
 assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
     'the resident call-site table ends before the following single-issue paragraph'
-# #903/#904: concurrent review ownership plus commit -> verify -> push worker contracts.
+# Issue #904 adds explicit commit -> full verification -> push recovery steps
+# to both worker contracts so an unchanged candidate is verified only once.
+# #903 adds the concurrent review/fix ownership contract at the dispatch site.
+# #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2277 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2291 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
