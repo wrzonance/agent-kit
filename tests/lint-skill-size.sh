@@ -33,7 +33,7 @@ declare -A KNOWN_OVERSIZE=(
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
     # #902: overlap review with CI and gate final-head and accepted-finding evidence.
     # #902 review: remote attempted spend and classifier-aware finalization.
-    # #905 landing: exact combined reviewed prose; final sprint trim follows.
+    # #911 landing: exact combined reviewed prose; final sprint trim follows.
     [review-remote-pr]="535:9789:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
@@ -57,8 +57,8 @@ declare -A KNOWN_OVERSIZE=(
 # #901: defer successor integration to the topological draft-ready boundary.
 # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
 # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
-    # #905 landing: exact combined reviewed prose; final sprint trim follows.
-    [parallel-issues]="854:18440:500"
+    # #911 landing: exact combined reviewed prose; final sprint trim follows.
+    [parallel-issues]="854:18483:500"
 )
 
 readonly MAX_BODY_LINES=500

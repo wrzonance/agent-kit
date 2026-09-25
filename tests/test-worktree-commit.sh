@@ -183,8 +183,8 @@ assert_contains "$(cat "$trunk_err")" 'refusing to commit' \
 assert_eq '' "$(git -C "$trunk_repo" diff --cached --name-only)" \
     'trunk refusal leaves the index untouched'
 
-# Ordinary protected edits retain the helper's historical behavior. The
-# inherited-path handoff applies only while a merge is active.
+# A fresh protected edit is prepared and staged, but publication parks until a
+# durable decision covers the exact staged tree.
 ordinary_repo="$tmp/ordinary-protected-repo"
 git init -q -b main "$ordinary_repo"
 git -C "$ordinary_repo" config user.name test
@@ -198,11 +198,89 @@ git -C "$ordinary_repo" commit -qm init
 git -C "$ordinary_repo" checkout -qb feature
 printf 'workflow-v2\n' > "$ordinary_repo/.github/workflows/ci.yml"
 ordinary_rc=0
-(cd "$ordinary_repo" && "$script" --message 'fix: ordinary protected edit' --trailer "$TEST_TRAILER" -- \
-    .github/workflows/ci.yml > /dev/null 2>&1) || ordinary_rc=$?
-assert_eq '0' "$ordinary_rc" 'ordinary protected edits commit outside an active merge'
+ordinary_out=$(cd "$ordinary_repo" && "$script" --message 'fix: ordinary protected edit' --trailer "$TEST_TRAILER" -- \
+    .github/workflows/ci.yml 2>&1) || ordinary_rc=$?
+assert_eq '3' "$ordinary_rc" 'a fresh protected edit parks before publication'
+assert_contains "$ordinary_out" '.github/workflows/ci.yml' 'the preparation packet names the protected path'
+ordinary_scope=$(sed -n 's/^approval_scope=//p' <<<"$ordinary_out")
+assert_contains "$ordinary_scope" 'protected-tree:' 'the packet names the exact staged-tree approval scope'
+assert_eq 'workflow-v1' "$(git -C "$ordinary_repo" show HEAD:.github/workflows/ci.yml)" \
+    'an unapproved protected edit does not reach a commit'
+
+ordinary_ledger_dir="$tmp/ordinary-ledger"
+mkdir -m 700 "$ordinary_ledger_dir"
+ordinary_ledger="$ordinary_ledger_dir/session-ledger.ndjson"
+ledger_bin="$root/agentkit/skills/.shared/scripts/session-ledger.sh"
+"$ledger_bin" append --ledger "$ordinary_ledger" --run-id issue-911-run \
+    --skills-path "$root/agentkit/skills" --procedure-set parallel-issues \
+    --decision 'authorize:protected-commit' --scope "$ordinary_scope" \
+    --quote 'approved the prepared protected diff' >/dev/null
+ordinary_authorized_rc=0
+ordinary_authorized_out=$(cd "$ordinary_repo" && "$script" --message 'fix: ordinary protected edit' \
+    --trailer "$TEST_TRAILER" --ledger "$ordinary_ledger" --run-id issue-911-run \
+    --ledger-scope "$ordinary_scope" -- .github/workflows/ci.yml 2>&1) || ordinary_authorized_rc=$?
+assert_eq '0' "$ordinary_authorized_rc" 'a scoped prepared-diff grant authorizes the fresh protected commit'
+assert_contains "$ordinary_authorized_out" 'committed' 'the resumed agent performs the authorized commit'
 assert_eq 'workflow-v2' "$(git -C "$ordinary_repo" show HEAD:.github/workflows/ci.yml)" \
-    'ordinary protected edit reaches the commit'
+    'the authorized protected bytes reach the commit'
+assert_contains "$(git -C "$ordinary_repo" log -1 --format=%B)" \
+    'Authorized-By-Ledger: issue-911-run authorize:protected-commit' \
+    'the protected commit records the durable scoped authorization'
+
+# The same grant cannot cover materially changed bytes, even at the same path.
+printf 'workflow-v3\n' > "$ordinary_repo/.github/workflows/ci.yml"
+changed_scope_rc=0
+changed_scope_out=$(cd "$ordinary_repo" && "$script" --message 'fix: changed protected edit' \
+    --trailer "$TEST_TRAILER" --ledger "$ordinary_ledger" --run-id issue-911-run \
+    --ledger-scope "$ordinary_scope" -- .github/workflows/ci.yml 2>&1) || changed_scope_rc=$?
+assert_eq '3' "$changed_scope_rc" 'changed protected bytes cannot inherit the earlier approval'
+assert_contains "$changed_scope_out" 'approval_scope=protected-tree:' \
+    'the changed packet reports the new concrete approval scope'
+assert_not_contains "$changed_scope_out" "approval_scope=$ordinary_scope" \
+    'the changed staged tree has a distinct scope'
+
+# An unresolved index cannot form a Git tree, so it is a content conflict to
+# resolve before any protected approval scope can truthfully be derived.
+unmerged_repo="$tmp/unmerged-protected-repo"
+git init -q -b main "$unmerged_repo"
+git -C "$unmerged_repo" config user.name test
+git -C "$unmerged_repo" config user.email test@example.invalid
+mkdir -p "$unmerged_repo/.github/workflows"
+printf 'base\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" add -- .
+git -C "$unmerged_repo" commit -qm base
+git -C "$unmerged_repo" checkout -qb feature
+printf 'feature\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" commit -qam feature
+git -C "$unmerged_repo" checkout -q main
+printf 'main\n' > "$unmerged_repo/.github/workflows/ci.yml"
+git -C "$unmerged_repo" commit -qam main
+git -C "$unmerged_repo" checkout -q feature
+git -C "$unmerged_repo" merge --no-commit main >/dev/null 2>&1 || true
+unmerged_rc=0
+unmerged_out=$(cd "$unmerged_repo" && "$script" --include-staged \
+    --message 'fix: unresolved protected merge' --trailer "$TEST_TRAILER" \
+    -- .github/workflows/ci.yml 2>&1) || unmerged_rc=$?
+assert_eq '1' "$unmerged_rc" 'an unresolved protected index is a resolvable content failure'
+assert_contains "$unmerged_out" 'failure-v1 class=content-conflict' \
+    'the unresolved index has a truthful machine-readable classification'
+assert_contains "$unmerged_out" 'resolve-index-conflicts-before-protected-approval' \
+    'the unresolved index names the action required before deriving a tree scope'
+assert_not_contains "$unmerged_out" 'approval_scope=' \
+    'an unusable index never advertises an empty or impossible approval scope'
+
+# A pre-existing broad workflow grant remains reusable for fresh CI changes;
+# it does not require the concrete grant introduced above.
+"$ledger_bin" append --ledger "$ordinary_ledger" --run-id issue-911-run \
+    --skills-path "$root/agentkit/skills" --procedure-set parallel-issues \
+    --decision 'authorize:workflow-mutations' --scope auto \
+    --quote 'operator authorized CI workflow mutations for this run' >/dev/null
+legacy_fresh_rc=0
+legacy_fresh_out=$(cd "$ordinary_repo" && "$script" --message 'fix: legacy-authorized workflow edit' \
+    --trailer "$TEST_TRAILER" --ledger "$ordinary_ledger" --run-id issue-911-run \
+    --ledger-scope auto -- .github/workflows/ci.yml 2>&1) || legacy_fresh_rc=$?
+assert_eq '0' "$legacy_fresh_rc" 'an existing workflow grant authorizes a fresh CI protected edit'
+assert_contains "$legacy_fresh_out" 'committed' 'the existing grant needs no repeated approval round'
 
 # A worker may not smuggle a tracked config.env change through include-staged;
 # only an explicit config.env operand (the issue write set) can authorize it.
@@ -975,6 +1053,19 @@ assert_contains "$harness_out" '.claude/settings.json' \
     'the harness-config park output names the non-CI-workflow path'
 assert_contains "$harness_out" 'does not authorize non-CI-workflow protected paths' \
     'the park output explains why the covering grant did not apply'
+harness_scope=$(sed -n 's/^approval_scope=//p' <<<"$harness_out")
+"$ledger_bin" append --ledger "$ledger_file" --run-id ledger-run-1 --skills-path "$root/agentkit/skills" \
+    --procedure-set parallel-issues --decision 'authorize:protected-commit' --scope "$harness_scope" \
+    --quote 'approved the prepared harness configuration commit' >/dev/null
+harness_exact_rc=0
+harness_exact_out=$(cd "$ledger_harness_repo" && "$script" --include-staged \
+    --message 'fix: exact harness config approval' --trailer "$TEST_TRAILER" \
+    --ledger "$ledger_file" --run-id ledger-run-1 --ledger-scope "$harness_scope" \
+    -- change.txt 2>&1) || harness_exact_rc=$?
+assert_eq '0' "$harness_exact_rc" \
+    'an exact prepared-commit grant authorizes a harness configuration path'
+assert_contains "$harness_exact_out" 'committed' \
+    'the exact harness authorization is consumed by the commit helper'
 
 # A mixed staged set -- one CI-workflow file the grant covers plus one
 # harness-config file it never covers -- parks the whole set (all-or-
@@ -1146,9 +1237,9 @@ assert_eq '2' "$(wc -l < "$mode_ledger" 2>/dev/null | tr -d '[:space:]')" \
 assert_eq 'base.txt' "$(tail -n 1 -- "$mode_ledger" | jq -r '.paths_touched[]' 2>/dev/null)" \
     'the newly appended record lists the changed path'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-# issue #611 Codex round: +2 lines for the symlink check and NUL-delimited read.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 847 ]] && printf yes || printf no)" \
-    'worktree-commit.sh stays at or under 847 lines (issue #732 typed failures)'
+# #911 review: the usable-index precondition preserves a truthful conflict
+# classification before exact protected-tree scope derivation.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/worktree-commit.sh") -le 891 ]] && printf yes || printf no)" \
+    'worktree-commit.sh stays at or under 891 lines (#911 protected proposal boundary)'
 
 finish

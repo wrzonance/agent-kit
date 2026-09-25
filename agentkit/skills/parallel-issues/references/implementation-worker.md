@@ -134,6 +134,14 @@ At FINISH, checkpoint the completed candidate before its publication verificatio
    consumes unchanged proof without rerunning it; changed code or relevant inputs require new
    proof. Root owns the draft PR, board, and review actions.
 
+If the helper parks staged protected paths (exit 3), preserve the worktree and return the diff,
+protected paths, rationale, focused check results, limitations, and reported `approval_scope`. Resume
+the same worker after a covering ledger decision exists. The resumed worker commits through the same
+helper, runs fresh full verification against the committed HEAD, and only then pushes. Prepared checks
+never stand in for that final committed-head verification.
+For a generated proposal-only boundary, `protected-patch.sh scope` derives the same concrete tree from
+a patch without writing live config; only its grant-checking `apply` mode may write it after approval.
+
 **History freeze — binding on first push.** After pushing, do not amend, rebase, reset, or force-push.
 Pushed commits can be a successor base; stranding that successor is the cost of every rewrite.
 Add a follow-up commit or report the problem and stop.

@@ -44,7 +44,9 @@ declare -A KNOWN_OVERSIZE=(
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
-    [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
+    # #911: exact staged-tree ledger grants authorize prepared protected commits.
+    # #911 review: classify an unresolved index before protected-tree scope derivation.
+    [skills/.shared/scripts/worktree-commit.sh]="891:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     # #901: seal deferred successor finalization against terminal evidence.
     # #901 parent integration: bind completed remote entry to canonical attempt.
@@ -234,6 +236,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
+# #911: exact staged-tree authorization plus protected-path preparation handback.
+# #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
 # #905 review: validate lease liveness and persist recovery trust provenance.
 # #905 final review: bind root recovery trust to its captured terminal summary.
 # #903: shared reviewer/native admission and its durable inventory checks.
@@ -248,7 +252,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #906 review: complete next-action help and inventory-safe dispatch.
 # #909: one-pass draft and saved publication-target enforcement in gh-body.sh.
 # #905 landing combines the reviewed recovery and dispatch helpers.
-readonly MAX_TREE_TOKENS=501664
+# #911 landing composes protected-patch and reviewed predecessor helpers.
+readonly MAX_TREE_TOKENS=505695
 
 violations=0
 checked=0
