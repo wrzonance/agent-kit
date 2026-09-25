@@ -54,9 +54,12 @@ def accepted_publication($issue):
 ([$opened[] | select(($receipts | index(.)) == null and ($skipped | index(.)) == null) |
     {id:("pr:"+(tostring)+":publish-receipt"),kind:"pr",issue:null,
      next_action:"publish-receipt",actionable:true}]) as $pr_work |
-([$queued[] as $issue | ($plan.entries | map(select(.issue == $issue)) | first // null) as $entry |
-    if ($entry | type) != "object" or ($entry.expectedPredecessors | type) != "array" or
-       any($entry.expectedPredecessors[]; uint | not) then
+([$queued[] as $issue | ($plan.entries | map(select(.issue == $issue))) as $entries |
+    ($entries[0] // null) as $entry |
+    if ($entries | length) != 1 or ($entry | type) != "object" or
+       ($entry.expectedPredecessors | type) != "array" or
+       any($entry.expectedPredecessors[]; uint | not) or
+       (($entry.expectedPredecessors | length) != ($entry.expectedPredecessors | unique | length)) then
         {id:("queued:"+($issue|tostring)+":reconcile-dispatch-readiness"),kind:"queue",issue:$issue,
          next_action:"reconcile-dispatch-readiness",actionable:false}
     elif all($entry.expectedPredecessors[]; accepted_publication(.)) then

@@ -227,6 +227,17 @@ assert_eq '["pr:604:publish-receipt","queued:606:dispatch-successor","result:att
     "$(jq -c '.orchestration.snapshot.remaining_work | sort' "$state")" \
     'saved next-action state records every source-derived obligation'
 
+# Ambiguous readiness evidence is reconciliation, even when the first duplicate
+# entry alone would make the successor appear ready.
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":605,"predictedWriteSet":["src/**"],"expectedPredecessors":[]},{"issue":606,"predictedWriteSet":["tests/**"],"expectedPredecessors":[]},{"issue":606,"predictedWriteSet":["other/**"],"expectedPredecessors":[999]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 'queued:606:reconcile-dispatch-readiness' \
+    "$(jq -r '.obligations[] | select(.issue == 606) | .id' <<<"$outstanding")" \
+    'duplicate plan entries cannot manufacture successor readiness'
+
 # Once the existing schema-2 plan maps the result issue to its opened PR and
 # the PR has a receipt, the derived obligation is genuinely discharged.
 "$script" set --file "$state" --path receipt_prs --json '[604]'
