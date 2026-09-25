@@ -7,15 +7,15 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
+Standalone invocation: run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
 stdout begins `skills=` (contract, not registry proof).
-Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run it once.
+Require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr` before work.
+Delegate only when dispatched inside active `parallel-issues`/`pr-to-green` and `check` reports that owner: reuse its receipt/preflight; do not run or acknowledge review-remote-pr preflight. Otherwise standalone native/natural-language activation delivers its own challenge. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
-a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Work and receipt survive restart/resume; new sessions need their own.
+Mismatch diagnostics name bounded read/search forms.
 
 ### No delivered challenge = no run
 
@@ -48,7 +48,9 @@ Before any multi-line recipe, read ["$agentkit/.shared/shell-portability.md"](..
 - Never run `gh pr ready` — draft-to-ready is the user's call.
 - Never trigger any provider (`@coderabbitai review`/`full review`/`pause`/`resume`, any bot command), ever.
 - Never resolve a human-touched thread, including the account `gh api user` returns.
-- Run the adversarial review ONCE per PR, as the LAST draft step; publish its receipt (`$agentkit/review-remote-pr/scripts/post-receipt.sh`) after the fix push, before handoff — incomplete without one.
+- Run the adversarial review ONCE per PR as soon as its immutable base/head/payload is captured;
+  pending or red CI continues independently. Publish its receipt only after final-head CI and
+  findings are green, before handoff — incomplete without one.
 - Never bypass a repository hook (no `--no-verify`, `core.hooksPath`, piped `y`).
 - Batch each cycle's fixes into ONE push; cap 3 cycles, then escalate.
 - Every wait is bounded (rounds/duration/marker); no model turns on `sleep` + re-check.
@@ -168,9 +170,11 @@ PHASE A — DRAFT (mechanical work; never initiate a provider review)
   0. SETUP    — enter/create the PR worktree, run agent-preflight ONCE, merge if conflicts
   1. CHECK    — one $agentkit/review-remote-pr/scripts/gh-pr-state.sh --full call: digest + durable artifacts
   1a. HUMAN   — surface human-authored content; gate every action/reply on per-item confirmation
-  2. FIX CI   — diagnose, dispatch the implementation worker, review the worker's pushed diff and re-check CI and review state after its push; repeat 1–2 until green
-  2a. FRESHEN — digest `base:` stale=yes? run 0b's merge recipe before the review
-  2b. ADVERSARIAL — LAST draft step (CI green, base current): materiality gate, then one cross-harness review with confirmed findings fixed, or a documented verified skip
+  1b. FRESHEN — digest `base:` stale=yes? run 0b's merge recipe before freezing review input
+  1c. ADVERSARIAL — without waiting for CI settlement: freeze base/head/payload, then launch the one cross-harness snapshot review or record a documented verified skip
+  2. FIX CI   — diagnose/repair independently; review the worker's pushed diff and re-check CI and review state; never cancel or relaunch the snapshot
+  2a. FINDINGS — apply the completed snapshot review deliberately to current code, accounting for intervening CI repairs; never spend again
+  2b. FINALIZE — refresh final-head evidence once; only green CI, complete findings, and exact-head verification may publish the receipt and hand off
 PHASE B — HANDOFF: 3. WAIT-READY — report draft-phase complete; the USER flips ready and triggers any provider review, never this skill
 PHASE C — REVIEW (when provider findings land)
   3a. FRESHEN — stale `base:`? rerun 0b's merge recipe once before Step 4
@@ -266,7 +270,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands, directly, no approval step: a focused suite during red/green, full suite before commit, never push without local verification. Commit-helper exit 2 needs the elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip to `agent-run.sh --cmd test` then `git push`.
+Run only declared `agent-run.sh --cmd` commands, directly, no approval step: use focused suites during red/green, then the full suite after commit and before push. Never push without successful local verification of that clean committed HEAD. Commit-helper exit 2 needs the elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip to `agent-run.sh --cmd test` then `git push`.
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
@@ -304,13 +308,16 @@ recognized providers, authoritative Bot/`[bot]` authors, and exact
 ["$agentkit/review-remote-pr/references/provider-rules.md"](references/provider-rules.md) for the H/B presentation formats and
 wait for an explicit per-item decision before acting.
 
-## Step 1b (runs as 2b): Adversarial Review — ONCE, at the end of the draft phase
+## Step 1b: Adversarial Review — ONCE, before waiting for CI settlement
 
 Read ["$agentkit/review-remote-pr/references/adversarial-review.md"](references/adversarial-review.md) in full before running
 or skipping — it carries materiality, attribution, consent, exit codes, and the one-shot runner
 contract. Provider selection uses `harness=`/`peer-cli=`; pass `--peer-cli-absent` only when absent.
+The runner's owner-private `state/launch-attempted` record is the launch event: it pins timestamp,
+reviewed head, and payload before the provider send. Preserve it through any later CI failure or
+repair, and do not start a blocking CI-settlement wait before this launch attempt is recorded.
 
-**Spent-budget precheck (must precede launch).** Before review, run `post-receipt.sh precheck` on
+**Spent-budget precheck (must precede launch).** Before review, run `$agentkit/review-remote-pr/scripts/post-receipt.sh precheck` on
 the Step 1 PR-conversation artifact:
 
 ```bash
@@ -372,7 +379,23 @@ Follow [wait-discipline](../.shared/wait-discipline.md) for direct helper waits,
 
 ### Adversarial-review receipt:
 
-Record confirmed unfixed findings as `open` with a next repair action. A receipt may publish execution evidence while remediation is incomplete; it does not authorize draft-phase completion or readiness. When fixes exist, publish **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (open next action, validated `fix commit`, or evidenced `decline rationale`), or the `verified-skip rationale` + oracle.
+Record confirmed unfixed findings as `open` with a next repair action in the local ledger, but do
+not publish a successful completion receipt while any finding remains open. Receipts prove review
+execution, never draft completion or readiness. The completed runner
+result records the review promptly while CI repair continues. Publish **after fixes are pushed**,
+fresh final-head CI is green, and every finding has validated repair or adjudication evidence,
+before draft-phase-complete handoff. The receipt keeps the original reviewed head/payload distinct
+from the final verified head in the attached `gh-pr-state` digest; never launch another reviewer
+after CI repair.
+Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
+format to `$RUN_DIR/accepted-findings.ndjson`. Write that owner-only file explicitly empty only after
+accepting none; missing or unreadable evidence remains unknown. Reuse the same file for repair and
+replace each open record with validated fixed or declined terminal evidence. Publication validates
+that ledger at the final verified head. The fresh digest records `finding-classification: cq=... icf=...`;
+an unavailable classifier does not delay review launch but blocks final publication. Raw untriaged
+thread counts do not create obligations.
+The receipt records cross-provider or blind fallback mode, P1/P2 counts, each confirmed finding,
+validated fix commit or decline rationale, and any verified-skip rationale.
 Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
 `post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Terminal evidence and later resume follow [the evidence contract](references/adversarial-review.md#terminal-evidence-and-resume); never use a pending repair as a terminal decline.
 
@@ -409,8 +432,20 @@ AGENT_IDENTITY=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$cont
 AGENT_IDENTITY=${AGENT_IDENTITY% <*}
 rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")
 [[ -z ${MODE_REASON:-} ]] || rla+=(--mode-reason "$MODE_REASON")
+# Required CI bound to current HEAD verifies it; declared acceptance adds mandatory repo-verify passes. This also refreshes comments.
+acceptance_args=()
+if [[ -f "$contract_root/.agent/acceptance.txt" && ! -L "$contract_root/.agent/acceptance.txt" ]]; then
+  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
+    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
+  done < "$contract_root/.agent/acceptance.txt"
+fi
+final_digest="$RUN_DIR/state/pr_${PR}_final.digest"
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO" \
+  --repo-root "$contract_root" --full --no-cache --tmpdir "$RUN_DIR/state" \
+  --digest-out "$final_digest" "${acceptance_args[@]}" || exit 1
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
+    --pr-state-digest "$final_digest" \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" "${rla[@]}" || publish_rc=$?

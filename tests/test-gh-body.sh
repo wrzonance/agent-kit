@@ -159,13 +159,24 @@ printf '%s\n' \
 run_state_repo="$tmp/run-state-repo"
 mkdir -p "$run_state_repo"
 run_id='test-wave'
+dispatch_plan="$tmp/dispatch-plan.json"
+publication_issue=909
+
+write_publication_plan() {
+    local target=$1
+    jq -n --arg target "$target" --argjson issue "$publication_issue" \
+        '{schemaVersion:1,entries:[{issue:$issue,publicationTarget:$target}],conflictMap:{pairs:[],revisions:[]}}' \
+        >"$dispatch_plan"
+}
+write_publication_plan main
 
 run_body() {
     local resource=${1-} action=${2-}
     shift 2
     local -a helper_args=("$resource" "$action")
     if [[ $resource == pr && $action == create ]]; then
-        helper_args+=(--run-id "$run_id" --repo-root "$run_state_repo")
+        helper_args+=(--run-id "$run_id" --repo-root "$run_state_repo" \
+            --dispatch-plan "$dispatch_plan" --plan-issue "$publication_issue")
     fi
     helper_args+=("$@")
     GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
@@ -191,11 +202,138 @@ run_body() {
 legacy_output=$(GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
     GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
     bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
-    --repo owner/repo --body-file "$body" --draft --title 'Legacy verified transport')
+    --repo owner/repo --body-file "$body" --title 'Legacy verified transport')
 assert_contains "$legacy_output" 'https://github.com/owner/repo/pull/41' \
     'standalone PR creation works without run-state context'
 assert_contains "$(cat "$tmp/gh.log")" 'pr create' \
     'standalone PR creation reaches the verified gh transport'
+assert_eq 1 "$(head -n 1 "$tmp/gh.log" | grep -o -- '--draft' | wc -l | tr -d '[:space:]')" \
+    'standalone PR creation defaults to exactly one draft option'
+assert_not_contains "$(head -n 1 "$tmp/gh.log")" '--base' \
+    'standalone creation without an explicit base leaves configured base selection to gh'
+
+# Old run artifacts in the working repository do not turn an ad-hoc invocation
+# into a workflow publication. With no explicit current-run options, the helper
+# still applies only the safe draft default and never imports a stale target.
+assert_rc 0 'stale unrelated run state fixture is written' -- \
+    "$root/agentkit/skills/.shared/scripts/run-state.sh" set --run-id stale-wave \
+    --repo-root "$run_state_repo" --path publication_target --value stale/target
+: >"$tmp/gh.log"
+stale_output=$(cd "$run_state_repo" && GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    GH_API_LOG="$tmp/api.log" GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+    --repo owner/repo --body-file "$body" --title 'Standalone amid stale state')
+assert_contains "$stale_output" 'https://github.com/owner/repo/pull/41' \
+    'stale unrelated run state does not block standalone creation'
+assert_eq 1 "$(head -n 1 "$tmp/gh.log" | grep -o -- '--draft' | wc -l | tr -d '[:space:]')" \
+    'standalone creation amid stale state still defaults to draft'
+assert_not_contains "$(head -n 1 "$tmp/gh.log")" 'stale/target' \
+    'standalone creation never imports a stale recorded target'
+
+: >"$tmp/gh.log"
+explicit_standalone_output=$(GH_BODY_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_API_LOG="$tmp/api.log" \
+    GH_STORED_BODY="$tmp/stored.md" GH_BODY_CLOSING_RETRY_DELAY=0 \
+    bash "$root/agentkit/skills/.shared/scripts/gh-body.sh" pr create \
+    --repo owner/repo --body-file "$body" --draft --draft=true --base=release/next)
+assert_contains "$explicit_standalone_output" 'https://github.com/owner/repo/pull/41' \
+    'standalone creation retains an explicit base path'
+explicit_standalone_args=$(head -n 1 "$tmp/gh.log")
+assert_eq 1 "$(grep -o -- '--draft' <<<"$explicit_standalone_args" | wc -l | tr -d '[:space:]')" \
+    'standalone duplicate draft forms normalize once'
+assert_contains "$explicit_standalone_args" '--base release/next' \
+    'standalone explicit base is normalized and forwarded'
+
+# A current run consumes the target recorded for this issue in its saved plan.
+# The parser collapses supported spellings and duplicates to one effective gh
+# argument so order and repetition cannot bypass the policy.
+: >"$tmp/gh.log"
+output=$(run_body pr create --repo owner/repo --body-file "$body" --title 'Recorded default')
+create_args=$(head -n 1 "$tmp/gh.log")
+assert_eq 1 "$(grep -o -- '--draft' <<<"$create_args" | wc -l | tr -d '[:space:]')" \
+    'run publication defaults to exactly one draft option'
+assert_eq 1 "$(grep -o -- '--base' <<<"$create_args" | wc -l | tr -d '[:space:]')" \
+    'run publication supplies exactly one recorded base option'
+assert_contains "$create_args" '--base main' \
+    'independent publication defaults to its recorded normal base'
+assert_not_contains "$create_args" '--dispatch-plan' \
+    'dispatch-plan identity is consumed locally'
+assert_not_contains "$create_args" '--plan-issue' \
+    'plan issue identity is consumed locally'
+
+write_publication_plan feat/issue-907
+: >"$tmp/gh.log"
+run_body pr create --repo owner/repo --body-file "$body" --draft=true \
+    --base=feat/issue-907 --base feat/issue-907 -Bfeat/issue-907 -B feat/issue-907 >/dev/null
+create_args=$(head -n 1 "$tmp/gh.log")
+assert_eq 1 "$(grep -o -- '--draft' <<<"$create_args" | wc -l | tr -d '[:space:]')" \
+    'matching duplicate draft forms normalize to one effective option'
+assert_eq 1 "$(grep -o -- '--base' <<<"$create_args" | wc -l | tr -d '[:space:]')" \
+    'matching duplicate base forms normalize to one effective option'
+assert_contains "$create_args" '--base feat/issue-907' \
+    'linear stacked publication uses its recorded predecessor branch'
+
+for conflict_args in '--base main' '--base=other/branch' '-Bmain'; do
+    : >"$tmp/gh.log"
+    conflict_rc=0
+    # shellcheck disable=SC2086  # Deliberately exercise the displayed option form.
+    run_body pr create --repo owner/repo --body-file "$body" $conflict_args \
+        >/dev/null 2>"$tmp/base-conflict.err" || conflict_rc=$?
+    assert_eq 1 "$conflict_rc" "conflicting target form $conflict_args is refused"
+    assert_contains "$(cat "$tmp/base-conflict.err")" 'expected --base feat/issue-907' \
+        "conflicting target form $conflict_args names the recorded target"
+    assert_contains "$(cat "$tmp/base-conflict.err")" '--base feat/issue-907' \
+        "conflicting target form $conflict_args gives the corrected invocation"
+    assert_eq 0 "$(grep -c '^pr create' "$tmp/gh.log" || true)" \
+        "conflicting target form $conflict_args makes zero create calls"
+done
+
+for draft_disable in '--draft=false' '--no-draft'; do
+    : >"$tmp/gh.log"
+    draft_disable_rc=0
+    run_body pr create --repo owner/repo --body-file "$body" "$draft_disable" \
+        >/dev/null 2>"$tmp/draft-disable.err" || draft_disable_rc=$?
+    assert_eq 1 "$draft_disable_rc" "$draft_disable cannot create a non-draft PR"
+    assert_contains "$(cat "$tmp/draft-disable.err")" 'must be created as a draft' \
+        "$draft_disable refusal names the draft policy"
+    assert_eq 0 "$(grep -c '^pr create' "$tmp/gh.log" || true)" \
+        "$draft_disable makes zero create calls"
+done
+
+: >"$tmp/gh.log"
+separator_rc=0
+run_body pr create --repo owner/repo --body-file "$body" -- --base main \
+    >/dev/null 2>"$tmp/policy-separator.err" || separator_rc=$?
+assert_eq 1 "$separator_rc" 'a target option after -- is refused before mutation'
+assert_contains "$(cat "$tmp/policy-separator.err")" 'creation policy options must precede --' \
+    'the separator refusal names the policy boundary'
+assert_eq 0 "$(grep -c '^pr create' "$tmp/gh.log" || true)" \
+    'a target option after -- makes zero create calls'
+
+jq 'del(.entries[0].publicationTarget)' "$dispatch_plan" >"$tmp/missing-target-plan.json"
+mv "$tmp/missing-target-plan.json" "$dispatch_plan"
+: >"$tmp/gh.log"
+missing_target_rc=0
+run_body pr create --repo owner/repo --body-file "$body" \
+    >/dev/null 2>"$tmp/missing-target.err" || missing_target_rc=$?
+assert_eq 1 "$missing_target_rc" 'missing recorded publication target refuses creation'
+assert_contains "$(cat "$tmp/missing-target.err")" 'no reliable publication target' \
+    'missing target refusal names the absent evidence'
+assert_eq 0 "$(grep -c '^pr create' "$tmp/gh.log" || true)" \
+    'missing recorded target makes zero create calls'
+
+jq -n --argjson issue "$publication_issue" \
+    '{schemaVersion:1,entries:[{issue:$issue,publicationTarget:"main"},{issue:$issue,publicationTarget:"other"}],conflictMap:{pairs:[],revisions:[]}}' \
+    >"$dispatch_plan"
+: >"$tmp/gh.log"
+ambiguous_target_rc=0
+run_body pr create --repo owner/repo --body-file "$body" \
+    >/dev/null 2>"$tmp/ambiguous-target.err" || ambiguous_target_rc=$?
+assert_eq 1 "$ambiguous_target_rc" 'ambiguous recorded publication target refuses creation'
+assert_contains "$(cat "$tmp/ambiguous-target.err")" 'ambiguous publication target' \
+    'ambiguous target refusal names the duplicate plan evidence'
+assert_eq 0 "$(grep -c '^pr create' "$tmp/gh.log" || true)" \
+    'ambiguous recorded target makes zero create calls'
+write_publication_plan main
 
 for partial_context in run-id repo-root; do
     : >"$tmp/gh.log"
@@ -577,6 +715,27 @@ assert_not_contains "$stacked_output" 'closing-issue #42: confirmed' \
     'deferred outcome is not reported as confirmed'
 assert_not_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
     'a stacked base never spends a GraphQL closing-reference query'
+
+# The publication recipe omits --expect-closing-issue while the saved target is
+# stacked. Model that create boundary directly: it makes one draft PR against
+# the recorded predecessor and performs no closing-reference registration probe.
+write_publication_plan feat/issue-907
+: >"$tmp/gh.log"
+: >"$tmp/api.log"
+stacked_create_output=$(GH_PR_BASE=feat/issue-907 GH_PR_DEFAULT_BRANCH=main \
+    run_body pr create --repo owner/repo --body-file "$body")
+stacked_create_args=$(head -n 1 "$tmp/gh.log")
+assert_contains "$stacked_create_output" 'https://github.com/owner/repo/pull/41' \
+    'stacked publication creates its draft PR without closing-reference proof'
+assert_eq 1 "$(grep -c '^pr create' "$tmp/gh.log")" \
+    'stacked publication makes exactly one create mutation'
+assert_contains "$stacked_create_args" '--base feat/issue-907' \
+    'stacked publication still uses its recorded predecessor target'
+assert_not_contains "$stacked_create_output" 'closing-issue #' \
+    'stacked publication emits no closing-reference result when proof is not requested'
+assert_not_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
+    'stacked publication performs no closing-reference query'
+write_publication_plan main
 
 # The deferred outcome is a genuinely different string than a plain verified
 # edit with no --expect-closing-issue at all, so the two are never conflated.

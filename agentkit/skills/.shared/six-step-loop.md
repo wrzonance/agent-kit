@@ -40,7 +40,8 @@ implementation begins only at Stage 6.
    tests, and little else — pin them at boundaries, not internals.
 6. **IMPLEMENTATION (TDD)** — for each task: write a failing boundary test (red), verify it
    actually fails, make it pass minimally (green), refactor, and run scoped checks through
-   `agent-run.sh`. Run the full suite the same way at the final task.
+   `agent-run.sh`. Focused checks are development feedback; do not add another focused pass
+   solely because FINISH's full verification follows.
 
 ### Evidence when CI fails but local verification passes
 
@@ -84,13 +85,16 @@ Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Rev
 7. **REVIEW** — inspect the full scoped unstaged diff through three lenses: correctness,
    repo-rule/security, and tests. Try to refute every suspected finding before acting on
    it. Fix confirmed findings with regression tests; cap at two rounds.
-8. **FINISH** — run the full repository verification through `agent-run.sh` from fresh
-   output, confirm the tree holds only files inside the declared write set, then commit
+8. **FINISH** — confirm the tree holds only files inside the declared write set, then commit
    with `worktree-commit.sh` (explicit operands, Conventional Commit subject, the
-   contract-derived `Co-Authored-By` trailer) and push the branch. Report the branch, full
-   commit SHA, diffstat, and green log path. The dispatching root reviews the pushed diff
-   and owns PR creation, board moves, adversarial review, and reviewer replies. Only when
-   commit or push is refused by the environment does the worker fall back: a commit
+   contract-derived `Co-Authored-By` trailer). Run each required unfocused full verification
+   command exactly once through `agent-run.sh` on that clean committed HEAD, then push only
+   after it passes. A failed full run stops publication: repair with focused TDD, create a new
+   local commit, and verify that new HEAD before push. Report the branch, full commit SHA,
+   diffstat, and green log path. The dispatching root validates and consumes the unchanged
+   proof without rerunning it; changed code or relevant inputs require new proof. Root also
+   owns PR creation, board moves, adversarial review, and reviewer replies. Only when commit
+   or push is refused by the environment does the worker fall back: a commit
    refusal (`worktree-commit.sh` exit 2, nothing committed) returns the exact ready-to-run
    commit command as a handback; a post-commit push refusal reports the commit SHA and the
    exact push command — never a commit command the root cannot rerun.

@@ -11,6 +11,7 @@ source "$STACKED_CI_DIR/lib/stacked-ci.sh"
 readonly PROGNAME=${0##*/}
 readonly UINT_RE='^[1-9][0-9]*$'
 readonly SLUG_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+readonly BRANCH_RE='^[A-Za-z0-9._/-]+$'
 readonly FRONT_BANNER='This was written agentically; verify its assertions:'
 readonly ATTRIBUTION_RE='^🤖 Co-authored by .+\.( (Closes|Fixes|Resolves) #[1-9][0-9]*)?$'
 readonly SIGNATURE_RE='^🤖 Co-authored by .+\.$'
@@ -42,14 +43,21 @@ TICK_TEXT=''
 TICK_NOTE=''
 RUN_STATE_ID=''
 RUN_STATE_REPO_ROOT=''
+DISPATCH_PLAN=''
+PLAN_ISSUE=''
+EXPLICIT_BASE=''
+BASE_SEEN=0
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME pr|issue create|edit [NUMBER|URL] --body-file FILE [gh options...]
 
-PR creation may pass --run-id ID --repo-root DIR together. These local options
-durably record the assigned PR number and are never forwarded to gh. Standalone
-creation may omit both; providing only one is refused before mutation.
+Workflow PR creation passes --run-id ID --repo-root DIR --dispatch-plan FILE
+--plan-issue N together. These local options select the saved publication target
+and durably record the assigned PR number; none are forwarded to gh. Standalone
+creation omits all four and retains gh's explicit/configured base selection.
+Every created PR is a draft. An omitted --draft and recorded --base are supplied
+automatically; an explicit conflicting base or draft-disable form is refused.
 
 Runs gh's file-backed create/edit command, re-fetches the resulting PR or issue,
 and compares its stored body byte-for-byte with FILE. --expect-closing-issue N
@@ -95,6 +103,17 @@ require_value() {
     [[ -n ${2-} ]] || die "$1 requires a value"
 }
 
+record_explicit_base() {
+    local value=$1
+    [[ -n $value ]] || die '--base requires a value'
+    [[ $value != -* ]] || die "--base must name a branch, got: $value"
+    if ((BASE_SEEN)) && [[ $EXPLICIT_BASE != "$value" ]]; then
+        die "conflicting PR targets: --base $EXPLICIT_BASE and --base $value; provide one target"
+    fi
+    EXPLICIT_BASE=$value
+    BASE_SEEN=1
+}
+
 parse_args() {
     if (($# == 1)) && [[ $1 == -h || $1 == --help ]]; then
         usage
@@ -127,6 +146,16 @@ parse_args() {
                             --tick|--tick=*|--note|--note=*|\
                             --run-id|--run-id=*|--repo-root|--repo-root=*)
                             die 'body options must precede --; use --body-file FILE'
+                            ;;
+                        --dispatch-plan|--dispatch-plan=*|--plan-issue|--plan-issue=*)
+                            die 'run context options must precede --'
+                            ;;
+                        --draft|--draft=*|--no-draft|--base|--base=*|-B|-B?*)
+                            if [[ $RESOURCE == pr && $ACTION == create ]]; then
+                                die 'PR creation policy options must precede --'
+                            fi
+                            GH_ARGS+=("$1")
+                            shift
                             ;;
                         *)
                             GH_ARGS+=("$1")
@@ -210,6 +239,46 @@ parse_args() {
                 RUN_STATE_REPO_ROOT=${1#*=}
                 shift
                 ;;
+            --dispatch-plan|--plan-issue)
+                require_value "$1" "${2-}"
+                if [[ $1 == --dispatch-plan ]]; then DISPATCH_PLAN=$2; else PLAN_ISSUE=$2; fi
+                shift 2
+                ;;
+            --dispatch-plan=*|--plan-issue=*)
+                option_name=${1%%=*}; option_value=${1#*=}
+                [[ -n $option_value ]] || die "$option_name requires a value"
+                if [[ $option_name == --dispatch-plan ]]; then DISPATCH_PLAN=$option_value; else PLAN_ISSUE=$option_value; fi
+                shift
+                ;;
+            --draft|--draft=*|--no-draft)
+                if [[ $RESOURCE == pr && $ACTION == create ]]; then
+                    [[ $1 == --draft || $1 == --draft=true ]] ||
+                        die 'PRs must be created as a draft; remove the draft-disable option'
+                else
+                    GH_ARGS+=("$1")
+                fi
+                shift
+                ;;
+            --base|-B)
+                if [[ $RESOURCE == pr && $ACTION == create ]]; then
+                    require_value "$1" "${2-}"
+                    record_explicit_base "$2"
+                    shift 2
+                else
+                    GH_ARGS+=("$1")
+                    shift
+                fi
+                ;;
+            --base=*|-B?*)
+                if [[ $RESOURCE == pr && $ACTION == create ]]; then
+                    option_value=${1#*=}
+                    if [[ $1 == -B?* ]]; then option_value=${1#-B}; option_value=${option_value#=}; fi
+                    record_explicit_base "$option_value"
+                else
+                    GH_ARGS+=("$1")
+                fi
+                shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -220,6 +289,45 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+normalize_pr_create_options() {
+    [[ $RESOURCE == pr && $ACTION == create ]] || {
+        [[ -z $DISPATCH_PLAN && -z $PLAN_ISSUE ]] ||
+            die '--dispatch-plan/--plan-issue apply to pr create only'
+        return 0
+    }
+
+    GH_ARGS+=(--draft)
+
+    if [[ -n $RUN_STATE_ID || -n $RUN_STATE_REPO_ROOT || -n $DISPATCH_PLAN || -n $PLAN_ISSUE ]]; then
+        [[ -n $RUN_STATE_ID && -n $RUN_STATE_REPO_ROOT && -n $DISPATCH_PLAN && -n $PLAN_ISSUE ]] ||
+            die 'workflow PR creation requires --run-id, --repo-root, --dispatch-plan, and --plan-issue together'
+        [[ $PLAN_ISSUE =~ $UINT_RE ]] || die '--plan-issue must be a positive integer'
+        [[ $DISPATCH_PLAN == /* && -f $DISPATCH_PLAN && ! -L $DISPATCH_PLAN && -r $DISPATCH_PLAN && -O $DISPATCH_PLAN ]] ||
+            die "--dispatch-plan must be an absolute owned readable regular file: $DISPATCH_PLAN"
+
+        local matches expected
+        matches=$(jq -er --argjson issue "$PLAN_ISSUE" \
+            '[.entries[]? | select(.issue == $issue)] | length' "$DISPATCH_PLAN" 2>/dev/null) ||
+            die "no reliable publication target for issue #$PLAN_ISSUE in saved dispatch plan: $DISPATCH_PLAN"
+        ((matches <= 1)) || die "ambiguous publication target for issue #$PLAN_ISSUE in saved dispatch plan: $DISPATCH_PLAN"
+        ((matches == 1)) || die "no reliable publication target for issue #$PLAN_ISSUE in saved dispatch plan: $DISPATCH_PLAN"
+        expected=$(jq -er --argjson issue "$PLAN_ISSUE" \
+            '.entries[] | select(.issue == $issue) | .publicationTarget |
+             select(type == "string" and length > 0)' "$DISPATCH_PLAN" 2>/dev/null) ||
+            die "no reliable publication target for issue #$PLAN_ISSUE in saved dispatch plan: $DISPATCH_PLAN"
+        [[ $expected =~ $BRANCH_RE && $expected != -* && $expected != *..* &&
+            $expected != */ && $expected != *.lock ]] ||
+            die "unsafe publication target for issue #$PLAN_ISSUE in saved dispatch plan: $expected"
+        if ((BASE_SEEN)) && [[ $EXPLICIT_BASE != "$expected" ]]; then
+            die "conflicting PR target: expected --base $expected, got --base $EXPLICIT_BASE; retry with --base $expected"
+        fi
+        GH_ARGS+=(--base "$expected")
+        return 0
+    fi
+
+    ((BASE_SEEN == 0)) || GH_ARGS+=(--base "$EXPLICIT_BASE")
 }
 
 validate_body() {
@@ -627,6 +735,7 @@ emit_json_result() {
 main() {
     parse_args "$@"
     validate_body
+    normalize_pr_create_options
     apply_tick
     validate_run_state_destination
     WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-body.XXXXXX")

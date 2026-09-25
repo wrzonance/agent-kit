@@ -577,6 +577,27 @@ assert_contains "$prompt" '--cmd backend-test' 'multi-word declaration becomes a
 assert_contains "$prompt" '--cmd test' 'test command is generated'
 assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]'" \
     'focused test selector is generated'
+
+# Issue #904: the rendered prompt is the issue lead's orchestration boundary.
+# Pin the publication cadence there: the candidate commit exists before the one
+# scheduled full run, and publication follows only that verdict.  Count the
+# scheduling instruction in the rendered prompt so a second prose path cannot
+# quietly reintroduce the duplicate full-suite execution this contract removes.
+issue_publication=$(sed -n '/^## Progress, commit, and push/,/^## True blockers/p' <<<"$prompt")
+issue_commit_line=$(grep -nF '2. Commit explicit paths' <<<"$issue_publication" | cut -d: -f1)
+issue_full_line=$(grep -nF '3. Run each required unfocused full verification command exactly once' \
+    <<<"$issue_publication" | cut -d: -f1)
+issue_push_line=$(grep -nF '4. Push the branch' <<<"$issue_publication" | cut -d: -f1)
+assert_eq yes "$([[ -n $issue_commit_line && -n $issue_full_line && -n $issue_push_line && \
+    $issue_commit_line -lt $issue_full_line && $issue_full_line -lt $issue_push_line ]] && printf yes || printf no)" \
+    'rendered issue-lead publication orders commit, one full verification, then push'
+assert_eq 1 "$(grep -cF 'Run each required unfocused full verification command exactly once' \
+    <<<"$issue_publication")" \
+    'rendered issue-lead publication schedules the full verification once'
+assert_contains "$issue_publication" 'A failed full run stops publication' \
+    'rendered issue-lead publication blocks push after a failed full run'
+assert_contains "$prompt" 'Do not add a focused pass solely because FINISH' \
+    'rendered issue-lead prompt does not schedule a redundant focused pass before full verification'
 assert_not_contains "$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')" '--yolo' \
     'generated command lines carry no unattended trust flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
@@ -686,6 +707,22 @@ assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
 
+fix_workflow=$(sed -n '/^## Your Workflow (worker fix batch)/,/^\*\*History freeze/p' <<<"$fix_prompt")
+fix_commit_line=$(grep -nF '4. Commit the repair' <<<"$fix_workflow" | cut -d: -f1)
+fix_full_line=$(grep -nF '5. Run each required unfocused full verification command exactly once' \
+    <<<"$fix_workflow" | cut -d: -f1)
+fix_push_line=$(grep -nF '6. Push the branch' <<<"$fix_workflow" | cut -d: -f1)
+assert_eq yes "$([[ -n $fix_commit_line && -n $fix_full_line && -n $fix_push_line && \
+    $fix_commit_line -lt $fix_full_line && $fix_full_line -lt $fix_push_line ]] && printf yes || printf no)" \
+    'rendered fix-batch publication orders commit, one full verification, then push'
+assert_eq 1 "$(grep -cF 'Run each required unfocused full verification command exactly once' \
+    <<<"$fix_workflow")" \
+    'rendered fix-batch publication schedules the full verification once'
+assert_contains "$fix_workflow" 'A failed full run stops publication' \
+    'rendered fix-batch publication blocks push after a failed full run'
+assert_contains "$fix_workflow" 'do not add a focused pass solely because the final full verification follows' \
+    'rendered fix-batch prompt does not schedule a redundant focused pass before full verification'
+
 # History freeze (issue #374): a fix-batch worker also commits and pushes its
 # own branch, so it carries the same post-push freeze rule, adapted for a
 # worker with no chain-successor concept of its own.
@@ -717,10 +754,10 @@ assert_contains "$setup_prompt" 'PR-loop setup worker' \
     'pr-loop-setup identifies its read-only phase'
 assert_contains "$setup_prompt" 'launch-ready' \
     'pr-loop-setup has a launch-ready terminal marker'
-assert_contains "$setup_prompt" 'ci-red: <check>' \
-    'pr-loop-setup has a CI-red terminal marker'
-assert_contains "$setup_prompt" 'cq-open: N' \
-    'pr-loop-setup has a Code Quality terminal marker'
+assert_contains "$setup_prompt" 'ci-observed=' \
+    'pr-loop-setup reports CI independently of review launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' \
+    'pr-loop-setup preserves the Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_136_code_quality_comments.json' \
     'pr-loop-setup names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -734,7 +771,7 @@ assert_contains "$setup_prompt" '--repo-root ' \
 assert_contains "$setup_prompt" "if ! cq_state=\$(" \
     'pr-loop-setup fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'pr-loop-setup names the unavailable Code Quality terminal marker'
+    'pr-loop-setup names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" "acceptance_args+=(--acceptance-command \"\$acceptance_command\")" \
     'pr-loop setup forwards each persisted acceptance command to PR-state checks'
 assert_contains "$setup_prompt" '--acceptance-file ' \
@@ -763,62 +800,103 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'pr-loop setup receives stable failing-check names'
 assert_contains "$setup_prompt" "ci_failing_checks=\$(sed -n" \
     'pr-loop setup parses stable failing-check names'
-assert_contains "$setup_prompt" "setup_terminal=\"ci-red: \$ci_failing_checks\"" \
-    'pr-loop setup names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'pr-loop setup preserves a failing CI terminal result'
+assert_contains "$setup_prompt" "ci_observed=\"red: \$ci_failing_checks\"" \
+    'pr-loop setup retains the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'pr-loop setup appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" "Rebuild \`acceptance_args\` inside this root block" \
     'pr-loop setup rebuilds acceptance arguments during root recovery'
 
 # Execute the rendered CI parser with a helper-shaped failing digest. This
-# crosses the prompt boundary and proves the named check reaches both durable
-# setup.result text and the completion line the root consumes.
+# crosses the prompt boundary and proves CI remains visible without changing
+# the review-launch terminal result.
 ci_parser=$(printf '%s\n' "$setup_prompt" | awk '
     /^ci_line=\$\(sed -n/ { capture=1 }
     capture { print }
-    capture && /^fi$/ { exit }
+    capture && /printf .ci-observed=%s/ { exit }
 ')
 ci_parser_script="$tmp/ci-parser.sh"
 {
     printf '%s\n' 'set -euo pipefail'
     printf '%s\n' "ci_digest=\$1"
-    printf '%s\n' "setup_terminal='launch-ready'" 'ci_red=0'
+    printf '%s\n' "setup_terminal='launch-ready'" "ci_observed='green'"
     printf '%s\n' "$ci_parser"
     printf '%s\n' "setup_result=\$(printf 'setup.result status=complete result=%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "completion=\$(printf '%s run-dir=%s\\n' \"\$setup_terminal\" /tmp/run)" \
         "printf '%s\\n%s\\n' \"\$setup_result\" \"\$completion\""
 } > "$ci_parser_script"
 ci_e2e_output=$(bash "$ci_parser_script" 'ci=1/3 failing pending=1 failing=1 failing-checks=lint')
-assert_contains "$ci_e2e_output" 'result=ci-red: lint run-dir=/tmp/run' \
-    'named failing CI survives into setup.result'
-assert_contains "$ci_e2e_output" 'ci-red: lint run-dir=/tmp/run' \
-    'named failing CI survives into completion output'
+assert_contains "$ci_e2e_output" 'result=launch-ready run-dir=/tmp/run' \
+    'failing CI leaves snapshot review launch-ready'
+assert_contains "$ci_e2e_output" 'ci-observed=red: lint' \
+    'failing CI retains the failing check identity beside launch eligibility'
 ci_pending_output=$(bash "$ci_parser_script" 'ci=1/2 pending pending=1 failing=0')
-assert_contains "$ci_pending_output" 'result=ci-pending run-dir=/tmp/run' \
-    'pending CI cannot produce a launch-ready setup result'
+assert_contains "$ci_pending_output" 'result=launch-ready run-dir=/tmp/run' \
+    'pending CI leaves snapshot review launch-ready'
 ci_green_output=$(bash "$ci_parser_script" 'ci=2/2 green pending=0 failing=0')
 assert_contains "$ci_green_output" 'result=launch-ready run-dir=/tmp/run' \
     'settled passing CI retains the launch-ready result'
-ci_priority=$(printf '%s\n' "$setup_prompt" | awk '
-    /^if \(\(ci_red\)\); then$/ { capture=1 }
+assert_not_contains "$setup_prompt" "setup_terminal='ci-pending'" \
+    'pending CI does not replace review launch eligibility'
+assert_contains "$setup_prompt" 'Continue CI diagnosis independently after launch' \
+    'setup contract keeps CI repair active after snapshot review launch'
+
+# Execute both finding classifiers from the rendered prompt. Their actionable
+# evidence must survive while the immutable review remains launch-ready.
+finding_agentkit="$tmp/finding-agentkit"
+mkdir -p "$finding_agentkit/review-remote-pr/scripts" "$tmp/finding-state"
+cat >"$finding_agentkit/review-remote-pr/scripts/code-quality-state.sh" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *' --probe '*) printf '%s\n' 'state=enabled' ;;
+  *) printf '%s\n' 'cq-repo: 0' 'cq-open: 2 source=pr_136_code_quality_comments.json' ;;
+esac
+EOF
+cat >"$finding_agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'open=3 total=3'
+EOF
+chmod +x "$finding_agentkit"/review-remote-pr/scripts/*.sh
+cq_parser=$(printf '%s\n' "$setup_prompt" | awk '
+    /^cq_probe=\$/ { capture=1 }
+    /^Classify issue-comment findings once/ { exit }
     capture { print }
-    capture && /^fi$/ { exit }
 ')
-ci_priority_output=$(ci_digest='ci=1/2 pending pending=1 failing=0' bash -c "ci_red=0
-$ci_parser
-setup_terminal='cq-open: findings'
-$ci_priority
-printf '%s\n' \"\$setup_terminal\"")
-assert_eq 'ci-pending' "$ci_priority_output" 'pending terminal survives subsequent finding classification'
-ci_priority_output=$(ci_digest='ci=1/3 failing pending=1 failing=1 failing-checks=lint' bash -c "ci_red=0
-$ci_parser
-setup_terminal='cq-open: findings'
-$ci_priority
-printf '%s\n' \"\$setup_terminal\"")
-assert_eq 'ci-red: lint' "$ci_priority_output" 'failing CI takes precedence over pending CI and findings'
-assert_contains "$setup_prompt" 'ci-pending' 'setup contract documents pending terminal state'
+cq_parser=${cq_parser//"$root/agentkit/skills"/$finding_agentkit}
+cq_output=$(agentkit="$finding_agentkit" state_dir="$tmp/finding-state" \
+    setup_terminal=launch-ready bash -c "$cq_parser
+printf 'terminal=%s\n' \"\$setup_terminal\"")
+assert_contains "$cq_output" 'cq-open: 2 source=pr_136_code_quality_comments.json' \
+    'open Code Quality evidence retains its count and source'
+assert_contains "$cq_output" 'findings-observed=cq-open:2' \
+    'open Code Quality evidence is explicitly actionable'
+assert_contains "$cq_output" 'terminal=launch-ready' \
+    'open Code Quality findings leave snapshot review launch-ready'
+icf_parser=$(printf '%s\n' "$setup_prompt" | awk '
+    /^icf_answered=/ { capture=1 }
+    /^Run the materiality precheck/ { exit }
+    capture { print }
+')
+icf_parser=${icf_parser//"$root/agentkit/skills"/$finding_agentkit}
+icf_output=$(agentkit="$finding_agentkit" state_dir="$tmp/finding-state" \
+    setup_terminal=launch-ready bash -c "$icf_parser
+printf 'terminal=%s\n' \"\$setup_terminal\"")
+assert_contains "$icf_output" 'icf-open: 3 source=pr_136_issue_comments.json' \
+    'open issue-comment evidence retains its count and source'
+assert_contains "$icf_output" 'findings-observed=icf-open:3' \
+    'open issue-comment evidence is explicitly actionable'
+assert_contains "$icf_output" 'terminal=launch-ready' \
+    'open issue-comment findings leave snapshot review launch-ready'
 assert_not_contains "$setup_prompt" "cq_evidence_dir=\$(mktemp" \
     'pr-loop setup does not discard state from a temporary evidence directory'
 assert_not_contains "$setup_prompt" 'cq_evidence_dir' \
@@ -834,7 +912,10 @@ assert_eq nonzero "$([[ $empty_findings_rc != 0 ]] && printf nonzero || printf z
     'pr-fix-batch refuses an empty findings ledger'
 
 accepted_findings="$tmp/accepted-findings.ndjson"
-printf '%s\n' '{"title":"Use bounded wait","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$accepted_findings"
+printf '%s\n' \
+    '{"schemaVersion":2,"title":"Use bounded wait","severity":"P2","verdict":"declined","rationale":"not a defect","evidence":{"finding":"Use bounded wait","decision":"rejected","rationale":"not a defect"}}' \
+    '{"schemaVersion":2,"title":"Upstream repair already available","severity":"P1","verdict":"declined","rationale":"already repaired","evidence":{"finding":"Upstream repair already available","decision":"rejected","rationale":"already repaired"}}' \
+    > "$accepted_findings"
 scopeless_fix_rc=0
 bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high --findings-file "$accepted_findings" \
@@ -846,6 +927,8 @@ pr_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --iss
     --write-set 'src/**' --findings-file "$accepted_findings")
 assert_contains "$pr_fix_prompt" 'Use bounded wait' \
     'pr-fix-batch renders the accepted findings ledger'
+assert_contains "$pr_fix_prompt" 'Upstream repair already available' \
+    'successor fix batch receives upstream evidence available at composition time'
 assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
 assert_contains "$pr_fix_prompt" 'untrusted data' \
@@ -856,6 +939,16 @@ assert_contains "$pr_fix_prompt" 'Root owns the immutable pre-dispatch snapshot 
     'pr-fix-batch assigns the snapshot and Collect duties to the root'
 assert_contains "$pr_fix_prompt" 'never call' \
     'pr-fix-batch keeps cross-write helper discovery out of leaf tasks'
+bare_fixed_findings="$tmp/bare-fixed-findings.ndjson"
+printf '%s\n' '{"title":"Unevidenced repair","severity":"P1","verdict":"fixed","sha":"abcdef1"}' \
+    >"$bare_fixed_findings"
+bare_fixed_rc=0
+bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --write-set 'src/**' --findings-file "$bare_fixed_findings" \
+    >/dev/null 2>&1 || bare_fixed_rc=$?
+assert_eq nonzero "$([[ $bare_fixed_rc != 0 ]] && printf nonzero || printf zero)" \
+    'pr-fix-batch refuses a bare fixed finding without terminal evidence'
 printf '%s\n' '{"title":"Confirmed repair pending","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair required"}' > "$accepted_findings"
 open_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
     --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
@@ -864,6 +957,8 @@ assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
 assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
 assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
 assert_contains "$open_fix_prompt" 'never purchase another review' 'repair resume preserves the one-review budget'
+assert_contains "$setup_prompt" "\$RUN_DIR/accepted-findings.ndjson" \
+    'setup contract canonicalizes root-accepted non-adversarial findings in RUN_DIR'
 assert_not_contains "$fix_prompt" '## Accepted findings' \
     'legacy fix-batch omits the accepted-findings section'
 
