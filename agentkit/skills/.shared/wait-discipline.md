@@ -94,11 +94,14 @@ printed value follows.
 
 ### Native and tool collection
 
-Use the current harness's advertised tools. `yield-cap=` is a legacy shell-yield
-hint, not a native-agent limit. Select each blocking duration from the live tool
-schema, observations of that same tool/session, the communication limit, and the
-remaining original collection window. If less than the tool minimum remains,
-expire collection without another call. An early event is not a timeout sample.
+Use the current harness's advertised tools. `yield-cap=` is a legacy shell-yield hint, not a native-agent limit. Select blocking durations from the live tool schema, the communication limit, and the original collection window; expire without another call when less than the tool minimum remains. An early event is not a timeout sample.
+
+Before dispatch, collection, or ending a turn, derive fresh evidence from the bound run's queue/results, worker ledger, live reviewer/test handles, and saved publication obligations; never reuse a pre-steer snapshot as current.
+Invoke `"$agentkit/.shared/scripts/run-state.sh" next-action --run-id "$RUN_ID" --repo-root "$repository_root" --json "$snapshot"`; its help names the required evidence, actionable work, typed operations, operator dependencies, completed work, and remaining work fields.
+Every field is required, operation `affected` values refer to `remaining_work`, and actionable work is disjoint from active or unknown ownership. The helper atomically saves the snapshot and decision under `orchestration`.
+Follow `next_action`: dispatch known independent work; collect active operations below; reconcile unknown/incomplete evidence through its existing bounded path; and send `complete` through normal completion checks.
+On `end-turn`, report completed work, each blocked workstream and exact question, remaining work, and saved progress, then end immediately. Its `wait_allowed=false`, `task_complete=false`, and `ownership_released=false` forbid a waiter, sleep/recheck, inventory query, or replacement worker merely to detect a reply.
+After an operator reply or other steer, re-derive evidence and resume remaining work without repeating saved completed work. Incomplete or unknown evidence cannot select `end-turn`; a known independent actionable item still dispatches.
 
 | Running operation | Collection |
 |---|---|
@@ -109,16 +112,12 @@ expire collection without another call. An early event is not a timeout sample.
 | Claude legacy explicit collection | Advertised `TaskOutput` only: returned `task_id`, `block: true`, `timeout` in milliseconds. Deprecated, not the default. |
 | Other harness | Advertised collector and returned handle; no borrowed API names. |
 
-For Codex, continue bounded native collection while children are outstanding;
-ending the root turn does not promise that completion mail starts a new one.
-Claude yields the turn with work recorded as pending and handles the later
-notification. Neither path declares the overall task complete before results.
-A mailbox wake can be a question, blocker, completion, or user input; act on that
-event and retain unfinished IDs. After an empty capped yield, re-issue the same wait with no message text.
+For Codex, continue bounded native collection while children are outstanding; ending the root turn does not promise that completion mail starts a new one. Claude yields with work recorded as pending and handles the later notification. Neither path declares the overall task complete before results.
+A mailbox wake can be a question, blocker, completion, or user input; act on it and retain unfinished IDs. After an empty capped yield, re-evaluate `next-action`; only a renewed `collect` may re-issue the same wait with no message text.
 The only permitted mid-wait output is `Heartbeat: outstanding=<IDs> deadline=<deadline>`, emitted
 no sooner than 10 minutes after collection began or the previous heartbeat. This specific rule
 overrides the harness's default of narrating before each tool call while a bounded wait is in progress.
-Empty yields do not justify restarting helpers or inspecting disk/forge. Keep the original deadline. At its
+Empty yields justify only the required `next-action` evidence refresh, never restarting helpers or unrelated disk/forge inspection. Keep the original deadline. At its
 expiry, report outstanding IDs and the next action. Collection expiry does not terminate a worker or authorize worktree writes.
 Failure status remains failure.
 

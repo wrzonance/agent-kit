@@ -27,6 +27,7 @@ preflight_sh="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
 activation_sh="$root/agentkit/skills/.shared/scripts/workflow-activation.sh"
 activation_hook="$root/agentkit/hooks/user-prompt-submit.sh"
 harness_id_script="$root/agentkit/skills/.shared/scripts/harness-id.sh"
+run_state_sh="$root/agentkit/skills/.shared/scripts/run-state.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -87,6 +88,9 @@ activate_parallel() {
     nonce=$(jq -r .nonce "$record")
     "$activation_sh" ack --repo-root "$repo" --session "$session" \
         --skill parallel-issues --nonce "$nonce" >/dev/null
+    jq -nc --arg cwd "$repo" --arg session "$session" \
+        '{cwd:$cwd,session_id:$session,hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"true"}}' |
+        "$activation_sh" hook >/dev/null
 }
 
 # An invalid origin receipt must fail before any worktree or repository mutation.
@@ -129,6 +133,21 @@ assert_eq 'yes' "$([[ -f $root_contract ]] && printf yes || printf no)" \
     'fixture setup: the root has a real preflight contract to inherit from'
 activation_session=create-worktree-session
 activate_parallel "$repo" "$activation_session"
+run_id=create-worktree-run
+"$run_state_sh" bind --run-id "$run_id" --repo-root "$repo" \
+    --activation-session "$activation_session" >/dev/null
+# Simulate compaction: discard the in-memory operands and recover every
+# identity from the existing run record through the normal bind operation.
+unset activation_session run_id
+run_context=$("$run_state_sh" bind --repo-root "$repo" \
+    --activation-session create-worktree-session)
+run_id=$(jq -r '.run_id' <<<"$run_context")
+activation_session=$(jq -r '.activation_session' <<<"$run_context")
+assert_eq 'create-worktree-run' "$run_id" 'resume recovers the workflow run ID'
+assert_eq 'create-worktree-session' "$activation_session" \
+    'resume recovers the activation session separately from the run ID'
+assert_eq no "$([[ $run_id == "$activation_session" ]] && printf yes || printf no)" \
+    'the worktree consumer never substitutes the run ID for activation session'
 
 out=$(umask 022; "$create_sh" --repo-root "$repo" --issue 41 --base main \
     --activation-session "$activation_session" 2>&1)

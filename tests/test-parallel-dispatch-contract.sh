@@ -934,8 +934,22 @@ assert_contains "$normalized_text" 'handoff cannot print' \
     'a final-sweep miss prevents the handoff'
 assert_contains "$normalized_text" 'run-state.sh" summary' \
     'handoff emits helper-computed opened-PR receipt coverage totals'
-assert_contains "$normalized_text" 'run-state.sh" init-summary --run-id "$RUN_ID"' \
-    'run setup initializes every required summary collection without resetting it'
+assert_contains "$normalized_text" 'run-state.sh" bind "${bind_args[@]}"' \
+    'startup and resume recover durable context through one run-state operation'
+assert_contains "$normalized_text" '--activation-session "$activation_session"' \
+    'run binding keys recovery to the actual acknowledged harness session'
+assert_contains "$normalized_text" '--rebind' \
+    'a known run can explicitly recover under an independently authorized new session'
+assert_contains "$normalized_text" 'candidate IDs' \
+    'ambiguous recovery explains how to use the candidate IDs already emitted by the helper'
+assert_contains "$normalized_text" 'Never choose by modification time' \
+    'resume guidance preserves deterministic selection without an mtime fallback'
+for binding_field in run_id activation_session repository_root decision_ledger worker_ledger; do
+    assert_contains "$normalized_text" ".$binding_field" \
+        "run setup restores the $binding_field binding field"
+done
+assert_not_contains "$normalized_text" 'activation_session=SESSION_ID' \
+    'worktree setup does not ask the model to reconstruct the activation session'
 assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path queued --json "$issue"' \
     'queue producers persist issue identities idempotently'
 assert_contains "$normalized_text" 'dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"' \
@@ -1975,6 +1989,8 @@ assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
 # #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
+# #907: the one-call startup/resume binding recipe replaces remembered run,
+# session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
 assert_eq yes "$([[ $prose_lines -le 2287 ]] && printf yes || printf no)" \
     'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \

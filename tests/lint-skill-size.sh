@@ -51,9 +51,11 @@ declare -A KNOWN_OVERSIZE=(
     # #875 review: preserve summary evidence and persist an invocation-derived review mode.
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
-    # #903: concurrent admission, cross-run freshness, and stopped proof contract.
-    # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    # #901: defer successor integration to the topological draft-ready boundary.
+# #903: concurrent admission, cross-run freshness, and stopped proof contract.
+# #902: separate launch eligibility and require accepted-finding evidence at finalization.
+# #901: defer successor integration to the topological draft-ready boundary.
+# #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
+# #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
     [parallel-issues]="834:17989:500"
 )
 
