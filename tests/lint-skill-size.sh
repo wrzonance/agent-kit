@@ -52,7 +52,7 @@ declare -A KNOWN_OVERSIZE=(
     # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
     # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
     # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
-    [parallel-issues]="790:17021:500"
+    [parallel-issues]="796:17194:500"
 )
 
 readonly MAX_BODY_LINES=500

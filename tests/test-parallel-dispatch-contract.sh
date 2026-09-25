@@ -1944,7 +1944,7 @@ prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$wo
 # and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
 # #910 adds the complete join/resolution recipe that prevents partial-base
 # dispatch and repeated recovery turns; ratchet the exact combined boundary.
-assert_eq yes "$([[ $prose_lines -le 2318 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2327 ]] && printf yes || printf no)" \
     'issue #910 prose files stay below their combined workflow line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

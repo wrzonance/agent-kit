@@ -169,8 +169,8 @@ assert_eq '0' "$canonical_mismatches" \
 # #784 parent integration: exact size after retaining the body-free picker boundary
 # alongside #782's provenance-bound installed issue-path helper recipe.
 # #910 records complete join predecessors, publication target, and integration identity.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 39418 ]] && printf yes || printf no)" \
-    'triage-and-selection reference stays at or under 39418 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 39485 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 39485 bytes'
 
 # Companion acknowledgement is derived from the active skill's declared map.
 assert_rc 0 'delegated skills preserve the governing active receipt' -- python3 - "$root" "$tmp" <<'PY'

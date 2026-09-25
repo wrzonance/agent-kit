@@ -35,6 +35,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
     # #905 review: split HEAD-bound evidence from its HEAD-independent exclusion lease.
     [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
+    # #905 final recovery binding plus #910 immutable accepted-publication projection.
+    [skills/.shared/scripts/worker-result.sh]="678:10258:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -232,7 +234,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #905 final review: bind root recovery trust to its captured terminal summary.
 # #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
 # #910: complete resumable join assembly and resolution-worker composition.
-readonly MAX_TREE_TOKENS=488180
+readonly MAX_TREE_TOKENS=494250
 
 violations=0
 checked=0
