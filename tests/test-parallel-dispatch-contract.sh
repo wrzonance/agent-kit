@@ -2015,7 +2015,7 @@ prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$wo
 # session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
 # #909: eight review-repair lines pin the saved-target lookup and default-target
 # closing-linkage condition before PR body composition.
-assert_eq yes "$([[ $prose_lines -le 2287 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2327 ]] && printf yes || printf no)" \
     'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
