@@ -376,6 +376,14 @@ pr_why_file=${pr_why_file:?set the root-approved Why section file}
 pr_what_file=${pr_what_file:?set the root-approved What section file}
 pr_decisions_file=${pr_decisions_file:?set the root-approved Decisions section file}
 pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
+base=${base:?set the repository default branch from the environment contract}
+[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan && -O $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
+publication_target=$(jq -er --argjson issue "$issue_number" \
+  '[.entries[]? | select(.issue == $issue) | .publicationTarget] | select(length == 1) | .[0] | select(type == "string" and length > 0)' \
+  "$dispatch_plan") || { printf '%s\n' "no reliable publication target for issue #$issue_number" >&2; exit 1; }
+closing_issue_args=()
+[[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
@@ -396,7 +404,7 @@ baseline_exclusion_args=()
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
   "${baseline_args[@]}" --agent "$agent_identity" "${baseline_exclusion_args[@]}" --output "$pr_body_file"
 "$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file" --title "$pr_title" --head "$branch" \
-  --run-id "$RUN_ID" --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --plan-issue "$issue_number" --expect-closing-issue "$issue_number"
+  --run-id "$RUN_ID" --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --plan-issue "$issue_number" "${closing_issue_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front
