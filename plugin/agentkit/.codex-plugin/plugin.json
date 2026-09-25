@@ -1,6 +1,6 @@
 {
   "name": "agentkit",
-  "version": "0.9.16",
+  "version": "0.9.17",
   "description": "Board-aware parallel issue and PR review skills, with lifecycle hooks and a per-repository contract.",
   "author": {
     "name": "wrzonance",
