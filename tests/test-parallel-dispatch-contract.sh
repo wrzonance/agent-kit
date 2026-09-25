@@ -1908,6 +1908,9 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
+assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
+    'the resident call-site table ends before the following single-issue paragraph'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 assert_eq yes "$([[ $prose_lines -le 2229 ]] && printf yes || printf no)" \
