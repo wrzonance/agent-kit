@@ -67,7 +67,7 @@ Options:
                       runs park inherited paths and preserve them in the index.
   --ledger FILE --run-id ID --ledger-scope SCOPE
                       All three or none. A covering authorize:protected-commit
-                      decision whose SCOPE is the reported protected-tree:<tree-id>
+                      decision whose SCOPE is protected-tree:<base>:<tree>
                       authorizes that exact staged tree. Existing
                       authorize:workflow-mutations grants continue to authorize
                       CI-workflow files (.github/workflows/, .gitlab-ci.yml,
