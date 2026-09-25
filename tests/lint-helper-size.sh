@@ -244,7 +244,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
 # #906 review: complete next-action help and inventory-safe dispatch.
 # #909: one-pass draft and saved publication-target enforcement in gh-body.sh.
-readonly MAX_TREE_TOKENS=490931
+# #909 landing: measured combined helper implementations.
+readonly MAX_TREE_TOKENS=496157
 
 violations=0
 checked=0
