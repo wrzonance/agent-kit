@@ -37,6 +37,9 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
     # #905 final recovery binding plus #910 immutable accepted-publication projection.
     [skills/.shared/scripts/worker-result.sh]="678:10258:800"
+    # #908: typed PR-create mutation outcome separates safe pre-mutation retry
+    # from exact-head recovery after an accepted but unverified create.
+    [skills/.shared/scripts/gh-body.sh]="856:9515:800"
     # #903: atomically admit reviews and release proved-stopped external capacity.
     [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
@@ -258,8 +261,10 @@ readonly MAX_HELPER_TOKENS=10000
 # #914 integration: #906 and #910 combined helper tree; exact measurement.
 # #914: durable-source obligations consume the joined publication projection.
 # #910 review: distinguish fresh publication equality from recorded-base reachability.
-# Integration of finalized #901-#914 heads: exact combined helper tree.
-readonly MAX_TREE_TOKENS=510263
+# #908 assembly: #902 and #909/#907 combined helper tree; exact measurement.
+# #908: resumable stages plus typed create/finalization identity proofs remove 8-12 root calls; exact tree measurement.
+# Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
+readonly MAX_TREE_TOKENS=518048
 
 violations=0
 checked=0
