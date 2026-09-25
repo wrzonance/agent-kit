@@ -404,62 +404,23 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 : "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
 # After repair: ev="$RUN_DIR/evidence-ID.json"; "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE'
 # --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA >"$ev", then
 # RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed
 # --sha "$(jq -r .repairSha "$ev")" --evidence "$ev" --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
-publish_rc=0
-# --head-sha/--diff-payload/--harness unlock post-receipt.sh's own ledger write-back (issue #486 item 4).
-# Receipt fields come from the attempt record; a verified skip has none, so set PROVIDER/MODEL/EFFORT/MODE yourself.
-ra="$RUN_DIR/state/review-attempt.json"
-rhs=''; [[ ! -e $ra ]] || { rhs=$(jq -er '.head | select(type == "string" and length > 0)' "$ra") || exit 1; }
-[[ ! -e $ra ]] || { IFS=$'\t' read -r PROVIDER MODEL EFFORT MODE < <(jq -er '[.provider, .model, .effort, .mode] | select(all(type == "string" and length > 0)) | @tsv' "$ra") || exit 1; }
-: "${PROVIDER:?set PROVIDER}" "${MODEL:?set MODEL}" "${EFFORT:?set EFFORT}" "${MODE:?set MODE: cross-provider, or blind-fallback plus MODE_REASON}"
-P1_COUNT=$(jq -s '[.[] | select(.severity == "P1")] | length' "$RUN_DIR/findings.ndjson") || exit 1
-P2_COUNT=$(jq -s '[.[] | select(.severity == "P2")] | length' "$RUN_DIR/findings.ndjson") || exit 1
-rh=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.name 2>/dev/null) || rh=''
-# The reviewed payload is the hash of the bytes the reviewer saw; a verified skip has no diff.
-rdp=''
-if [[ -e $RUN_DIR/adversarial.diff ]]; then
-    rdp=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --repo "$REPO" --pr "$PR" --diff "$RUN_DIR/adversarial.diff") || exit 1
-fi
 # The agent posting this receipt -- your own harness and model, never the reviewer's.
 : "${ROOT_MODEL:?set ROOT_MODEL to your own model id, e.g. gpt-5.6-luna}"
 AGENT_IDENTITY=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.identity --worker-model "$ROOT_MODEL") || exit 1
 AGENT_IDENTITY=${AGENT_IDENTITY% <*}
-rla=(); [[ -z $rhs ]] || rla+=(--head-sha "$rhs"); [[ -z $rdp ]] || rla+=(--diff-payload "$rdp"); [[ -z $rh ]] || rla+=(--harness "$rh")
-[[ -z ${MODE_REASON:-} ]] || rla+=(--mode-reason "$MODE_REASON")
-# Required CI bound to current HEAD verifies it; declared acceptance adds mandatory repo-verify passes. This also refreshes comments.
-acceptance_args=()
-if [[ -f "$contract_root/.agent/acceptance.txt" && ! -L "$contract_root/.agent/acceptance.txt" ]]; then
-  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
-    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
-  done < "$contract_root/.agent/acceptance.txt"
-fi
-final_digest="$RUN_DIR/state/pr_${PR}_final.digest"
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO" \
-  --repo-root "$contract_root" --full --no-cache --tmpdir "$RUN_DIR/state" \
-  --digest-out "$final_digest" "${acceptance_args[@]}" || exit 1
-RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
-    --pr-state-digest "$final_digest" \
-    --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
-    --mode "$MODE" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
-    --agent-identity "$AGENT_IDENTITY" "${rla[@]}" || publish_rc=$?
-# The ledger owns titles/dispositions/SHAs/rationales; the script owns every
-# receipt byte (--findings-file PATH overrides RUN_DIR). --skip-rationale S --oracle S for a skip.
-case "$publish_rc" in
-    0)  : ;; # posted and byte-verified
-    11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
-    12) printf '%s\n' 'receipt refused: fixes are dirty or not reachable from origin' >&2; exit 1 ;;
-    13) printf '%s\n' 'receipt refused: finding pipeline is out of order' >&2; exit 1 ;;
-    *)  printf '%s\n' 'receipt publication failed' >&2; exit 1 ;;
-esac
-# Any other nonzero has already triggered a fresh live comment re-fetch inside
-# post-receipt.sh. Do not retry from receipt_comments; inspect the fresh live comments first.
+finalize_args=(finalize --repo-root "$contract_root" --pr "$PR" --repo "$REPO" \
+    --agent-identity "$AGENT_IDENTITY")
+[[ -z ${MODE_REASON:-} ]] || finalize_args+=(--mode-reason "$MODE_REASON")
+"$agentkit/parallel-issues/scripts/pr-stage.sh" "${finalize_args[@]}"
+# Standalone review supplies explicit PR/repository/worktree context and does not
+# claim parallel-issues run binding. For a verified skip, also pass --provider,
+# --model, --effort, --mode, --skip-rationale, and --oracle.
 ```
 
 ## Step 3 (Phase B): Wait for the user to decide the ready transition

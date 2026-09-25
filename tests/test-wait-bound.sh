@@ -145,7 +145,7 @@ git -C "$ratchet_repo" -c user.name=test -c user.email=test@example.invalid comm
 git -C "$ratchet_repo" update-ref refs/remotes/origin/main HEAD
 assert_eq "$(git -C "$ratchet_repo" rev-parse HEAD)" "$(git -C "$ratchet_repo" rev-parse origin/main)" \
     'the stable ratchet is exercised when the moving base already equals HEAD'
-assert_eq yes "$([[ $(wc -l < "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md") -le 170 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $(wc -l < "$ratchet_repo/agentkit/skills/.shared/wait-discipline.md") -le 166 ]] && printf yes || printf no)" \
     'shared wait policy stays within its explicit cross-harness line budget'
 
 finish

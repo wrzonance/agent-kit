@@ -193,7 +193,7 @@ Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
-| `protected= patterns=` | Check every planned write set and accepted review finding against the repository's actual protected patterns. Keep collisions selected. A validator `proposal=N[...]` entry uses the generated proposal-only boundary: derive the concrete tree with `$agentkit/.shared/scripts/protected-patch.sh` without touching live Git/harness config, then apply it only after that exact grant. Continue unrelated work and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` publishes the approved commit. |
+| `protected= patterns=` | Check planned write sets and accepted findings against actual patterns; keep collisions selected. For `proposal=N[...]`, use `$agentkit/.shared/scripts/protected-patch.sh` without changing live Git/harness config, apply only under the exact grant, and keep dependents queued until the approved commit is made through `$agentkit/.shared/scripts/worktree-commit.sh` and pushed; unrelated work continues. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
@@ -378,16 +378,8 @@ setup_rc=0
 
 The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
 
-Exit 3 with `join-conflict ... next=resolution-worker-then-resume` is an automatic
-continuation, not an operator checkpoint. Dispatch a resolution-only worker as the named
-active sole writer in that same worktree. It verifies `MERGE_HEAD`, compares both complete
-blobs and predecessor intent, combines independent behavior, runs the affected declared
-checks, and commits through `worktree-commit.sh`; it must not start issue implementation.
-Then rerun the same setup arguments with `--resume`. A failed resolver returns the existing
-structured BLOCKED handback; classify it with
-`$agentkit/.shared/scripts/validate-handback.sh --classify-completion`,
-preserve `partial-blockers.list`, keep this issue queued, and continue independent work.
-Only `setup_rc=0` with the printed `join-base=` may proceed to implementation dispatch.
+On exit 3 with `next=resolution-worker-then-resume`, dispatch the [resolution-only prompt](references/worker-prompts.md#join-resolution-worker-prompt) as the same worktree's sole writer, then rerun setup with `--resume`.
+Classify a BLOCKED handback, preserve `partial-blockers.list`, keep the issue queued, and continue unrelated work. Dispatch implementation only after exit 0 prints `join-base=`.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -553,8 +545,8 @@ Composer publishes once; root installs and verifies its hashed `uncoveredVerific
   worker's evidence. A dirty path is never an "unrelated local change" until the check proves
   otherwise.
 
-- **Completion report (branch + pushed SHA)** → review pushed diff; run `$agentkit/parallel-issues/scripts/compose-pr-body.sh`, then `"$agentkit/.shared/scripts/gh-body.sh" pr create`; record with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`; print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`; move issue to `In review`; start Phase 3. Diff size is never a reason to withhold this; see Diff-size facts.
-- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves the queried remote HEAD, not log attribution: review the diff, open the draft, record it with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"`, print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`, and pass `--blocker-file "$blocker_file"` to `$agentkit/parallel-issues/scripts/compose-pr-body.sh`; its `## Operator action required` section preserves blocker paths and discloses limited verification. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
+- **Completion report (branch + pushed SHA)** → review pushed diff; run the draft PR body template's single `$agentkit/parallel-issues/scripts/pr-stage.sh open` call. It composes the four approved sections, creates or uniquely recovers the draft, registers `opened_prs`, and moves the issue to `In review`; use its `pr=` result to print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"` and start Phase 3. Diff size is never a reason to withhold this; see Diff-size facts.
+- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves the queried remote HEAD, not log attribution: review the diff and use the same one-call open stage with `--blocker-file "$blocker_file"`; use its `pr=` result to print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`. Its `## Operator action required` section preserves blocker paths and discloses limited verification. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
 - **Queued issue** → spawn it immediately into the freed slot.
 
 **Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
@@ -623,7 +615,7 @@ root handles CI state/verification, forge conflicts, adversarial review, consent
 ### Polling discipline (applies to every wait in this skill)
 
 Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
-After handling any operator message, reconcile actual ledgers/results, dispatch plan/cache, publication records, and live worker/reviewer/test handles, then call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"`. Follow `resume_required=true` in the same turn: accept pushed results, dispatch proven-ready successors, publish missing drafts/receipts, or reconcile incomplete mappings. Only `end-turn` or `complete` may stop; on `end-turn`, report saved progress and stop without waiting.
+After an operator message, call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"` with fresh evidence; follow its result that turn. `resume_required=true` requires continuation; only `end-turn` or `complete` may stop.
 
 Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
 
@@ -775,7 +767,6 @@ without delaying the earlier immutable review launch; raw untriaged thread count
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
-receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # After the runner returns 0, produce terminal proof before each disposition:
 fixed_evidence="$RUN_DIR/evidence-fixed.json"
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE' \
@@ -792,34 +783,17 @@ RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
   --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE' \
   --evidence "$decline_evidence" --repo-root "$worktree" \
   --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
-acceptance_args=()
-if [[ -f "$worktree/.agent/acceptance.txt" && ! -L "$worktree/.agent/acceptance.txt" ]]; then
-  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
-    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
-  done < "$worktree/.agent/acceptance.txt"
-fi
-final_digest="$RUN_DIR/state/pr_${PR}_final.digest"
-"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO" \
-  --repo-root "$worktree" --full --no-cache --tmpdir "$RUN_DIR/state" \
-  --digest-out "$final_digest" "${acceptance_args[@]}" || exit 1
-publish_rc=0
-RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
-    --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
-    --pr-state-digest "$final_digest" \
-    --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
-    --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
-    --agent-identity "$AGENT_IDENTITY" || publish_rc=$?
-case "$publish_rc" in
-    0)  : ;; # post-receipt.sh posted and byte-verified the receipt
-    11) printf '%s\n' 'receipt already spent -- no second post, no rerun' ;;
-    12) printf '%s\n' 'receipt refused: fixes are dirty or not reachable from origin' >&2; exit 1 ;;
-    13) printf '%s\n' 'receipt refused: finding pipeline is out of order' >&2; exit 1 ;;
-    *)  printf '%s\n' 'receipt publication failed (evidence unavailable, bad flags, or comment post/verify failed)' >&2; exit 1 ;;
-esac
-# A different nonzero already caused post-receipt.sh to fetch live comments.
-# Never retry against receipt_comments until the fresh live comments are reviewed.
+finalize_args=(finalize --run-id "$RUN_ID" --run-repo-root "$repository_root" \
+  --repo-root "$worktree" --pr "$PR" \
+  --repo "$REPO" --agent-identity "$AGENT_IDENTITY")
+[[ -z ${MODE_REASON:-} ]] || finalize_args+=(--mode-reason "$MODE_REASON")
+"$agentkit/parallel-issues/scripts/pr-stage.sh" "${finalize_args[@]}" || exit 1
 ```
-The ledger owns titles, dispositions, SHAs, and rationales; `post-receipt.sh publish` renders every receipt byte from `RUN_DIR`'s `findings.ndjson` (`--findings-file PATH` overrides it), takes `--skip-rationale S --oracle S` for a verified trivial-diff skip, and refuses (exit 11) rather than double-posting.
+The ledger owns titles, dispositions, SHAs, and rationales. The one-call finalizer derives the
+review attempt and counts, takes one fresh `gh-pr-state.sh --full --no-cache` digest, passes it
+unchanged to `post-receipt.sh publish`, classifies the receipt, and records `receipt_prs` or
+`skipped_prs`. For a verified skip, add `--provider`, `--model`, `--effort`, `--mode`,
+`--skip-rationale`, and `--oracle`; there is no review attempt to derive.
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
 After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:

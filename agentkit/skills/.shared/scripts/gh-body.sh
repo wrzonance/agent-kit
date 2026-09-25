@@ -21,6 +21,7 @@ readonly CLOSING_REFERENCE_RETRY_DELAY=${GH_BODY_CLOSING_RETRY_DELAY:-5}
 
 GH_BIN=${GH_BODY_GH:-gh}
 RUN_STATE_SH=${GH_BODY_RUN_STATE_SH:-$STACKED_CI_DIR/run-state.sh}
+RUN_DIR_SH=${GH_BODY_RUN_DIR_SH:-$STACKED_CI_DIR/../../review-remote-pr/scripts/run-dir.sh}
 RESOURCE=''
 ACTION=''
 BODY_FILE=''
@@ -47,6 +48,7 @@ DISPATCH_PLAN=''
 PLAN_ISSUE=''
 EXPLICIT_BASE=''
 BASE_SEEN=0
+MUTATION_OUTCOME_FILE=''
 
 usage() {
     cat <<EOF
@@ -56,6 +58,9 @@ Workflow PR creation passes --run-id ID --repo-root DIR --dispatch-plan FILE
 --plan-issue N together. These local options select the saved publication target
 and durably record the assigned PR number; none are forwarded to gh. Standalone
 creation omits all four and retains gh's explicit/configured base selection.
+--mutation-outcome-file FILE is an optional workflow-only JSON side channel in
+the selected run directory. Local refusal before gh starts is not-attempted;
+the state becomes uncertain before gh and created only after gh exits zero.
 Every created PR is a draft. An omitted --draft and recorded --base are supplied
 automatically; an explicit conflicting base or draft-disable form is refused.
 
@@ -144,7 +149,8 @@ parse_args() {
                         --body|-b|--body=*|-b?*|--body-file|--body-file=*|\
                             --expect-closing-issue|--expect-closing-issue=*|\
                             --tick|--tick=*|--note|--note=*|\
-                            --run-id|--run-id=*|--repo-root|--repo-root=*)
+                            --run-id|--run-id=*|--repo-root|--repo-root=*|\
+                            --mutation-outcome-file|--mutation-outcome-file=*)
                             die 'body options must precede --; use --body-file FILE'
                             ;;
                         --dispatch-plan|--dispatch-plan=*|--plan-issue|--plan-issue=*)
@@ -237,6 +243,16 @@ parse_args() {
                 ;;
             --repo-root=*)
                 RUN_STATE_REPO_ROOT=${1#*=}
+                shift
+                ;;
+            --mutation-outcome-file)
+                require_value "$1" "${2-}"
+                MUTATION_OUTCOME_FILE=$2
+                shift 2
+                ;;
+            --mutation-outcome-file=*)
+                MUTATION_OUTCOME_FILE=${1#*=}
+                [[ -n $MUTATION_OUTCOME_FILE ]] || die '--mutation-outcome-file requires a value'
                 shift
                 ;;
             --dispatch-plan|--plan-issue)
@@ -382,6 +398,42 @@ validate_run_state_destination() {
     esac
 }
 
+validate_mutation_outcome_file() {
+    [[ -n $MUTATION_OUTCOME_FILE ]] || return 0
+    [[ $RESOURCE == pr && $ACTION == create && $JSON_MODE == 1 ]] ||
+        die '--mutation-outcome-file requires pr create --json'
+    [[ $MUTATION_OUTCOME_FILE == /* ]] || die '--mutation-outcome-file must be absolute'
+    [[ -n $RUN_STATE_ID && -n $RUN_STATE_REPO_ROOT && -x $RUN_DIR_SH ]] ||
+        die '--mutation-outcome-file requires workflow run context and run-dir.sh'
+    [[ -n $PLAN_ISSUE && ${MUTATION_OUTCOME_FILE##*/} == "pr-stage-$PLAN_ISSUE-create-outcome.json" ]] ||
+        die '--mutation-outcome-file must use the current issue-specific PR-stage artifact name'
+    local parent=${MUTATION_OUTCOME_FILE%/*} run_dir
+    [[ -n $parent ]] || parent=/
+    [[ -d $parent && ! -L $parent && -O $parent ]] ||
+        die '--mutation-outcome-file parent must be an owned non-symlink directory'
+    if [[ -e $MUTATION_OUTCOME_FILE || -L $MUTATION_OUTCOME_FILE ]]; then
+        [[ -f $MUTATION_OUTCOME_FILE && ! -L $MUTATION_OUTCOME_FILE && -O $MUTATION_OUTCOME_FILE ]] ||
+            die '--mutation-outcome-file must be an owned regular file when it exists'
+    fi
+    run_dir=$($RUN_DIR_SH --run-id "$RUN_STATE_ID" --repo-root "$RUN_STATE_REPO_ROOT") ||
+        die 'could not resolve the workflow run directory for --mutation-outcome-file'
+    [[ $(cd -P -- "$parent" && pwd -P) == "$run_dir" ]] ||
+        die '--mutation-outcome-file must live directly in the selected workflow run directory'
+}
+
+write_mutation_outcome() {
+    local state=$1 parent=${MUTATION_OUTCOME_FILE%/*} staged
+    [[ -n $MUTATION_OUTCOME_FILE ]] || return 0
+    [[ -n $parent ]] || parent=/
+    staged=$(mktemp "$parent/.gh-body-outcome.XXXXXXXXXX") ||
+        die 'could not stage the mutation outcome'
+    if ! jq -nc --arg state "$state" '{schemaVersion:1,mutation:$state}' >"$staged" ||
+        ! chmod 600 -- "$staged" || ! mv -f -- "$staged" "$MUTATION_OUTCOME_FILE"; then
+        rm -f -- "$staged"
+        die 'could not publish the mutation outcome'
+    fi
+}
+
 validate_footer() {
     local last_line signature separator
     last_line=$(tail -n 1 -- "$BODY_FILE")
@@ -463,6 +515,7 @@ cleanup() {
 
 run_mutation() {
     local rc=0
+    write_mutation_outcome uncertain
     "$GH_BIN" "$RESOURCE" "$ACTION" "${GH_ARGS[@]}" \
         >"$WORK_DIR/mutation.out" 2>"$WORK_DIR/mutation.err" || rc=$?
     if ((rc != 0)); then
@@ -480,6 +533,7 @@ run_mutation() {
         die "gh $RESOURCE $ACTION failed (rc=$rc); body was not verified"
     fi
     MUTATION_COMPLETED=1
+    write_mutation_outcome created
 }
 
 endpoint_from_url() {
@@ -734,6 +788,8 @@ emit_json_result() {
 
 main() {
     parse_args "$@"
+    validate_mutation_outcome_file
+    write_mutation_outcome not-attempted
     validate_body
     normalize_pr_create_options
     apply_tick

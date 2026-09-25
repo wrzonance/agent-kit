@@ -316,8 +316,9 @@ conflict analysis. The plan uses this schema:
 the dependency plan; a caller-supplied `--chain-base` never replaces or narrows it.
 `integrationBaseSha` starts null and setup replaces it with the published join head
 only after every predecessor's immutable initial publication is proven reachable.
-`publicationTarget` is the PR's single target branch and remains separate: targeting
-one predecessor branch is not evidence that a multi-input join contains the others.
+Before dispatch, every implementation entry records one `publicationTarget`: the normal base, linear predecessor
+branch, or single join publication branch; `no-code` omits it. This PR target remains separate from
+the integrated start/review commit, is never inferred from prose, `chainBaseSha`, or predecessors, and never proves that a multi-input join contains the other predecessors.
 The schema-2 upgrade preserves all three entry fields unchanged.
 
 The dispatch artifact stays at schema 1 until PR numbers and pushed heads exist. Persist it atomically,
@@ -327,10 +328,6 @@ in `predictedWriteSet` or `testRootExclusions`; it reports all violations and `-
 `protected=N[...]` keeps those entries for preparation. A `proposal=N[...]` subset must use the
 temporary-index patch boundary before writing Git/harness config. Continue unrelated work, and queue
 dependents until the exact approved commit is pushed.
-
-Every implementation entry records one `publicationTarget` before dispatch: the normal base,
-linear predecessor branch, or single join publication branch. It is distinct from a join's
-integrated start/review commit and is never inferred from prose, `chainBaseSha`, or predecessors; `no-code` omits it.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

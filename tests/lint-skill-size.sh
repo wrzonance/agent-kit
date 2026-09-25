@@ -34,7 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     # #902: overlap review with CI and gate final-head and accepted-finding evidence.
     # #902 review: remote attempted spend and classifier-aware finalization.
     # #912: delegated activation distinguishes an active owning workflow from standalone use.
-    [review-remote-pr]="535:9789:450"
+    # #908: move resumable finalization into pr-stage while retaining delegated activation.
+    [review-remote-pr]="496:9035:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
@@ -60,7 +61,10 @@ declare -A KNOWN_OVERSIZE=(
     # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
     # #914 integration: preserve the #907 rebind and #910 join contracts; exact measurement.
     # #914: resume source-derived obligations after a steer in the same root turn.
-    [parallel-issues]="868:18801:500"
+    # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
+    # #908 final parent integration: exact combined one-call finalization measurement.
+    # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
+    [parallel-issues]="842:18228:500"
 )
 
 readonly MAX_BODY_LINES=500
