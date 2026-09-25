@@ -144,6 +144,31 @@ assert_contains "$prompt" 'BLOCKED: class=<write-set|baseline-red|other>' \
 assert_contains "$prompt" 'remaining-step=<exact next step>' \
     'issue-lead prompt requires the exact remaining step on a blocker'
 
+join_plan="$tmp/join-dispatch-plan.json"
+jq -n '{schemaVersion:1,entries:[{issue:910,publicationTarget:"main",
+    expectedPredecessors:[905,907,911],integrationBaseSha:null,
+    predictedWriteSet:["seed.txt"]}],conflictMap:{pairs:[],revisions:[]}}' >"$join_plan"
+chmod 600 "$join_plan"
+join_prompt_rc=0
+join_prompt=$(bash "$compose" --template join-resolution --write-set seed.txt \
+    --dispatch-plan "$join_plan" --worktree "$repo" --issue 910 \
+    --branch feat/issue-910 --worker-model gpt-5.6-luna --worker-effort high 2>&1) || join_prompt_rc=$?
+assert_eq 0 "$join_prompt_rc" 'composer supports the resolution-only join worker interface'
+assert_contains "$join_prompt" 'You are the resolution-only worker for join issue #910' \
+    'join handoff scopes the worker to conflict resolution'
+assert_contains "$join_prompt" 'git rev-parse -q --verify MERGE_HEAD' \
+    'join handoff requires the preserved active merge'
+assert_contains "$join_prompt" 'compare every complete stage-2 and stage-3 blob' \
+    'join handoff requires evidence-based conflict repair'
+assert_contains "$join_prompt" "Never choose \`ours\` or \`theirs\` blindly" \
+    'join handoff forbids blind side selection'
+assert_contains "$join_prompt" 'Do not push and do not implement issue #910' \
+    'join worker returns control before implementation dispatch'
+assert_contains "$join_prompt" 'agent-run.sh --cmd test --summary' \
+    'join resolution runs the combined-code declared check'
+assert_contains "$join_prompt" 'join-resolution=committed' \
+    'join worker returns the machine-readable resume marker'
+
 ineligible_repo="$tmp/verification-ineligible"
 make_repo "$ineligible_repo" "$contract"
 sed -i '/^AGENT_VERIFY_TEST_/d' "$ineligible_repo/.agent/config.env"

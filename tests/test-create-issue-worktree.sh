@@ -23,6 +23,8 @@ stat_mode() {
 }
 
 create_sh="$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh"
+compose_worker_sh="$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh"
+worktree_commit_sh="$root/agentkit/skills/.shared/scripts/worktree-commit.sh"
 preflight_sh="$root/agentkit/skills/.shared/scripts/agent-preflight.sh"
 activation_sh="$root/agentkit/skills/.shared/scripts/workflow-activation.sh"
 activation_hook="$root/agentkit/hooks/user-prompt-submit.sh"
@@ -46,6 +48,9 @@ assert_exec() {
     fi
 }
 assert_exec "$create_sh" 'create-issue-worktree.sh is executable'
+create_help=$("$create_sh" --help)
+assert_contains "$create_help" '--dispatch-plan FILE --run-id ID' \
+    'join setup help names its paired saved-run inputs'
 assert_contains "$(<"$create_sh")" \
     'preflight_args=(--worktree "$worktree" --inherit-session "$root_contract")' \
     'preflight argv starts nonempty before optional activation arguments'
@@ -66,8 +71,10 @@ make_repo() {
     git -C "$repo" config user.email test@example.invalid
     mkdir -p "$repo/.agent"
     printf '%s\n' \
+        'AGENT_REPO_SLUG=example/repo' \
         'AGENT_BASE_BRANCH=main' \
         'AGENT_WORKTREE_ROOT=.fleet' \
+        'AGENT_CMD_TEST=true' \
         >"$repo/.agent/config.env"
     printf 'seed\n' >"$repo/seed.txt"
     git -C "$repo" add -- seed.txt
@@ -112,6 +119,22 @@ assert_eq no "$(git -C "$refusal_repo" show-ref --verify --quiet refs/remotes/or
     'activation refusal pushes no remote issue branch'
 assert_eq no "$(test -e "$refusal_repo/.fleet/feat/issue-39" && printf yes || printf no)" \
     'activation refusal creates no target worktree'
+
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":38,"expectedPredecessors":[],"integrationBaseSha":null,"predictedWriteSet":["seed.txt"]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$tmp/argument-plan.json"
+for bad_args in \
+    "--dispatch-plan $tmp/argument-plan.json" \
+    '--run-id argument-run' \
+    "--dispatch-plan $tmp/argument-plan.json --dispatch-plan $tmp/argument-plan.json --run-id argument-run" \
+    '--run-id argument-run --run-id argument-run'; do
+    argument_rc=0
+    # shellcheck disable=SC2086 # fixture exercises distinct public argv forms
+    "$create_sh" --repo-root "$refusal_repo" --issue 38 --base main $bad_args \
+        >/dev/null 2>"$tmp/argument.err" || argument_rc=$?
+    assert_eq 1 "$argument_rc" "invalid join setup arguments are refused: $bad_args"
+done
+assert_eq no "$(git -C "$refusal_repo" show-ref --verify --quiet refs/heads/feat/issue-38 && printf yes || printf no)" \
+    'invalid join arguments create no local issue branch'
 
 # Exercise the public no-session path on the current shell. The structural
 # assertion above pins the nonempty argv required by older Bash nounset.
@@ -482,9 +505,41 @@ assert_rc 0 'the unresolved join preserves MERGE_HEAD for the sole writer' -- \
     git -C "$conflict_worktree" rev-parse -q --verify MERGE_HEAD
 assert_eq no "$(git -C "$join_repo" show-ref --verify --quiet refs/remotes/origin/feat/issue-80 && printf yes || printf no)" \
     'a conflicted partial join is not published as an implementation base'
-printf 'left\nright\n' >"$conflict_worktree/seed.txt"
-git -C "$conflict_worktree" add -- seed.txt
-git -C "$conflict_worktree" commit -qm 'resolve both predecessor behaviors'
+
+resolution_prompt="$conflict_worktree/.agent/prompts/join-resolution.md"
+"$compose_worker_sh" --template join-resolution --write-set seed.txt \
+    --dispatch-plan "$join_plan" --worktree "$conflict_worktree" --issue 80 \
+    --branch feat/issue-80 --worker-model gpt-5.6-luna --worker-effort high \
+    --output "$resolution_prompt" >/dev/null
+
+run_resolution_worker() {
+    local prompt=$1 worktree=$2 mode=$3 merge_head
+    grep -Fq 'resolution-only worker' "$prompt" || return 2
+    git -C "$worktree" rev-parse -q --verify MERGE_HEAD >/dev/null || return 2
+    [[ $mode != fail-validation ]] || return 1
+    printf 'left\nright\n' >"$worktree/seed.txt"
+    git -C "$worktree" add -- seed.txt
+    merge_head=$(git -C "$worktree" rev-parse MERGE_HEAD)
+    (cd "$worktree" && "$worktree_commit_sh" --include-staged \
+        --message 'chore(chains): preserve both predecessor behaviors' \
+        --allow-base-inherited "$merge_head" --yolo -- seed.txt) >/dev/null
+    printf 'join-resolution=committed head=%s\n' "$(git -C "$worktree" rev-parse HEAD)"
+}
+
+failed_resolution_rc=0
+run_resolution_worker "$resolution_prompt" "$conflict_worktree" fail-validation \
+    >/dev/null || failed_resolution_rc=$?
+assert_eq 1 "$failed_resolution_rc" 'resolution-only validation failure returns blocked work'
+assert_rc 0 'failed resolution keeps the active merge resumable' -- \
+    git -C "$conflict_worktree" rev-parse -q --verify MERGE_HEAD
+assert_eq conflict "$("$run_state_sh" get --run-id "$join_run" --repo-root "$join_repo" \
+    --path joins.80.status)" 'failed resolution retains durable conflict state'
+assert_eq no "$(git -C "$join_repo" show-ref --verify --quiet refs/remotes/origin/feat/issue-80 && printf yes || printf no)" \
+    'failed resolution cannot publish or start implementation'
+
+resolution_marker=$(run_resolution_worker "$resolution_prompt" "$conflict_worktree" resolve)
+assert_contains "$resolution_marker" 'join-resolution=committed head=' \
+    'the composed resolution-only worker returns the setup resume marker'
 resolved_out=$("$create_sh" --repo-root "$join_repo" --issue 80 --base main \
     --dispatch-plan "$join_plan" --run-id "$join_run" --resume 2>&1)
 resolved_head=$(git -C "$conflict_worktree" rev-parse HEAD)
@@ -499,7 +554,9 @@ assert_rc 0 'resolved join contains the right predecessor' -- \
 
 # Issue #910: join-plan/run-state wiring adds only the public options and one
 # call into the focused join helper; hold the setup script at its new boundary.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 341 ]] && printf yes || printf no)" \
-    'create-issue-worktree.sh stays at or under 341 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/create-issue-worktree.sh") -le 347 ]] && printf yes || printf no)" \
+    'create-issue-worktree.sh stays at or under 347 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/lib/join-base.sh") -le 215 ]] && printf yes || printf no)" \
+    'the private join assembly library stays at or under 215 lines'
 
 finish

@@ -226,8 +226,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #907: durable run binding and stall-output ledger alias protection.
 # #905: native-log validation and one durable missing-evidence recovery add measured helper code.
 # #911: exact staged-tree authorization plus protected-path preparation handback.
-# #910 assembly: #905, #907, and #911 combined helper tree; exact measurement.
-readonly MAX_TREE_TOKENS=484843
+# #910: complete resumable join assembly and resolution-worker composition.
+readonly MAX_TREE_TOKENS=488180
 
 violations=0
 checked=0

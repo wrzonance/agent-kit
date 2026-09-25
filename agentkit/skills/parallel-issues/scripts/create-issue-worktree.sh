@@ -90,8 +90,14 @@ parse_args() {
                 shift
                 ;;
             --activation-session) worktree_setup_require_value "$1" "${2:-}" || exit 1; ACTIVATION_SESSION=$2; shift 2 ;;
-            --dispatch-plan) worktree_setup_require_value "$1" "${2:-}" || exit 1; DISPATCH_PLAN=$2; shift 2 ;;
-            --run-id) worktree_setup_require_value "$1" "${2:-}" || exit 1; RUN_ID=$2; shift 2 ;;
+            --dispatch-plan)
+                worktree_setup_require_value "$1" "${2:-}" || exit 1
+                [[ -z $DISPATCH_PLAN ]] || { worktree_setup_fail '--dispatch-plan given more than once'; exit 1; }
+                DISPATCH_PLAN=$2; shift 2 ;;
+            --run-id)
+                worktree_setup_require_value "$1" "${2:-}" || exit 1
+                [[ -z $RUN_ID ]] || { worktree_setup_fail '--run-id given more than once'; exit 1; }
+                RUN_ID=$2; shift 2 ;;
             --resume)
                 RESUME=yes
                 shift
