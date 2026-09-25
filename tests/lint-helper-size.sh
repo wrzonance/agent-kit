@@ -234,7 +234,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #905 final review: bind root recovery trust to its captured terminal summary.
 # #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
 # #910: complete resumable join assembly and resolution-worker composition.
-readonly MAX_TREE_TOKENS=494250
+# #910 review: distinguish fresh publication equality from recorded-base reachability.
+readonly MAX_TREE_TOKENS=494319
 
 violations=0
 checked=0
