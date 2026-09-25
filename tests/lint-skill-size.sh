@@ -64,7 +64,7 @@ declare -A KNOWN_OVERSIZE=(
     # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
     # #908 final parent integration: exact combined one-call finalization measurement.
     # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
-    [parallel-issues]="842:18223:500"
+    [parallel-issues]="842:18228:500"
 )
 
 readonly MAX_BODY_LINES=500

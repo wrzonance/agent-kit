@@ -316,7 +316,7 @@ conflict analysis. The plan uses this schema:
 the dependency plan; a caller-supplied `--chain-base` never replaces or narrows it.
 `integrationBaseSha` starts null and setup replaces it with the published join head
 only after every predecessor's immutable initial publication is proven reachable.
-Every implementation entry records one `publicationTarget`: the normal base, linear predecessor
+Before dispatch, every implementation entry records one `publicationTarget`: the normal base, linear predecessor
 branch, or single join publication branch; `no-code` omits it. This PR target remains separate from
 the integrated start/review commit, is never inferred from prose, `chainBaseSha`, or predecessors, and never proves that a multi-input join contains the other predecessors.
 The schema-2 upgrade preserves all three entry fields unchanged.

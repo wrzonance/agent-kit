@@ -193,7 +193,7 @@ Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
-| `protected= patterns=` | Check planned write sets and accepted findings against actual patterns; keep collisions selected. For `proposal=N[...]`, use `$agentkit/.shared/scripts/protected-patch.sh` without changing live Git/harness config, apply only under the exact grant, and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` pushes the approved commit; unrelated work continues. |
+| `protected= patterns=` | Check planned write sets and accepted findings against actual patterns; keep collisions selected. For `proposal=N[...]`, use `$agentkit/.shared/scripts/protected-patch.sh` without changing live Git/harness config, apply only under the exact grant, and keep dependents queued until the approved commit is made through `$agentkit/.shared/scripts/worktree-commit.sh` and pushed; unrelated work continues. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
