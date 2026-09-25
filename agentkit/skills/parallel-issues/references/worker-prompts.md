@@ -470,6 +470,10 @@ Root owns the immutable pre-dispatch snapshot and Collect; never call `cross-wri
 Return scoped changes and timing/handback evidence; root handles a missing snapshot on every dispatch or resume.
 __ACCEPTED_FINDINGS_SECTION__
 
+The accepted-findings ledger also carries any available upstream findings and fix evidence supplied
+by root. Use that completed evidence to avoid known duplicate work. Do not wait, poll, or contact an
+upstream reviewer for findings that were not available when this batch was composed.
+
 ## How to write a file
 
 Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
@@ -497,6 +501,8 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 
 ## Branch Rules (MANDATORY)
 - Work only in the supplied worktree and confirm the supplied branch before editing.
+- This worker owns the worktree until its terminal lifecycle release. Never invite a second writer;
+  root edits and merge-down wait for that confirmed release.
 - Do not alter branch history or metadata; surface conflicts or branch mismatches to the
   top-level session.
 

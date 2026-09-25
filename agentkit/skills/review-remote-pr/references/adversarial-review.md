@@ -107,8 +107,10 @@ The rest of the gate stands unchanged:
   # RUN_ID, consent_record, and invocation_quote are existing data variables
   # (the quote read from its ledger/quote file, never retyped into shell source).
   provenance="RUN_ID=${RUN_ID}; consent=${consent_record}; invocation=${invocation_quote}"
+  AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" \
   "$agentkit/review-remote-pr/scripts/adversarial-run.sh" --pr N --repo OWNER/NAME \
-      --run-dir "$RUN_DIR" --provenance "$provenance"
+      --run-dir "$RUN_DIR" --comments "$RUN_DIR/state/pr_N_issue_comments.json" \
+      --reaffirm-if-covered --provenance "$provenance"
   ```
 
   `adversarial-run.sh` takes the value as one argv element — never eval'd, never re-parsed — so
@@ -177,7 +179,8 @@ scripts/consent-record.sh disclose --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
 scripts/consent-record.sh grant --worktree "$WORKTREE" --run-dir "$RUN_DIR" \
     --provider anthropic --payload "$PAYLOAD" --source interactive
 scripts/adversarial-run.sh --worktree "$WORKTREE" --pr "$PR" --repo "$REPO" \
-    --run-dir "$RUN_DIR"
+    --run-dir "$RUN_DIR" --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" \
+    --reaffirm-if-covered
 ```
 
 For `--auto-review`, add `--emit-paths FILE` to the `payload` call and grant with
@@ -294,6 +297,7 @@ Claude Code OAuth availability or effort levels.
 The one-shot blocking entry point is:
 
     scripts/adversarial-run.sh --worktree DIR --pr N --repo OWNER/REPO --run-dir DIR [--peer-cli-absent]
+                               [--comments FILE --reaffirm-if-covered]
                                [--provenance TEXT]
                                [--review-base-sha SHA]
                                [--reviewer MODEL-EFFORT --override-authorization TEXT]
@@ -302,10 +306,24 @@ The one-shot blocking entry point is:
                                [--retry-attempt ID --retry-authorization TEXT]
 
 It owns consent enforcement, diff capture, provider selection, schema validation, and atomic
-publication of adversarial.diff and adversarial.result.json. Its stdout receipt line is shaped for
+publication of adversarial.diff and adversarial.result.json. `--comments` names the fresh
+`gh-pr-state --full --no-cache` issue-comments artifact; when omitted the runner resolves
+`RUN_DIR/state/pr_N_issue_comments.json`. That evidence is required to byte-verify remote attempted
+spend before the provider executes. Its stdout receipt line is shaped for
 post-receipt.sh publish. A provider failure, missing provider, or unparseable verdict is blocked
 and is never clean. The legacy invocation `adversarial-run.sh --pr N --repo OWNER/REPO --run-dir DIR`
 remains accepted for callers that already enter the PR worktree before launching.
+
+Before any provider helper can send, the durable attempt reservation enters the repository's shared
+capacity boundary. Under one short lock it counts root, matching-run version-2 native worker
+reservations, fresh nonfuture reservations from other runs, and reserved/running/unreconciled
+unknown-outcome review attempts, then uses the existing
+`concurrency-cap.sh --assert-count` contract. Distinct PR attempts may run concurrently. A refused
+reservation writes no launch marker and sends nothing, so the caller may queue it and refill after
+another execution reaches a confirmed terminal state. Reserved/running attempts with interrupted or
+unknown local outcomes continue to consume their identity and are never silently submitted again.
+An ad-hoc review without `AGENTKIT_PARALLEL_RUN_ID` ignores unrelated native-run ledger rows while
+still counting outstanding reviews. Parallel-issues supplies its existing validated `RUN_ID`.
 
 Use `--review-base-sha SHA` only when the review must include commits already merged into the
 current PR base. SHA must be a full local commit ID and an ancestor of both the observed PR base
@@ -377,6 +395,14 @@ Reconciliation validates the original result without a provider launch. Preserve
 missing evidence; no command resets the budget. Authorized retry preserves prior evidence under
 its original ID. Canonical replay reuses matching completed results; changed targets require
 mechanical lineage, not another review.
+
+When no retry is authorized but all recorded processes are known stopped, copy the existing
+stopped-timeout proof shape with the original attempt's head/payload and an empty `authorization`,
+then run `review-ledger.sh attempt confirm-stopped --repo-root DIR --entry-file ORIGINAL_ENTRY
+--id ORIGINAL_ID --stopped-timeout-proof FILE`. The same positive PID/timeout checks apply. This
+keeps the ID and `unknown-outcome` spend state, so duplicate submission stays refused, while its
+validated proof releases only the execution-capacity slot. A live, reused, missing, mismatched, or
+tampered process proof releases nothing; `review-liveness.sh` Blocked is not this proof.
 
 A `parser-rejected` preparation recovers only when complete history proves no provider start
 or process registration. Consent and payload checks precede local preparation retry;

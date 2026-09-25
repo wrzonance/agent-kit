@@ -390,7 +390,9 @@ Root classification writes accepted Code Quality and issue-comment records in th
 format to `$RUN_DIR/accepted-findings.ndjson`. Write that owner-only file explicitly empty only after
 accepting none; missing or unreadable evidence remains unknown. Reuse the same file for repair and
 replace each open record with validated fixed or declined terminal evidence. Publication validates
-that ledger at the final verified head; raw untriaged thread counts do not create obligations.
+that ledger at the final verified head. The fresh digest records `finding-classification: cq=... icf=...`;
+an unavailable classifier does not delay review launch but blocks final publication. Raw untriaged
+thread counts do not create obligations.
 The receipt records cross-provider or blind fallback mode, P1/P2 counts, each confirmed finding,
 validated fix commit or decline rationale, and any verified-skip rationale.
 Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.

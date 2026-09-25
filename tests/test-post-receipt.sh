@@ -49,7 +49,8 @@ if [[ -z $digest && -n $pr ]]; then
     current_head=$(git rev-parse HEAD)
     {
         printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$current_head"
-        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0' \
+            'finding-classification: cq=known icf=known'
     } >"$digest"
     chmod 600 -- "$digest"
     args+=(--pr-state-digest "$digest")
@@ -125,7 +126,8 @@ write_green_digest() {
     head=$(git rev-parse HEAD)
     {
         printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$head"
-        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0' \
+            'finding-classification: cq=known icf=known'
     } >"$path"
     chmod 600 -- "$path"
 }
@@ -337,6 +339,7 @@ run_publish() {
             pending) printf 'ci=0/1 pending pending=1 failing=0\n' ;;
             failing) printf 'ci=0/1 failing pending=0 failing=1 failing-checks=tests\n' ;;
         esac
+        printf 'finding-classification: cq=known icf=known\n'
     } >"$final_digest"
     chmod 600 -- "$final_digest"
     GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
@@ -393,15 +396,24 @@ assert_eq 1 "$?" 'finalization refuses a bare fixed accepted finding without ter
 assert_contains "$accepted_out" 'accepted findings' \
     'legacy accepted-finding refusal names the incomplete artifact'
 
-jq -cn '{schemaVersion:2,title:"not applicable",severity:"P2",verdict:"declined",
-    rationale:"not a defect",evidence:{finding:"not applicable",decision:"rejected",rationale:"not a defect"}}' \
-    >"$accepted_findings"
+accepted_producer="$tmp/accepted-producer"
+mkdir -m 700 -- "$accepted_producer"
+cp -- "$tmp/adversarial.result.json" "$accepted_producer/adversarial.result.json"
+chmod 600 -- "$accepted_producer/adversarial.result.json"
+jq -cn '{finding:"not applicable",decision:"rejected",rationale:"not a defect"}' \
+    >"$accepted_producer/decline-evidence.json"
+RUN_DIR="$accepted_producer" "$root/agentkit/skills/review-remote-pr/scripts/finding-ledger.sh" add \
+    --title 'not applicable' --severity P2 --verdict declined --rationale 'not a defect' \
+    --evidence "$accepted_producer/decline-evidence.json" --repo-root "$root" \
+    --head "$(git -C "$root" rev-parse HEAD)"
+cp -- "$accepted_producer/findings.ndjson" "$accepted_findings"
+chmod 600 -- "$accepted_findings"
 accepted_comments="$tmp/accepted-terminal-comments.json"
 printf '%s\n' '[]' >"$accepted_comments"
 run_publish --pr 15 --repo owner/repo --issue-comments "$accepted_comments" \
     --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
     --p1 0 --p2 0 --agent-identity 'Claude Opus 5' >/dev/null
-assert_eq 0 "$?" 'terminal evidence completes accepted non-adversarial findings'
+assert_eq 0 "$?" 'an evidence-bearing finding-ledger producer completes final publication'
 : >"$accepted_findings"
 
 for final_ci in pending failing; do
@@ -425,6 +437,7 @@ unavailable_ci_digest="$tmp/unavailable-ci.digest"
 {
     printf 'pr=14 draft=true mergeable=MERGEABLE head=test sha=%s\n' "$final_head"
     printf 'base: ref=main behind=0 stale=no\n'
+    printf 'finding-classification: cq=known icf=known\n'
 } >"$unavailable_ci_digest"
 chmod 600 -- "$unavailable_ci_digest"
 assert_rc 1 'finalization refuses unavailable final-head CI evidence' -- \
@@ -439,6 +452,7 @@ concealed_digest="$tmp/concealed-pending.digest"
     printf 'base: ref=main behind=0 stale=no\n'
     printf 'ci=0/1 pending pending=1 failing=0\n'
     printf 'ci=1/1 green pending=0 failing=0\n'
+    printf 'finding-classification: cq=known icf=known\n'
 } >"$concealed_digest"
 chmod 600 -- "$concealed_digest"
 assert_rc 1 'a green line cannot conceal a pending CI line' -- \
@@ -448,7 +462,8 @@ assert_rc 1 'a green line cannot conceal a pending CI line' -- \
     --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
 
 missing_head_digest="$tmp/missing-head.digest"
-printf '%s\n' 'ci=1/1 green pending=0 failing=0' >"$missing_head_digest"
+printf '%s\n' 'ci=1/1 green pending=0 failing=0' \
+    'finding-classification: cq=known icf=known' >"$missing_head_digest"
 chmod 600 -- "$missing_head_digest"
 assert_rc 1 'finalization refuses a digest with no final-head identity' -- \
     "$script" publish --findings-file "$findings_file" --pr-state-digest "$missing_head_digest" \
@@ -460,6 +475,7 @@ mismatched_head_digest="$tmp/mismatched-head.digest"
 {
     printf '%s\n' 'pr=14 draft=true mergeable=MERGEABLE head=test sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     printf '%s\n' 'ci=1/1 green pending=0 failing=0'
+    printf '%s\n' 'finding-classification: cq=known icf=known'
 } >"$mismatched_head_digest"
 chmod 600 -- "$mismatched_head_digest"
 assert_rc 1 'finalization refuses CI evidence for a different head' -- \
@@ -467,6 +483,30 @@ assert_rc 1 'finalization refuses CI evidence for a different head' -- \
     --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
     --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
+
+classification_unavailable_digest="$tmp/classification-unavailable.digest"
+write_green_digest "$classification_unavailable_digest" 14
+sed -i 's/cq=known icf=known/cq=known icf=unavailable/' "$classification_unavailable_digest"
+reset_not_spent
+classification_out=$("$script" publish --findings-file "$findings_file" --pr-state-digest "$classification_unavailable_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses unavailable required finding classification'
+assert_contains "$classification_out" 'unavailable required finding classification' \
+    'an empty accepted ledger cannot conceal unavailable classification'
+
+classification_missing_digest="$tmp/classification-missing.digest"
+write_green_digest "$classification_missing_digest" 14
+sed -i '/^finding-classification:/d' "$classification_missing_digest"
+reset_not_spent
+classification_out=$("$script" publish --findings-file "$findings_file" --pr-state-digest "$classification_missing_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses missing required finding classification provenance'
+assert_contains "$classification_out" 'exactly one canonical finding-classification line' \
+    'missing classification provenance is distinct from an empty accepted ledger'
 
 acceptance_repo="$tmp/acceptance-repo"
 mkdir -p "$acceptance_repo/.agent"
@@ -1318,6 +1358,8 @@ assert_contains "$ledger_body" '"covered_heads": [' \
     'the review-ledger entry initializes its append-only covered-head lineage'
 assert_contains "$ledger_body" '"kind": "adversarial"' \
     'the review-ledger entry records kind=adversarial'
+assert_contains "$ledger_body" '"executionState": "completed"' \
+    'the final receipt records completed execution rather than leaving attempted spend open'
 assert_contains "$ledger_body" '"reviewed_at"' \
     'the review-ledger entry records a reviewed_at timestamp (CodeRabbit #484 nitpick)'
 # shellcheck disable=SC2016  # single-quoted on purpose: a literal sed pattern, not meant to expand.
@@ -1636,8 +1678,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 
 # Issue #902 composes the existing gh-pr-state and finding-ledger evidence at
 # publication so pending/red/stale final heads cannot claim draft completion.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1086 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 1086 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1096 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 1096 lines'
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'

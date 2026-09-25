@@ -661,6 +661,7 @@ validate_finalization_evidence() {
         evidence_unavailable "finalization evidence is not an owned readable regular file: $PR_STATE_DIGEST"
 
     local root current_head summary_count summary digest_pr digest_sha ci_count ci_line base_count
+    local classification_count classification_line
     root=$(git rev-parse --show-toplevel 2>/dev/null) ||
         evidence_unavailable 'finalization evidence cannot be bound outside a git worktree'
     current_head=$(git -C "$root" rev-parse --verify HEAD 2>/dev/null) ||
@@ -694,6 +695,15 @@ validate_finalization_evidence() {
     FINAL_CI_LINE=$ci_line
     ! grep -qE '^ready-eligible=no( |$)' "$PR_STATE_DIGEST" ||
         evidence_unavailable 'finalization evidence reports ready-eligible=no'
+
+    classification_count=$(grep -cE '^finding-classification: cq=(known|unavailable) icf=(known|unavailable)$' \
+        "$PR_STATE_DIGEST" || true)
+    [[ $classification_count == 1 ]] ||
+        evidence_unavailable 'finalization evidence requires exactly one canonical finding-classification line'
+    classification_line=$(grep -E '^finding-classification: cq=(known|unavailable) icf=(known|unavailable)$' \
+        "$PR_STATE_DIGEST")
+    [[ $classification_line == 'finding-classification: cq=known icf=known' ]] ||
+        evidence_unavailable "finalization evidence has unavailable required finding classification: $classification_line"
 
     local acceptance_file=$root/.agent/acceptance.txt command expected matches
     if [[ -e $acceptance_file || -L $acceptance_file ]]; then
@@ -820,7 +830,7 @@ append_ledger_entry() {
         --argjson p1 "$P1" --argjson p2 "$P2" \
         '{kind:$kind, provider:$provider, model:$model, effort:$effort, mode:$mode}
          + (if $attempt_id == "" then {} else {attemptId:$attempt_id,launcherSha256:$launcher,
-            procedure:$procedure,reviewerOverride:$reviewer_override} end)
+            procedure:$procedure,reviewerOverride:$reviewer_override,executionState:"completed"} end)
          + (if $substituted_from == "" then {} else {modelSubstitutedFrom:$substituted_from} end)
          + (if $harness == "" then {} else {harness:$harness} end)
          + {head_sha:$head, covered_heads:([$head] + $covered_heads | unique)}

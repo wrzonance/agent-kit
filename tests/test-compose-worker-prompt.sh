@@ -848,7 +848,10 @@ assert_eq nonzero "$([[ $empty_findings_rc != 0 ]] && printf nonzero || printf z
     'pr-fix-batch refuses an empty findings ledger'
 
 accepted_findings="$tmp/accepted-findings.ndjson"
-printf '%s\n' '{"schemaVersion":2,"title":"Use bounded wait","severity":"P2","verdict":"declined","rationale":"not a defect","evidence":{"finding":"Use bounded wait","decision":"rejected","rationale":"not a defect"}}' > "$accepted_findings"
+printf '%s\n' \
+    '{"schemaVersion":2,"title":"Use bounded wait","severity":"P2","verdict":"declined","rationale":"not a defect","evidence":{"finding":"Use bounded wait","decision":"rejected","rationale":"not a defect"}}' \
+    '{"schemaVersion":2,"title":"Upstream repair already available","severity":"P1","verdict":"declined","rationale":"already repaired","evidence":{"finding":"Upstream repair already available","decision":"rejected","rationale":"already repaired"}}' \
+    > "$accepted_findings"
 scopeless_fix_rc=0
 bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high --findings-file "$accepted_findings" \
@@ -860,6 +863,8 @@ pr_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --iss
     --write-set 'src/**' --findings-file "$accepted_findings")
 assert_contains "$pr_fix_prompt" 'Use bounded wait' \
     'pr-fix-batch renders the accepted findings ledger'
+assert_contains "$pr_fix_prompt" 'Upstream repair already available' \
+    'successor fix batch receives upstream evidence available at composition time'
 assert_contains "$pr_fix_prompt" 'accepted findings' \
     'pr-fix-batch keeps the accepted-findings contract visible'
 assert_contains "$pr_fix_prompt" 'untrusted data' \
