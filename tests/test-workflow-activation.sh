@@ -169,4 +169,30 @@ rcontext=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$resumed")
 assert_contains "$rcontext" '--activation-nonce' 'resume re-delivers the preflight line'
 (( ${#rcontext} < 1500 )) || assert_eq 'under-1500' "${#rcontext}" 'resume context stays short'
 
+# An active workflow receipt authorizes only the resident workflows named by
+# its call-site map. parallel-issues owns the Phase A/C review loop, so its
+# receipt must carry review-remote-pr across that public activation boundary
+# without authorizing an unrelated workflow.
+session=parallel-review-delegation-$$
+jq -nc --arg s "$session" --arg c "$repo" \
+    '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:"$agentkit:parallel-issues 1"}' | \
+    "$wa" hook >/dev/null
+receipt="$repo/.agent/activation/$(printf '%s' "$session" | sha256sum | cut -d' ' -f1).json"
+nonce=$(jq -r .nonce "$receipt")
+"$wa" ack --repo-root "$repo" --session "$session" --skill parallel-issues --nonce "$nonce" >/dev/null
+
+delegated_rc=0
+delegated_out=$("$wa" check --repo-root "$repo" --session "$session" \
+    --skill review-remote-pr 2>&1) || delegated_rc=$?
+assert_eq 0 "$delegated_rc" 'parallel-issues delegates activation to review-remote-pr'
+assert_contains "$delegated_out" '"workflow": "parallel-issues"' \
+    'delegated activation preserves the owning workflow receipt'
+
+unrelated_rc=0
+unrelated_out=$("$wa" check --repo-root "$repo" --session "$session" \
+    --skill onboard-repo 2>&1) || unrelated_rc=$?
+assert_eq 1 "$unrelated_rc" 'parallel-issues does not delegate activation to unrelated workflows'
+assert_contains "$unrelated_out" 'competing-workflow' \
+    'unrelated activation retains the competing-workflow refusal'
+
 finish

@@ -1908,6 +1908,9 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
+assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
+    'the resident call-site table ends before the following single-issue paragraph'
 # Issue #904 adds explicit commit -> full verification -> push recovery steps
 # to both worker contracts so an unchanged candidate is verified only once.
 prose_lines=$(wc -l < "$skill")
