@@ -449,6 +449,8 @@ assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'publicationTarget' \
+    'dispatch-plan entries pin the single PR publication target before dispatch'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
 assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
@@ -1312,8 +1314,8 @@ assert_contains "$normalized_root_publication" 'Environment-refusal fallback onl
 normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
 assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
     'the normal completion branch names the canonical PR body composer inline'
-assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
-    'the normal completion branch names the verified draft PR creation transport inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create' \
+    'the normal completion branch names the verified policy-enforcing PR creation transport inline'
 assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
     'the normal completion branch preserves the complete PR identity record command'
 blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
@@ -1389,10 +1391,18 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
-assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
-    'draft PR publication uses the byte-verifying body transport'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file"' \
+    'draft PR publication uses the byte-verifying policy-enforcing body transport'
 assert_contains "$publication_section" '--run-id "$RUN_ID" --repo-root "$repository_root"' \
     'draft PR publication attributes the created PR to the invocation run'
+assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --plan-issue "$issue_number"' \
+    'draft PR publication binds its target to the current issue saved in the dispatch plan'
+assert_contains "$publication_section" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
+    'draft PR publication requires the root-owned dispatch plan before composing the body'
+assert_contains "$publication_section" '[.entries[]? | select(.issue == $issue) | .publicationTarget]' \
+    'draft PR publication reads its target from the matching saved-plan entry'
+assert_not_contains "$publication_section" '--title "$pr_title" --base "$base"' \
+    'draft PR publication does not duplicate or guess the recorded target'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
 assert_contains "$publication_section" 'compose-pr-body.sh' \
@@ -1402,7 +1412,11 @@ assert_contains "$publication_section" '--why-file "$pr_why_file"' \
 assert_contains "$publication_section" '--testing-file "$pr_testing_file"' \
     'draft PR publication supplies the root-approved Testing file'
 assert_contains "$publication_section" '--expect-closing-issue "$issue_number"' \
-    'default-branch PR publication verifies GitHub closing linkage'
+    'default-branch PR publication can request GitHub closing linkage'
+assert_contains "$publication_section" '[[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")' \
+    'only a recorded default-branch publication requests closing linkage at creation'
+assert_contains "$publication_section" '"${closing_issue_args[@]}"' \
+    'draft PR publication passes the target-derived closing-linkage arguments'
 assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
@@ -1726,7 +1740,7 @@ assert_contains "$worker_prompts_text" 'is never an unattended default' \
 # recipe, after both prerequisites are established. Pin the ordering
 # directly so a future edit cannot silently pull it back out ahead of them.
 mapfile -t pub_lines <<< "$publication_section"
-decisions_guard_idx=-1 resolver_guard_idx=-1 diff_facts_idx=-1 compose_idx=-1
+decisions_guard_idx=-1 resolver_guard_idx=-1 dispatch_guard_idx=-1 target_lookup_idx=-1 diff_facts_idx=-1 compose_idx=-1
 for _pub_i in "${!pub_lines[@]}"; do
     _pub_line=${pub_lines[$_pub_i]}
     if ((decisions_guard_idx < 0)) && [[ $_pub_line == *'pr_decisions_file=${pr_decisions_file:?'* ]]; then
@@ -1734,6 +1748,12 @@ for _pub_i in "${!pub_lines[@]}"; do
     fi
     if ((resolver_guard_idx < 0)) && [[ $_pub_line == *'agentkit unresolved: prepend the Step 0 resolver block'* ]]; then
         resolver_guard_idx=$_pub_i
+    fi
+    if ((dispatch_guard_idx < 0)) && [[ $_pub_line == *'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}'* ]]; then
+        dispatch_guard_idx=$_pub_i
+    fi
+    if ((target_lookup_idx < 0)) && [[ $_pub_line == *'publication_target=$(jq -er'* ]]; then
+        target_lookup_idx=$_pub_i
     fi
     if ((diff_facts_idx < 0)) && [[ $_pub_line == *'"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"'* ]]; then
         diff_facts_idx=$_pub_i
@@ -1746,6 +1766,8 @@ assert_eq yes "$([[ $decisions_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff
     'the disclosure recipe runs after $pr_decisions_file is guarded, never before'
 assert_eq yes "$([[ $resolver_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -gt $resolver_guard_idx ]] && printf yes || printf no)" \
     'the disclosure recipe runs after the resolver establishes $agentkit, never before'
+assert_eq yes "$([[ $dispatch_guard_idx -ge 0 && $target_lookup_idx -gt $dispatch_guard_idx && $target_lookup_idx -lt $compose_idx ]] && printf yes || printf no)" \
+    'the publication recipe validates and reads its dispatch plan before composing the body'
 assert_eq yes "$([[ $compose_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -lt $compose_idx ]] && printf yes || printf no)" \
     'the disclosure recipe runs before compose-pr-body.sh consumes the Decisions file'
 
@@ -1991,6 +2013,8 @@ prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
 # session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
+# #909: eight review-repair lines pin the saved-target lookup and default-target
+# closing-linkage condition before PR body composition.
 assert_eq yes "$([[ $prose_lines -le 2287 ]] && printf yes || printf no)" \
     'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
