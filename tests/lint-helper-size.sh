@@ -223,7 +223,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #907: durable run binding and stall-output ledger alias protection.
 # #906: validated durable next-action boundary prevents operator-only wait loops.
-readonly MAX_TREE_TOKENS=482711
+# #907 review: exact-run rebind validates fresh authority without losing durable state.
+# #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
+readonly MAX_TREE_TOKENS=482908
 
 violations=0
 checked=0
