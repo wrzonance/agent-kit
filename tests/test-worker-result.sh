@@ -188,6 +188,25 @@ with tempfile.TemporaryDirectory() as temp:
     git('push','-q','origin','HEAD')
     run('git','--git-dir',str(remote),'update-ref','refs/heads/a/refs/heads/feat/result',base)
     validate()  # A wrong-SHA decoy sorts before the valid exact ref.
+    initial=json.loads(state.read_text())['initialPublications']['729']
+    assert initial == {'attempt':'attempt','branch':'feat/result','headSha':head}, initial
+    # A later accepted publication on the same branch is a review fix, not a
+    # replacement for the immutable implementation commit successors consume.
+    (repo / 'a.txt').write_text('review fix\n'); git('commit','-qam','review fix')
+    head=git('rev-parse','HEAD'); git('push','-q','origin','HEAD')
+    review_output=run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--force', '--summary')
+    review_summary=review_output.splitlines()[-1]
+    review_match=re.search(r' log=([^ ]+) log-sha256=([0-9a-f]{64}) receipt=',review_summary)
+    assert review_match,review_summary
+    review_log=Path(review_match.group(1)); review_digest=review_match.group(2)
+    review_cache=(repo/'.agent/verification-cache').read_text().splitlines()[-1]
+    review_key=re.fullmatch(r'([0-9a-f]{64}) cmd=test log=.+ at=\S+ focus=',review_cache).group(1)
+    result['headSha']=head
+    result['verification'][0].update(fingerprint=review_key,log=str(review_log))
+    save(); validate(digest=review_digest)
+    assert json.loads(state.read_text())['initialPublications']['729'] == initial, \
+        'a later accepted publication replaced the initial implementation identity'
+    key,log,observed_digest=review_key,review_log,review_digest
     run('git','--git-dir',str(remote),'update-ref','refs/heads/feat/result',base)
     # The cached origin ref still points at HEAD; query actual remote while
     # retaining independently valid verification claims for resume.
