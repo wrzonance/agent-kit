@@ -49,6 +49,8 @@ done
 printf '%s\n' '- [x] focused verification' >"$tmp/testing.md"
 printf '%s\n' '{"entries":[{"issue":908,"publicationTarget":"fix/issue-909"}]}' >"$tmp/plan.json"
 chmod 600 "$tmp/plan.json"
+printf '%s\n' '{"entries":[{"issue":909,"publicationTarget":"main"}]}' >"$tmp/plan-main.json"
+chmod 600 "$tmp/plan-main.json"
 
 cat >"$tmp/bin/run-dir" <<'EOF'
 #!/usr/bin/env bash
@@ -134,6 +136,7 @@ cat >"$tmp/bin/gh-body" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'gh-body\n' >>"$TEST_CALLS"
+printf 'gh-body-args %s\n' "$*" >>"$TEST_CALLS"
 if [[ ${TEST_GH_BODY_MODE:-success} == lost ]]; then
     printf 'response lost\n' >&2
     exit 1
@@ -261,6 +264,8 @@ assert_contains "$open_output" 'stage=open pr=44 completed=compose,create,regist
     'open emits one compact completed status'
 assert_eq 1 "$(grep -c '^gh-body$' "$tmp/calls")" 'open creates the PR once'
 assert_eq 1 "$(grep -c '^board$' "$tmp/calls")" 'open moves the board once'
+assert_not_contains "$(grep '^gh-body-args ' "$tmp/calls")" '--expect-closing-issue' \
+    'stacked-target open does not demand default-branch closing linkage'
 assert_eq 'owner/repo' "$(jq -r '.pr_stage.issue_908.open.intent.repo' "$tmp/state.json")" \
     'open persists repository intent before mutation'
 assert_eq 'fix/issue-908' "$(jq -r '.pr_stage.issue_908.open.intent.head' "$tmp/state.json")" \
@@ -277,6 +282,21 @@ repeat_output=$(env "${common_env[@]}" "$helper" "${open_args[@]}")
 assert_contains "$repeat_output" 'outstanding=none' 'completed open repeats as a truthful no-op'
 assert_eq 1 "$(grep -c '^gh-body$' "$tmp/calls")" 'completed open does not recreate the PR'
 assert_eq 1 "$(grep -c '^board$' "$tmp/calls")" 'completed open does not repeat the board move'
+
+# The saved default-branch target is the only lane that forwards closing-link
+# verification through the consolidated create call.
+default_args=("${open_args[@]}")
+for ((i = 0; i < ${#default_args[@]}; i++)); do
+    case ${default_args[$i]} in
+        --dispatch-plan) default_args[$((i + 1))]="$tmp/plan-main.json" ;;
+        --issue) default_args[$((i + 1))]=909 ;;
+    esac
+done
+rm -f "$tmp/lookup.count"
+default_output=$(env "${common_env[@]}" "$helper" "${default_args[@]}" --expect-closing-issue 909)
+assert_contains "$default_output" 'stage=open pr=44' 'default-target open completes through the same stage'
+assert_contains "$(grep '^gh-body-args ' "$tmp/calls" | tail -n1)" '--expect-closing-issue 909' \
+    'default-target open forwards closing-link verification'
 
 # A failure after creation keeps the saved PR identity. Resume finishes the
 # remaining registration/board work without another create mutation.

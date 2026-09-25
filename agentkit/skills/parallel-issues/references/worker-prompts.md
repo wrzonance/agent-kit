@@ -355,6 +355,14 @@ pr_why_file=${pr_why_file:?set the root-approved Why section file}
 pr_what_file=${pr_what_file:?set the root-approved What section file}
 pr_decisions_file=${pr_decisions_file:?set the root-approved Decisions section file}
 pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
+base=${base:?set the repository default branch from the environment contract}
+[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan && -O $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
+publication_target=$(jq -er --argjson issue "$issue_number" \
+  '[.entries[]? | select(.issue == $issue) | .publicationTarget] | select(length == 1) | .[0] | select(type == "string" and length > 0)' \
+  "$dispatch_plan") || { printf '%s\n' "no reliable publication target for issue #$issue_number" >&2; exit 1; }
+closing_issue_args=()
+[[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
@@ -373,7 +381,7 @@ baseline_exclusion_args=()
   --repo "$REPO" --head "$branch" --title "$pr_title" --why-file "$pr_why_file" \
   --what-file "$pr_what_file" --decisions-file "$pr_decisions_file" \
   --testing-file "$pr_testing_file" "${baseline_args[@]}" --agent "$agent_identity" \
-  "${baseline_exclusion_args[@]}"
+  "${baseline_exclusion_args[@]}" "${closing_issue_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front

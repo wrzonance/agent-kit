@@ -29,6 +29,7 @@ ISSUE=''
 PR=''
 REPO=''
 HEAD_REF=''
+EXPECT_CLOSING_ISSUE=''
 TITLE=''
 WHY_FILE=''
 WHAT_FILE=''
@@ -52,7 +53,7 @@ usage() {
 Usage: $PROGNAME open --run-id ID --repo-root DIR --dispatch-plan FILE --issue N \\
        --repo OWNER/REPO --head BRANCH --title TITLE --why-file FILE --what-file FILE \\
        --decisions-file FILE --testing-file FILE --agent ID [--baseline-file FILE] \\
-       [--baseline-exclusion-file FILE] [--blocker-file FILE]
+       [--baseline-exclusion-file FILE] [--blocker-file FILE] [--expect-closing-issue N]
        $PROGNAME finalize [--run-id ID --run-repo-root DIR] --repo-root DIR --pr N --repo OWNER/REPO \\
        --agent-identity ID [--provider S --model S --effort S --mode S] \\
        [--mode-reason S] [--skip-rationale S --oracle S]
@@ -81,12 +82,13 @@ parse_args() {
     while (($#)); do
         case $1 in
             --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; break ;;
-            --run-id|--repo-root|--run-repo-root|--dispatch-plan|--issue|--pr|--repo|--head|--title|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker-file|--agent|--agent-identity|--skip-rationale|--oracle|--mode-reason|--provider|--model|--effort|--mode)
+            --run-id|--repo-root|--run-repo-root|--dispatch-plan|--issue|--pr|--repo|--head|--expect-closing-issue|--title|--why-file|--what-file|--decisions-file|--testing-file|--baseline-file|--baseline-exclusion-file|--blocker-file|--agent|--agent-identity|--skip-rationale|--oracle|--mode-reason|--provider|--model|--effort|--mode)
                 require_value "$1" "${2-}"
                 case $1 in
                     --run-id) RUN_ID=$2 ;; --repo-root) REPO_ROOT=$2 ;; --run-repo-root) RUN_REPO_ROOT=$2 ;;
                     --dispatch-plan) DISPATCH_PLAN=$2 ;;
                     --issue) ISSUE=$2 ;; --pr) PR=$2 ;; --repo) REPO=$2 ;; --head) HEAD_REF=$2 ;;
+                    --expect-closing-issue) EXPECT_CLOSING_ISSUE=$2 ;;
                     --title) TITLE=$2 ;; --why-file) WHY_FILE=$2 ;; --what-file) WHAT_FILE=$2 ;;
                     --decisions-file) DECISIONS_FILE=$2 ;; --testing-file) TESTING_FILE=$2 ;;
                     --baseline-file) BASELINE_FILE=$2 ;; --baseline-exclusion-file) BASELINE_EXCLUSION_FILE=$2 ;;
@@ -175,6 +177,8 @@ open_stage() {
     [[ -n $RUN_ID ]] || die_usage 'open requires --run-id'
     [[ $ISSUE =~ $UINT_RE ]] || die_usage 'open requires a positive --issue'
     [[ -n $HEAD_REF && -n $TITLE && -n $AGENT ]] || die_usage 'open requires --head, --title, and --agent'
+    [[ -z $EXPECT_CLOSING_ISSUE || $EXPECT_CLOSING_ISSUE == "$ISSUE" ]] ||
+        die_usage '--expect-closing-issue must equal --issue'
     [[ -f $DISPATCH_PLAN && ! -L $DISPATCH_PLAN && -O $DISPATCH_PLAN ]] ||
         die_usage 'open requires an owned regular --dispatch-plan'
     [[ -x $COMPOSE_SH && -x $GH_BODY_SH && -x $BOARD_SH ]] || die 'open-stage helpers are unavailable'
@@ -200,9 +204,11 @@ open_stage() {
         0)
             had_intent=1
             jq -e --arg repo "$REPO" --arg head "$HEAD_REF" --arg head_sha "$head_sha" \
-                --arg base "$base" --arg title "$TITLE" --arg body_sha256 "$body_sha" '
+                --arg base "$base" --arg title "$TITLE" --arg closing "$EXPECT_CLOSING_ISSUE" \
+                --arg body_sha256 "$body_sha" '
                 .intent.repo == $repo and .intent.head == $head and .intent.head_sha == $head_sha
                 and .intent.base == $base and .intent.title == $title
+                and .intent.expect_closing_issue == $closing
                 and .intent.body_sha256 == $body_sha256' <<<"$saved" >/dev/null || {
                     rm -f -- "$candidate"
                     die 'saved open-stage intent does not match repo/target/head/title/body; refusing a different PR mutation'
@@ -223,10 +229,12 @@ open_stage() {
             preexisting=$(jq -ce '[.[] | .number | select(type == "number" and . > 0 and floor == .)] | unique' \
                 <<<"$listed") || { rm -f -- "$candidate"; die 'could not classify pre-existing exact-head PRs'; }
             intent=$(jq -nc --arg repo "$REPO" --arg head "$HEAD_REF" --arg head_sha "$head_sha" \
-                --arg base "$base" --arg title "$TITLE" --arg body_sha256 "$body_sha" \
+                --arg base "$base" --arg title "$TITLE" --arg closing "$EXPECT_CLOSING_ISSUE" \
+                --arg body_sha256 "$body_sha" \
                 --argjson preexisting "$preexisting" \
                 '{repo:$repo,head:$head,head_sha:$head_sha,base:$base,title:$title,
-                  body_sha256:$body_sha256,preexisting_prs:$preexisting}')
+                  expect_closing_issue:$closing,body_sha256:$body_sha256,
+                  preexisting_prs:$preexisting}')
             mv -f -- "$candidate" "$body"
             saved=$(jq -nc --argjson intent "$intent" '{intent:$intent}')
             state_set_json "$key" "$saved"
@@ -252,9 +260,11 @@ open_stage() {
             pr_json=$(recover_created_pr "$body" "$base" "$head_sha" "$preexisting")
         else
             local create_rc=0
-            pr_json=$($GH_BODY_SH pr create --json --run-id "$RUN_ID" --repo-root "$REPO_ROOT" \
+            local -a create_args=(pr create --json --run-id "$RUN_ID" --repo-root "$REPO_ROOT" \
                 --dispatch-plan "$DISPATCH_PLAN" --plan-issue "$ISSUE" --body-file "$body" \
-                --repo "$REPO" --head "$HEAD_REF" --title "$TITLE" --expect-closing-issue "$ISSUE") || create_rc=$?
+                --repo "$REPO" --head "$HEAD_REF" --title "$TITLE")
+            [[ -z $EXPECT_CLOSING_ISSUE ]] || create_args+=(--expect-closing-issue "$ISSUE")
+            pr_json=$($GH_BODY_SH "${create_args[@]}") || create_rc=$?
             if ((create_rc != 0)); then
                 if jq -e '.number | type=="number" and .>0' <<<"$pr_json" >/dev/null 2>&1; then
                     if jq -e '.closing_issue.state == "failed"' <<<"$pr_json" >/dev/null 2>&1; then
@@ -303,6 +313,7 @@ load_attempt() {
 finalize_stage() {
     require_common
     [[ $PR =~ $UINT_RE ]] || die_usage 'finalize requires a positive --pr'
+    [[ -z $EXPECT_CLOSING_ISSUE ]] || die_usage '--expect-closing-issue is valid only for open'
     [[ -n $AGENT_IDENTITY ]] || die_usage 'finalize requires --agent-identity'
     if [[ -n $RUN_ID ]]; then
         [[ -n $RUN_REPO_ROOT ]] || die_usage 'finalize with --run-id requires --run-repo-root'

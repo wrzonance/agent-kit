@@ -716,6 +716,27 @@ assert_not_contains "$stacked_output" 'closing-issue #42: confirmed' \
 assert_not_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
     'a stacked base never spends a GraphQL closing-reference query'
 
+# The publication recipe omits --expect-closing-issue while the saved target is
+# stacked. Model that create boundary directly: it makes one draft PR against
+# the recorded predecessor and performs no closing-reference registration probe.
+write_publication_plan feat/issue-907
+: >"$tmp/gh.log"
+: >"$tmp/api.log"
+stacked_create_output=$(GH_PR_BASE=feat/issue-907 GH_PR_DEFAULT_BRANCH=main \
+    run_body pr create --repo owner/repo --body-file "$body")
+stacked_create_args=$(head -n 1 "$tmp/gh.log")
+assert_contains "$stacked_create_output" 'https://github.com/owner/repo/pull/41' \
+    'stacked publication creates its draft PR without closing-reference proof'
+assert_eq 1 "$(grep -c '^pr create' "$tmp/gh.log")" \
+    'stacked publication makes exactly one create mutation'
+assert_contains "$stacked_create_args" '--base feat/issue-907' \
+    'stacked publication still uses its recorded predecessor target'
+assert_not_contains "$stacked_create_output" 'closing-issue #' \
+    'stacked publication emits no closing-reference result when proof is not requested'
+assert_not_contains "$(cat "$tmp/api.log")" 'endpoint=graphql' \
+    'stacked publication performs no closing-reference query'
+write_publication_plan main
+
 # The deferred outcome is a genuinely different string than a plain verified
 # edit with no --expect-closing-issue at all, so the two are never conflated.
 plain_output=$(run_body pr edit 41 --repo owner/repo --body-file "$canonical")
