@@ -55,7 +55,7 @@ Root invokes `worker-result.sh validate --result FILE --dispatch-plan FILE --own
 --state RUN_STATE_JSON --run-id ID --attempt ID --worker-id ID --issue N --worktree PATH
 --base-sha SHA --required-check test` (repeat `--required-check` for all declared obligations).
 For initial acceptance, supply `--log-sha256 test=SHA256` from an independently delivered terminal `agent-run-summary` line; repeat for each command. The sibling `<verification.log>.sha256` file is worker-writable integrity data, never an independent trust pin.
-Root makes zero blocking calls spanning the verification run: collect the completed terminal record once after worker completion. If root cannot independently observe that runner output, omit the digest and keep verification unknown.
+Root makes zero blocking calls spanning the worker's verification run: collect the completed terminal record once after worker completion. If that proof is missing or incomplete, validation durably records and performs one native recovery for the required check and candidate head; resume cannot grant another attempt.
 Never hash a worker's retained log at handback or accept a digest from worker JSON, narration, or sidecar.
 Every expected identity/path/check comes from root dispatch, never from the result. `--owners`
 is the repository's existing `active-workers.ndjson`; `--state` is its run's `run-state.json`.
@@ -79,9 +79,8 @@ commands, final successful logs and root-held original digest pins. Pins persist
 result receipt through rejected/unknown handbacks. A conflicting supplied digest cannot replace
 a pin for the same command/fingerprint/log path. Missing or modified pinned logs invalidate that
 execution, even if later restored; acceptance needs a newly observed execution/log identity.
-Missing initial pins, focused, precommit, scoped or unsupported durable records stay
-unknown; a marker alone is insufficient. A native text fallback also stays unknown until root can
-collect real evidence. Existing `validate-handback.sh` publication-command argv validation is unchanged.
+When local-cache declarations are absent, a runner-owned native record binds the resolved command inputs, clean worktree, committed head, full scope, exit status, log and digest. Valid native proof is
+reported as `evidence=native-log`; no cache eligibility is implied. Focused, wrong-command, stale-head, failed, interrupted or altered proof never establishes success. Existing `validate-handback.sh` publication-command argv validation is unchanged.
 
 ## Throwaway waiter prompt
 
