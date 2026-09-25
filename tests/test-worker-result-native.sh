@@ -3,7 +3,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 python3 - "$(dirname -- "$here")" <<'PY'
-import hashlib, json, os, re, signal, subprocess, sys, tempfile, time
+import hashlib, json, os, re, shlex, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
 helper=Path(sys.argv[1])/'agentkit/skills/.shared/scripts/worker-result.sh'
@@ -67,9 +67,10 @@ with tempfile.TemporaryDirectory() as temp:
                 stream.write(json.dumps(dict(version=2,runId=label,attempt=attempt,workerId='worker',
                                              issue=905,worktree=str(repo),branch='feat/result',state='active',
                                              disposition='returned',heartbeatEpoch=2,evidence=''))+'\n')
-        def validate(expected, digest=None, *, attempt='attempt', recovery_timeout=None):
+        def validate(expected, digest=None, *, attempt='attempt', recovery_timeout=None,
+                     validation_helper=helper):
             set_attempt(attempt)
-            argv=[str(helper),'validate','--result',str(artifact),'--dispatch-plan',str(plan),
+            argv=[str(validation_helper),'validate','--result',str(artifact),'--dispatch-plan',str(plan),
                   '--owners',str(owners),'--state',str(state),'--run-id',label,'--attempt',attempt,
                   '--worker-id','worker','--issue','905','--worktree',str(repo),'--base-sha',base,
                   '--required-check','test']
@@ -126,6 +127,21 @@ with tempfile.TemporaryDirectory() as temp:
     lease_dir.mkdir(parents=True); (lease_dir/'running').write_text(str(repo/'.agent/logs/stale.log')+'\n')
     accepted=validate(0,recovery_timeout=2)
     assert executions()==1 and accepted['evidence']=='native-log',accepted
+
+    # A root recovery killed before it replaces stale proof cannot promote that proof.
+    repo,result,artifact,state,validate,executions,run_native=fixture('killed-recovery')
+    stale=run_native(); assert stale.returncode==0,stale.stderr
+    shim=root/'killed-recovery-helpers'; shim.mkdir()
+    for sibling in helper.parent.iterdir():
+        if sibling.name!='agent-run.sh': (shim/sibling.name).symlink_to(sibling)
+    (shim/'agent-run.sh').write_text(
+        '#!/bin/sh\nfor arg do [ "$arg" != --force ] || kill -KILL $$; done\n'
+        f'exec {shlex.quote(str(runner))} "$@"\n')
+    (shim/'agent-run.sh').chmod(0o700)
+    rejected=validate(2,recovery_timeout=2,validation_helper=shim/'worker-result.sh')
+    assert executions()==1 and 'result' in rejected['reason'],rejected
+    recovery=list(json.loads(state.read_text())['nativeRecoveries'].values())
+    assert recovery[0]['status']=='incomplete',recovery
 
     # Evidence for the previous commit cannot establish the current candidate.
     repo,result,artifact,state,validate,executions,run_native=fixture('different-head')

@@ -223,7 +223,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #905 review: validate lease liveness and persist recovery trust provenance.
-readonly MAX_TREE_TOKENS=483894
+# #905 final review: bind root recovery trust to its captured terminal summary.
+readonly MAX_TREE_TOKENS=484659
 
 violations=0
 checked=0
