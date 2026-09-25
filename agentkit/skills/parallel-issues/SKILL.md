@@ -16,15 +16,13 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
-stdout begins `skills=` (contract, not registry proof).
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command; stdout begins `skills=` (contract, not registry proof).
 Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
 `check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Client restart/conversation resume retains
-the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Fresh acknowledgement preserves saved work. Client restart/conversation resume retains the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
 
 ### No delivered challenge = no run
@@ -57,15 +55,17 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-Follow [shared reading discipline](../.shared/reading-discipline.md): use
-`"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+## Resident call-site map
+| Boundary | Authority |
+|---|---|
+| Phase A/C review loop, adversarial receipt, finding ledger, run-dir | `../review-remote-pr/SKILL.md` and its lazy references |
 
 **Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` adjudication sections only when its digest flags them, and `references/implementation-worker.md` only when composing the issue lead. The template carries the loop from `.shared/six-step-loop.md`; root reads that file only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation
-line only — nothing infers them from tone, urgency, or a previous run.
+Four flags decide how much this skill stops to ask. They are read from the invocation line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
@@ -96,7 +96,7 @@ command with no approval step and no trust record — `--yolo` only ever governe
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
 
-**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness; reused evidence is not fresh execution. Run focused suites while iterating; use `--force` for the required fresh full suite before commit. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
+**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness. Run focused suites while iterating; commit the completed candidate, then run the required unfocused full suite on that clean committed HEAD before push. Root validation and resume consume unchanged proof without scheduling the suite again. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
 
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 

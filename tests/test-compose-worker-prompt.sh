@@ -550,6 +550,27 @@ assert_contains "$prompt" '--cmd backend-test' 'multi-word declaration becomes a
 assert_contains "$prompt" '--cmd test' 'test command is generated'
 assert_contains "$prompt" "--cmd test --only 'NAME[,NAME...]'" \
     'focused test selector is generated'
+
+# Issue #904: the rendered prompt is the issue lead's orchestration boundary.
+# Pin the publication cadence there: the candidate commit exists before the one
+# scheduled full run, and publication follows only that verdict.  Count the
+# scheduling instruction in the rendered prompt so a second prose path cannot
+# quietly reintroduce the duplicate full-suite execution this contract removes.
+issue_publication=$(sed -n '/^## Progress, commit, and push/,/^## True blockers/p' <<<"$prompt")
+issue_commit_line=$(grep -nF '2. Commit explicit paths' <<<"$issue_publication" | cut -d: -f1)
+issue_full_line=$(grep -nF '3. Run each required unfocused full verification command exactly once' \
+    <<<"$issue_publication" | cut -d: -f1)
+issue_push_line=$(grep -nF '4. Push the branch' <<<"$issue_publication" | cut -d: -f1)
+assert_eq yes "$([[ -n $issue_commit_line && -n $issue_full_line && -n $issue_push_line && \
+    $issue_commit_line -lt $issue_full_line && $issue_full_line -lt $issue_push_line ]] && printf yes || printf no)" \
+    'rendered issue-lead publication orders commit, one full verification, then push'
+assert_eq 1 "$(grep -cF 'Run each required unfocused full verification command exactly once' \
+    <<<"$issue_publication")" \
+    'rendered issue-lead publication schedules the full verification once'
+assert_contains "$issue_publication" 'A failed full run stops publication' \
+    'rendered issue-lead publication blocks push after a failed full run'
+assert_contains "$prompt" 'Do not add a focused pass solely because FINISH' \
+    'rendered issue-lead prompt does not schedule a redundant focused pass before full verification'
 assert_not_contains "$(printf '%s\n' "$prompt" | grep -E 'agent-run\.sh.*--cmd')" '--yolo' \
     'generated command lines carry no unattended trust flags'
 assert_rendered_guard_passes "$prompt" 'issue-lead'
@@ -658,6 +679,22 @@ assert_not_contains "$fix_prompt" "$shared_reference" \
 assert_not_contains "$fix_prompt" '<PASTE' 'fix-batch has no PASTE placeholder'
 assert_not_contains "$fix_prompt" '<WHEN' 'fix-batch has no WHEN placeholder'
 assert_rendered_guard_passes "$fix_prompt" 'fix-batch'
+
+fix_workflow=$(sed -n '/^## Your Workflow (worker fix batch)/,/^\*\*History freeze/p' <<<"$fix_prompt")
+fix_commit_line=$(grep -nF '4. Commit the repair' <<<"$fix_workflow" | cut -d: -f1)
+fix_full_line=$(grep -nF '5. Run each required unfocused full verification command exactly once' \
+    <<<"$fix_workflow" | cut -d: -f1)
+fix_push_line=$(grep -nF '6. Push the branch' <<<"$fix_workflow" | cut -d: -f1)
+assert_eq yes "$([[ -n $fix_commit_line && -n $fix_full_line && -n $fix_push_line && \
+    $fix_commit_line -lt $fix_full_line && $fix_full_line -lt $fix_push_line ]] && printf yes || printf no)" \
+    'rendered fix-batch publication orders commit, one full verification, then push'
+assert_eq 1 "$(grep -cF 'Run each required unfocused full verification command exactly once' \
+    <<<"$fix_workflow")" \
+    'rendered fix-batch publication schedules the full verification once'
+assert_contains "$fix_workflow" 'A failed full run stops publication' \
+    'rendered fix-batch publication blocks push after a failed full run'
+assert_contains "$fix_workflow" 'do not add a focused pass solely because the final full verification follows' \
+    'rendered fix-batch prompt does not schedule a redundant focused pass before full verification'
 
 # History freeze (issue #374): a fix-batch worker also commits and pushes its
 # own branch, so it carries the same post-push freeze rule, adapted for a

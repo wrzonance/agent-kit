@@ -354,30 +354,37 @@ if ((plan_active == 0)); then
     issue_map='[]'
     [[ ! -f $work_dir/plan-records.json ]] || issue_map=$(jq '[.[] | {pr,issue}]' "$work_dir/plan-records.json")
 
-    # Forge bases form a graph with one possible predecessor per PR. Reject an
-    # unknown base, duplicate head, fork, or cycle before emitting any queue.
     if ! jq -e --arg base "$default_branch" '
       . as $prs |
       (map(.number) | unique | length) == length and
       (map(.head.ref) | unique | length) == length and
-      all(.[]; (.base.ref == $base) or (.base.ref as $b | any($prs[]; .head.ref == $b))) and
-      all($prs[]; . as $parent |
-        ([ $prs[] | select(.base.ref == $parent.head.ref) ] | length) <= 1)
+      all(.[]; (.base.ref == $base) or
+        (.base.ref as $ref | any($prs[]; .head.ref == $ref)))
     ' "$work_dir/live.json" >/dev/null; then
-        die 'forge graph has an invalid base, join, or ambiguous fork'
+        die 'forge graph has an unknown base or duplicate PR/head'
+    fi
+
+    jq --arg base "$default_branch" '
+      def topo($left; $done):
+        ([$left[] as $pr | select($pr.base.ref == $base or
+          any($done[]; .head.ref == $pr.base.ref)) | $pr] | sort_by(.number)) as $ready |
+        if ($left | length) == 0 or ($ready | length) == 0 then
+          {ordered:$done, remaining:$left}
+        else
+          $ready[0] as $next |
+          topo([$left[] | select(.number != $next.number)]; $done + [$next])
+        end;
+      topo(.; [])
+    ' "$work_dir/live.json" >"$work_dir/topology.json"
+    if [[ $(jq '.remaining | length' "$work_dir/topology.json") -gt 0 ]]; then
+        cycle=$(jq -r '[.remaining[].head.ref] | sort | join(", ")' "$work_dir/topology.json")
+        die "forge graph contains a cycle among: $cycle"
     fi
 
     jq --arg base "$default_branch" --arg source "$source" --argjson issues "$issue_map" '
-      . as $prs |
+      .ordered as $prs |
       def issue_for($number): [ $issues[] | select(.pr == $number) | .issue ][0];
-      def child($branch): [ $prs[] | select(.base.ref == $branch) ];
-      def walk($pr):
-        [$pr] + (child($pr.head.ref) as $children |
-          if ($children|length) == 1 then walk($children[0]) else [] end);
-      ([ $prs[] | select(.base.ref == $base) ] | sort_by(.created_at, .number) |
-        map(walk(.)) | add // []) as $ordered |
-      if ($ordered | length) != ($prs | length) then error("cycle") else
-        $ordered | map({
+      $prs | map({
           pr:.number, issue:issue_for(.number),
           state:(if .mergeable == true then
                    (if .base.ref == $base then "RUNNABLE" else "WAITING_FOR_MERGE" end)
@@ -385,9 +392,7 @@ if ((plan_active == 0)); then
                  else "MERGEABLE_UNKNOWN" end),
           source:$source, base:.base.ref, head:.head.ref, sha:.head.sha
         })
-      end
-    ' "$work_dir/live.json" >"$work_dir/queue.json" 2>/dev/null ||
-        die 'forge graph contains a cycle or could not be serialized'
+    ' "$work_dir/topology.json" >"$work_dir/queue.json"
 else
     # A current artifact is the primary topology. Live reads verify its heads,
     # bases, draft/open state, mergeability, and predecessor state only.
