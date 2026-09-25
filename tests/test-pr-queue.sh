@@ -105,8 +105,20 @@ repos/owner/repo/pulls/32)
 repos/owner/repo/pulls/33)
     printf '%s\n' '{"number":33,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/b","sha":"3333333333333333333333333333333333333333"},"base":{"ref":"feat/root"}}'
     ;;
+repos/owner/repo/pulls/34)
+    printf '%s\n' '{"number":34,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/c","sha":"3434343434343434343434343434343434343434"},"base":{"ref":"feat/root"}}'
+    ;;
+repos/owner/repo/pulls/35)
+    printf '%s\n' '{"number":35,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-05T00:00:00Z","head":{"ref":"feat/grandchild","sha":"3535353535353535353535353535353535353535"},"base":{"ref":"feat/a"}}'
+    ;;
 repos/owner/repo/pulls/41)
     printf '%s\n' '{"number":41,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}'
+    ;;
+repos/owner/repo/pulls/51)
+    printf '%s\n' '{"number":51,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/duplicate","sha":"5151515151515151515151515151515151515151"},"base":{"ref":"main"}}'
+    ;;
+repos/owner/repo/pulls/52)
+    printf '%s\n' '{"number":52,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/duplicate","sha":"5252525252525252525252525252525252525252"},"base":{"ref":"main"}}'
     ;;
 repos/owner/repo/pulls/*/files*)
     files_pr=$(sed -E 's#.*/pulls/([0-9]+)/files.*#\1#' <<<"$endpoint")
@@ -133,10 +145,13 @@ repos/owner/repo/pulls\?state=open*)
         printf '%s\n' '[{"number":21,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"feat/b"}},{"number":22,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/b","sha":"2222222222222222222222222222222222222222"},"base":{"ref":"feat/a"}}]'
         ;;
     fork)
-        printf '%s\n' '[{"number":31,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"main"}},{"number":32,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/a","sha":"2222222222222222222222222222222222222222"},"base":{"ref":"feat/root"}},{"number":33,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/b","sha":"3333333333333333333333333333333333333333"},"base":{"ref":"feat/root"}}]'
+        printf '%s\n' '[{"number":35,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-05T00:00:00Z","head":{"ref":"feat/grandchild"},"base":{"ref":"feat/a"}},{"number":34,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-04T00:00:00Z","head":{"ref":"feat/c"},"base":{"ref":"feat/root"}},{"number":33,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-03T00:00:00Z","head":{"ref":"feat/b"},"base":{"ref":"feat/root"}},{"number":32,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/a"},"base":{"ref":"feat/root"}},{"number":31,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/root"},"base":{"ref":"main"}}]'
         ;;
     wrong-base)
         printf '%s\n' '[{"number":41,"state":"open","draft":true,"merged":false,"mergeable":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/a","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}]'
+        ;;
+    duplicate-head)
+        printf '%s\n' '[{"number":51,"state":"open","draft":true,"created_at":"2026-08-01T00:00:00Z","head":{"ref":"feat/duplicate"},"base":{"ref":"main"}},{"number":52,"state":"open","draft":true,"created_at":"2026-08-02T00:00:00Z","head":{"ref":"feat/duplicate"},"base":{"ref":"main"}}]'
         ;;
     closed-race)
         printf '%s\n' '[{"number":61,"state":"open","draft":true,"created_at":"2026-08-07T00:00:00Z","head":{"ref":"feat/race-closed"},"base":{"ref":"main"}}]'
@@ -429,7 +444,20 @@ out=$(QUEUE_MODE=closed-race run_queue --format records)
 assert_eq '' "$out" \
     'a PR that closed between listing and fetch is dropped, never classified RUNNABLE'
 
-for mode in cycle fork wrong-base malformed; do
+fan_out=$(QUEUE_MODE=fork run_queue --repo-root "$repo_root" \
+    --write-confirmed-queue --no-providers --format records)
+assert_eq $'pr=31 issue=null state=RUNNABLE source=forge base=main head=feat/root sha=1111111111111111111111111111111111111111\npr=32 issue=null state=WAITING_FOR_MERGE source=forge base=feat/root head=feat/a sha=2222222222222222222222222222222222222222\npr=33 issue=null state=WAITING_FOR_MERGE source=forge base=feat/root head=feat/b sha=3333333333333333333333333333333333333333\npr=34 issue=null state=WAITING_FOR_MERGE source=forge base=feat/root head=feat/c sha=3434343434343434343434343434343434343434\npr=35 issue=null state=WAITING_FOR_MERGE source=forge base=feat/a head=feat/grandchild sha=3535353535353535353535353535353535353535' \
+    "$fan_out" 'a fan-out stack emits all five PRs with parents before children and siblings by PR number'
+assert_eq '[31,32,33,34,35]' "$(jq -c '.queue | map(.pr)' "$confirmed")" \
+    'the written confirmation persists the full topological fan-out queue'
+
+cycle_rc=0
+QUEUE_MODE=cycle run_queue --format records >"$tmp/cycle.out" 2>"$tmp/cycle.err" || cycle_rc=$?
+assert_eq 1 "$cycle_rc" 'a forge cycle fails closed'
+assert_contains "$(cat "$tmp/cycle.err")" 'feat/a, feat/b' \
+    'the cycle refusal names the branches in the cycle'
+
+for mode in duplicate-head wrong-base malformed; do
     assert_rc 1 "$mode forge data fails closed" -- env QUEUE_MODE="$mode" \
         GH_LOG="$tmp/gh.log" PR_QUEUE_GH="$tmp/gh" bash "$queue" \
         --repo owner/repo --format records
