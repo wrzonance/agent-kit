@@ -411,12 +411,46 @@ assert_contains "$normalized_chains_text" 'queued=1[#6]' \
     'depth-six fixture reports the queued tail at the funnel'
 assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
     'depth-six fixture dispatches the tail after predecessor push'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalize-successor' \
+    'chain draft finalization uses the executable evidence boundary'
+assert_contains "$normalized_chains_text" 'does not enumerate or update descendants' \
+    'a predecessor repair causes no eager descendant cascade'
+assert_contains "$normalized_chains_text" 'chainFinalizations.<pr>' \
+    'topological finalization reuses the existing run-state PR namespace'
+assert_contains "$normalized_chains_text" 'merge-down:<exact-predecessor-final-head>' \
+    'review coverage bridges the original snapshot to the integrated head'
+assert_contains "$normalized_chains_text" '--pr-state-digest' \
+    'finalization inherits the final-head CI digest contract'
+assert_contains "$normalized_chains_text" '--accepted-findings' \
+    'finalization inherits the explicit accepted-finding proof contract'
+assert_contains "$normalized_chains_text" 'known code-quality and inline-comment classifications' \
+    'finalization requires both persisted finding channels to be available'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalization-status' \
+    'the driver checks sealed evidence before any repeated integration work'
+assert_contains "$normalized_chains_text" 'commit -> full verification -> push' \
+    'the documented driver verifies the committed head before pushing it'
+assert_contains "$normalized_chains_text" '--include-staged --yolo --allow-base-inherited' \
+    'deferred merge commits retain the sanctioned protected-path recipe'
+assert_contains "$normalized_chains_text" 'git rev-parse MERGE_HEAD' \
+    'the inherited-path allowance binds the active merge head'
+assert_contains "$normalized_chains_text" 'verified-skip' \
+    'normal review-policy skips remain an explicit supported finalization path'
+assert_not_contains "$normalized_chains_text" 'The response is a merge-down cascade' \
+    'chain repair no longer prescribes eager merge-down cascades'
+retarget_heading_line=$(grep -n '^## Merge order and the stacked-PR retarget$' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
+    'retarget-only proof exceptions stay inside the retarget section'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'publicationTarget' \
+    'dispatch-plan entries pin the single PR publication target before dispatch'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
 assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
@@ -595,6 +629,18 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
+assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
+    'the consent holder launches real reviews rather than forwarding consent'
+assert_contains "$text" 'review attempts and native worker reservations share the same atomic admission lock' \
+    'parallel review launch names the executable shared-cap boundary'
+assert_contains "$text" 'launch all currently eligible reviews without waiting for an earlier review result' \
+    'distinct eligible reviews are dispatched concurrently'
+assert_contains "$text" 'available upstream findings' \
+    'fix batches receive known upstream findings without waiting for future results'
+assert_contains "$text" 'confirmed terminal release' \
+    'same-worktree fix and merge-down work waits for confirmed writer release'
+assert_contains "$text" 'Publish one root-owned receipt at a time' \
+    'root publication remains serial across concurrent review and fix completion'
 assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
     'concurrency dispatch carries the canonical session-context loader'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
@@ -890,8 +936,22 @@ assert_contains "$normalized_text" 'handoff cannot print' \
     'a final-sweep miss prevents the handoff'
 assert_contains "$normalized_text" 'run-state.sh" summary' \
     'handoff emits helper-computed opened-PR receipt coverage totals'
-assert_contains "$normalized_text" 'run-state.sh" init-summary --run-id "$RUN_ID"' \
-    'run setup initializes every required summary collection without resetting it'
+assert_contains "$normalized_text" 'run-state.sh" bind "${bind_args[@]}"' \
+    'startup and resume recover durable context through one run-state operation'
+assert_contains "$normalized_text" '--activation-session "$activation_session"' \
+    'run binding keys recovery to the actual acknowledged harness session'
+assert_contains "$normalized_text" '--rebind' \
+    'a known run can explicitly recover under an independently authorized new session'
+assert_contains "$normalized_text" 'candidate IDs' \
+    'ambiguous recovery explains how to use the candidate IDs already emitted by the helper'
+assert_contains "$normalized_text" 'Never choose by modification time' \
+    'resume guidance preserves deterministic selection without an mtime fallback'
+for binding_field in run_id activation_session repository_root decision_ledger worker_ledger; do
+    assert_contains "$normalized_text" ".$binding_field" \
+        "run setup restores the $binding_field binding field"
+done
+assert_not_contains "$normalized_text" 'activation_session=SESSION_ID' \
+    'worktree setup does not ask the model to reconstruct the activation session'
 assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path queued --json "$issue"' \
     'queue producers persist issue identities idempotently'
 assert_contains "$normalized_text" 'dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"' \
@@ -979,7 +1039,7 @@ assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
 assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
-assert_contains "$issue_lead_prompt" 'once against the final tree state' \
+assert_contains "$issue_lead_prompt" 'exactly once through `agent-run.sh`' \
     'the final tree receives one unfocused full-suite run'
 assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
     'Code Quality evidence failure stops before no-findings processing'
@@ -1050,8 +1110,8 @@ assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs ma
 assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
     'setup prompt treats a zero-finding loop as success'
 assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
-assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
-assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'ci-observed=' 'setup prompt preserves actual CI beside launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' 'setup prompt names its Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_NNN_code_quality_comments.json' \
     'setup prompt names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -1065,7 +1125,7 @@ assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
 assert_contains "$setup_prompt" 'if ! cq_state=' \
     'setup prompt fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'setup prompt names the unavailable Code Quality terminal marker'
+    'setup prompt names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
@@ -1090,10 +1150,18 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'setup prompt receives stable failing-check names'
 assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
     'setup prompt parses stable failing-check names'
-assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
-    'setup prompt names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'setup prompt preserves a failing CI terminal result'
+assert_contains "$setup_prompt" 'ci_observed="red: $ci_failing_checks"' \
+    'setup prompt names the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'setup prompt appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" 'Rebuild `acceptance_args` inside this root block' \
@@ -1171,7 +1239,7 @@ assert_contains "$text" 'set its working directory to the assigned worktree' 'di
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
-assert_contains "$draft_loop_prompt" 'push the branch' 'phase lead pushes its own branch'
+assert_contains "$draft_loop_prompt" 'Push the branch' 'phase lead pushes its own branch'
 issue_lead_flat=$(tr '\n' ' ' <<<"$issue_lead_prompt" | tr -s '[:space:]' ' ')
 draft_loop_flat=$(tr '\n' ' ' <<<"$draft_loop_prompt" | tr -s '[:space:]' ' ')
 assert_contains "$issue_lead_flat" 'worktree-commit.sh" --message' \
@@ -1246,8 +1314,8 @@ assert_contains "$normalized_root_publication" 'Environment-refusal fallback onl
 normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
 assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
     'the normal completion branch names the canonical PR body composer inline'
-assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
-    'the normal completion branch names the verified draft PR creation transport inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create' \
+    'the normal completion branch names the verified policy-enforcing PR creation transport inline'
 assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
     'the normal completion branch preserves the complete PR identity record command'
 blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
@@ -1323,10 +1391,18 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
-assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
-    'draft PR publication uses the byte-verifying body transport'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file"' \
+    'draft PR publication uses the byte-verifying policy-enforcing body transport'
 assert_contains "$publication_section" '--run-id "$RUN_ID" --repo-root "$repository_root"' \
     'draft PR publication attributes the created PR to the invocation run'
+assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --plan-issue "$issue_number"' \
+    'draft PR publication binds its target to the current issue saved in the dispatch plan'
+assert_contains "$publication_section" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
+    'draft PR publication requires the root-owned dispatch plan before composing the body'
+assert_contains "$publication_section" '[.entries[]? | select(.issue == $issue) | .publicationTarget]' \
+    'draft PR publication reads its target from the matching saved-plan entry'
+assert_not_contains "$publication_section" '--title "$pr_title" --base "$base"' \
+    'draft PR publication does not duplicate or guess the recorded target'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
 assert_contains "$publication_section" 'compose-pr-body.sh' \
@@ -1336,7 +1412,11 @@ assert_contains "$publication_section" '--why-file "$pr_why_file"' \
 assert_contains "$publication_section" '--testing-file "$pr_testing_file"' \
     'draft PR publication supplies the root-approved Testing file'
 assert_contains "$publication_section" '--expect-closing-issue "$issue_number"' \
-    'default-branch PR publication verifies GitHub closing linkage'
+    'default-branch PR publication can request GitHub closing linkage'
+assert_contains "$publication_section" '[[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")' \
+    'only a recorded default-branch publication requests closing linkage at creation'
+assert_contains "$publication_section" '"${closing_issue_args[@]}"' \
+    'draft PR publication passes the target-derived closing-linkage arguments'
 assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
@@ -1660,7 +1740,7 @@ assert_contains "$worker_prompts_text" 'is never an unattended default' \
 # recipe, after both prerequisites are established. Pin the ordering
 # directly so a future edit cannot silently pull it back out ahead of them.
 mapfile -t pub_lines <<< "$publication_section"
-decisions_guard_idx=-1 resolver_guard_idx=-1 diff_facts_idx=-1 compose_idx=-1
+decisions_guard_idx=-1 resolver_guard_idx=-1 dispatch_guard_idx=-1 target_lookup_idx=-1 diff_facts_idx=-1 compose_idx=-1
 for _pub_i in "${!pub_lines[@]}"; do
     _pub_line=${pub_lines[$_pub_i]}
     if ((decisions_guard_idx < 0)) && [[ $_pub_line == *'pr_decisions_file=${pr_decisions_file:?'* ]]; then
@@ -1668,6 +1748,12 @@ for _pub_i in "${!pub_lines[@]}"; do
     fi
     if ((resolver_guard_idx < 0)) && [[ $_pub_line == *'agentkit unresolved: prepend the Step 0 resolver block'* ]]; then
         resolver_guard_idx=$_pub_i
+    fi
+    if ((dispatch_guard_idx < 0)) && [[ $_pub_line == *'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}'* ]]; then
+        dispatch_guard_idx=$_pub_i
+    fi
+    if ((target_lookup_idx < 0)) && [[ $_pub_line == *'publication_target=$(jq -er'* ]]; then
+        target_lookup_idx=$_pub_i
     fi
     if ((diff_facts_idx < 0)) && [[ $_pub_line == *'"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"'* ]]; then
         diff_facts_idx=$_pub_i
@@ -1680,6 +1766,8 @@ assert_eq yes "$([[ $decisions_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff
     'the disclosure recipe runs after $pr_decisions_file is guarded, never before'
 assert_eq yes "$([[ $resolver_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -gt $resolver_guard_idx ]] && printf yes || printf no)" \
     'the disclosure recipe runs after the resolver establishes $agentkit, never before'
+assert_eq yes "$([[ $dispatch_guard_idx -ge 0 && $target_lookup_idx -gt $dispatch_guard_idx && $target_lookup_idx -lt $compose_idx ]] && printf yes || printf no)" \
+    'the publication recipe validates and reads its dispatch plan before composing the body'
 assert_eq yes "$([[ $compose_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -lt $compose_idx ]] && printf yes || printf no)" \
     'the disclosure recipe runs before compose-pr-body.sh consumes the Decisions file'
 
@@ -1722,6 +1810,12 @@ assert_not_contains "$err" 'spawn refused:' \
     'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
+assert_rc 0 'state-backed admission uses the Codex V2 runtime default when config is absent' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 4 --agent-kind reviewer
+assert_rc 1 'state-backed admission refuses above the Codex V2 runtime default without config' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 5 --agent-kind reviewer
 
 # --- issue #224: named wait bounds (WS1) --------------------------------------
 # The guidance must name a NUMBER per wait class, and every named bound must be
@@ -1908,12 +2002,21 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
+assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
+    'the resident call-site table ends before the following single-issue paragraph'
+# Issue #904 adds explicit commit -> full verification -> push recovery steps
+# to both worker contracts so an unchanged candidate is verified only once.
+# #903 adds the concurrent review/fix ownership contract at the dispatch site.
+# #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-# #911 adds the protected preparation/approval/resume contract at the worker
-# and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
-assert_eq yes "$([[ $prose_lines -le 2238 ]] && printf yes || printf no)" \
-    'issue #911 prose files stay below their protected-publication line count'
+# #907: the one-call startup/resume binding recipe replaces remembered run,
+# session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
+# #909: eight review-repair lines pin the saved-target lookup and default-target
+# closing-linkage condition before PR body composition.
+assert_eq yes "$([[ $prose_lines -le 2332 ]] && printf yes || printf no)" \
+    'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

@@ -118,21 +118,29 @@ with tempfile.TemporaryDirectory() as temp:
     reasons=[rejected(*case) for case in malformed_cases]
     assert len(reasons)==len(set(reasons)), reasons
     save()
-    # A successful fresh native run cannot create cache evidence when the
-    # repository has not declared local verification capability. Acceptance
-    # diagnoses the configuration gap before requesting an impossible rerun.
+    # A successful fresh native run remains usable evidence when the repository
+    # has not opted into verification-cache reuse.
+    cache_path=repo/'.agent/verification-cache'
+    saved_cache=cache_path.read_bytes(); cache_path.unlink()
     (repo/'.agent/config.env').write_text('AGENT_CMD_TEST=true\n')
     native_output=run(str(helper.with_name('agent-run.sh')), '--dir', str(repo), '--cmd', 'test', '--force', '--summary')
     assert 'PASS:' in native_output,native_output
-    unavailable=validate(2)
-    assert unavailable['status']=='unknown',unavailable
-    assert 'verification capability unavailable' in unavailable['reason'],unavailable
-    assert 'AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN' in unavailable['reason'],unavailable
-    assert 'authorize-native-evidence-handoff' in unavailable['reason'],unavailable
-    assert 'evidence unavailable' not in unavailable['reason'],unavailable
+    native_summary=native_output.splitlines()[-1]
+    native_match=re.search(r' log=([^ ]+) log-sha256=([0-9a-f]{64}) receipt=',native_summary)
+    assert native_match,native_summary
+    native_log=Path(native_match.group(1)); native_digest=native_match.group(2)
+    result['verification'][0]={'command':'test','status':'pass','log':str(native_log)}
+    save()
+    accepted=validate(digest=native_digest)
+    assert accepted['status']=='accepted',accepted
+    assert accepted['evidence']=='native-log',accepted
+    assert 'AGENT_VERIFY_TEST_MODE=local' in accepted['suggestion'],accepted
+    assert 'AGENT_VERIFY_TEST_TOOLCHAIN' in accepted['suggestion'],accepted
+    assert not (repo/'.agent/verification-cache').exists(), 'native acceptance did not invent cache eligibility'
     (repo/'.agent/config.env').write_text(local_declaration)
-    cache_path=repo/'.agent/verification-cache'
-    saved_cache=cache_path.read_bytes(); cache_path.unlink()
+    result['verification'][0]=dict(command='test',status='pass',log=str(log),fingerprint=key)
+    save()
+    cache_path.write_bytes(saved_cache); cache_path.unlink()
     absent=validate(2)
     assert 'evidence unavailable' in absent['reason'] and 'verification-cache' in absent['reason'],absent
     assert 'verification capability unavailable' not in absent['reason'],absent
@@ -142,7 +150,10 @@ with tempfile.TemporaryDirectory() as temp:
     assert validate(digest=observed_digest)['status'] == 'accepted', 'harmless stderr must not corrupt the stdout fingerprint'
     os.environ.pop('LC_ALL')
     assert validate(digest=observed_digest)['status'] == 'accepted'
+    logs_before_resume={p.name:p.read_bytes() for p in (repo/'.agent/logs').iterdir()}
     assert validate()['reused'] is True
+    assert {p.name:p.read_bytes() for p in (repo/'.agent/logs').iterdir()}==logs_before_resume, \
+        'root validation and resume consume unchanged proof without executing verification again'
     # Durable execution state cannot be replaced by the legacy green index.
     record=repo/'.agent/verification-records'/key/'result'
     saved_record=record.read_bytes()
@@ -238,9 +249,10 @@ with tempfile.TemporaryDirectory() as temp:
         save(); validate(2 if status != 'fail' else 1)
     result['verification'][0]['status']='pass'; result['verification'][0].pop('reason')
     save()
-    for declaration in ('AGENT_CMD_TEST=false\n', 'AGENT_CMD_TEST=true\nAGENT_RUNDIR_TEST=src\n',
-                        'AGENT_CMD_TEST=true\nAGENT_CMD_TEST_KIND=format\n'):
-        (repo / '.agent/config.env').write_text(declaration); validate(2)
+    for declaration,expected in (('AGENT_CMD_TEST=false\n',1),
+                                 ('AGENT_CMD_TEST=true\nAGENT_RUNDIR_TEST=src\n',2),
+                                 ('AGENT_CMD_TEST=true\nAGENT_CMD_TEST_KIND=format\n',2)):
+        (repo / '.agent/config.env').write_text(declaration); validate(expected)
     (repo / '.agent/config.env').write_text(local_declaration)
     result['verification'][0]['command']='lint'; save(); validate(1)
     result['verification'][0]['command']='test'; save()

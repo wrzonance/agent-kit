@@ -41,7 +41,16 @@ with tempfile.TemporaryDirectory() as temp:
         assert not counter.exists(), 'capability query executed the declared command'
         assert all(fragment in p.stderr for fragment in fragments),(p.stderr,fragments)
     first=query(); assert query()==first
+    git('commit','--allow-empty','-qm','candidate checkpoint')
+    committed=query()
+    assert committed!=first, 'a new committed HEAD cannot inherit proof from an identical tree'
+    first=committed
     assert list(agent.iterdir())==[config], 'query created durable directories'
+    before=snapshot()
+    lease=subprocess.run([str(helper),'--dir',str(repo),'--cmd','test','--execution-lease-key'],
+                         capture_output=True,text=True,check=True).stdout
+    assert re.fullmatch(r'[0-9a-f]{64}\n',lease) and snapshot()==before,'lease query was not read-only'
+    assert not counter.exists(),'lease query executed the declared command'
     (repo/'input').write_text('two\n'); assert query()!=first
     (repo/'input').write_text('one\n'); assert query()==first
     tool.write_text('#!/bin/sh\nexit 1\n'); assert query()!=first
@@ -52,9 +61,12 @@ with tempfile.TemporaryDirectory() as temp:
         config.write_text('\n'.join(line for line in declaration.splitlines() if not line.startswith(suffix.split('=')[0]+'='))+'\n'+suffix); query(expected=1)
     unavailable('AGENT_CMD_TEST=true\n','reason=mode-not-local',
                 'missing=AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN',
-                'choices=declare-local-verification-or-authorize-native-evidence-handoff')
+                'declarations=mode-absent,toolchain-absent',
+                'choices=declare-local-verification-or-use-native-execution-evidence')
+    unavailable('AGENT_CMD_TEST=true\nAGENT_VERIFY_TEST_MODE=external\n','reason=mode-not-local',
+                'declarations=mode-present,toolchain-absent')
     unavailable('AGENT_CMD_TEST=true\nAGENT_VERIFY_TEST_MODE=local\n','reason=no-toolchain',
-                'missing=AGENT_VERIFY_TEST_TOOLCHAIN')
+                'missing=AGENT_VERIFY_TEST_TOOLCHAIN','declarations=mode-present,toolchain-absent')
     config.write_text(declaration)
     for flags in (('--force',),('--only','unit'),('--cmd','lint'),('--if-declared',),('--resolve','test'),('--fix',),('--','true'),
                   ('--baseline-ref','HEAD','--baseline-path','input','--baseline-id','query')):

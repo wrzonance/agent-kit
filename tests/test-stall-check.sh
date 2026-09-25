@@ -101,6 +101,49 @@ touch "$git_wt/.git/FETCH_HEAD"
 out=$("$helper" --worktree "$git_wt" --state "$git_state")
 assert_contains "$out" 'verdict=quiet' 'git metadata churn does not read as progress'
 
+# Issue #907: a mistaken stall output must never replace durable workflow
+# records, even when an alias hides the protected path.
+protected_wt="$tmp/protected-worktree"
+git init -q -b main "$protected_wt"
+git -C "$protected_wt" config user.name test
+git -C "$protected_wt" config user.email test@example.invalid
+mkdir -p "$protected_wt/.agent/runs" "$protected_wt/src"
+printf 'work\n' >"$protected_wt/src/progress.txt"
+git -C "$protected_wt" add src/progress.txt
+git -C "$protected_wt" commit -qm seed
+protected_worker="$tmp/protected-worker"
+git -C "$protected_wt" worktree add -q -b feat/protected-worker "$protected_worker"
+worker_ledger="$protected_wt/.agent/runs/active-workers.ndjson"
+decision_ledger="$protected_wt/.agent/session-ledger.ndjson"
+printf '%s\n' '{"worker":"keep"}' >"$worker_ledger"
+printf '%s\n' '{"decision":"keep"}' >"$decision_ledger"
+chmod 600 "$worker_ledger" "$decision_ledger"
+worker_before=$(sha256sum "$worker_ledger")
+decision_before=$(sha256sum "$decision_ledger")
+worker_rc=0
+worker_err=$("$helper" --worktree "$protected_worker" --state "$worker_ledger" 2>&1 >/dev/null) || worker_rc=$?
+assert_eq 2 "$worker_rc" 'worker ledger cannot be used as stall output'
+assert_contains "$worker_err" 'reserved workflow ledger' 'worker-ledger refusal names the alias hazard'
+assert_eq "$worker_before" "$(sha256sum "$worker_ledger")" \
+    'worker-ledger refusal happens before mutation'
+hardlink_state="$tmp/worker-ledger-hardlink"
+ln "$worker_ledger" "$hardlink_state"
+hardlink_rc=0
+hardlink_err=$("$helper" --worktree "$protected_worker" --state "$hardlink_state" 2>&1 >/dev/null) || hardlink_rc=$?
+assert_eq 2 "$hardlink_rc" 'a hardlink alias cannot hide the worker ledger'
+assert_contains "$hardlink_err" 'reserved workflow ledger' 'hardlink refusal names the alias hazard'
+assert_eq "$worker_before" "$(sha256sum "$worker_ledger")" \
+    'hardlink refusal leaves the worker ledger byte-for-byte unchanged'
+alias_parent="$tmp/ledger-alias"
+ln -s "$protected_wt/.agent" "$alias_parent"
+decision_rc=0
+decision_err=$("$helper" --worktree "$protected_worker" \
+    --state "$alias_parent/session-ledger.ndjson" 2>&1 >/dev/null) || decision_rc=$?
+assert_eq 2 "$decision_rc" 'a symlink-parent alias cannot hide the decision ledger'
+assert_contains "$decision_err" 'reserved workflow ledger' 'decision-ledger alias refusal names the hazard'
+assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
+    'decision-ledger alias refusal happens before mutation'
+
 # Evidence failures are loud, never a silent verdict.
 assert_rc 2 'a missing worktree is a usage error' -- \
     "$helper" --worktree "$tmp/absent" --state "$tmp/s"
@@ -109,8 +152,9 @@ assert_rc 2 'a missing state path is a usage error' -- \
 assert_rc 2 'a non-numeric threshold is refused' -- \
     "$helper" --worktree "$wt" --state "$state" --threshold-minutes soon
 
-# Issue #810 adds completed-verification evidence to the existing stall sample.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/stall-check.sh") -le 126 ]] && printf yes || printf no)" \
-    'stall-check.sh stays at or under 126 lines'
+# Issue #810 adds completed-verification evidence; #907 adds pre-write ledger
+# alias protection at the existing output boundary.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/stall-check.sh") -le 142 ]] && printf yes || printf no)" \
+    'stall-check.sh stays at or under 142 lines'
 
 finish

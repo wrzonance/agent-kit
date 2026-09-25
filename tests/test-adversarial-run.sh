@@ -11,6 +11,9 @@ script="$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh"
 consent="$root/agentkit/skills/review-remote-pr/scripts/consent-record.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export CODEX_HOME="$tmp/codex-home"
+mkdir -p "$CODEX_HOME"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 
 repo="$tmp/repo"
 origin="$tmp/origin.git"
@@ -56,8 +59,25 @@ mkdir -- "$fake_bin"
 cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ${1:-} == api && ${2:-} == repos/acme/widget/pulls/42 ]] || exit 1
-printf '%s\n' "{\"base\":{\"ref\":\"main\",\"sha\":\"$FAKE_BASE_OID\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
+[[ ${1:-} == api ]] || exit 1
+endpoint=${2:-}
+if [[ $endpoint == user ]]; then
+    printf '%s\n' '{"login":"ledger-test-author"}'
+elif [[ $endpoint =~ ^repos/acme/widget/pulls/[0-9]+$ ]]; then
+    printf '%s\n' "{\"base\":{\"ref\":\"main\",\"sha\":\"$FAKE_BASE_OID\"},\"head\":{\"sha\":\"$FAKE_HEAD_OID\"}}"
+elif [[ $endpoint =~ ^repos/acme/widget/issues/([0-9]+)/comments$ && " $* " == *" --input - "* ]]; then
+    [[ ${REMOTE_LEDGER_FAIL:-0} != 1 ]] || { cat >/dev/null; exit 1; }
+    pr=${BASH_REMATCH[1]}
+    id=$((9000 + pr))
+    body_file="$CODEX_HOME/remote-review-$id.json"
+    cat >"$body_file"
+    [[ -z ${REVIEW_ORDER_LOG:-} ]] || printf '%s\n' remote-attempted >>"$REVIEW_ORDER_LOG"
+    jq --argjson id "$id" --arg url "https://example.invalid/$id" '. + {id:$id,html_url:$url}' "$body_file"
+elif [[ $endpoint =~ ^repos/acme/widget/issues/comments/([0-9]+)$ ]]; then
+    cat "$CODEX_HOME/remote-review-${BASH_REMATCH[1]}.json"
+else
+    exit 1
+fi
 EOF
 chmod +x "$fake_bin/gh"
 
@@ -76,6 +96,16 @@ fi
 # blocks must leave no marker: absence of a result file alone would still pass
 # if a regression launched the provider and simply failed to publish.
 [[ -z ${FAKE_CLAUDE_CALLED:-} ]] || printf 'called\n' >>"$FAKE_CLAUDE_CALLED"
+[[ -z ${REVIEW_ORDER_LOG:-} ]] || printf '%s\n' provider >>"$REVIEW_ORDER_LOG"
+if [[ -n ${FAKE_PROVIDER_GATE_DIR:-} ]]; then
+    mkdir -p "$FAKE_PROVIDER_GATE_DIR"
+    : >"$FAKE_PROVIDER_GATE_DIR/${FAKE_PROVIDER_LABEL:?}.started"
+    for _ in {1..500}; do
+        [[ ! -e $FAKE_PROVIDER_GATE_DIR/release ]] || break
+        sleep 0.01
+    done
+    [[ -e $FAKE_PROVIDER_GATE_DIR/release ]] || exit 42
+fi
 if [[ -n ${FAKE_CLAUDE_LIMITS:-} ]]; then
     printf '%s\n' "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-unset}" >"$FAKE_CLAUDE_LIMITS"
     printf '%s\n' "$@" >>"$FAKE_CLAUDE_LIMITS"
@@ -120,13 +150,27 @@ expected="$tmp/expected.diff"
 git -C "$repo" --no-pager diff --find-renames --unified=25 origin/main...HEAD >"$expected"
 
 grant() {
-    local run_dir=$1 provider=$2 diff=${3:-$expected} base_sha=${4:-} payload
+    local run_dir=$1 provider=$2 diff=${3:-$expected} base_sha=${4:-}
     # Each grant below starts an independent scenario, with a fresh PR budget.
     rm -rf -- "$repo/.git/agentkit-review-attempts"
+    grant_pr "$run_dir" "$provider" 42 "$diff" "$base_sha"
+}
+
+seed_comments() {
+    local run_dir=$1 pr=${2:-42}
+    mkdir -p -- "$run_dir/state"
+    chmod 700 -- "$run_dir" "$run_dir/state"
+    printf '%s\n' '[]' >"$run_dir/state/pr_${pr}_issue_comments.json"
+    chmod 600 -- "$run_dir/state/pr_${pr}_issue_comments.json"
+}
+
+grant_pr() {
+    local run_dir=$1 provider=$2 pr=$3 diff=${4:-$expected} base_sha=${5:-} payload
     mkdir -- "$run_dir" "$run_dir/state"
     chmod 700 "$run_dir" "$run_dir/state"
+    seed_comments "$run_dir" "$pr"
     local -a payload_args=(payload --worktree "$repo" --run-dir "$run_dir" \
-        --repo acme/widget --pr 42 --diff "$diff")
+        --repo acme/widget --pr "$pr" --diff "$diff")
     [[ -z $base_sha ]] || payload_args+=(--base-sha "$base_sha")
     payload=$(/bin/bash "$consent" "${payload_args[@]}")
     /bin/bash "$consent" grant --worktree "$repo" --run-dir "$run_dir" \
@@ -136,6 +180,7 @@ grant() {
 missing="$tmp/missing"
 mkdir -- "$missing"
 chmod 700 "$missing"
+seed_comments "$missing"
 printf '%s\n' 'stale result' >"$missing/adversarial.result.json"
 missing_rc=0
 (cd "$root" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
@@ -158,6 +203,7 @@ mismatch_run="$tmp/mismatch-run"
 # Keyed-only roots pass contract loading and still stop at the consent gate.
 mv -- "$contract" "$repo/.agent/env-contract.codex.txt"
 keyed_run="$tmp/keyed-run"
+seed_comments "$keyed_run"
 keyed_rc=0
 (cd "$repo" && env CLAUDECODE= CLAUDE_CODE_ENTRYPOINT= CODEX_PERMISSION_PROFILE=test \
     PATH="$fake_bin:$PATH" bash "$script" --pr 42 --repo acme/widget --run-dir "$keyed_run") \
@@ -245,6 +291,7 @@ prior_retry_id=$(jq -r .id <<<"$prior_record")
 prior_retry_hash=$(sha256sum "$retry_failed/claude.ndjson" | cut -d' ' -f1)
 retry_missing_limit="$tmp/retry-missing-limit"
 mkdir -m 700 "$retry_missing_limit"
+seed_comments "$retry_missing_limit"
 retry_missing_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_missing_limit" \
     --repo acme/widget --pr 42 --diff "$expected")
 bash "$consent" grant --worktree "$repo" --run-dir "$retry_missing_limit" --provider anthropic \
@@ -260,6 +307,7 @@ assert_eq no "$( [[ -e $tmp/retry-missing-limit.calls ]] && printf yes || printf
     'Claude retry without its required output-token limit never launches a provider'
 retry_run="$tmp/retry-success"
 mkdir -m 700 "$retry_run"
+seed_comments "$retry_run"
 retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$retry_run" --repo acme/widget --pr 42 --diff "$expected")
 bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthropic \
     --payload "$retry_payload" --source interactive >/dev/null
@@ -276,6 +324,7 @@ assert_eq no "$([[ -e $tmp/timeout-proof.calls ]] && printf yes || printf no)" '
 # The failed preparation belongs only to this fresh test run, not the prior attempt.
 rm -rf -- "$retry_run"
 mkdir -m 700 "$retry_run"
+seed_comments "$retry_run"
 bash "$consent" grant --worktree "$repo" --run-dir "$retry_run" --provider anthropic \
     --payload "$retry_payload" --source interactive >/dev/null
 retry_rc=0
@@ -309,6 +358,7 @@ codex_prior_record=$(bash "$retry_ledger" attempt read --repo-root "$repo" \
 codex_prior_id=$(jq -r .id <<<"$codex_prior_record")
 codex_retry_run="$tmp/codex-retry-success"
 mkdir -m 700 "$codex_retry_run"
+seed_comments "$codex_retry_run"
 codex_retry_payload=$(bash "$consent" payload --worktree "$repo" --run-dir "$codex_retry_run" \
     --repo acme/widget --pr 42 --diff "$expected")
 bash "$consent" grant --worktree "$repo" --run-dir "$codex_retry_run" --provider openai \
@@ -327,10 +377,23 @@ assert_eq null "$(jq -c '.maxBudgetUsd' <<<"$codex_retry_record")" 'Codex retry 
 assert_eq null "$(jq -c '.maxOutputTokens' <<<"$codex_retry_record")" 'Codex retry records no Claude output-token override'
 write_contract codex claude "present path=$tmp/fake-claude"
 
+invalid_parallel_run="$tmp/invalid-parallel-run"
+grant "$invalid_parallel_run" anthropic
+invalid_parallel_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/invalid-parallel.called" AGENTKIT_PARALLEL_RUN_ID='not a run id' \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$invalid_parallel_run") \
+    >"$tmp/invalid-parallel.out" 2>"$tmp/invalid-parallel.err" || invalid_parallel_rc=$?
+assert_eq 1 "$invalid_parallel_rc" 'invalid parallel run identity is refused before persistence'
+assert_eq no "$( [[ -e $tmp/invalid-parallel.called ]] && printf yes || printf no )" \
+    'invalid parallel run identity never launches the provider'
+
 claude_run="$tmp/claude-run"
 grant "$claude_run" anthropic
 claude_rc=0
 (cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" FAKE_CLAUDE_CALLED="$tmp/canonical.calls" \
+    REVIEW_ORDER_LOG="$tmp/canonical-order.log" \
+    AGENTKIT_PARALLEL_RUN_ID=parallel-wave \
     bash "$script" --pr 42 --repo acme/widget --run-dir "$claude_run") \
     >"$tmp/claude.out" 2>"$tmp/claude.err" || claude_rc=$?
 assert_eq 0 "$claude_rc" 'consented Claude review completes'
@@ -338,6 +401,8 @@ assert_eq yes "$( [[ -s $claude_run/adversarial.diff ]] && printf yes || printf 
     'orchestrator writes the shared adversarial diff'
 assert_eq yes "$( [[ -s $claude_run/adversarial.result.json ]] && printf yes || printf no )" \
     'orchestrator writes the canonical result'
+assert_eq parallel-wave "$(jq -r .runId "$claude_run/state/review-attempt.json")" \
+    'canonical review attempt persists its matching parallel run context'
 assert_eq yes "$( [[ -f $claude_run/findings.ndjson ]] && printf yes || printf no )" \
     'a completed review initializes the findings ledger'
 assert_eq 600 "$(stat -c %a "$claude_run/findings.ndjson")" \
@@ -363,9 +428,75 @@ assert_eq true "$(jq -r '(.payload | type == "string" and length > 0)' <"$claude
     'the launch-attempted marker records a non-empty payload id'
 assert_eq true "$(jq -r '(.timestamp | type == "string" and length > 0)' <"$claude_run/state/launch-attempted")" \
     'the launch-attempted marker records a timestamp'
+remote_attempt="$CODEX_HOME/remote-review-9042.json"
+assert_eq attempted "$(jq -r '.body | capture("(?s)```json\\n(?<json>.*?)\\n```").json | fromjson | .reviews[0].executionState' "$remote_attempt")" \
+    'the launcher records truthful remote attempted spend before final publication'
+assert_eq "$(jq -r .attemptId "$claude_run/adversarial.result.json")" \
+    "$(jq -r '.body | capture("(?s)```json\\n(?<json>.*?)\\n```").json | fromjson | .reviews[0].attemptId' "$remote_attempt")" \
+    'the remote attempted spend binds the canonical local attempt id'
+assert_eq $'remote-attempted\nprovider' "$(cat "$tmp/canonical-order.log")" \
+    'the remote attempted marker is byte-verified before provider execution'
+
+remote_fail_run="$tmp/remote-fail-run"
+grant_pr "$remote_fail_run" anthropic 45
+remote_fail_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    REMOTE_LEDGER_FAIL=1 FAKE_CLAUDE_CALLED="$tmp/remote-fail.calls" \
+    bash "$script" --pr 45 --repo acme/widget --run-dir "$remote_fail_run") \
+    >"$tmp/remote-fail.out" 2>"$tmp/remote-fail.err" || remote_fail_rc=$?
+assert_eq 1 "$remote_fail_rc" 'uncertain remote attempted-marker transport blocks the launch'
+assert_eq no "$( [[ -e $tmp/remote-fail.calls ]] && printf yes || printf no )" \
+    'remote attempted-marker failure never executes the provider'
+
+# #903: root launches two real one-shot runners. The stub provider holds both
+# after their durable `running` transition so overlap is observed, not inferred.
+overlap_a="$tmp/overlap-a"
+overlap_b="$tmp/overlap-b"
+grant_pr "$overlap_a" anthropic 43
+grant_pr "$overlap_b" anthropic 44
+overlap_gate="$tmp/overlap-gate"
+mkdir -p "$overlap_gate"
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/overlap.calls" FAKE_PROVIDER_GATE_DIR="$overlap_gate" \
+    FAKE_PROVIDER_LABEL=pr43 AGENTKIT_PARALLEL_RUN_ID=overlap-wave \
+    bash "$script" --pr 43 --repo acme/widget --run-dir "$overlap_a") \
+    >"$tmp/overlap-a.out" 2>"$tmp/overlap-a.err" &
+overlap_a_pid=$!
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/overlap.calls" FAKE_PROVIDER_GATE_DIR="$overlap_gate" \
+    FAKE_PROVIDER_LABEL=pr44 AGENTKIT_PARALLEL_RUN_ID=overlap-wave \
+    bash "$script" --pr 44 --repo acme/widget --run-dir "$overlap_b") \
+    >"$tmp/overlap-b.out" 2>"$tmp/overlap-b.err" &
+overlap_b_pid=$!
+overlap_started=no
+for _ in {1..500}; do
+    if [[ -e $overlap_gate/pr43.started && -e $overlap_gate/pr44.started ]]; then
+        overlap_started=yes
+        break
+    fi
+    sleep 0.01
+done
+assert_eq yes "$overlap_started" 'two distinct review provider launches overlap before either finishes'
+attempt_registry="$repo/.git/agentkit-review-attempts"
+assert_eq 2 "$(jq -s '[.[] | select(.state == "running")] | length' "$attempt_registry"/*.json)" \
+    'peak active reviewer count reaches two under the shared cap'
+assert_eq 0 "$(find "$overlap_a" "$overlap_b" -name adversarial.result.json -type f | wc -l)" \
+    'neither overlapping review finishes before the release gate'
+: >"$overlap_gate/release"
+overlap_a_rc=0
+overlap_b_rc=0
+wait "$overlap_a_pid" || overlap_a_rc=$?
+wait "$overlap_b_pid" || overlap_b_rc=$?
+assert_eq 0 "$overlap_a_rc" 'first overlapping review completes after release'
+assert_eq 0 "$overlap_b_rc" 'second overlapping review completes after release'
+assert_eq 2 "$(wc -l <"$tmp/overlap.calls")" 'two overlapping reviews launch the provider exactly once each'
+assert_eq yes "$([[ $(jq -r .attemptId "$overlap_a/adversarial.result.json") != \
+    "$(jq -r .attemptId "$overlap_b/adversarial.result.json")" ]] && printf yes || printf no)" \
+    'overlapping reviews retain distinct result and attempt identities'
 
 resume_run="$tmp/resumed-run"
 mkdir -m 700 "$resume_run" "$resume_run/state"
+seed_comments "$resume_run"
 resume_payload=$(jq -r '.payload' "$claude_run/state/launch-attempted")
 "$consent" grant --worktree "$repo" --run-dir "$resume_run" --provider anthropic \
     --payload "$resume_payload" --source interactive >/dev/null
@@ -393,6 +524,7 @@ assert_eq "$(cat "$tmp/claude.out")" "$(cat "$tmp/same-dir.out")" \
 
 relative_run="$repo/.agent/relative-run"
 mkdir -m 700 "$relative_run" "$relative_run/state"
+seed_comments "$relative_run"
 "$consent" grant --worktree "$repo" --run-dir "$relative_run" --provider anthropic \
     --payload "$resume_payload" --source interactive >/dev/null
 relative_rc=0
@@ -417,6 +549,7 @@ for recovery_dir in same new; do
     if [[ $recovery_dir == new ]]; then
         recovered="$tmp/recovered-new"
         mkdir -m 700 "$recovered" "$recovered/state"
+        seed_comments "$recovered"
         "$consent" grant --worktree "$repo" --run-dir "$recovered" --provider anthropic \
             --payload "$(jq -r '.payload' <<<"$rejection")" --source interactive >/dev/null
     fi
@@ -711,11 +844,15 @@ assert_contains "$(cat -- "$tmp/invalid.out")" 'verdict=blocked' \
 
 malformed_root="$tmp/malformed-plugin"
 malformed_script_dir="$malformed_root/skills/review-remote-pr/scripts"
-mkdir -p -- "$malformed_script_dir" "$malformed_root/skills/.shared/scripts/lib"
+mkdir -p -- "$malformed_script_dir" "$malformed_root/skills/.shared/scripts/lib" \
+    "$malformed_root/skills/parallel-issues/scripts"
 cp -- "$script" "$malformed_script_dir/adversarial-run.sh"
 cp -- "$consent" "$malformed_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$malformed_script_dir/"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/gh-comment.sh" "$malformed_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$malformed_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh" \
+    "$malformed_root/skills/parallel-issues/scripts/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$malformed_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$malformed_root/skills/.shared/scripts/lib/private-dir.sh"
@@ -779,11 +916,15 @@ write_contract codex claude "present path=$tmp/fake-claude"
 # produced no review; it has no verdict to report.
 verdict_root="$tmp/verdict-plugin"
 verdict_script_dir="$verdict_root/skills/review-remote-pr/scripts"
-mkdir -p -- "$verdict_script_dir" "$verdict_root/skills/.shared/scripts/lib"
+mkdir -p -- "$verdict_script_dir" "$verdict_root/skills/.shared/scripts/lib" \
+    "$verdict_root/skills/parallel-issues/scripts"
 cp -- "$script" "$verdict_script_dir/adversarial-run.sh"
 cp -- "$consent" "$verdict_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$verdict_script_dir/"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/gh-comment.sh" "$verdict_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$verdict_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh" \
+    "$verdict_root/skills/parallel-issues/scripts/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$verdict_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$verdict_root/skills/.shared/scripts/lib/private-dir.sh"
@@ -1074,11 +1215,15 @@ assert_contains "$(cat -- "$tmp/provenance.out")" 'verdict=findings' \
 # require operator authorization rather than an automatic retry.
 noreceipt_root="$tmp/noreceipt-plugin"
 noreceipt_script_dir="$noreceipt_root/skills/review-remote-pr/scripts"
-mkdir -p -- "$noreceipt_script_dir" "$noreceipt_root/skills/.shared/scripts/lib"
+mkdir -p -- "$noreceipt_script_dir" "$noreceipt_root/skills/.shared/scripts/lib" \
+    "$noreceipt_root/skills/parallel-issues/scripts"
 cp -- "$script" "$noreceipt_script_dir/adversarial-run.sh"
 cp -- "$consent" "$noreceipt_script_dir/consent-record.sh"
 cp -- "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh" "$noreceipt_script_dir/"
+cp -- "$root/agentkit/skills/review-remote-pr/scripts/gh-comment.sh" "$noreceipt_script_dir/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-attempt.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
+cp -- "$root/agentkit/skills/parallel-issues/scripts/concurrency-cap.sh" \
+    "$noreceipt_root/skills/parallel-issues/scripts/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/review-launch-options.sh" "$noreceipt_root/skills/.shared/scripts/lib/"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/private-dir.sh" \
     "$noreceipt_root/skills/.shared/scripts/lib/private-dir.sh"
@@ -1131,6 +1276,23 @@ make_ledger_comments() {
             ({version:1, pr:42, repo:"acme/widget", reviews:$reviews} | tojson) +
             "\n```\n<!-- /review-ledger:v1 -->")}]' >"$1"
 }
+
+attempted_comments="$tmp/reaffirm-attempted-comments.json"
+attempted_reviews='[{"kind":"adversarial","provider":"anthropic","head_sha":"0000000000000000000000000000000000000001","diff_payload":"acme/widget:42:old","attemptId":"remote-unknown-1","executionState":"attempted"}]'
+make_ledger_comments "$attempted_comments" "$attempted_reviews"
+attempted_run="$tmp/reaffirm-attempted-run"
+grant "$attempted_run" anthropic
+attempted_rc=0
+(cd "$repo" && PATH="$fake_bin:$PATH" CLAUDE_EXECUTABLE="$tmp/fake-claude" \
+    FAKE_CLAUDE_CALLED="$tmp/reaffirm-attempted.called" \
+    bash "$script" --pr 42 --repo acme/widget --run-dir "$attempted_run" \
+        --comments "$attempted_comments") \
+    >"$tmp/reaffirm-attempted.out" 2>"$tmp/reaffirm-attempted.err" || attempted_rc=$?
+assert_eq 1 "$attempted_rc" 'a fresh clone refuses an uncertain remote spend from an older head'
+assert_contains "$(cat "$tmp/reaffirm-attempted.err")" 'remote review attempt has uncertain delivery' \
+    'the fresh-clone refusal names remote attempt reconciliation'
+assert_eq no "$( [[ -e $tmp/reaffirm-attempted.called ]] && printf yes || printf no )" \
+    'an attempted remote spend never executes another provider'
 
 covered_reviews="[{\"kind\":\"adversarial\",\"provider\":\"anthropic\",\"head_sha\":\"$head_oid\",\"diff_payload\":\"$reaffirm_payload\"}]"
 covered_comments="$tmp/reaffirm-covered-comments.json"
@@ -1833,8 +1995,8 @@ assert_eq no "$( [[ -e $tmp/inject-run/adversarial.diff ]] && printf yes || prin
 # sent). Measured.
 # Issue #705 adds six lines for keyed resolution and distinct absent diagnostics.
 # Issue #706 adds selected-model provenance extraction and atomic result annotation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1016 ]] && printf yes || printf no)" \
-    'adversarial-run.sh stays at or under 1016 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/adversarial-run.sh") -le 1049 ]] && printf yes || printf no)" \
+    'adversarial-run.sh stays at or under 1049 lines'
 # --- roster form, OpenCode-family compound: repo-config.sh's model_family
 # classifies a well-formed provider/model-id as opencode (a real, recognized
 # family) rather than failing outright, so this needs its own case from the

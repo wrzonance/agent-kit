@@ -1677,7 +1677,8 @@ assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
     'a comment request failure after valid partial JSON cannot be masked by jq'
 
 # Issue #707: disclose absent CI on stacked target branches.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17850 ]] && printf yes || printf no)" 'chains reference stays at or under 17850 bytes'
+# Issue #901: deferred finalization adds the sealed pre-work guard and skip path.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18353 ]] && printf yes || printf no)" 'chains reference stays at or under 18353 bytes'
 
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4091 ]] && printf yes || printf no)" \
     'trust-and-fencing reference stays at or under 4091 bytes (issue #731 local reuse contract)'
@@ -1699,7 +1700,8 @@ assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/
 #
 # 2026-09-21 PR #855 repair: +10 to classify the default CodeQL setup probe
 # explicitly and fail closed when its state is unavailable (measured).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1086 ]] && printf yes || printf no)" \
-    'chain-advance.sh stays at or under 1086 lines'
+# 2026-09-24 issue #901: +352 for terminal evidence and exact push classification.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/chain-advance.sh") -le 1438 ]] && printf yes || printf no)" \
+    'chain-advance.sh stays at or under 1438 lines'
 
 finish

@@ -13,6 +13,8 @@ usage() {
     printf '  --ledger/--run-id/--ledger-scope (given together) carry a recorded authorization into an issue-lead prompt so FINISH can resume a parked protected-path commit\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) ||
+    die 'could not resolve script directory'
 
 template_kind=
 worktree=
@@ -128,16 +130,16 @@ if [[ $template_kind == pr-fix-batch ]]; then
     [[ $findings_file == /* && -f $findings_file && ! -L $findings_file && -r $findings_file && -O $findings_file ]] ||
         die '--findings-file must be an absolute, owned, readable regular file'
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate the pr-fix-batch findings ledger'
-    jq -s -e '
-        def safe_text: ((type == "string") and (test("[[:cntrl:]]") | not));
-        length > 0 and all(.[];
-            type == "object" and (.severity == "P1" or .severity == "P2") and
-            (.title | safe_text) and
-            ((.verdict == "fixed" and (.sha | safe_text)) or
-             ((.verdict == "declined" or (.verdict == "open" and .schemaVersion == 2)) and (.rationale | safe_text))))
-    ' \
-        "$findings_file" >/dev/null 2>&1 ||
-        die 'pr-fix-batch requires a non-empty accepted findings ledger'
+    [[ -s $findings_file ]] || die 'pr-fix-batch requires a non-empty accepted findings ledger'
+    finding_ledger=$script_dir/../../review-remote-pr/scripts/finding-ledger.sh
+    [[ -x $finding_ledger ]] || die "missing finding-ledger.sh: $finding_ledger"
+    findings_head=$(git -C "$worktree" rev-parse --verify HEAD 2>/dev/null) ||
+        die 'could not resolve the fix-batch worktree HEAD'
+    findings_status=$("$finding_ledger" status --file "$findings_file" \
+        --repo-root "$worktree" --head "$findings_head" 2>/dev/null) ||
+        die 'pr-fix-batch requires valid findings and current terminal repair evidence'
+    [[ $(jq -r '.remediation // ""' <<<"$findings_status") != unknown ]] ||
+        die 'pr-fix-batch refuses legacy terminal findings without current evidence'
 fi
 for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
     # Repository-relative globs only, matching the dispatch-plan validator's
@@ -150,7 +152,6 @@ for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
         *'/../'* | *'//'* | *'/./'*) die "--write-set glob contains an unsafe path: $glob" ;;
     esac
 done
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
 template_file=$script_dir/../references/worker-prompts.md
 [[ $template_kind != issue-lead ]] || template_file=$script_dir/../references/implementation-worker.md
 repo_config=$script_dir/../../.shared/scripts/repo-config.sh contract_reader=$script_dir/../../.shared/scripts/contract-read.sh
@@ -288,7 +289,7 @@ yield_cap_ms=${yield_cap_ms%% *}
 emit_verify_runbook() {
     local collect read=once-at-marker
     [[ -n $verify_command ]] || { printf 'verify= unavailable reason=no-scoped-command\n'; return; }
-    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=block-structured-acceptance-or-authorize-native-evidence-handoff\n' "$verification_capability_diagnostic"
+    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=run-full-check-and-return-native-log\n' "$verification_capability_diagnostic"
     case $harness_name in
         codex) collect='shell:write_stdin,cell:functions.wait' ;;
         claude) collect=completion-notification; read=returned-output-file ;;
@@ -614,7 +615,7 @@ while IFS= read -r line || [[ -n $line ]]; do
                     '' 'The following records are the complete accepted fix batch:'
                 cat -- "$findings_file"
                 printf '%s\n' '' 'Confirmed open findings remain repair obligations; never decline merely because repair is pending.' \
-                    'Update the same title with finding-ledger.sh add --verdict fixed --sha FULL_SHA --evidence FILE --repo-root WORKTREE --head CURRENT_SHA.' \
+                    'Return the same ledger with each repaired title replaced by a schemaVersion 2 fixed record carrying the terminal --evidence fields produced by finding-ledger.sh evidence.' \
                     'Evidence binds the finding title, reachable repairSha, tested head, affected path, command, status=passed, log and logSha256.' \
                     'A decline requires explicit rejected/accepted-risk adjudication evidence; accepted risk cites existing authorization.' \
                     'Return the updated findings ledger; the root resumes the original review entry. Keep unresolved findings open; never purchase another review.'

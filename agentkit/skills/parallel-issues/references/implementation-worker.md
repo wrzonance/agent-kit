@@ -58,7 +58,8 @@ __DECLARED_COMMANDS__
 A failed declared check may use `--baseline-ref <chain-base>`, `--baseline-path <failing-test-file>`,
 and `--baseline-id <test-id>`; `BASELINE-EXCLUDED` is unchecked evidence, never a green result.
 
-# Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared; the full command runs once against the final tree state.
+# Focused red/green checks use --only NAME[,NAME...] only when AGENT_CMD_TEST_FOCUS is declared.
+# Do not add a focused pass solely because FINISH's full verification follows.
 __DECLARED_FOCUS__
 
 __BLOCKER_CONTRACT__
@@ -118,14 +119,20 @@ worker_attribution=$("$shared/contract-read.sh" --repo-root "$contract_root" \
 Compute the expanded literal value of `worker_attribution` in the commit's tool call and pass its complete
 `Co-Authored-By` line as `--trailer`; shell state does not persist.
 
-When FINISH's fresh full verification is green, publish the branch yourself:
+At FINISH, checkpoint the completed candidate before its publication verification:
 
 1. Confirm status contains only declared paths and previously reported dirt.
 2. Commit explicit paths with the shipped helper, never blanket staging:
    `"$shared/worktree-commit.sh" --message '<Conventional Commit subject>' --body '<why>'
    --trailer "$worker_attribution" -- <each changed file>`; record its full SHA.
-3. Push the branch: `git push -u origin feat/issue-NNN`.
-4. Report branch, SHA, diffstat, and the marker-bearing green log path. Root owns the draft PR, board, and review actions.
+3. Run each required unfocused full verification command exactly once through `agent-run.sh`
+   on that clean committed HEAD; retain its marker-bearing green log.
+   A failed full run stops publication: repair with focused TDD, create a new local commit, and
+   verify that new HEAD.
+4. Push the branch only after the full verification passes: `git push -u origin feat/issue-NNN`.
+5. Report branch, SHA, diffstat, and the marker-bearing green log path. Root validates and
+   consumes unchanged proof without rerunning it; changed code or relevant inputs require new
+   proof. Root owns the draft PR, board, and review actions.
 
 If the helper parks staged protected paths (exit 3), preserve the worktree and return the diff,
 protected paths, rationale, focused check results, limitations, and reported `approval_scope`. Resume
@@ -179,12 +186,12 @@ Before implementation, report the six-step checklist and its status. Do not coll
 3. **TODOS** — map affected files, call sites, wiring, and verification commands.
 4. **SPIKE + REVERT** — required exactly when the change is novel: a new data shape, control-flow pattern, integration boundary, or failure mode. For novel work, rough-implement one bounded vertical slice only enough to learn, record what the design missed, then revert every spike change before tests or production code. A change of any size that only extends an existing pattern skips the spike and names it: `SPIKE + REVERT: SKIPPED — extends existing pattern <name>` (or another one-line justification for why nothing here is novel); line count is not the test. For a performed spike, use `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`; the references must identify immutable transcript/tool evidence containing both the spike edit and the revert, not a prose narrative. A documentation-only or no-code issue may report `SPIKE + REVERT: N/A — <concrete reason>`. A skip is never silent: the report line always records why.
 5. **INVARIANTS** — revise the design from spike learnings and state boundary invariants; derive the ordered tasks.
-6. **IMPLEMENTATION (TDD)** — for each task, write a failing boundary test, make it pass minimally, refactor, and run scoped checks through agent-run.sh; run the full suite the same way at the final task.
+6. **IMPLEMENTATION (TDD)** — for each task, write a failing boundary test, make it pass minimally, refactor, and run scoped checks through agent-run.sh. Focused checks are development feedback; do not add one solely because FINISH's full verification follows.
 
 The lead must report transitions such as `Six-step loop: 1 Structs ✅ · 2 Interfaces ✅ · 3 Todos ✅ · 4 Spike + Revert ✅ · 5 Invariants ✅ · 6 Implementation (TDD) in progress`. `N/A` is valid only when the accepted scope contains no code changes. After step 6, continue with Review and Finish as separate gates:
 
 7. **REVIEW** — inspect the full scoped unstaged diff through correctness, repo-rule/security, and tests lenses. Try to refute every suspected finding before acting. Fix confirmed findings with regression tests; max two rounds.
-8. **FINISH** — run the full repo verification through agent-run.sh from fresh output, confirm the tree holds only declared-write-set files, then commit and push per "Progress, commit, and push" above and return the completion report. The top-level session owns the draft PR, board moves, review orchestration, and any privileged retry.
+8. **FINISH** — confirm the tree holds only declared-write-set files, then commit, run each required unfocused full verification once on that clean committed HEAD, and push only after it passes per "Progress, commit, and push" above. Return the completion report. The top-level session owns the draft PR, board moves, review orchestration, and any privileged retry.
 
 ### Canonical issue fetch and fence preparation
 
@@ -216,8 +223,8 @@ When root supplies runId, attempt, and workerId, use the fields in
 `parallel-issues/references/worker-prompts.md#structured-result-contract` and run
 `.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with `worker-result=ABSOLUTE_PATH`; set each `verification[].command` to the composed runbook's bare `cmd_name`, not its runnable `cmd` line.
 Do not invent IDs or verification fingerprints. Missing filesystem/native support uses a text handback with
-`evidence=unknown` and the precise remaining action. Structured acceptance blocks unavailable capability and names missing declarations plus the authorized native-evidence handoff.
-Report the final runner log path, but never copy a digest from output, narration, or the worker-writable `.sha256` sidecar into worker JSON; without independently observed runner output, root keeps verification unknown. Its root-review, root-ci and draft-pr obligations remain unresolved.
+`evidence=unknown` and the precise remaining action. When cache declarations are absent, run the full declared check and return its native log; structured acceptance validates that execution without an operator question.
+Report the final runner log path, but never copy a digest from output, narration, or the worker-writable `.sha256` sidecar into worker JSON. Root observes the terminal summary or performs the single retained recovery when proof is missing. Its root-review, root-ci and draft-pr obligations remain unresolved.
 
 Return the six-step/review/finish status and the completion report (branch, full commit SHA,
 diffstat, green verification log path) — or, on an environment refusal, the fallback
