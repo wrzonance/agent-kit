@@ -9,6 +9,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 exec python3 - "$script_dir" "$@" <<'PY'
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -153,6 +154,15 @@ def execution_key(root, name):
         raise Unknown(f'native execution capability unavailable: {name} (exit {p.returncode})')
     return key
 
+def execution_lease_key(root, name):
+    argv=[str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,'--execution-lease-key']
+    try: p=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+    except (OSError,subprocess.TimeoutExpired) as e: raise Unknown(f'native execution lease query unavailable: {name}') from e
+    key=p.stdout.decode(errors='replace').strip()
+    if p.returncode or not re.fullmatch('[0-9a-f]{64}',key):
+        raise Unknown(f'native execution lease unavailable: {name} (exit {p.returncode})')
+    return key
+
 def native_record(path):
     fields=read(path).split(b'\0')
     if fields and fields[-1]==b'': fields.pop()
@@ -167,6 +177,35 @@ def native_record(path):
     expected={'rc','command','key','head','worktree','scope','clean','log','sha256'}
     if set(record)!=expected: raise Unknown(f'invalid native execution record fields: {path}')
     return record
+
+def lease_active(root, lease, name):
+    handle=root/'.agent/run-records/leases'/lease
+    if not os.path.lexists(handle): return False
+    for directory in (handle.parent,handle):
+        try: info=directory.lstat()
+        except OSError as e: raise Unknown(f'native execution lease unavailable: {name}') from e
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution lease directory must be owned and non-symlink: {directory}')
+    running=handle/'running'
+    if os.path.lexists(running):
+        info=running.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution running record must be owned and non-symlink: {name}')
+    lock=handle/'lock'
+    if not os.path.lexists(lock): return False
+    try:
+        fd=os.open(lock,os.O_RDWR|os.O_NOFOLLOW)
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution lock must be owned and non-symlink: {name}')
+        try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: return True
+        else:
+            fcntl.flock(fd,fcntl.LOCK_UN)
+            return False
+    except OSError as e: raise Unknown(f'native execution lock unavailable: {name}') from e
+    finally:
+        if 'fd' in locals(): os.close(fd)
 
 def recovery_id(root, name, head):
     return hashlib.sha256(json.dumps([str(root),name,head]).encode()).hexdigest()
@@ -187,44 +226,73 @@ def persist_recovery(a, recovery, prior, reason):
              'obligations':['root-review','root-ci','draft-pr','root-push']}
     store_receipt(a,receipt)
 
-def collect_native_recovery(root, name, key, a):
+def collect_native_recovery(root, name, key, lease, a):
     head=command(['git','-C',str(root),'rev-parse','HEAD']).decode().strip()
     recovery,prior=load_native_recovery(a,root,name,head)
     handle=root/'.agent/run-records'/key
-    running=handle/'running'
-    if os.path.lexists(running):
-        info=running.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
-            raise Unknown(f'native execution running record must be owned and non-symlink: {name}')
-    process=None
+    active=lease_active(root,lease,name)
     if prior is not None:
-        if not isinstance(prior,dict) or prior.get('command')!=name or prior.get('head')!=head:
+        if not isinstance(prior,dict) or prior.get('command')!=name or prior.get('head')!=head or \
+                prior.get('lease')!=lease:
             raise Unknown(f'invalid retained native recovery state: {name}')
         if prior.get('key')!=key:
             raise Unknown(f'native recovery already used for this check and candidate head: {name}')
         if prior.get('status') in ('pass','fail'):
-            a.root_digests[name]=prior.get('sha256','')
+            if prior.get('provenance')=='root-started': a.root_digests[name]=prior.get('sha256','')
             return prior.get('log','')
         if prior.get('status')!='started':
             raise Unknown(f'native recovery already exhausted with status={prior.get("status")}: {name}')
     else:
-        prior={'command':name,'head':head,'key':key,'status':'started'}
+        prior={'command':name,'head':head,'key':key,'lease':lease,'status':'started',
+               'provenance':'foreign-active' if active else 'pending',
+               'rootRecoveryUsed':False,'waitSpent':False}
         persist_recovery(a,recovery,prior,f'native recovery started: {name}')
-        if not os.path.lexists(running):
-            try:
-                process=subprocess.Popen([str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,
-                                          '--force','--summary'],stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL,start_new_session=True)
-            except OSError as e: raise Unknown(f'native recovery unavailable: {name}') from e
-    deadline=time.monotonic()+a.native_recovery_timeout_seconds
-    while time.monotonic()<deadline:
-        if process is not None:
-            if process.poll() is not None: break
-        elif not os.path.lexists(running): break
-        time.sleep(0.1)
-    if (process is not None and process.poll() is None) or (process is None and os.path.lexists(running)):
+
+    if active:
+        if prior.get('waitSpent'):
+            raise Unknown(f'native recovery still active; resume after its owner completes: {name}')
+        prior['waitSpent']=True
+        persist_recovery(a,recovery,prior,f'observing active native execution once: {name}')
+        deadline=time.monotonic()+a.native_recovery_timeout_seconds
+        while lease_active(root,lease,name) and time.monotonic()<deadline: time.sleep(0.1)
+        if lease_active(root,lease,name):
+            persist_recovery(a,recovery,prior,f'native recovery still active after bounded wait: {name}')
+            raise Unknown(f'native recovery still active after bounded wait: {name}')
+
+    record=None
+    try: record=native_record(handle/'result')
+    except Unknown:
+        if prior.get('rootRecoveryUsed'):
+            prior['status']='incomplete'
+            persist_recovery(a,recovery,prior,f'native recovery produced no complete record: {name}')
+            raise
+    if record is not None:
+        trusted=prior.get('provenance')=='root-started'
+        identity=hashlib.sha256(json.dumps(['native-log',name,key,record['log']]).encode()).hexdigest()
+        independently_pinned=name in a.root_digests or identity in a.trusted_logs
+        if record['rc']!='0' or trusted or independently_pinned:
+            prior.update(status='pass' if record['rc']=='0' else 'fail',log=record['log'])
+            if trusted: prior['sha256']=record['sha256']; a.root_digests[name]=record['sha256']
+            persist_recovery(a,recovery,prior,f'native recovery completed status={prior["status"]}: {name}')
+            return record['log']
+
+    prior.update(provenance='root-starting',rootRecoveryUsed=True,waitSpent=True)
+    persist_recovery(a,recovery,prior,f'root native recovery starting: {name}')
+    try:
+        process=subprocess.Popen([str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,
+                                  '--force','--summary'],stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,start_new_session=True)
+    except OSError as e: raise Unknown(f'native recovery unavailable: {name}') from e
+    try: returncode=process.wait(timeout=a.native_recovery_timeout_seconds)
+    except subprocess.TimeoutExpired:
+        prior['provenance']='root-started'
         persist_recovery(a,recovery,prior,f'native recovery still active after bounded wait: {name}')
         raise Unknown(f'native recovery still active after bounded wait: {name}')
+    if returncode==2:
+        prior['provenance']='foreign-active'
+        persist_recovery(a,recovery,prior,f'native recovery lease was claimed concurrently: {name}')
+        raise Unknown(f'native recovery lease was claimed concurrently; resume after its owner completes: {name}')
+    prior['provenance']='root-started'
     try: record=native_record(handle/'result')
     except Unknown:
         prior['status']='incomplete'
@@ -262,18 +330,14 @@ def trusted_log(a, name, fingerprint, log, record_digest, source):
     a.trusted_logs[identity]=dict(command=name,fingerprint=fingerprint,log=str(log),sha256=expected_digest)
     return data,expected_digest
 
-def verify_native(root, v, name, key, a, recovered_log=None):
+def verify_native(root, v, name, key, lease, a, recovered_log=None):
     handle=root/'.agent/run-records'/key
     for directory in (root/'.agent',handle.parent,handle):
         try: info=directory.lstat()
         except OSError as e: raise RecoveryNeeded(f'native execution record unavailable: {name}') from e
         if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid():
             raise Unknown(f'native execution directory must be owned and non-symlink: {directory}')
-    running=handle/'running'
-    if os.path.lexists(running):
-        info=running.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
-            raise Unknown(f'native execution running record must be owned and non-symlink: {name}')
+    if lease_active(root,lease,name):
         raise RecoveryNeeded(f'native verification is running or interrupted: {name}')
     if not os.path.lexists(handle/'result'):
         raise RecoveryNeeded(f'native execution result unavailable: {name}')
@@ -328,18 +392,20 @@ def verify(root, r, git, a):
         fingerprint,_diagnostic=capabilities[name]
         if fingerprint is None:
             key=execution_key(root,name)
+            lease=execution_lease_key(root,name)
             head=git('rev-parse','HEAD').decode().strip(); recovered_log=None
             _recovery,prior=load_native_recovery(a,root,name,head)
             if prior is not None:
-                if not isinstance(prior,dict) or prior.get('key')!=key:
+                if not isinstance(prior,dict) or prior.get('key')!=key or prior.get('lease')!=lease:
                     raise Unknown(f'native recovery already used for this check and candidate head: {name}')
                 if prior.get('status') in ('pass','fail'):
-                    a.root_digests[name]=prior.get('sha256',''); recovered_log=prior.get('log','')
+                    if prior.get('provenance')=='root-started': a.root_digests[name]=prior.get('sha256','')
+                    recovered_log=prior.get('log','')
             try:
-                native=verify_native(root,v,name,key,a,recovered_log)
+                native=verify_native(root,v,name,key,lease,a,recovered_log)
             except RecoveryNeeded:
-                recovered_log=collect_native_recovery(root,name,key,a)
-                native=verify_native(root,v,name,key,a,recovered_log)
+                recovered_log=collect_native_recovery(root,name,key,lease,a)
+                native=verify_native(root,v,name,key,lease,a,recovered_log)
             observed.append(native); sources.append('native-log')
             upper=name.upper().replace('-','_')
             suggestions.append(f'configure AGENT_VERIFY_{upper}_MODE=local and AGENT_VERIFY_{upper}_TOOLCHAIN to enable cache reuse')
@@ -493,7 +559,7 @@ def main():
     v.add_argument('--issue',type=int,required=True)
     v.add_argument('--required-check',action='append',required=True)
     v.add_argument('--log-sha256',action='append',default=[],help='root-observed original COMMAND=SHA256; never worker JSON or sidecar')
-    v.add_argument('--native-recovery-timeout-seconds',type=float,default=1800,
+    v.add_argument('--native-recovery-timeout-seconds',type=float,default=30,
                    help=argparse.SUPPRESS)
     a=p.parse_args(sys.argv[2:]); claims={k:'unknown' for k in ('ownership','implementation','push','verification')}
     try:
@@ -501,8 +567,8 @@ def main():
             prior=load_receipt(a)
             a.trusted_logs=prior.get('trustedLogs',{})
             require(isinstance(a.trusted_logs,dict), 'trusted log pins must be an object')
-            require(0<a.native_recovery_timeout_seconds<=1800,
-                    'native recovery timeout must be greater than zero and at most 1800 seconds')
+            require(0<a.native_recovery_timeout_seconds<=60,
+                    'native recovery timeout must be greater than zero and at most 60 seconds')
             a.claims=claims
             a.root_digests={}
             for item in a.log_sha256:
