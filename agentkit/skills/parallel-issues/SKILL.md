@@ -16,16 +16,14 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
-stdout begins `skills=` (contract, not registry proof).
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command; stdout begins `skills=` (contract, not registry proof).
 Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
 `check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
 Retain that acknowledged harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Client restart/conversation resume retains
-the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Fresh acknowledgement preserves saved work. Client restart/conversation resume retains the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
 
 ### No delivered challenge = no run
@@ -58,15 +56,17 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-Follow [shared reading discipline](../.shared/reading-discipline.md): use
-`"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+## Resident call-site map
+| Boundary | Authority |
+|---|---|
+| Phase A/C review loop, adversarial receipt, finding ledger, run-dir | `../review-remote-pr/SKILL.md` and its lazy references |
 
 **Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` adjudication sections only when its digest flags them, and `references/implementation-worker.md` only when composing the issue lead. The template carries the loop from `.shared/six-step-loop.md`; root reads that file only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation
-line only — nothing infers them from tone, urgency, or a previous run.
+Four flags decide how much this skill stops to ask. They are read from the invocation line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
@@ -97,7 +97,7 @@ command with no approval step and no trust record — `--yolo` only ever governe
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
 
-**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness; reused evidence is not fresh execution. Run focused suites while iterating; use `--force` for the required fresh full suite before commit. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
+**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness. Run focused suites while iterating; commit the completed candidate, then run the required unfocused full suite on that clean committed HEAD before push. Root validation and resume consume unchanged proof without scheduling the suite again. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
 
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
@@ -193,7 +193,7 @@ Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
-| `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `$agentkit/.shared/scripts/worktree-commit.sh`'s refusal. |
+| `protected= patterns=` | Check every planned write set and accepted review finding against the repository's actual protected patterns. Keep collisions selected. A validator `proposal=N[...]` entry uses the generated proposal-only boundary: derive the concrete tree with `$agentkit/.shared/scripts/protected-patch.sh` without touching live Git/harness config, then apply it only after that exact grant. Continue unrelated work and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` publishes the approved commit. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
@@ -368,12 +368,26 @@ base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_roo
 # A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
-setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session")
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session" \
+  --dispatch-plan "$dispatch_plan" --run-id "$RUN_ID")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
-"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
+setup_rc=0
+"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}" || setup_rc=$?
+((setup_rc == 0)) || exit "$setup_rc"
 ```
 
 The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
+
+Exit 3 with `join-conflict ... next=resolution-worker-then-resume` is an automatic
+continuation, not an operator checkpoint. Dispatch a resolution-only worker as the named
+active sole writer in that same worktree. It verifies `MERGE_HEAD`, compares both complete
+blobs and predecessor intent, combines independent behavior, runs the affected declared
+checks, and commits through `worktree-commit.sh`; it must not start issue implementation.
+Then rerun the same setup arguments with `--resume`. A failed resolver returns the existing
+structured BLOCKED handback; classify it with
+`$agentkit/.shared/scripts/validate-handback.sh --classify-completion`,
+preserve `partial-blockers.list`, keep this issue queued, and continue independent work.
+Only `setup_rc=0` with the printed `join-base=` may proceed to implementation dispatch.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 
@@ -608,11 +622,10 @@ root handles CI state/verification, forge conflicts, adversarial review, consent
 
 ### Polling discipline (applies to every wait in this skill)
 
-Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before the first wait; it
-owns the no-model-turn rule, one wait per interval, and the durable-state recipe. A bounded wait is
-silent until terminal: emit only the one completion or expiry line and redirect any heartbeat to a log.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
+After handling any operator message, reconcile actual ledgers/results, dispatch plan/cache, publication records, and live worker/reviewer/test handles, then call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"`. Follow `resume_required=true` in the same turn: accept pushed results, dispatch proven-ready successors, publish missing drafts/receipts, or reconcile incomplete mappings. Only `end-turn` or `complete` may stop; on `end-turn`, report saved progress and stop without waiting.
 
-Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; live tool/session caps govern calls. Dispatch already printed this worker's own bound as a `wait-bound=` line — quote it. Follow shared wait-discipline for collection, direct helpers, and waiter exceptions.
+Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
 
 After completion, inspect durable state (worktree `git status`/`log`, then
 `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):
@@ -636,6 +649,16 @@ immutable snapshot without waiting for pending or red CI. CI repair and review c
 independently; neither a mid-review failure nor a repair push cancels or relaunches the review. The
 agent reports "draft phase complete" only after fresh final-head CI is green and all findings are
 fixed/declined with evidence, WITHOUT marking the PR ready.
+For a chain, predecessor fixes never trigger eager descendant merges. At draft finalization, walk
+the chain in dependency order. Call `"$agentkit/parallel-issues/scripts/chain-advance.sh"` with
+`--finalization-status` before merge or full verification; a sealed tuple stops the driver.
+Otherwise use `--finalize-successor` with the terminal receipt, final digest, accepted-finding
+ledger, exact pushed branch, immediate predecessor's `chainFinalizations.<pr>` tuple, and immutable
+review attempt when a review ran. The successor's sole writer performs any merge/conflict repair,
+commits, runs one final integrated verification, pushes, and, for an adversarial receipt, invokes
+`"$agentkit/review-remote-pr/scripts/review-ledger.sh"` with `cover --reason
+merge-down:<exact-predecessor-final-head>` before this boundary may pass. See
+[references/chains.md](references/chains.md#deferred-draft-finalization-after-a-predecessor-advances).
 
 **Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
 `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.

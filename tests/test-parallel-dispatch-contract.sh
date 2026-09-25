@@ -381,6 +381,8 @@ assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
     'worktree recipe parameterizes its start point'
+assert_contains "$text" '--dispatch-plan "$dispatch_plan" --run-id "$RUN_ID"' \
+    'worktree setup consumes the saved expected set and accepted publications'
 assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
     'chain successors gate on the pushed commit, not root publication'
 assert_not_contains "$normalized_text" 'only after the root has validated, committed, and pushed' \
@@ -393,10 +395,16 @@ assert_contains "$normalized_chains_text" 'A join is scheduled, not dropped' \
     'a multi-predecessor join is scheduled instead of dropped'
 assert_contains "$normalized_chains_text" 'a five-issue set dispatches five issues' \
     'join scheduling keeps every selected issue dispatched'
-assert_contains "$normalized_chains_text" 'Push that integration commit to' \
-    'the join recipe pushes the merged base before dispatch'
-assert_contains "$normalized_chains_text" 'predecessors pushed AND join base pushed' \
-    "a join's dispatch gate is stated as two-part"
+assert_contains "$normalized_chains_text" 'initialPublications.<issue>' \
+    'join assembly consumes immutable accepted worker publications'
+assert_contains "$normalized_chains_text" 'expectedPredecessors' \
+    'the saved plan remains authoritative for the complete predecessor set'
+assert_contains "$normalized_chains_text" 'integrationBaseSha' \
+    'join publication records the exact complete integration base'
+assert_contains "$normalized_chains_text" 'resolution-only worker' \
+    'a merge conflict automatically routes to the sole-writer resolution worker'
+assert_contains "$normalized_chains_text" 'validate-handback.sh --classify-completion' \
+    'failed automatic conflict resolution uses the existing blocker lifecycle'
 assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base' \
     'chains reference documents the general pushed-base requirement'
 assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
@@ -413,14 +421,50 @@ assert_contains "$normalized_chains_text" 'queued=1[#6]' \
     'depth-six fixture reports the queued tail at the funnel'
 assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
     'depth-six fixture dispatches the tail after predecessor push'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalize-successor' \
+    'chain draft finalization uses the executable evidence boundary'
+assert_contains "$normalized_chains_text" 'does not enumerate or update descendants' \
+    'a predecessor repair causes no eager descendant cascade'
+assert_contains "$normalized_chains_text" 'chainFinalizations.<pr>' \
+    'topological finalization reuses the existing run-state PR namespace'
+assert_contains "$normalized_chains_text" 'merge-down:<exact-predecessor-final-head>' \
+    'review coverage bridges the original snapshot to the integrated head'
+assert_contains "$normalized_chains_text" '--pr-state-digest' \
+    'finalization inherits the final-head CI digest contract'
+assert_contains "$normalized_chains_text" '--accepted-findings' \
+    'finalization inherits the explicit accepted-finding proof contract'
+assert_contains "$normalized_chains_text" 'known code-quality and inline-comment classifications' \
+    'finalization requires both persisted finding channels to be available'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalization-status' \
+    'the driver checks sealed evidence before any repeated integration work'
+assert_contains "$normalized_chains_text" 'commit -> full verification -> push' \
+    'the documented driver verifies the committed head before pushing it'
+assert_contains "$normalized_chains_text" '--include-staged --yolo --allow-base-inherited' \
+    'deferred merge commits retain the sanctioned protected-path recipe'
+assert_contains "$normalized_chains_text" 'git rev-parse MERGE_HEAD' \
+    'the inherited-path allowance binds the active merge head'
+assert_contains "$normalized_chains_text" 'verified-skip' \
+    'normal review-policy skips remain an explicit supported finalization path'
+assert_not_contains "$normalized_chains_text" 'The response is a merge-down cascade' \
+    'chain repair no longer prescribes eager merge-down cascades'
+retarget_heading_line=$(grep -n '^## Merge order and the stacked-PR retarget$' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
+    'retarget-only proof exceptions stay inside the retarget section'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'expectedPredecessors' \
+    'dispatch-plan entries pin the ordered complete predecessor set'
+assert_contains "$triage_and_selection_text" 'integrationBaseSha' \
+    'dispatch-plan entries separate join integration identity from PR targeting'
 assert_contains "$triage_and_selection_text" 'publicationTarget' \
-    'dispatch-plan entries pin the single PR publication target before dispatch'
+    'dispatch-plan entries pin and preserve the single PR publication target before dispatch'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
 assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
@@ -1009,7 +1053,7 @@ assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
 assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
-assert_contains "$issue_lead_prompt" 'once against the final tree state' \
+assert_contains "$issue_lead_prompt" 'exactly once through `agent-run.sh`' \
     'the final tree receives one unfocused full-suite run'
 assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
     'Code Quality evidence failure stops before no-findings processing'
@@ -1209,7 +1253,7 @@ assert_contains "$text" 'set its working directory to the assigned worktree' 'di
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
-assert_contains "$draft_loop_prompt" 'push the branch' 'phase lead pushes its own branch'
+assert_contains "$draft_loop_prompt" 'Push the branch' 'phase lead pushes its own branch'
 issue_lead_flat=$(tr '\n' ' ' <<<"$issue_lead_prompt" | tr -s '[:space:]' ' ')
 draft_loop_flat=$(tr '\n' ' ' <<<"$draft_loop_prompt" | tr -s '[:space:]' ' ')
 assert_contains "$issue_lead_flat" 'worktree-commit.sh" --message' \
@@ -2006,18 +2050,28 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
+assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
+    'the resident call-site table ends before the following single-issue paragraph'
+# Issue #904 adds explicit commit -> full verification -> push recovery steps
+# to both worker contracts so an unchanged candidate is verified only once.
 # #903 adds the concurrent review/fix ownership contract at the dispatch site.
 # #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
-# session, ledger, and explicit rebind operands; 20 lines keep those boundaries visible.
+# session, ledger, and explicit rebind operands; preserve that boundary in the combined contract.
 # #909: eight review-repair lines pin the saved-target lookup and default-target
 # closing-linkage condition before PR body composition.
+# #911 adds the protected preparation/approval/resume contract at the worker
+# and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
+# #910 adds the complete join/resolution recipe that prevents partial-base
+# dispatch and repeated recovery turns; ratchet the exact combined boundary.
+# #914 integration preserves both complete source contracts.
 # #908: eleven publication lines make the diff disclosure retry-idempotent and
 # bind the saved publication target to the environment default branch.
-assert_eq yes "$([[ $prose_lines -le 2288 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+assert_eq yes "$([[ $prose_lines -le 2388 ]] && printf yes || printf no)" \
+    'combined workflow prose stays below its measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

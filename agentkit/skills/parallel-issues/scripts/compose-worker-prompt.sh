@@ -5,12 +5,12 @@ umask 077
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE]\n' "$program" >&2
-    printf '  --write-set is required for issue-lead and pr-fix-batch\n' >&2
+    printf 'usage: %s --template issue-lead|join-resolution|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE]\n' "$program" >&2
+    printf '  --write-set is required for issue-lead, join-resolution, and pr-fix-batch\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
     printf '  --findings-file is required and non-empty for the pr-fix-batch template\n' >&2
     printf '  --materiality-base/--chain-base selects the PR-loop setup comparison base\n' >&2
-    printf '  --ledger/--run-id/--ledger-scope (given together) carry the session-ledger handle into an issue-lead prompt dispatched under --boundary yolo-trusted, so FINISH can authorize a parked protected-path commit\n' >&2
+    printf '  --ledger/--run-id/--ledger-scope (given together) carry a recorded authorization into an issue-lead prompt so FINISH can resume a parked protected-path commit\n' >&2
 }
 die() { printf '%s: %s\n' "$program" "$1" >&2; exit 1; }
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) ||
@@ -66,9 +66,9 @@ done
 ((dispatch_plan_supplied == 0)) || [[ -n $dispatch_plan ]] ||
     die '--dispatch-plan requires a non-empty value'
 
-[[ $template_kind == issue-lead || $template_kind == pr-loop-setup ||
+[[ $template_kind == issue-lead || $template_kind == join-resolution || $template_kind == pr-loop-setup ||
     $template_kind == pr-fix-batch || $template_kind == fix-batch ]] ||
-    die '--template must be issue-lead, pr-loop-setup, pr-fix-batch, or fix-batch'
+    die '--template must be issue-lead, join-resolution, pr-loop-setup, pr-fix-batch, or fix-batch'
 [[ $worktree == /* && -d $worktree ]] || die '--worktree must be an absolute directory'
 [[ $issue =~ ^[1-9][0-9]*$ ]] || die '--issue must be a positive integer'
 [[ $branch =~ ^[A-Za-z0-9._/-]+$ && $branch != -* && $branch != *..* && $branch != */ ]] || die '--branch must be a safe branch name'
@@ -84,8 +84,8 @@ for write_set in ${write_set_args[@]+"${write_set_args[@]}"}; do
         IFS=, read -r -a write_set_globs <<< "$write_set"
     fi
 done
-((${#write_set_globs[@]})) || [[ $template_kind != issue-lead && $template_kind != pr-fix-batch ]] ||
-    die '--write-set is required for issue-lead/pr-fix-batch'
+((${#write_set_globs[@]})) || [[ $template_kind != issue-lead && $template_kind != join-resolution && $template_kind != pr-fix-batch ]] ||
+    die '--write-set is required for issue-lead/join-resolution/pr-fix-batch'
 # A composer that cannot name the trust level must not produce a prompt
 # (issue #334): the issue-lead template embeds a single disclosed boundary
 # mode plus its one binding rule paragraph, so a missing or invalid mode is a
@@ -108,19 +108,16 @@ if ((materiality_base_supplied)); then
         die '--materiality-base must be a safe single-token ref'
 fi
 # --ledger/--run-id/--ledger-scope carry the session-ledger handle (issue
-# #563, extending #537's yolo-carry) so a yolo-dispatched issue-lead's FINISH
-# step can authorize a parked protected-path commit. One coherent query: all
-# three or none, only for issue-lead, and only where an unattended trust
-# record even applies.
+# #563, extended by #911) so an issue lead's FINISH step can reuse a recorded
+# protected-path grant after either attended or unattended preparation. One
+# coherent query: all three or none, and only for issue-lead.
 ledger_flags_supplied=0
 [[ -z $ledger_path && -z $ledger_run_id && -z $ledger_scope ]] || ledger_flags_supplied=1
 if ((ledger_flags_supplied)); then
-    [[ $template_kind == issue-lead ]] ||
-        die '--ledger/--run-id/--ledger-scope are only valid for the issue-lead template'
+    [[ $template_kind == issue-lead || $template_kind == join-resolution ]] ||
+        die '--ledger/--run-id/--ledger-scope are only valid for the issue-lead template or join-resolution template'
     [[ -n $ledger_path && -n $ledger_run_id && -n $ledger_scope ]] ||
         die '--ledger, --run-id, and --ledger-scope must be given together'
-    [[ $boundary_mode == yolo-trusted ]] ||
-        die '--ledger/--run-id/--ledger-scope require --boundary yolo-trusted'
     [[ $ledger_path == /* && $ledger_path != *[[:cntrl:]]* ]] ||
         die '--ledger must be an absolute path with no control characters'
     [[ $ledger_run_id =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
@@ -128,6 +125,8 @@ if ((ledger_flags_supplied)); then
     [[ -n $ledger_scope && $ledger_scope != *[[:cntrl:]]* && ${#ledger_scope} -le 4096 ]] ||
         die '--ledger-scope must be a non-empty value with no control characters (maximum 4096 characters)'
 fi
+[[ $template_kind != join-resolution ]] || ((dispatch_plan_supplied)) ||
+    die '--dispatch-plan is required for the join-resolution template'
 if [[ $template_kind == pr-fix-batch ]]; then
     ((findings_file_supplied)) || die '--findings-file is required for the pr-fix-batch template'
     [[ $findings_file == /* && -f $findings_file && ! -L $findings_file && -r $findings_file && -O $findings_file ]] ||
@@ -163,6 +162,7 @@ sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.
 harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
 contract_cache_lib=$script_dir/../../.shared/scripts/lib/contract-cache.sh
 yield_cap_lib=$script_dir/../../.shared/scripts/lib/yield-cap.sh
+protected_paths_lib=$script_dir/../../.shared/scripts/lib/protected-paths.sh
 wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
@@ -172,6 +172,7 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
 [[ -r $contract_cache_lib ]] || die "missing contract-cache.sh: $contract_cache_lib"
 [[ -r $yield_cap_lib ]] || die "missing yield-cap.sh: $yield_cap_lib"
+[[ -r $protected_paths_lib ]] || die "missing protected-path policy: $protected_paths_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
 fence_script=$script_dir/fence-untrusted-data.sh
 [[ -x $fence_script ]] || die "fence-untrusted-data.sh is missing or not executable: $fence_script"
@@ -186,6 +187,14 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 # Resolve the current-harness contract; the bare name is its legacy fallback.
 # shellcheck disable=SC1090,SC1091
 source "$contract_cache_lib"
+# shellcheck source=../../.shared/scripts/lib/protected-paths.sh
+source "$protected_paths_lib"
+declare -a preparation_restricted_globs=()
+for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
+    shared_write_set_collision "$glob" \
+        "${SHARED_PREPARATION_RESTRICTED_PATTERNS[@]}" >/dev/null || continue
+    preparation_restricted_globs+=("$glob")
+done
 contract=$(contract_cache_contract_file "$worktree")
 spec=
 prior_art=
@@ -282,7 +291,7 @@ yield_cap_ms=${yield_cap_ms%% *}
 emit_verify_runbook() {
     local collect read=once-at-marker
     [[ -n $verify_command ]] || { printf 'verify= unavailable reason=no-scoped-command\n'; return; }
-    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=block-structured-acceptance-or-authorize-native-evidence-handoff\n' "$verification_capability_diagnostic"
+    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=run-full-check-and-return-native-log\n' "$verification_capability_diagnostic"
     case $harness_name in
         codex) collect='shell:write_stdin,cell:functions.wait' ;;
         claude) collect=completion-notification; read=returned-output-file ;;
@@ -546,6 +555,7 @@ skip_when=0
 template_placeholder=0
 case $template_kind in
     issue-lead) open_fence='````text'; close_fence='````' ;;
+    join-resolution) template_section='## Join-resolution worker prompt'; open_fence='```text'; close_fence='```' ;;
     pr-loop-setup) template_section='## PR-loop setup worker prompt'; open_fence='```text'; close_fence='```' ;;
     pr-fix-batch|fix-batch) template_section='## PR-fix-batch worker prompt'; open_fence='```text'; close_fence='```' ;;
 esac
@@ -599,7 +609,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         __IMAGE_INVALIDATING_WRITERS__) emit_image_invalidating_writers; continue ;;
         __DECLARED_WRITE_SET__) emit_write_set; continue ;;
         __DECLARED_REPAIR_SCOPE__)
-            [[ $template_kind != pr-fix-batch ]] || emit_write_set
+            [[ $template_kind != pr-fix-batch && $template_kind != join-resolution ]] || emit_write_set
             continue ;;
         __ACCEPTED_FINDINGS_SECTION__)
             if [[ $template_kind == pr-fix-batch ]]; then

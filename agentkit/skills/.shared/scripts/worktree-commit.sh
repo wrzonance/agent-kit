@@ -66,20 +66,24 @@ Options:
                       when the named commit is the active merge head; attended
                       runs park inherited paths and preserve them in the index.
   --ledger FILE --run-id ID --ledger-scope SCOPE
-                      All three or none: when every merge-inherited protected path
-                      is a CI-workflow file (.github/workflows/, .gitlab-ci.yml,
+                      All three or none. A covering authorize:protected-commit
+                      decision whose SCOPE is protected-tree:<base>:<tree>
+                      authorizes that exact staged tree. Existing
+                      authorize:workflow-mutations grants continue to authorize
+                      CI-workflow files (.github/workflows/, .gitlab-ci.yml,
                       .circleci/, azure-pipelines.yml, Jenkinsfile) and RUN ID's
                       ledger at FILE records a covering 'authorize:workflow-mutations'
                       grant for SCOPE (session-ledger.sh), commit with an
                       Authorized-By-Ledger trailer instead of parking. Harness/hook
                       configuration (.githooks/, .git/hooks/, .git/config,
                       .pre-commit-config.yaml, .codex/config.toml, .claude/settings*.json)
-                      is never ledger-authorizable and still parks the staged set.
+                      remains outside the legacy workflow grant; only an exact
+                      authorize:protected-commit decision may authorize it.
   --                  End of options; every later argument is a FILE.
   -h, --help          Print this help and exit 0.
 Exit status: 0 committed; 1 usage error, not a repository, trunk branch, or any git
   failure; 2 a git metadata directory is not writable (needs elevation, then retry);
-  3 an active merge carries protected paths that attended work must park.
+  3 staged protected paths need a covering authorization decision.
 
 Output (stdout, on success -- one line):
   committed 0123456789abcdef0123456789abcdef01234567 feat(example): add widget (3 files)
@@ -216,21 +220,21 @@ staged_protected_paths() {
     done < <(git diff --cached --name-only -z --diff-filter=ACDMRTUXB)
 }
 
-park_inherited_paths() {
-    local paths=$1
+park_protected_paths() {
+    local paths=$1 churn=$2 approval_scope=$3
     failure_class=permission-trust-refusal
     failure_state=$paths
     failure_action=hand-back-protected-paths-for-authorization
-    printf '%s: merge-inherited protected paths parked/handed off (churn: merge-inherited):\n' \
-        "$PROGNAME" >&2
+    printf '%s: protected paths parked/handed off (churn: %s):\n' "$PROGNAME" "$churn" >&2
     while IFS= read -r path; do
         [[ -n $path ]] || continue
         printf '  %s\n' "$path" >&2
     done <<< "$paths"
-    printf '%s: inherited bytes remain staged; attended mode will not silently drop them.\n' \
+    printf '%s: prepared bytes remain staged; attended mode will not silently publish them.\n' \
         "$PROGNAME" >&2
-    printf '%s: re-run with --allow-base-inherited BASE --yolo only after naming the merged base.\n' \
-        "$PROGNAME" >&2
+    printf 'approval_scope=%s\n' "$approval_scope" >&2
+    printf '%s: record a covering %s decision for this exact scope, then resume the same worktree.\n' \
+        "$PROGNAME" "$SHARED_PROTECTED_COMMIT_DECISION" >&2
     exit 3
 }
 
@@ -276,20 +280,37 @@ config_merge_authorized() {
     verify_base_inherited '.agent/config.env'
 }
 
-# The one decision token this guard ever checks. Fixed, never caller-chosen:
-# only SCOPE (validate_ledger_args) varies per invocation, so a worker cannot
-# widen its own authorization by naming a different decision (issue #563).
+# Fixed decision tokens, never caller-chosen: a worker cannot widen its own
+# authorization by substituting a different ledger decision.
 readonly LEDGER_WORKFLOW_DECISION='authorize:workflow-mutations'
 
 # 0 when a recorded session-ledger grant covers this run's protected-path
 # commit. Fails closed on any missing input or non-zero session-ledger.sh
 # exit -- an unreadable or absent ledger is exactly as authorized as no
 # ledger at all.
-ledger_authorizes_workflow_mutations() {
+ledger_covers() {
+    local decision=$1 scope=$2
     [[ -n $LEDGER_FILE ]] || return 1
     [[ -x $SCRIPT_DIR/session-ledger.sh ]] || return 1
     "$SCRIPT_DIR/session-ledger.sh" covers --ledger "$LEDGER_FILE" --run-id "$LEDGER_RUN_ID" \
-        --decision "$LEDGER_WORKFLOW_DECISION" --scope "$LEDGER_SCOPE" >/dev/null 2>&1
+        --decision "$decision" --scope "$scope" >/dev/null 2>&1
+}
+
+ledger_authorizes_workflow_mutations() {
+    ledger_covers "$LEDGER_WORKFLOW_DECISION" "$LEDGER_SCOPE"
+}
+
+protected_commit_scope() {
+    local base tree
+    base=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || die 1 'could not resolve HEAD for protected-path approval'
+    tree=$(git write-tree 2>/dev/null) || die 1 'could not derive the staged tree for protected-path approval'
+    shared_protected_commit_scope "$base" "$tree" || die 1 'could not format the protected-path approval scope'
+}
+
+ledger_authorizes_protected_commit() {
+    local expected_scope=$1
+    [[ $LEDGER_SCOPE == "$expected_scope" ]] || return 1
+    ledger_covers "$SHARED_PROTECTED_COMMIT_DECISION" "$expected_scope"
 }
 
 # 0 when PATH is one of the fixed CI-workflow patterns a session-ledger
@@ -317,14 +338,25 @@ non_ledger_authorizable_paths() {
 }
 
 guard_staged_protected_paths() {
-    local paths
-    active_merge || return 0
+    local paths approval_scope churn=prepared
     paths=$(staged_protected_paths)
     [[ -n $paths ]] || return 0
+    approval_scope=$(protected_commit_scope)
+    active_merge && churn=merge-inherited
     if (( ALLOW_BASE_INHERITED == 1 && YOLO == 1 )); then
+        active_merge || die 1 '--allow-base-inherited requires an active merge'
         verify_base_inherited "$paths"
         printf '%s: merge-inherited paths authorized by named base (churn: merge-inherited): %s\n' \
             "$PROGNAME" "${paths//$'\n'/, }" >&2
+        return 0
+    fi
+    if ledger_authorizes_protected_commit "$approval_scope"; then
+        local protected_trailer="Authorized-By-Ledger: $LEDGER_RUN_ID $SHARED_PROTECTED_COMMIT_DECISION"
+        validate_trailer_line "$protected_trailer"
+        TRAILERS+=("$protected_trailer")
+        printf '%s: staged protected tree authorized by session ledger (run %s, decision %s, scope %s): %s\n' \
+            "$PROGNAME" "$LEDGER_RUN_ID" "$SHARED_PROTECTED_COMMIT_DECISION" "$approval_scope" \
+            "${paths//$'\n'/, }" >&2
         return 0
     fi
     if ledger_authorizes_workflow_mutations; then
@@ -341,7 +373,7 @@ guard_staged_protected_paths() {
         printf '%s: session ledger grant does not authorize non-CI-workflow protected paths: %s\n' \
             "$PROGNAME" "${non_ci_paths//$'\n'/, }" >&2
     fi
-    park_inherited_paths "$paths"
+    park_protected_paths "$paths" "$churn" "$approval_scope"
 }
 
 validate_args() {
@@ -735,6 +767,17 @@ check_staged() {
         "git diff --cached --check reported whitespace or conflict-marker problems (rc=$rc); fix them and re-run"
 }
 
+require_resolved_index() {
+    local unmerged
+    unmerged=$(git ls-files --unmerged) || die 1 'could not inspect the Git index for unresolved entries'
+    [[ -z $unmerged ]] || {
+        failure_class=content-conflict
+        failure_state='unmerged-index'
+        failure_action=resolve-index-conflicts-before-protected-approval
+        die 1 'Git index has unresolved entries; resolve them before deriving a protected approval scope'
+    }
+}
+
 build_message_args() {
     MESSAGE_ARGS=(--message "$SUBJECT")
     if [[ -n "$BODY" ]]; then
@@ -832,11 +875,12 @@ main() {
     acquire_transaction_lock
     refuse_unrequested_config
     refuse_staged_outside_operands
+    require_resolved_index
     stage_files
     refuse_unrequested_config
-    guard_staged_protected_paths
     guard_exact_operand_scope
     check_staged
+    guard_staged_protected_paths
     build_message_args
     do_commit
     verify_trailers

@@ -22,9 +22,9 @@ cat >"$plan" <<'EOF'
 {
   "schemaVersion": 1,
   "entries": [
-    {"issue": 11, "publicationTarget": "main", "predictedWriteSet": ["src/a"]},
-    {"issue": 12, "publicationTarget": "feat/root", "predictedWriteSet": ["src/b"]},
-    {"issue": 13, "publicationTarget": "main", "predictedWriteSet": ["src/c"]}
+    {"issue": 11, "publicationTarget": "main", "expectedPredecessors": [], "integrationBaseSha": null, "predictedWriteSet": ["src/a"]},
+    {"issue": 12, "publicationTarget": "feat/root", "expectedPredecessors": [11], "integrationBaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "predictedWriteSet": ["src/b"]},
+    {"issue": 13, "publicationTarget": "main", "expectedPredecessors": [], "integrationBaseSha": null, "predictedWriteSet": ["src/c"]}
   ],
   "conflictMap": {"pairs": [], "revisions": []}
 }
@@ -336,6 +336,11 @@ assert_eq 'src/a' "$(jq -r '.entries[0].predictedWriteSet[0]' "$plan")" \
     'writer preserves the existing dispatch audit record'
 assert_eq 'feat/root' "$(jq -r '.entries[] | select(.issue == 12) | .publicationTarget' "$plan")" \
     'schema-2 upgrade preserves each recorded PR publication target'
+assert_eq '[11]' "$(jq -c '.entries[] | select(.issue == 12) | .expectedPredecessors' "$plan")" \
+    'schema-2 upgrade preserves the ordered predecessor set'
+assert_eq 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    "$(jq -r '.entries[] | select(.issue == 12) | .integrationBaseSha' "$plan")" \
+    'schema-2 upgrade preserves the assembled integration base separately'
 
 before=$(sha256sum "$plan")
 jq '.chains += [[.chains[0][1]]]' "$merge_plan" >"$tmp/join.json"

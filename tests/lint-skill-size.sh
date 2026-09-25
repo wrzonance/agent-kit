@@ -33,7 +33,9 @@ declare -A KNOWN_OVERSIZE=(
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
     # #902: overlap review with CI and gate final-head and accepted-finding evidence.
     # #902 review: remote attempted spend and classifier-aware finalization.
-    [review-remote-pr]="534:9701:450"
+    # #912: delegated activation distinguishes an active owning workflow from standalone use.
+    # #908: move resumable finalization into pr-stage while retaining delegated activation.
+    [review-remote-pr]="496:9035:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
@@ -51,12 +53,17 @@ declare -A KNOWN_OVERSIZE=(
     # #875 review: preserve summary evidence and persist an invocation-derived review mode.
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
-    # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
     # #903: concurrent admission, cross-run freshness, and stopped proof contract.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
+    # #901: defer successor integration to the topological draft-ready boundary.
+    # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
+    # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
+    # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
+    # #914 integration: preserve the #907 rebind and #910 join contracts; exact measurement.
+    # #914: resume source-derived obligations after a steer in the same root turn.
     # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
     # #908 final parent integration: exact combined one-call finalization measurement.
-    [parallel-issues]="827:17766:500"
+    [parallel-issues]="850:18430:500"
 )
 
 readonly MAX_BODY_LINES=500
