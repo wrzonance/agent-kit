@@ -153,6 +153,56 @@ assert_eq 'complete' "$(jq -r .next_action <<<"$decision")" \
 assert_eq true "$(jq -r .task_complete <<<"$decision")" \
     'the drained checkpoint alone marks the task complete'
 
+# A queued operator message starts a new root turn. The pre-steer complete
+# snapshot is context, not current evidence: exact replay must fail before it
+# can strand a newly accepted worker result or another publication obligation.
+before_stale=$(sha256sum "$state")
+stale_rc=0
+stale_err=$("$script" next-action --after-steer --file "$state" --json "$drained" \
+    2>&1 >/dev/null) || stale_rc=$?
+assert_eq 1 "$stale_rc" 'after-steer refuses exact replay of the saved evidence observation'
+assert_contains "$stale_err" 'after-steer requires a newly observed snapshot' \
+    'stale replay names the fresh-evidence action'
+assert_eq "$before_stale" "$(sha256sum "$state")" \
+    'stale after-steer evidence cannot replace the durable checkpoint'
+
+# Fresh source reconciliation finds the incident obligations: a pushed worker
+# result still needs acceptance/publication, its successor is now ready, and an
+# opened PR lacks its review receipt. They are one resumed wave, so the root
+# must continue this turn rather than wait for an operator re-drive.
+after_steer=$(jq -c '
+    .evidence.id = "fixture-ledgers@def456" |
+    .evidence.observed_at = "2026-09-24T12:05:00Z" |
+    .actionable_work = ["issue-605:accept-result", "issue-606:dispatch-successor",
+                        "pr-604:publish-receipt"] |
+    .completed_work = ["issue-604:implementation"] |
+    .remaining_work = .actionable_work
+' <<<"$drained")
+decision=$("$script" next-action --after-steer --file "$state" --json "$after_steer")
+assert_eq 'dispatch' "$(jq -r .next_action <<<"$decision")" \
+    'fresh post-steer obligations resume the authorized wave'
+assert_eq 3 "$(jq -r .outstanding <<<"$decision")" \
+    'the decision reports every reconciled unfinished obligation'
+assert_eq true "$(jq -r .resume_required <<<"$decision")" \
+    'a post-steer dispatch decision forbids ending the root turn'
+assert_eq false "$(jq -r .wait_allowed <<<"$decision")" \
+    'actionable post-steer work resumes directly instead of entering a wait'
+
+# Missing immutable issue/PR metadata cannot be manufactured from a result
+# path, fingerprint, or the opened_prs number list. Keep that gap outstanding
+# and choose reconciliation instead of falsely completing the run.
+ambiguous=$(snapshot '[]' '[]' '[]' '["issue-604"]' \
+    '["result-attempt-605:reconcile-publication-mapping"]')
+ambiguous=$(jq -c '.evidence.id = "fixture-ledgers@ghi789" |
+    .evidence.observed_at = "2026-09-24T12:06:00Z"' <<<"$ambiguous")
+decision=$("$script" next-action --after-steer --file "$state" --json "$ambiguous")
+assert_eq 'reconcile' "$(jq -r .next_action <<<"$decision")" \
+    'an ambiguous result-to-publication mapping remains actionable reconciliation'
+assert_eq 1 "$(jq -r .outstanding <<<"$decision")" \
+    'the unresolved producer metadata gap is counted rather than erased'
+assert_eq true "$(jq -r .resume_required <<<"$decision")" \
+    'reconciliation keeps the turn active without claiming completion'
+
 missing_field=$(jq 'del(.operations)' <<<"$operator_only")
 before_missing=$(sha256sum "$state")
 missing_rc=0
