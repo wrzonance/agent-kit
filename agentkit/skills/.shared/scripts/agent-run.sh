@@ -71,7 +71,8 @@ fi
 usage() {
     cat <<'EOF'
 Usage: agent-run.sh status LOG
-       agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--summary] [--only NAME[,NAME...]]
+       agent-run.sh [--dir PATH] [--label NAME] [--resolve NAME] [--force] [--summary]
+                    [--verification-key | --execution-key] [--only NAME[,NAME...]]
                     [--baseline-ref REF --baseline-path PATH --baseline-id ID]
                     (--cmd NAME | [--] <command> ...)
 
@@ -87,6 +88,9 @@ Runs one command with a sandbox-safe environment and a compact result summary.
   --verification-key  Read-only query for one local, generic, full-checkout
                  command. Prints only its current fingerprint; creates no execution
                  records or logs. Rejects execution modifiers and unsupported inputs.
+  --execution-key  Read-only query for one declared, generic, unfocused full-checkout
+                 command. Prints its current native execution identity without
+                 requiring or granting verification-cache eligibility.
   --fix          With --cmd [COMPONENT-]format, run its declared *_FORMAT_FIX
                  pair. Applies to that link only; never falls back to a runner.
   --only NAME[,NAME...]  For --cmd test, use the repository's
@@ -238,6 +242,7 @@ focus_requested=0
 force_cmd=0
 summary_cmd=0
 verification_key=0
+execution_key_query=0
 fix_cmd=0
 baseline_ref=''
 baseline_path=''
@@ -256,6 +261,7 @@ declare -a cmd_queue_fix=() remaining_fix=()
 while (($#)); do
     case $1 in
         --verification-key) verification_key=1; shift ;;
+        --execution-key) execution_key_query=1; shift ;;
         --fix)
             ((${#cmd_queue[@]})) || die '--fix requires a preceding --cmd format.'
             fix_name=${cmd_queue[${#cmd_queue[@]} - 1]}
@@ -320,12 +326,14 @@ while (($#)); do
     esac
 done
 
-if ((verification_key)); then
+if ((verification_key || execution_key_query)); then
     if ((${#cmd_queue[@]} != 1 || ${#cmd[@]} != 0 || force_cmd || summary_cmd || focus_requested)) ||
         [[ -n $resolve_name || -n $baseline_ref || -n $baseline_path || -n $baseline_id || -n $label ]] ||
         ((cmd_queue_if_declared[0] || cmd_queue_fix[0])); then
-        die '--verification-key requires exactly one --cmd without execution modifiers.'
+        die '--verification-key/--execution-key requires exactly one --cmd without execution modifiers.'
     fi
+    ((verification_key == 0 || execution_key_query == 0)) ||
+        die '--verification-key and --execution-key are mutually exclusive.'
 fi
 
 if ((${#cmd_queue[@]})); then
@@ -1202,7 +1210,8 @@ claim_active_run() {
     [[ ! -L $git_top/.agent ]] || return 0
     root=$git_top/.agent/run-records
     assert_private_dir "$root"
-    key=$(printf '%s\0' "$work_dir" "${cmd[@]}" | sha256sum | awk '{print $1}')
+    key=${execution_key:-}
+    [[ -n $key ]] || key=$(printf '%s\0' "$work_dir" "${cmd[@]}" | sha256sum | awk '{print $1}')
     active_run_handle=$root/$key
     assert_private_dir "$active_run_handle"
     [[ ! -L $active_run_handle/lock && ! -L $active_run_handle/running ]] ||
@@ -1217,9 +1226,25 @@ claim_active_run() {
         finish 2
     fi
     printf '%s\n' "$log_file" > "$active_run_handle/running"
+    rm -f -- "$active_run_handle/result"
     active_run_owned=1
 }
-
+complete_native_execution() {
+    local result temp scope
+    ((active_run_owned)) || return 0
+    [[ $log_sha256 =~ ^[0-9a-f]{64}$ && -n ${execution_key:-} ]] || return 0
+    scope=full
+    [[ -z $focus_opt ]] || scope=focused
+    result=$active_run_handle/result
+    temp=$(mktemp "$active_run_handle/.result.XXXXXX") || return 0
+    if ! printf 'native-v1\0rc\0%s\0command\0%s\0key\0%s\0head\0%s\0worktree\0%s\0scope\0%s\0clean\0%s\0log\0%s\0sha256\0%s\0' \
+        "$rc" "$cmd_name" "$execution_key" "$log_head" "$git_top" "$scope" "$log_clean" \
+        "$log_file" "$log_sha256" > "$temp" || ! chmod 600 -- "$temp" || ! mv -f -- "$temp" "$result"; then
+        rm -f -- "$temp"
+        return 0
+    fi
+    rm -f -- "$active_run_handle/running"
+}
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
 cleanup_active_run() {
     ((active_run_owned)) || return 0
@@ -1237,6 +1262,7 @@ failure_signature() {
     sed -E \
         -e '/^=== agent-run /d' \
         -e '/^=== started /d' \
+        -e '/^=== execution-v1 /d' \
         -e '/^=== finding /d' \
         -e '/^=== agent-run exited /d' \
         "$file" | sha256sum | awk '{print $1}'
@@ -1684,7 +1710,24 @@ compute_tree_hash() {
     rm -f -- "$hash_input"
     printf '%s' "$digest"
 }
-
+compute_execution_key() {
+    local hash_input digest head
+    [[ -n ${git_top:-} && -n ${cmd_name:-} ]] || return 1
+    head=$(git -C "$git_top" rev-parse --verify HEAD 2>/dev/null) || return 1
+    [[ $head =~ ^[0-9a-f]{40}$ ]] || return 1
+    hash_input=$(mktemp "${TMPDIR:-/tmp}/agent-run-execution.XXXXXX") || return 1
+    if ! printf 'native-v1\0command\0%s\0kind\0%s\0focus\0%s\0head\0%s\0worktree\0%s\0argv\0' \
+        "$cmd_name" "$command_kind" "$focus_opt" "$head" "$work_dir" > "$hash_input" ||
+        ! printf '%s\0' "${cmd[@]}" >> "$hash_input" ||
+        ! hash_verification_toolchain >> "$hash_input"; then
+        rm -f -- "$hash_input"
+        return 1
+    fi
+    digest=$(sha256sum -- "$hash_input" | awk '{print $1}') || { rm -f -- "$hash_input"; return 1; }
+    rm -f -- "$hash_input"
+    [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$digest"
+}
 verification_cache_path() {
     [[ -n ${git_top:-} ]] || return 1
     printf '%s/.agent/verification-cache' "$git_top"
@@ -1829,14 +1872,31 @@ maybe_use_package_dir
 canonicalise_work_dir
 resolve_literal_executable
 
+execution_key=''
+if [[ -n $cmd_name && $cmd_declared == yes ]]; then
+    execution_key=$(compute_execution_key 2>/dev/null || true)
+fi
+
+if ((execution_key_query)); then
+    [[ $cmd_declared == yes && $command_kind == generic && $work_dir == "$git_top" ]] &&
+        verification_command_name && [[ -n $execution_key ]] ||
+        die 'native execution capability unavailable: requires a declared, generic, full-checkout verification command.'
+    printf '%s\n' "$execution_key"
+    exit 0
+fi
+
 if ((verification_key)); then
-    choice=declare-local-verification-or-authorize-native-evidence-handoff
+    choice=declare-local-verification-or-use-native-execution-evidence
     if ! verification_cache_eligible; then
         upper=${cmd_name^^}; upper=${upper//-/_}; missing=none
+        mode_key="AGENT_VERIFY_${upper}_MODE" toolchain_key="AGENT_VERIFY_${upper}_TOOLCHAIN"
+        mode_state=absent toolchain_state=absent
+        [[ ${resolved_config_present[$mode_key]+present} ]] && mode_state=present
+        [[ ${resolved_config_present[$toolchain_key]+present} ]] && toolchain_state=present
         [[ $verification_ineligible_reason != not-declared ]] || missing="AGENT_CMD_$upper"
         [[ $verification_ineligible_reason != mode-not-local ]] || { missing="AGENT_VERIFY_${upper}_MODE=local"; [[ -n $verification_tools ]] || missing+=",AGENT_VERIFY_${upper}_TOOLCHAIN"; }
         [[ $verification_ineligible_reason != no-toolchain ]] || missing="AGENT_VERIFY_${upper}_TOOLCHAIN"
-        die "verification capability unavailable: reason=$verification_ineligible_reason missing=$missing choices=$choice"
+        die "verification capability unavailable: reason=$verification_ineligible_reason missing=$missing declarations=mode-$mode_state,toolchain-$toolchain_state choices=$choice"
     fi
     [[ $command_kind == generic && $work_dir == "$git_top" && ${#verification_paths[@]} == 1 && ${verification_paths[0]} == . ]] ||
         die "verification capability unavailable: reason=scope-not-full-checkout missing=none choices=$choice"
@@ -1922,7 +1982,7 @@ printf '  if this call returns before "=== agent-run exited", the run is still g
     "$0" "$log_file" >&2
 
 # The closing marker distinguishes completed logs; exclude bookkeeping lines.
-readonly LOG_HEADER_LINES=2
+readonly LOG_HEADER_LINES=3
 log_head=none log_clean=no
 [[ -z $git_top ]] || log_head=$(git -C "$git_top" rev-parse --verify -q HEAD 2> /dev/null) || log_head=none
 git_worktree_status() {
@@ -1937,6 +1997,8 @@ fi
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || printf 'unknown')" "$$" \
         "$process_start" "$(epoch_seconds)" "$work_dir" "$concurrent_suites" \
         "$log_head" "$log_clean"
+    printf '=== execution-v1 command=%s key=%s scope=%s\n' \
+        "${cmd_name:-literal}" "${execution_key:-none}" "$([[ -z $focus_opt ]] && printf full || printf focused)"
 } > "$log_file"
 
 started_at=$SECONDS
@@ -2007,6 +2069,7 @@ if ! publish_log_sha256_receipt; then
     receipt_failure=yes log_sha256=unavailable log_sha256_receipt=unavailable
     printf 'agent-run: WARNING: final log digest receipt unavailable; command status preserved\n' >&2
 fi
+complete_native_execution
 complete_verification
 
 if ((rc == 0)); then

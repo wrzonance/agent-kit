@@ -648,6 +648,19 @@ if ((validate_only)); then
         ((.protectedPathAcknowledgement | type) == "array" and
           (.protectedPathAcknowledgement | length) > 0 and
           all(.protectedPathAcknowledgement[]; path));
+      def join_fields:
+        if (has("expectedPredecessors") or has("integrationBaseSha")) | not then true
+        else
+          .issue as $issue |
+          has("expectedPredecessors") and has("integrationBaseSha") and
+          ((.expectedPredecessors | type) == "array") and
+          all(.expectedPredecessors[]; uint) and
+          ((.expectedPredecessors | unique | length) == (.expectedPredecessors | length)) and
+          ((.expectedPredecessors | index($issue)) == null) and
+          ((.integrationBaseSha == null) or
+            ((.integrationBaseSha | type) == "string" and
+              (.integrationBaseSha | test("^[0-9a-f]{40}$"))))
+        end;
       def issue_set_or_count:
         (type == "number" and . >= 0 and floor == .) or
         (type == "array" and all(.[]; uint) and (map(.) | unique | length) == length);
@@ -674,7 +687,7 @@ if ((validate_only)); then
         ((.predictedWriteSet | type) == "array" and
           (.predictedWriteSet | length) > 0) and
         all(.predictedWriteSet[]; path) and
-        work_shape and test_root_exclusions and protected_path_acknowledgement) and
+        work_shape and test_root_exclusions and protected_path_acknowledgement and join_fields) and
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and
@@ -693,6 +706,7 @@ if ((validate_only)); then
     declare -a missing_issue_order=()
     declare -A missing_companions_by_issue=()
     declare -a companion_issue_order=()
+    declare -a protected_entries=()
 
     # --- protected-path collision check: runs unconditionally, independent
     # of --chain-base, because it is pure pattern matching over the plan's
@@ -715,43 +729,28 @@ if ((validate_only)); then
         IFS=',' read -r -a protected_extra <<< "$protected_declared"
         protected_patterns+=("${protected_extra[@]}")
     fi
-    # predictedWriteSet/protectedPathAcknowledgement entries are schema-valid
-    # repo-relative paths but may still contain a comma (the `path` predicate
+    # predictedWriteSet entries are schema-valid repo-relative paths but may
+    # still contain a comma (the `path` predicate
     # never forbids one). A plain comma-joined TSV field would silently split
     # "safe,dir/x" into two phantom patterns, so each element travels
     # base64-encoded (a comma cannot occur in base64 output) and is decoded
     # per-element on the bash side -- a genuinely lossless transfer.
-    while IFS=$'\t' read -r issue patterns_b64 acknowledged_b64; do
-        declare -a prediction_patterns_b64=() acknowledged_patterns_b64=()
+    while IFS=$'\t' read -r issue patterns_b64; do
+        declare -a prediction_patterns_b64=()
         IFS=',' read -ra prediction_patterns_b64 <<< "$patterns_b64"
-        IFS=',' read -ra acknowledged_patterns_b64 <<< "${acknowledged_b64:-}"
         declare -a prediction_patterns=()
         for encoded in "${prediction_patterns_b64[@]}"; do
             [[ -n $encoded ]] || continue
             prediction_patterns+=("$(base64 -d <<< "$encoded")")
         done
-        declare -a acknowledged_patterns=()
-        for encoded in "${acknowledged_patterns_b64[@]}"; do
-            [[ -n $encoded ]] || continue
-            acknowledged_patterns+=("$(base64 -d <<< "$encoded")")
-        done
         for pattern in "${prediction_patterns[@]}"; do
-            collision=$(protected_write_set_collision "$pattern" "${protected_patterns[@]}") || continue
-            is_acknowledged=0
-            for acked in "${acknowledged_patterns[@]}"; do
-                [[ -n $acked && $acked == "$pattern" ]] || continue
-                is_acknowledged=1
-                break
-            done
-            ((is_acknowledged)) && continue
-            violation_lines+=("issue #$issue predictedWriteSet path collides with a protected pattern: $pattern (matches $collision); drop it from the write set, route it through an operator step, or add \"$pattern\" to protectedPathAcknowledgement to accept the collision explicitly")
+            protected_write_set_collision "$pattern" "${protected_patterns[@]}" >/dev/null || continue
+            protected_entries+=("issue#$issue:$pattern")
         done
     done < <(jq -r '
-      (.protectedPathAcknowledgement // []) as $planAcknowledgement |
       .entries[] | [
         .issue,
-        (.predictedWriteSet | map(@base64) | join(",")),
-        (((.protectedPathAcknowledgement // []) + $planAcknowledgement) | map(@base64) | join(","))
+        (.predictedWriteSet | map(@base64) | join(","))
       ] | @tsv
     ' "$dispatch_plan")
 
@@ -840,12 +839,6 @@ if ((validate_only)); then
         ' "$dispatch_plan")
     fi
 
-    # Protected-path collisions are never auto-fixable (dropping, splitting to
-    # an operator step, or acknowledging is a human decision), so they are
-    # reported alongside any test-root violations but excluded from the
-    # missing-test-root remedy/--fix machinery below, which understands
-    # testRootExclusions patches and predictedWriteSet manifest-companion
-    # patches.
     if ((${#violation_lines[@]})); then
         for violation in "${violation_lines[@]}"; do
             printf '%s: %s\n' "$PROGRAM" "$violation" >&2
@@ -924,8 +917,12 @@ if ((validate_only)); then
     create_summary=none
     ((${#create_entries[@]} == 0)) ||
         create_summary=$(printf '%s\n' "${create_entries[@]}" | LC_ALL=C sort -u | paste -sd, -)
-    printf 'dispatch-plan=%s schemaVersion=1 valid create=%s\n' \
-        "$dispatch_plan" "$create_summary"
+    protected_summary=''
+    ((${#protected_entries[@]} == 0)) ||
+        protected_summary=$(printf '%s\n' "${protected_entries[@]}" | LC_ALL=C sort -u | paste -sd, -)
+    printf 'dispatch-plan=%s schemaVersion=1 valid create=%s protected=%s%s\n' \
+        "$dispatch_plan" "$create_summary" "${#protected_entries[@]}" \
+        "${protected_summary:+[$protected_summary]}"
     exit 0
 fi
 

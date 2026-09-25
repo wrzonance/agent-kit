@@ -1676,8 +1676,8 @@ assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
 assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
     'a comment request failure after valid partial JSON cannot be masked by jq'
 
-# Issue #707: disclose absent CI on stacked target branches.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 17850 ]] && printf yes || printf no)" 'chains reference stays at or under 17850 bytes'
+# Issue #910: document complete join assembly and the automatic conflict handoff.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18526 ]] && printf yes || printf no)" 'chains reference stays at or under 18526 bytes'
 
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4091 ]] && printf yes || printf no)" \
     'trust-and-fencing reference stays at or under 4091 bytes (issue #731 local reuse contract)'

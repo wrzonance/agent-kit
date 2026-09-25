@@ -9,6 +9,8 @@ readonly SCRIPT_DIR
 source "$SCRIPT_DIR/../../.shared/scripts/lib/worktree-setup.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../../.shared/scripts/lib/contract-cache.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/join-base.sh"
 
 WORKTREE_SETUP_PROGNAME=$PROGNAME
 REPO_ROOT=''
@@ -16,12 +18,14 @@ ISSUE=''
 BASE=''
 CHAIN_BASE=''
 ACTIVATION_SESSION=''
+DISPATCH_PLAN=''
+RUN_ID=''
 RESUME=no
 
 usage() {
     cat <<'EOF'
 Usage: create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH [--chain-base SHA] [--activation-session ID]
-       create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH --resume
+       create-issue-worktree.sh --repo-root PATH --issue N --base BRANCH --dispatch-plan FILE --run-id ID [--resume]
 
 Create feat/issue-N below the configured AGENT_WORKTREE_ROOT (default
 .worktrees), starting at origin/BRANCH or the supplied full chain-base SHA.
@@ -86,6 +90,14 @@ parse_args() {
                 shift
                 ;;
             --activation-session) worktree_setup_require_value "$1" "${2:-}" || exit 1; ACTIVATION_SESSION=$2; shift 2 ;;
+            --dispatch-plan)
+                worktree_setup_require_value "$1" "${2:-}" || exit 1
+                [[ -z $DISPATCH_PLAN ]] || { worktree_setup_fail '--dispatch-plan given more than once'; exit 1; }
+                DISPATCH_PLAN=$2; shift 2 ;;
+            --run-id)
+                worktree_setup_require_value "$1" "${2:-}" || exit 1
+                [[ -z $RUN_ID ]] || { worktree_setup_fail '--run-id given more than once'; exit 1; }
+                RUN_ID=$2; shift 2 ;;
             --resume)
                 RESUME=yes
                 shift
@@ -178,7 +190,7 @@ main() {
     parse_args "$@"
     validate_args
 
-    local root config shared preflight worktree_root branch worktree start setup_declared
+    local root config shared preflight worktree_root branch worktree start setup_declared join_rc
     local root_contract
     local -a preflight_args
     root=$(worktree_setup_resolve_repo_root "$REPO_ROOT") || exit 1
@@ -189,7 +201,6 @@ main() {
     worktree_setup_validate_worktree_root "$worktree_root" || exit 1
     branch="feat/issue-$ISSUE"
     worktree="$root/$worktree_root/$branch"
-    start=${CHAIN_BASE:-origin/$BASE}
 
     if [[ -n $ACTIVATION_SESSION ]]; then
         "$shared/workflow-activation.sh" check --repo-root "$root" \
@@ -201,6 +212,8 @@ main() {
         worktree_setup_fail 'could not fetch origin'
         exit 1
     }
+    join_plan_load "$root" "$shared/run-state.sh" || exit 1
+    start=$JOIN_START
     local resumable=no untracked=0 modified=0 state_counts worktree_registered=no
     if worktree_registered_for_branch "$root" "$worktree" "$branch"; then
         worktree_registered=yes
@@ -268,7 +281,7 @@ main() {
                     exit 1
                 }
             fi
-        else
+        elif ((JOIN_ENABLED == 0)); then
             git -C "$worktree" push --set-upstream origin "$branch" || {
                 worktree_setup_fail "could not push origin/$branch during resume"
                 exit 1
@@ -295,10 +308,12 @@ main() {
                 exit 1
             }
         done
-        git -C "$worktree" push --set-upstream origin "$branch" || {
-            worktree_setup_fail "could not create remote branch origin/$branch"
-            exit 1
-        }
+        if ((JOIN_ENABLED == 0)); then
+            git -C "$worktree" push --set-upstream origin "$branch" || {
+                worktree_setup_fail "could not create remote branch origin/$branch"
+                exit 1
+            }
+        fi
     fi
     worktree_setup_ensure_exclude "$root" '.agent/*' || exit 1
     worktree_setup_propagate_config "$root" "$worktree" || exit 1
@@ -315,6 +330,11 @@ main() {
         worktree_setup_fail "preflight failed in $worktree"
         exit 1
     }
+    if ((JOIN_ENABLED)); then
+        join_rc=0
+        join_assemble "$worktree" "$branch" || join_rc=$?
+        ((join_rc == 0)) || exit "$join_rc"
+    fi
     setup_declared=$("$config" --repo-root "$worktree" --get AGENT_CMD_SETUP 2>/dev/null) || setup_declared=''
     worktree_setup_declared_setup "$config" "$shared/agent-run.sh" "$worktree" || {
         worktree_setup_fail "setup failed in $worktree"

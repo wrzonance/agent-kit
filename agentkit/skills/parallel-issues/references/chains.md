@@ -48,25 +48,38 @@ members by issue number and fall back to the ordinary drop/ask handling for exac
 issues — the rest of the chain plan is unaffected.
 
 **A join is scheduled, not dropped.** If an issue has more than one predecessor in the graph
-(C blocked by both A and B), there is no single predecessor SHA to start from — but that is
-a sequencing fact, not a reason to lose the issue from the run. Defer C until every
-predecessor's commit is pushed, then build its start point by merging those pushed commits
-down: create C's branch from the first predecessor's SHA, then for each remaining
-predecessor's SHA in turn run `git merge --no-ff` (inspect with `--no-commit` first when
-caution is warranted, but **commit each merge before starting the next** — one pending
-merge blocks another, and an uncommitted merge has no SHA). The final integration commit's
-full 40-character SHA is C's `chain_base_sha`. Push that integration commit to
-`origin/feat/issue-C` before C's lead is dispatched: `create-issue-worktree.sh` pushes a
-branch exactly once, at creation, from whichever single SHA it started at, and never
-re-pushes a merge commit added afterward. A join's dispatch gate is therefore two-part —
-**predecessors pushed AND join base pushed** — an unpushed join base exists only in this
-session's local git objects, and a torn-down session or pruned worktree can lose it before
-anyone else reads it (see "Publishing a locally-built chain base" below). A conflict at any
-step parks exactly C by
-name for human resolution — never pick one predecessor and silently drop the other's
-commits, and never invent a merge base by hand.
-Report the join, its predecessors, and the merged base in the chain plan so a five-issue set
-dispatches five issues. Chains respect a hard depth cap of 4 concurrent successor links. The
+(C blocked by both A and B), record their issue IDs in deterministic merge order as C's
+`expectedPredecessors`. Report the join in the chain plan so a five-issue set dispatches five
+issues. The set comes from the saved plan, never the supplied `--chain-base` operand.
+
+Each accepted pushed worker result records its first publication once at
+`initialPublications.<issue> = {attempt,branch,headSha}`. Review fixes may advance the
+published branch, so assembly proves that immutable `headSha` is reachable from the branch;
+it does not require the branch tip still equal the initial SHA. Once every planned record is
+available, call `create-issue-worktree.sh` with the saved `--dispatch-plan` and bound
+`--run-id`. It creates or resumes C's sole-writer worktree, merges each missing initial SHA
+in plan order, commits one merge before starting the next, and stores partial progress under
+`joins.C`. A supplied preassembled base succeeds only when ancestry proves it contains the
+whole expected set.
+
+After the last merge, setup pushes C's branch, proves the remote tip equals the combined
+head and every initial SHA is its ancestor, writes that SHA to C's `integrationBaseSha`, and
+only then returns the worktree for implementation dispatch. An earlier single-parent push is
+resumable progress, not a complete join. `publicationTarget` remains the PR target and never
+stands in for `integrationBaseSha`.
+
+If Git leaves an active conflicted merge, setup exits 3 with the exact predecessor and
+worktree. The root automatically dispatches a **resolution-only worker** as that worktree's
+same named active sole writer; there is no operator checkpoint and no second registry. The
+worker compares both complete blobs and intended behaviors, combines independent changes,
+runs the combined-code checks, and commits through the protected-path grant flow. The root
+then repeats setup with `--resume`; ancestry skips completed inputs and prevents duplicate
+merges or implementation dispatch. If resolution or validation fails, preserve the worker's
+BLOCKED handback and run
+`$agentkit/.shared/scripts/validate-handback.sh --classify-completion` with
+`partial-blockers.list`; keep C queued while independent issues continue.
+
+Chains respect a hard depth cap of 4 concurrent successor links. The
 cap limits how many links may be in flight; it does not limit chain membership; a successor
 that would extend the in-flight depth enters the same refill queue as slot-cap overflow, with
 `queued=N[#...]` accounting, and is dispatched from its predecessor's pushed SHA as soon as a
@@ -75,9 +88,9 @@ chain.
 
 ## Publishing a locally-built chain base
 
-`create-issue-worktree.sh` pushes a branch exactly once, at creation; any merge commit added
-afterward (a join's integration commit, or a successor's merge-down of an advanced predecessor) is
-invisible to `origin` until pushed — a linear chain is not protected from this just because it only had one predecessor.
+Every locally-built base must be explicitly published before dispatch. Join-aware
+`create-issue-worktree.sh` performs and proves that publication itself; a later successor
+merge-down still needs its own push; a linear chain is not protected from this just because it only had one predecessor.
 Push before handing a commit to a successor's worktree creation or to review; a worker's interim
 verification needs no push, since `agent-run.sh` runs against what is on disk.
 

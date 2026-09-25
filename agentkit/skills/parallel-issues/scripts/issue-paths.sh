@@ -47,17 +47,6 @@ else
     body=$(jq -er '.body | strings' <<<"$issue_json") || die "issue #$issue has no body"
 fi
 
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could not resolve script directory'
-protected_lib=$script_dir/../../.shared/scripts/lib/protected-paths.sh
-[[ -f $protected_lib && ! -L $protected_lib ]] || die 'protected-path policy is unavailable'
-# shellcheck source=../../.shared/scripts/lib/protected-paths.sh
-source "$protected_lib"
-declared_protected=''
-config_reader=$script_dir/../../.shared/scripts/repo-config.sh
-if [[ -x $config_reader ]]; then
-    declared_protected=$("$config_reader" --repo-root "$repo_root" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
-fi
-
 tree_listing=$(mktemp) || die 'could not create repository tree buffer'
 trap 'rm -f -- "$tree_listing"' EXIT HUP INT TERM
 git -C "$repo_root" ls-tree -rz 'HEAD^{tree}' >"$tree_listing" ||
@@ -89,7 +78,7 @@ candidate_is_safe() {
         prefix=${prefix:+$prefix/}$segment
         [[ -z ${symlinks[$prefix]+yes} ]] || return 1
     done
-    ! shared_protected_pattern "$candidate" '' "$declared_protected" 0 >/dev/null
+    return 0
 }
 
 classify() {

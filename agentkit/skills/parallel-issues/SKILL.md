@@ -193,7 +193,7 @@ Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command
 | Line | What to do with it |
 |---|---|
 | `repo=` / `base=` | Step 1 reads `repo.slug`/`base.branch` from the contract and stops on `none`. |
-| `protected= patterns=` | Check every planned write set, and every accepted review finding's target path, against this before dispatching a worker. A collision means that worker structurally cannot land its own fix — hand it to the operator instead of spending a verification pass and only then hitting `$agentkit/.shared/scripts/worktree-commit.sh`'s refusal. |
+| `protected= patterns=` | Check every planned write set and accepted review finding against the repository's actual protected patterns. Keep collisions selected: dispatch permitted preparation in their isolated worktrees, continue unrelated work, and keep dependents queued until `$agentkit/.shared/scripts/worktree-commit.sh` publishes an approved commit. |
 | `gh= … project-scope=no` | Fleet: verify the App's `Projects: write`; OAuth: refresh `project` with `gh auth refresh -s project`; never use a human-token fallback. |
 | `git= … writable=no` | The first write needs elevated filesystem permission — the same condition `worktree-commit.sh` reports as exit 2. |
 | `caches=` / `tls=` | `agent-run.sh` exports exactly these values. Nobody exports them by hand, ever. |
@@ -368,12 +368,26 @@ base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_roo
 # A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
-setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session")
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session" \
+  --dispatch-plan "$dispatch_plan" --run-id "$RUN_ID")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
-"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
+setup_rc=0
+"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}" || setup_rc=$?
+((setup_rc == 0)) || exit "$setup_rc"
 ```
 
 The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
+
+Exit 3 with `join-conflict ... next=resolution-worker-then-resume` is an automatic
+continuation, not an operator checkpoint. Dispatch a resolution-only worker as the named
+active sole writer in that same worktree. It verifies `MERGE_HEAD`, compares both complete
+blobs and predecessor intent, combines independent behavior, runs the affected declared
+checks, and commits through `worktree-commit.sh`; it must not start issue implementation.
+Then rerun the same setup arguments with `--resume`. A failed resolver returns the existing
+structured BLOCKED handback; classify it with
+`$agentkit/.shared/scripts/validate-handback.sh --classify-completion`,
+preserve `partial-blockers.list`, keep this issue queued, and continue independent work.
+Only `setup_rc=0` with the printed `join-base=` may proceed to implementation dispatch.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 

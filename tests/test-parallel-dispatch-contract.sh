@@ -379,6 +379,8 @@ assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
 assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
     'worktree recipe parameterizes its start point'
+assert_contains "$text" '--dispatch-plan "$dispatch_plan" --run-id "$RUN_ID"' \
+    'worktree setup consumes the saved expected set and accepted publications'
 assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
     'chain successors gate on the pushed commit, not root publication'
 assert_not_contains "$normalized_text" 'only after the root has validated, committed, and pushed' \
@@ -391,10 +393,16 @@ assert_contains "$normalized_chains_text" 'A join is scheduled, not dropped' \
     'a multi-predecessor join is scheduled instead of dropped'
 assert_contains "$normalized_chains_text" 'a five-issue set dispatches five issues' \
     'join scheduling keeps every selected issue dispatched'
-assert_contains "$normalized_chains_text" 'Push that integration commit to' \
-    'the join recipe pushes the merged base before dispatch'
-assert_contains "$normalized_chains_text" 'predecessors pushed AND join base pushed' \
-    "a join's dispatch gate is stated as two-part"
+assert_contains "$normalized_chains_text" 'initialPublications.<issue>' \
+    'join assembly consumes immutable accepted worker publications'
+assert_contains "$normalized_chains_text" 'expectedPredecessors' \
+    'the saved plan remains authoritative for the complete predecessor set'
+assert_contains "$normalized_chains_text" 'integrationBaseSha' \
+    'join publication records the exact complete integration base'
+assert_contains "$normalized_chains_text" 'resolution-only worker' \
+    'a merge conflict automatically routes to the sole-writer resolution worker'
+assert_contains "$normalized_chains_text" 'validate-handback.sh --classify-completion' \
+    'failed automatic conflict resolution uses the existing blocker lifecycle'
 assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base' \
     'chains reference documents the general pushed-base requirement'
 assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
@@ -417,6 +425,12 @@ assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'expectedPredecessors' \
+    'dispatch-plan entries pin the ordered complete predecessor set'
+assert_contains "$triage_and_selection_text" 'integrationBaseSha' \
+    'dispatch-plan entries separate join integration identity from PR targeting'
+assert_contains "$triage_and_selection_text" 'publicationTarget' \
+    'dispatch-plan entries preserve the single PR publication target'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
 assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
@@ -1926,8 +1940,13 @@ prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
 # session, ledger, and explicit rebind operands; 20 lines keep those boundaries visible.
-assert_eq yes "$([[ $prose_lines -le 2249 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+# #911 adds the protected preparation/approval/resume contract at the worker
+# and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
+# #910 adds the complete join/resolution recipe that prevents partial-base
+# dispatch and repeated recovery turns; ratchet the exact combined boundary.
+# #914 integration preserves both complete source contracts.
+assert_eq yes "$([[ $prose_lines -le 2323 ]] && printf yes || printf no)" \
+    'issue #914 prose files stay below their combined workflow line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

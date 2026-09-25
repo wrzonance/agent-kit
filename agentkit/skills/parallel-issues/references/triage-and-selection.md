@@ -287,6 +287,9 @@ conflict analysis. The plan uses this schema:
   "entries": [
     {
       "issue": 167,
+      "publicationTarget": "feat/issue-164",
+      "expectedPredecessors": [164, 166],
+      "integrationBaseSha": null,
       "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"],
       "workerEffort": "xhigh",
       "effortReason": "novel cache-ownership rewrite; three prior attempts failed",
@@ -294,6 +297,9 @@ conflict analysis. The plan uses this schema:
     },
     {
       "issue": 172,
+      "publicationTarget": "main",
+      "expectedPredecessors": [],
+      "integrationBaseSha": null,
       "predictedWriteSet": ["docs/research/**"],
       "workShape": "no-code",
       "holdReason": "issue body: 'do not open a pull request for this analysis'"
@@ -306,16 +312,20 @@ conflict analysis. The plan uses this schema:
 }
 ```
 
-The dispatch-time artifact stays at schema version 1 while PR numbers and
-pushed heads do not exist. Immediately after atomically persisting it, run
-`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`;
-the dispatch must not begin unless the helper prints `schemaVersion=1 valid`. The validator resolves
-every glob against the chain-base tree (a glob matching nothing fails closed and names the nearest
-sibling) and derives each project test root from that tree's declared `AGENT_RUNDIR_*_TEST*`/
-`AGENT_CMD_*_TEST*` commands — declaration-driven only, never from a directory merely named
-`test`. Each proposed root must be inside `predictedWriteSet` or listed in `testRootExclusions` (per entry, or once at
-the top level for the whole plan). One invocation reports every violation with a copy-pasteable `jq`
-patch; `--fix` applies them.
+`expectedPredecessors` is the complete ordered set of issue IDs derived from
+the dependency plan; a caller-supplied `--chain-base` never replaces or narrows it.
+`integrationBaseSha` starts null and setup replaces it with the published join head
+only after every predecessor's immutable initial publication is proven reachable.
+`publicationTarget` is the PR's single target branch and remains separate: targeting
+one predecessor branch is not evidence that a multi-input join contains the others.
+The schema-2 upgrade preserves all three entry fields unchanged.
+
+The dispatch artifact stays at schema 1 until PR numbers and pushed heads exist. Persist it atomically,
+then run `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`; dispatch requires `schemaVersion=1 valid`.
+The validator resolves globs and declared test roots against the chain-base tree, requiring each root
+in `predictedWriteSet` or `testRootExclusions`; it reports all violations and `--fix` remedies. Its
+`protected=N[...]` summary is a publication-boundary disclosure: keep those entries for preparation,
+continue unrelated work, and queue dependents until the approved commit is pushed.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

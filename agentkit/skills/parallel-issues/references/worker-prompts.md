@@ -6,6 +6,7 @@
 - [PR-loop setup worker prompt](#pr-loop-setup-worker-prompt) — read-only state, CI, Code Quality, and materiality triage before any fix batch
 - [Draft PR body template](#draft-pr-body-template) — root-owned recipe read at publication time, after a worker's pushed completion report
 - [Diff-size disclosure](#diff-size-disclosure) — the unattended default for an over-guideline packet: disclose in the PR body, never park the draft
+- [Join-resolution worker prompt](#join-resolution-worker-prompt) — resolve one preserved join merge, validate, commit, and return to setup resume
 - [PR-fix-batch worker prompt](#pr-fix-batch-worker-prompt) — pasted verbatim when dispatching a Phase 3 mechanical fix-batch worker with accepted findings
 
 Read only the setup, fix-batch, or publication section in use. The implementation-worker prompt
@@ -55,7 +56,7 @@ Root invokes `worker-result.sh validate --result FILE --dispatch-plan FILE --own
 --state RUN_STATE_JSON --run-id ID --attempt ID --worker-id ID --issue N --worktree PATH
 --base-sha SHA --required-check test` (repeat `--required-check` for all declared obligations).
 For initial acceptance, supply `--log-sha256 test=SHA256` from an independently delivered terminal `agent-run-summary` line; repeat for each command. The sibling `<verification.log>.sha256` file is worker-writable integrity data, never an independent trust pin.
-Root makes zero blocking calls spanning the verification run: collect the completed terminal record once after worker completion. If root cannot independently observe that runner output, omit the digest and keep verification unknown.
+Root makes zero blocking calls spanning the worker's verification run: collect the completed terminal record once after worker completion. If that proof is missing or incomplete, validation durably records and performs one native recovery for the required check and candidate head; resume cannot grant another attempt.
 Never hash a worker's retained log at handback or accept a digest from worker JSON, narration, or sidecar.
 Every expected identity/path/check comes from root dispatch, never from the result. `--owners`
 is the repository's existing `active-workers.ndjson`; `--state` is its run's `run-state.json`.
@@ -79,9 +80,8 @@ commands, final successful logs and root-held original digest pins. Pins persist
 result receipt through rejected/unknown handbacks. A conflicting supplied digest cannot replace
 a pin for the same command/fingerprint/log path. Missing or modified pinned logs invalidate that
 execution, even if later restored; acceptance needs a newly observed execution/log identity.
-Missing initial pins, focused, precommit, scoped or unsupported durable records stay
-unknown; a marker alone is insufficient. A native text fallback also stays unknown until root can
-collect real evidence. Existing `validate-handback.sh` publication-command argv validation is unchanged.
+When local-cache declarations are absent, a runner-owned native record binds the resolved command inputs, clean worktree, committed head, full scope, exit status, log and digest. Valid native proof is
+reported as `evidence=native-log`; no cache eligibility is implied. Focused, wrong-command, stale-head, failed, interrupted or altered proof never establishes success. Existing `validate-handback.sh` publication-command argv validation is unchanged.
 
 ## Throwaway waiter prompt
 
@@ -413,6 +413,51 @@ banner and closing attribution as the PR template:
 "$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file" \
   --title "$issue_title"
 "$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"
+```
+
+## Join-resolution worker prompt
+
+```text
+__LEAF_ROLE__
+
+You are the resolution-only worker for join issue #NNN. Resolve the one preserved
+merge in this assigned worktree, validate the combined behavior, commit it, and stop.
+Do not push and do not implement issue #NNN; the root resumes join setup after you return.
+
+Worktree: FULL_PATH
+Branch: feat/issue-NNN
+Worker effort: __WORKER_EFFORT__
+
+## Environment contract
+
+Use the existing `.agent/env-contract.txt` and its authoritative `instructions=` line.
+Stay inside this worktree. You are its sole writer and may not spawn another agent.
+
+## Commands and scope
+
+worktree=FULL_PATH
+shared=<PASTE the validated shared-scripts path from the contract>
+__DECLARED_COMMANDS__
+__VERIFY_RUNBOOK__
+__DECLARED_REPAIR_SCOPE__
+__BLOCKER_CONTRACT__
+
+1. Confirm the supplied branch and require an active merge:
+   `git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1`; absence is BLOCKED.
+2. List every unmerged path. For each path, compare every complete stage-2 and stage-3 blob
+   (`git show :2:PATH` and `git show :3:PATH`) and inspect the
+   relevant committed predecessor intent. Never choose `ours` or `theirs` blindly.
+   Combine all independent intended behavior and stage only the declared repair scope.
+3. Run the affected focused checks, then the composed declared check through
+   `agent-run.sh`. A failed or unavailable check leaves `MERGE_HEAD` and the resolved
+   worktree intact and returns BLOCKED; it never permits a commit or implementation.
+4. Read `merge_head=$(git rev-parse MERGE_HEAD)`, collect the staged paths, and commit
+   through `worktree-commit.sh --include-staged --allow-base-inherited "$merge_head"
+   --yolo`. When the leaf contract supplied `ledger`, `run_id`, and `ledger_scope`, pass
+   that exact trio so a prepared protected-tree grant remains authoritative.
+5. Return exactly `join-resolution=committed head=FULL_SHA`; do not push. The root
+   reruns `create-issue-worktree.sh ... --resume`, which proves ancestry, publishes the
+   complete base, records `integrationBaseSha`, and only then dispatches implementation.
 ```
 
 ## PR-fix-batch worker prompt

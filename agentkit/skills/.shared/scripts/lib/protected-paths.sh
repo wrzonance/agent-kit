@@ -30,6 +30,20 @@ readonly SHARED_CI_WORKFLOW_PATTERNS=(
     'Jenkinsfile'
 )
 
+# A concrete protected commit is approved by its complete staged tree, not by
+# path names alone. The fixed decision token prevents callers from substituting
+# a broader decision; the scope binds unchanged bytes across resume.
+# shellcheck disable=SC2034  # public constant consumed by sourcing commit helpers
+readonly SHARED_PROTECTED_COMMIT_DECISION='authorize:protected-commit'
+readonly SHARED_PROTECTED_SCOPE_PREFIX='protected-tree:'
+
+shared_protected_commit_scope() {
+    local base=$1 tree=$2
+    [[ $base =~ ^[0-9a-f]{40}$ || $base =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ $tree =~ ^[0-9a-f]{40}$ || $tree =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s%s:%s' "$SHARED_PROTECTED_SCOPE_PREFIX" "$base" "$tree"
+}
+
 # CANDIDATE against each remaining PATTERN argument, in NESTED mode. Prints
 # the first match and returns 0, or returns 1. Shared by shared_protected_pattern
 # and shared_ci_workflow_pattern so the two never drift on how a pattern matches.

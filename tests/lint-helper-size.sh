@@ -35,13 +35,15 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
+    # #905: retain native execution identity, terminal records, and cache-declaration provenance.
+    [skills/.shared/scripts/agent-run.sh]="2094:22851:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
-    [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
+    # #911: exact staged-tree ledger grants authorize prepared protected commits.
+    [skills/.shared/scripts/worktree-commit.sh]="879:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
@@ -228,7 +230,11 @@ readonly MAX_HELPER_TOKENS=10000
 # #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
 # #906 review: complete next-action help and inventory-safe dispatch.
-readonly MAX_TREE_TOKENS=483040
+# #905: native-log validation and one durable missing-evidence recovery add measured helper code.
+# #911: exact staged-tree authorization plus protected-path preparation handback.
+# #910: complete resumable join assembly and resolution-worker composition.
+# #914 integration: #906 and #910 combined helper tree; exact measurement.
+readonly MAX_TREE_TOKENS=490043
 
 violations=0
 checked=0

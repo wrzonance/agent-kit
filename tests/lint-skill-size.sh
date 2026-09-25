@@ -51,7 +51,9 @@ declare -A KNOWN_OVERSIZE=(
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
     # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
-    [parallel-issues]="782:16913:500"
+    # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
+    # #914 integration: preserve the #907 rebind and #910 join contracts; exact measurement.
+    [parallel-issues]="795:17145:500"
 )
 
 readonly MAX_BODY_LINES=500

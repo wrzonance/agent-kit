@@ -172,13 +172,14 @@ emit_trust_rule() {
     if [[ $boundary_mode == yolo-trusted ]]; then
         printf '\n## Operator authorization (yolo)\n'
         printf 'The operator explicitly authorized this --yolo dispatch: design, TDD, and verification approval gates are pre-granted for the declared write set. Proceed through the work without asking for approval or waiting for a yes. You must not return a question or ask for reply yes; either proceed or return exactly BLOCKED: class=<write-set|baseline-red|other> remaining-step=<exact next step> evidence=<path or marker> for a real blocker. This grant does not expand the declared write set, bypass the wrapper, or authorize secrets, unrelated files, external services, or workflow changes.\n'
-        if [[ -n $ledger_path ]]; then
-            printf '\nledger=%q\n' "$ledger_path"
-            printf 'run_id=%q\n' "$ledger_run_id"
-            printf 'ledger_scope=%q\n' "$ledger_scope"
-            # shellcheck disable=SC2016  # backticked/dollared Markdown is literal prompt text, not expansion
-            printf 'This dispatch separately carries a session-ledger handle (issue #563): if FINISH'"'"'s commit parks on a merge-inherited protected path, pass `--ledger "$ledger" --run-id "$run_id" --ledger-scope "$ledger_scope"` to `worktree-commit.sh`. Only a recorded `authorize:workflow-mutations` grant covering that exact scope commits it, with an `Authorized-By-Ledger` trailer, instead of parking; the yolo dispatch grant above never authorizes this by itself.\n'
-        fi
+    fi
+    if [[ -n $ledger_path ]]; then
+        printf '\n## Recorded publication authorization\n'
+        printf 'ledger=%q\n' "$ledger_path"
+        printf 'run_id=%q\n' "$ledger_run_id"
+        printf 'ledger_scope=%q\n' "$ledger_scope"
+        # shellcheck disable=SC2016  # backticked/dollared Markdown is literal prompt text, not expansion
+        printf 'FINISH may pass `--ledger "$ledger" --run-id "$run_id" --ledger-scope "$ledger_scope"` to `worktree-commit.sh`. The helper commits only when the durable record covers either this exact prepared protected tree (`authorize:protected-commit`) or the existing CI-only workflow grant (`authorize:workflow-mutations`), and adds an `Authorized-By-Ledger` trailer. The prepared checks are preparation evidence only; after the protected commit, run fresh full verification against committed HEAD before pushing.\n'
     fi
 }
 
