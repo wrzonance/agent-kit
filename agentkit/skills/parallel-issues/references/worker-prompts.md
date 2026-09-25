@@ -308,8 +308,10 @@ CI and finding repair never replace launch eligibility. Preserve `ci=`, `ci-obse
 `icf-open:`, and `findings-observed=` lines while review, CI repair, and finding repair proceed
 independently. Return exactly `launch-ready`, including with pending/red CI or open Code Quality and
 issue-comment findings; unavailable classification remains visible as unavailable evidence. The
-final completion line is `launch-ready run-dir=$RUN_DIR`. The root may also dispatch `pr-fix-batch`
-only when its accepted ledger contains at least one in-diff finding.
+final completion line is `launch-ready run-dir=$RUN_DIR`. After root classification, write every
+accepted Code Quality or issue-comment record in the existing pr-fix format to `$RUN_DIR/accepted-findings.ndjson`; create it owner-only and explicitly empty only when none are accepted.
+Missing means unknown, never zero. Reuse this exact file for `pr-fix-batch`, replacing open records with validated fixed or declined evidence before final publication.
+The root may dispatch `pr-fix-batch` only when this ledger contains at least one in-diff finding.
 Zero in-diff findings are a successful setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because
 there is nothing to fix.

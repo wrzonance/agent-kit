@@ -386,6 +386,11 @@ fresh final-head CI is green, and every finding has validated repair or adjudica
 before draft-phase-complete handoff. The receipt keeps the original reviewed head/payload distinct
 from the final verified head in the attached `gh-pr-state` digest; never launch another reviewer
 after CI repair.
+Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
+format to `$RUN_DIR/accepted-findings.ndjson`. Write that owner-only file explicitly empty only after
+accepting none; missing or unreadable evidence remains unknown. Reuse the same file for repair and
+replace each open record with validated fixed or declined terminal evidence. Publication validates
+that ledger at the final verified head; raw untriaged thread counts do not create obligations.
 The receipt records cross-provider or blind fallback mode, P1/P2 counts, each confirmed finding,
 validated fix commit or decline rationale, and any verified-skip rationale.
 Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.

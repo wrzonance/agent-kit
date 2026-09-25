@@ -54,6 +54,8 @@ one-spend receipt, and posts it via gh-comment.sh's byte-verified transport; ref
 --require-pushed additionally requires a clean tree whose HEAD is reachable from origin/*.
 --pr-state-digest binds required green CI to the PR's current checkout HEAD/base, verifying the
 final head; every command declared in .agent/acceptance.txt must also have one passing record.
+Finalization also consumes accepted-findings.ndjson beside the findings ledger (or in RUN_DIR):
+an explicit empty ledger proves none were accepted; every accepted finding needs terminal evidence.
 
 The findings ledger is \$RUN_DIR/findings.ndjson (RUN_DIR: owned, non-symlink, mode 0700, as
 finding-ledger.sh requires) or --findings-file; one is required. One JSON record per line:
@@ -389,6 +391,7 @@ REMEDIATION=''
 PR_STATE_DIGEST=''
 FINAL_HEAD_SHA=''
 FINAL_CI_LINE=''
+FINAL_REPO_ROOT=''
 # Global, not local to cmd_publish: an EXIT trap fires after the function that
 # set it has returned, so a deferred '"$var"' expansion in the trap needs the
 # variable to still be in scope at that point.
@@ -676,6 +679,7 @@ validate_finalization_evidence() {
     [[ $digest_sha == "$current_head" ]] ||
         evidence_unavailable "finalization evidence head $digest_sha does not match current HEAD $current_head"
     FINAL_HEAD_SHA=$digest_sha
+    FINAL_REPO_ROOT=$root
 
     base_count=$(grep -cE '^base: ref=\S+ behind=[0-9]+ stale=no$' "$PR_STATE_DIGEST" || true)
     [[ $base_count == 1 ]] ||
@@ -711,6 +715,22 @@ validate_finalization_evidence() {
 
     [[ $(jq -r '.remediation // ""' <<<"$REMEDIATION") == complete ]] ||
         evidence_unavailable 'finalization evidence has unresolved adversarial findings'
+}
+
+validate_accepted_findings() {
+    local evidence_dir accepted_file accepted_status
+    # FINDINGS_FILE resolves to RUN_DIR/findings.ndjson on the normal path.
+    # Its existing explicit override keeps both ledgers together and preserves
+    # the override's ability to bypass a stale or inaccessible RUN_DIR.
+    evidence_dir=$(dirname -- "$FINDINGS_FILE")
+    accepted_file=$evidence_dir/accepted-findings.ndjson
+    [[ -f $accepted_file && ! -L $accepted_file && -O $accepted_file && -r $accepted_file ]] ||
+        evidence_unavailable "accepted findings evidence is not an owned readable regular file: $accepted_file"
+    accepted_status=$("$STACKED_CI_DIR/finding-ledger.sh" status --file "$accepted_file" \
+        --repo-root "$FINAL_REPO_ROOT" --head "$FINAL_HEAD_SHA") ||
+        evidence_unavailable 'accepted findings evidence is invalid or its terminal proof is stale'
+    [[ $(jq -r '.remediation // ""' <<<"$accepted_status") == complete ]] ||
+        evidence_unavailable 'accepted findings evidence has incomplete or unknown dispositions'
 }
 
 refuse_push() {
@@ -967,6 +987,7 @@ cmd_publish() {
     validate_runner_provenance
     ((REQUIRE_PUSHED == 0)) || require_pushed_state
     validate_finalization_evidence
+    validate_accepted_findings
     resolve_gh_comment_script
 
     local rc=0

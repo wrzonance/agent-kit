@@ -848,7 +848,7 @@ assert_eq nonzero "$([[ $empty_findings_rc != 0 ]] && printf nonzero || printf z
     'pr-fix-batch refuses an empty findings ledger'
 
 accepted_findings="$tmp/accepted-findings.ndjson"
-printf '%s\n' '{"title":"Use bounded wait","severity":"P2","verdict":"fixed","sha":"abcdef1"}' > "$accepted_findings"
+printf '%s\n' '{"schemaVersion":2,"title":"Use bounded wait","severity":"P2","verdict":"declined","rationale":"not a defect","evidence":{"finding":"Use bounded wait","decision":"rejected","rationale":"not a defect"}}' > "$accepted_findings"
 scopeless_fix_rc=0
 bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high --findings-file "$accepted_findings" \
@@ -870,6 +870,16 @@ assert_contains "$pr_fix_prompt" 'Root owns the immutable pre-dispatch snapshot 
     'pr-fix-batch assigns the snapshot and Collect duties to the root'
 assert_contains "$pr_fix_prompt" 'never call' \
     'pr-fix-batch keeps cross-write helper discovery out of leaf tasks'
+bare_fixed_findings="$tmp/bare-fixed-findings.ndjson"
+printf '%s\n' '{"title":"Unevidenced repair","severity":"P1","verdict":"fixed","sha":"abcdef1"}' \
+    >"$bare_fixed_findings"
+bare_fixed_rc=0
+bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
+    --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --write-set 'src/**' --findings-file "$bare_fixed_findings" \
+    >/dev/null 2>&1 || bare_fixed_rc=$?
+assert_eq nonzero "$([[ $bare_fixed_rc != 0 ]] && printf nonzero || printf zero)" \
+    'pr-fix-batch refuses a bare fixed finding without terminal evidence'
 printf '%s\n' '{"title":"Confirmed repair pending","severity":"P1","schemaVersion":2,"verdict":"open","rationale":"repair required"}' > "$accepted_findings"
 open_fix_prompt=$(bash "$compose" --template pr-fix-batch --worktree "$repo" --issue 136 \
     --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
@@ -878,6 +888,8 @@ assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
 assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
 assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
 assert_contains "$open_fix_prompt" 'never purchase another review' 'repair resume preserves the one-review budget'
+assert_contains "$setup_prompt" '$RUN_DIR/accepted-findings.ndjson' \
+    'setup contract canonicalizes root-accepted non-adversarial findings in RUN_DIR'
 assert_not_contains "$fix_prompt" '## Accepted findings' \
     'legacy fix-batch omits the accepted-findings section'
 

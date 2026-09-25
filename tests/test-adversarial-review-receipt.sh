@@ -46,6 +46,10 @@ assert_receipt_contract() {
     assert_contains "$section" '--require-pushed' "$label enforces pushed fixes at publication"
     assert_contains "$section" '--pr-state-digest' "$label binds publication to final-head CI evidence"
     assert_contains "$section" '--digest-out' "$label refreshes the final digest exactly at publication"
+    assert_contains "$section" '$RUN_DIR/accepted-findings.ndjson' \
+        "$label names the canonical accepted non-adversarial findings artifact"
+    assert_contains "$section" 'explicitly empty' \
+        "$label requires a positive zero-findings record"
     assert_contains "$normalized" 'after fixes are pushed' "$label orders receipt after fixes"
     assert_contains "$normalized" 'before draft-phase-complete handoff' "$label orders receipt before handoff"
 
@@ -238,7 +242,9 @@ prime_attempt "$valid_run_dir" 301
 # -- RUN_DIR-derived findings file resolves when --findings-file is omitted --
 
 : >"$valid_run_dir/findings.ndjson"
+: >"$valid_run_dir/accepted-findings.ndjson"
 chmod 600 -- "$valid_run_dir/findings.ndjson"
+chmod 600 -- "$valid_run_dir/accepted-findings.ndjson"
 reset_rd_not_spent
 rd_out=$(RUN_DIR="$valid_run_dir" run_rd_publish \
     --pr 301 --repo owner/repo --comments "$rd_not_spent" \
@@ -258,6 +264,8 @@ mkdir -p "$override_dir"
 chmod 600 "$override_dir" 2>/dev/null || true # deliberately not 0700; never consulted
 override_findings="$rd_tmp/override-findings.ndjson"
 : >"$override_findings"
+: >"$rd_tmp/accepted-findings.ndjson"
+chmod 600 -- "$rd_tmp/accepted-findings.ndjson"
 printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
     >"$rd_tmp/adversarial.result.json"
 chmod 600 -- "$rd_tmp/adversarial.result.json"

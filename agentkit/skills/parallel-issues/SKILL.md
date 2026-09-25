@@ -691,7 +691,11 @@ or the `verified-skip rationale` + oracle. The order is executable: the successf
 `$agentkit/review-remote-pr/scripts/adversarial-run.sh` result must precede `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`, and publication consumes only
 that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
 skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
-the pre-launch gate above, and the precheck must never fall through to a placeholder receipt:
+the pre-launch gate above, and the precheck must never fall through to a placeholder receipt.
+Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
+format to `$RUN_DIR/accepted-findings.ndjson`; create it explicitly empty only after accepting none.
+Reuse it for repair and terminal evidence. Missing, open, legacy-terminal, or stale evidence blocks
+publication, while raw untriaged thread counts remain non-gating:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.

@@ -54,6 +54,11 @@ if [[ -z $digest && -n $pr ]]; then
     chmod 600 -- "$digest"
     args+=(--pr-state-digest "$digest")
 fi
+accepted="$dir/accepted-findings.ndjson"
+if [[ -d $dir && ${RECEIPT_ACCEPTED_FIXTURE:-empty} == empty && ! -e $accepted ]]; then
+    : >"$accepted"
+    chmod 600 -- "$accepted"
+fi
 result="$dir/adversarial.result.json"
 if [[ $skip == 0 && -n $repo && -n $pr && -f $result && ! -L $result ]] &&
     jq -se 'length == 1 and .[0].status == "completed" and .[0].exitCode == 0' "$result" >/dev/null 2>&1; then
@@ -352,6 +357,52 @@ rendered_body() {
 }
 
 # -- publish: finalization requires fresh green evidence for the final head --
+
+accepted_findings="$tmp/accepted-findings.ndjson"
+rm -f -- "$accepted_findings"
+reset_not_spent
+reset_findings
+accepted_out=$(RECEIPT_ACCEPTED_FIXTURE=missing run_publish --pr 14 --repo owner/repo \
+    --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
+    --effort high --mode cross-provider --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses missing accepted-findings evidence'
+assert_contains "$accepted_out" 'accepted findings' \
+    'missing accepted-findings refusal names the required artifact'
+
+printf '%s\n' \
+    '{"schemaVersion":2,"title":"repair pending","severity":"P1","verdict":"open","rationale":"fix it"}' \
+    >"$accepted_findings"
+chmod 600 -- "$accepted_findings"
+reset_not_spent
+accepted_out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses an open accepted non-adversarial finding'
+assert_contains "$accepted_out" 'accepted findings' \
+    'open accepted-finding refusal names the incomplete artifact'
+
+printf '%s\n' \
+    '{"title":"legacy fix","severity":"P1","verdict":"fixed","sha":"abcdef1"}' \
+    >"$accepted_findings"
+reset_not_spent
+accepted_out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses a bare fixed accepted finding without terminal evidence'
+assert_contains "$accepted_out" 'accepted findings' \
+    'legacy accepted-finding refusal names the incomplete artifact'
+
+jq -cn '{schemaVersion:2,title:"not applicable",severity:"P2",verdict:"declined",
+    rationale:"not a defect",evidence:{finding:"not applicable",decision:"rejected",rationale:"not a defect"}}' \
+    >"$accepted_findings"
+accepted_comments="$tmp/accepted-terminal-comments.json"
+printf '%s\n' '[]' >"$accepted_comments"
+run_publish --pr 15 --repo owner/repo --issue-comments "$accepted_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' >/dev/null
+assert_eq 0 "$?" 'terminal evidence completes accepted non-adversarial findings'
+: >"$accepted_findings"
 
 for final_ci in pending failing; do
     : >"$tmp/gh.log"
@@ -1560,8 +1611,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 
 # Issue #902 composes the existing gh-pr-state and finding-ledger evidence at
 # publication so pending/red/stale final heads cannot claim draft completion.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1065 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 1065 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1086 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 1086 lines'
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'

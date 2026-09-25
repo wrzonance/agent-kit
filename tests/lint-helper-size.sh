@@ -74,8 +74,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/review-remote-pr/scripts/consent-record.sh]="911:10831:800"
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
-    # #902: compose final-head CI, acceptance, and remediation evidence before publication.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="1065:12395:800"
+    # #902: compose final-head CI, acceptance, and all finding evidence before publication.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="1086:12728:800"
     # #727: independently validated remediation and repair resume.
     # #873: cover states its preconditions and binds fix:<id> via finding-ledger ids.
     [skills/review-remote-pr/scripts/review-ledger.sh]="829:10284:800"
@@ -223,7 +223,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #902: executable final-head receipt gate; exact combined helper tree measurement.
-readonly MAX_TREE_TOKENS=480197
+# #902: validate the root-owned accepted findings ledger at finalization.
+readonly MAX_TREE_TOKENS=480601
 
 violations=0
 checked=0
