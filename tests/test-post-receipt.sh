@@ -1333,29 +1333,54 @@ printf 'repaired\n' >"$receipt_repo/repair.txt"
 git -C "$receipt_repo" add -- repair.txt
 git -C "$receipt_repo" -c user.name=test -c user.email=test@example.invalid commit -qm repaired
 repair_head=$(git -C "$receipt_repo" rev-parse HEAD)
-# #873: the head is read only when the attempt record exists (a verified skip has none).
-recipe=$(sed -n '/^ra=/p; /^rhs=/p' "$root/agentkit/skills/review-remote-pr/SKILL.md")
 postfix_comments="$tmp/postfix-unspent.json"
 printf '%s\n' '[]' >"$postfix_comments"
+stage="$root/agentkit/skills/parallel-issues/scripts/pr-stage.sh"
+stage_bin="$tmp/postfix-stage-bin"
+mkdir -p -- "$stage_bin"
+cat >"$stage_bin/run-dir" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '$tmp'
+EOF
+cat >"$stage_bin/gh-pr-state" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+digest=''; state_dir=''; pr=''
+while (($#)); do
+    case $1 in
+        --digest-out) digest=$2; shift 2 ;;
+        --tmpdir) state_dir=$2; shift 2 ;;
+        --pr) pr=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+mkdir -p -- "$state_dir"
+cp -- "$STAGE_COMMENTS" "$state_dir/pr_${pr}_issue_comments.json"
+head=$(git rev-parse HEAD)
+{
+    printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$head"
+    printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+    printf '%s\n' 'finding-classification: cq=known icf=known'
+} >"$digest"
+chmod 600 -- "$digest"
+EOF
+chmod +x -- "$stage_bin"/*
+# The finalizer consumes the original attempt and validates that the current
+# checkout is already pushed before handing publication to post-receipt.
+jq '.mode="cross-provider"' "$tmp/state/review-attempt.json" >"$tmp/state/review-attempt.next"
+mv -- "$tmp/state/review-attempt.next" "$tmp/state/review-attempt.json"
+git -C "$receipt_repo" update-ref refs/remotes/origin/fix/postfix "$repair_head"
 postfix_rc=0
-# The extracted canonical recipe reads these globals and assigns rhs via eval.
-# shellcheck disable=SC2034,SC2329,SC2154
 (
     cd "$receipt_repo" || exit 1
-    RUN_DIR=$(dirname "$findings_file")
-    REPO=owner/repo PR=900
-    gh() { printf '%s\n' "$repair_head"; }
-    eval "$recipe"
-    write_green_digest "$tmp/postfix-pr-state.digest" 900
     # This fixture must not depend on a developer's authenticated gh session.
     export REVIEW_LEDGER_GH=/definitely/missing/gh REVIEW_LEDGER_VIEWER=''
-    GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" AGENT_IDENTITY=claude \
+    PR_STAGE_RUN_DIR_SH="$stage_bin/run-dir" PR_STAGE_GH_PR_STATE_SH="$stage_bin/gh-pr-state" \
+        PR_STAGE_POST_RECEIPT_SH="$REAL_RECEIPT" STAGE_COMMENTS="$postfix_comments" \
+        GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
         REVIEW_LEDGER_VIEWER=ledger-test-author \
-        "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
-        --comments "$postfix_comments" --provider anthropic --model claude-opus-5 --effort high \
-        --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' \
-        --head-sha "$rhs" --diff-payload "$diff_payload" --harness claude \
-        --pr-state-digest "$tmp/postfix-pr-state.digest"
+        "$stage" finalize --repo-root "$receipt_repo" --pr 900 --repo owner/repo \
+        --agent-identity 'Claude Opus 5' --mode-reason ok
 ) >"$tmp/postfix.out" 2>"$tmp/postfix.err" || postfix_rc=$?
 [[ $postfix_rc == 0 ]] || cat "$tmp/postfix.err" >&2
 assert_eq 0 "$postfix_rc" 'canonical post-fix receipt publishes with original reviewed identity'
@@ -1369,7 +1394,7 @@ assert_contains "$postfix_ledger" "$head_sha" 'post-fix ledger retains original 
 assert_not_contains "$postfix_ledger" "$repair_head" 'post-fix ledger does not add unsupported descendant coverage'
 assert_rc 1 'an arbitrary descendant cannot replace the original reviewed head' -- \
     "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
-    --pr-state-digest "$tmp/postfix-pr-state.digest" \
+    --pr-state-digest "$tmp/state/pr_900_final.digest" \
     --comments "$head_comments" --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' --head-sha "$repair_head"
 
