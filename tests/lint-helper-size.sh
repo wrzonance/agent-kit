@@ -33,8 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    # #905: retain native execution identity, terminal records, and cache-declaration provenance.
-    [skills/.shared/scripts/agent-run.sh]="2094:22851:800"
+    # #905 review: split HEAD-bound evidence from its HEAD-independent exclusion lease.
+    [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -227,6 +227,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #905: native-log validation and one durable missing-evidence recovery add measured helper code.
 # #911: exact staged-tree authorization plus protected-path preparation handback.
 # #907 review: exact-run rebind validates fresh authority without losing durable state.
+# #905 review: validate lease liveness and persist recovery trust provenance.
+# #905 final review: bind root recovery trust to its captured terminal summary.
 # #910: complete resumable join assembly and resolution-worker composition.
 readonly MAX_TREE_TOKENS=488180
 
