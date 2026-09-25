@@ -24,6 +24,7 @@ Usage: $PROGNAME get|set|append|append-unique|unset (--file FILE | --run-id ID [
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
        $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
+       $PROGNAME next-action (--file FILE | --run-id ID [--repo-root DIR]) --json SNAPSHOT
        $PROGNAME summary --run-id ID [--repo-root DIR] [--reports-dir DIR]
 get     print the value at --path (scalars raw, objects/arrays compact JSON, null as "null");
         exit 11 when the key is absent -- a key explicitly set to JSON null is present, not absent
@@ -40,6 +41,7 @@ summary print handoff coverage from durable run state and active-worker lifecycl
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
 dequeue-summary remove one queued issue identity when its dispatch starts (absent is success)
+next-action validate/save SNAPSHOT fields evidence, actionable_work, operations, operator_dependencies, completed_work, and remaining_work; operations require id, kind (worker/reviewer/test/other), status (active/unknown), and affected IDs; print the saved decision
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
 Writes are atomic (temp file beside it, mode 0600, rename).
@@ -53,7 +55,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|append-unique|unset|latest|bind|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
+        get|set|append|append-unique|unset|latest|bind|init-summary|record-summary|dequeue-summary|next-action|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -109,6 +111,11 @@ parse_args() {
         [[ -z $KEY_PATH && -z $REPORTS_DIR ]] || die_usage 'dequeue-summary takes no --path/--reports-dir'
         [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'dequeue-summary requires --json POSITIVE_INTEGER'
         KEY_PATH=queued
+    elif [[ $ACTION == next-action ]]; then
+        [[ -z $KEY_PATH && -z $REPORTS_DIR ]] || die_usage 'next-action takes no --path/--reports-dir'
+        [[ -n $JSON_VALUE && -z $VALUE ]] || die_usage 'next-action requires --json SNAPSHOT'
+        if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
+        [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
     else
         [[ -z $REPORTS_DIR ]] || die_usage "$ACTION takes no --reports-dir"
         [[ -n $KEY_PATH ]] || die_usage '--path is required'
@@ -365,6 +372,97 @@ initialize_binding() {
     printf '%s\n' "$binding"
 }
 
+validate_next_action_snapshot() {
+    jq -ec '
+        def strings:
+            type == "array" and length <= 10000 and
+            all(.[]; type == "string" and length > 0 and length <= 4096) and
+            length == (unique | length);
+        def exact_keys($wanted): (keys | sort) == ($wanted | sort);
+        . as $s |
+        ($s | type) == "object" and
+        ($s | exact_keys(["actionable_work","completed_work","evidence","operations",
+                          "operator_dependencies","remaining_work"])) and
+        ($s.evidence | type) == "object" and
+        ($s.evidence | exact_keys(["actionable_complete","id","observed_at","operations_complete"])) and
+        ($s.evidence.id | type) == "string" and ($s.evidence.id | length) > 0 and
+        ($s.evidence.id | length) <= 1024 and
+        ($s.evidence.observed_at | type) == "string" and
+        ($s.evidence.observed_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$")) and
+        ($s.evidence.actionable_complete | type) == "boolean" and
+        ($s.evidence.operations_complete | type) == "boolean" and
+        ($s.actionable_work | strings) and ($s.completed_work | strings) and
+        ($s.remaining_work | strings) and
+        (($s.completed_work + $s.remaining_work | length) ==
+         ($s.completed_work + $s.remaining_work | unique | length)) and
+        ($s.operations | type) == "array" and ($s.operations | length) <= 10000 and
+        all($s.operations[];
+            type == "object" and exact_keys(["affected","id","kind","status"]) and
+            (.id | type) == "string" and (.id | length) > 0 and (.id | length) <= 1024 and
+            (.kind == "worker" or .kind == "reviewer" or .kind == "test" or .kind == "other") and
+            (.status == "active" or .status == "unknown") and
+            (.affected | strings) and (.affected | length) > 0) and
+        (($s.operations | map(.id) | length) == ($s.operations | map(.id) | unique | length)) and
+        ($s.operator_dependencies | type) == "array" and ($s.operator_dependencies | length) <= 10000 and
+        all($s.operator_dependencies[];
+            type == "object" and exact_keys(["affected","question"]) and
+            (.question | type) == "string" and (.question | length) > 0 and (.question | length) <= 4096 and
+            (.affected | strings) and (.affected | length) > 0) and
+        ($s.remaining_work as $remaining |
+            all($s.actionable_work[]; . as $id | $remaining | index($id) != null) and
+            all($s.operations[].affected[]; . as $id | $remaining | index($id) != null) and
+            all($s.operator_dependencies[].affected[]; . as $id | $remaining | index($id) != null))
+        | if . then $s else error("invalid") end
+    ' <<<"$1" 2>/dev/null
+}
+
+next_action_ownership_overlaps() {
+    jq -r '
+        ([.operations[].affected[]] | unique) as $owned |
+        any(.actionable_work[]; . as $id | $owned | index($id) != null)
+    ' <<<"$1"
+}
+
+select_next_action() {
+    jq -ec '
+        . as $snapshot |
+        ($snapshot.operations | map(select(.status == "active")) | length) as $active |
+        ($snapshot.operations | map(select(.status == "unknown")) | length) as $unknown |
+        ([$snapshot.operator_dependencies[].affected[]] | unique) as $operator_affected |
+        (if ($snapshot.actionable_work | length) > 0 then "dispatch"
+         elif $unknown > 0 then "reconcile"
+         elif $active > 0 then "collect"
+         elif (($snapshot.evidence.actionable_complete and $snapshot.evidence.operations_complete) | not)
+            then "reconcile"
+         elif ($snapshot.remaining_work | length) == 0 then "complete"
+         elif ($snapshot.operator_dependencies | length) > 0 and
+              (($snapshot.remaining_work - $operator_affected) | length) == 0 then "end-turn"
+         else "reconcile" end) as $action |
+        {snapshot:$snapshot,
+         decision:{next_action:$action,
+                   actionable_count:($snapshot.actionable_work | length),
+                   active_operations:$active,unknown_operations:$unknown,
+                   operator_dependencies:($snapshot.operator_dependencies | length),
+                   remaining_count:($snapshot.remaining_work | length),
+                   evidence_id:$snapshot.evidence.id,observed_at:$snapshot.evidence.observed_at,
+                   wait_allowed:($action == "collect"),task_complete:($action == "complete"),
+                   ownership_released:false}}
+    ' <<<"$1" 2>/dev/null
+}
+
+record_next_action() {
+    local snapshot=$1 overlap record next
+    snapshot=$(validate_next_action_snapshot "$snapshot") ||
+        die 'invalid next-action snapshot; every evidence and work field is required'
+    overlap=$(next_action_ownership_overlaps "$snapshot") || die 'could not compare next-action ownership'
+    [[ $overlap == false ]] || die 'actionable work overlaps an outstanding operation'
+    record=$(select_next_action "$snapshot") || die 'could not select next action'
+    next=$(jq -c --argjson record "$record" '.orchestration=$record' <<<"$STATE") ||
+        die 'could not record next action'
+    write_state "$next"
+    jq -c '.decision' <<<"$record"
+}
+
 print_summary() {
     local counts ledger_mode parked_rows parked_count
     counts=$(jq -er '
@@ -489,6 +587,7 @@ main() {
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
     if [[ $ACTION == bind || $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||
+        $ACTION == next-action ||
         $ACTION == init-summary || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
         FILE=$parent/$(basename -- "$FILE")
@@ -499,9 +598,9 @@ main() {
     fi
     read_state
     local path='' next present value=''
-    [[ $ACTION == bind || $ACTION == summary || $ACTION == init-summary ]] || path=$(jq_path)
+    [[ $ACTION == bind || $ACTION == summary || $ACTION == init-summary || $ACTION == next-action ]] || path=$(jq_path)
     if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique ||
-        $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
+        $ACTION == record-summary || $ACTION == dequeue-summary || $ACTION == next-action ]]; then
         value=$(value_json) || exit $?
     fi
     case $ACTION in
@@ -562,6 +661,9 @@ main() {
                 else error("missing or invalid summary collection") end
             ' <<<"$STATE" 2>/dev/null) || die 'could not update summary identity; initialize and repair summary collections first'
             write_state "$next"
+            ;;
+        next-action)
+            record_next_action "$value"
             ;;
         summary)
             print_summary

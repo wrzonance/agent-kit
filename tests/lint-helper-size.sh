@@ -222,7 +222,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #907: durable run binding and stall-output ledger alias protection.
-readonly MAX_TREE_TOKENS=481177
+# #906: validated durable next-action boundary prevents operator-only wait loops.
+readonly MAX_TREE_TOKENS=482711
 
 violations=0
 checked=0

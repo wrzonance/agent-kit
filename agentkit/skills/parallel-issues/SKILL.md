@@ -602,11 +602,10 @@ root handles CI state/verification, forge conflicts, adversarial review, consent
 
 ### Polling discipline (applies to every wait in this skill)
 
-Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) in full before the first wait; it
-owns the no-model-turn rule, one wait per interval, and the durable-state recipe. A bounded wait is
-silent until terminal: emit only the one completion or expiry line and redirect any heartbeat to a log.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
+Reconcile actual ledgers/results and live worker/reviewer/test handles after a steer; dispatch independent work, collect/reconcile operations, and on `end-turn` report saved progress then stop without waiting.
 
-Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; live tool/session caps govern calls. Dispatch already printed this worker's own bound as a `wait-bound=` line — quote it. Follow shared wait-discipline for collection, direct helpers, and waiter exceptions.
+Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
 
 After completion, inspect durable state (worktree `git status`/`log`, then
 `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):
