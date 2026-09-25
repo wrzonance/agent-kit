@@ -1910,8 +1910,10 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
     'Collect reuses only receipts already accepted by root'
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2229 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+# #911 adds the protected preparation/approval/resume contract at the worker
+# and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
+assert_eq yes "$([[ $prose_lines -le 2238 ]] && printf yes || printf no)" \
+    'issue #911 prose files stay below their protected-publication line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

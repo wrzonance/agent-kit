@@ -26,12 +26,12 @@ cat >"$literal_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-literal_rc=0
-literal_err=$("$writer" --dispatch-plan "$literal_plan" --validate-only 2>&1 >/dev/null) || literal_rc=$?
-assert_eq 1 "$literal_rc" 'a default-protected literal path is rejected'
-assert_contains "$literal_err" 'issue #583' 'the violating issue number is named'
-assert_contains "$literal_err" '.github/workflows/ci.yml' 'the colliding path is named'
-assert_contains "$literal_err" 'protectedPathAcknowledgement' 'the remedy names the acknowledgement field'
+literal_out=$("$writer" --dispatch-plan "$literal_plan" --validate-only)
+assert_contains "$literal_out" 'schemaVersion=1 valid' \
+    'a default-protected literal path stays in the valid dispatch plan'
+assert_contains "$literal_out" 'protected=1' 'the retained protected-path count is reported'
+assert_contains "$literal_out" 'issue#583:.github/workflows/ci.yml' \
+    'the retained protected issue and concrete path are reported'
 
 # --- a directory-prefix glob over a protected directory is flagged too. -----
 glob_plan="$tmp/glob.json"
@@ -42,10 +42,10 @@ cat >"$glob_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-glob_rc=0
-glob_err=$("$writer" --dispatch-plan "$glob_plan" --validate-only 2>&1 >/dev/null) || glob_rc=$?
-assert_eq 1 "$glob_rc" 'a directory-prefix glob over a protected directory is rejected'
-assert_contains "$glob_err" '.github/workflows/**' 'the colliding glob is named'
+glob_out=$("$writer" --dispatch-plan "$glob_plan" --validate-only)
+assert_contains "$glob_out" 'schemaVersion=1 valid' \
+    'a directory-prefix glob over a protected directory stays dispatchable'
+assert_contains "$glob_out" 'issue#584:.github/workflows/**' 'the colliding glob is reported'
 
 # --- a benign path is never a false positive (no substring match on a
 # protected pattern's name). --------------------------------------------------
@@ -59,6 +59,27 @@ cat >"$benign_plan" <<'EOF'
 EOF
 assert_rc 0 'a path that merely shares a prefix string with a protected pattern is not flagged' -- \
     "$writer" --dispatch-plan "$benign_plan" --validate-only
+
+# Incident examples do not redefine policy: ordinary .github/ and docs/adrs/
+# paths remain unprotected while an actual harness configuration path is named.
+actual_policy_plan="$tmp/actual-policy.json"
+cat >"$actual_policy_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "entries": [{
+    "issue": 595,
+    "predictedWriteSet": [".github/CODEOWNERS", "docs/adrs/decision.md", ".claude/settings.json"]
+  }],
+  "conflictMap": {"pairs": [], "revisions": []}
+}
+EOF
+actual_policy_out=$("$writer" --dispatch-plan "$actual_policy_plan" --validate-only)
+assert_contains "$actual_policy_out" 'protected=1[issue#595:.claude/settings.json]' \
+    'classification follows the shared protected policy instead of incident path guesses'
+assert_not_contains "$actual_policy_out" '.github/CODEOWNERS' \
+    'ordinary .github content is not promoted to protected'
+assert_not_contains "$actual_policy_out" 'docs/adrs/decision.md' \
+    'ADR content is not promoted to protected'
 
 # --- regression: a literal predictedWriteSet path containing a "/" must
 # never be misrouted into the dir-prefix-glob branch -- `[[ $x == */** ]]`
@@ -99,10 +120,10 @@ cat >"$sibling_glob_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-sibling_glob_rc=0
-sibling_glob_err=$(cd "$sibling_repo" && "$writer" --dispatch-plan "$sibling_glob_plan" --validate-only 2>&1 >/dev/null) || sibling_glob_rc=$?
-assert_eq 1 "$sibling_glob_rc" 'a dir/** glob covering a protected file still collides'
-assert_contains "$sibling_glob_err" 'config/**' 'the colliding glob is named'
+sibling_glob_out=$(cd "$sibling_repo" && "$writer" --dispatch-plan "$sibling_glob_plan" --validate-only)
+assert_contains "$sibling_glob_out" 'schemaVersion=1 valid' \
+    'a dir/** glob covering a protected file remains dispatchable'
+assert_contains "$sibling_glob_out" 'issue#592:config/**' 'the colliding glob is reported'
 
 # --- regression: a predictedWriteSet entry containing a literal comma must
 # never be split into phantom patterns by the comma-joined TSV transfer --
@@ -138,10 +159,11 @@ cat >"$declared_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-declared_rc=0
-declared_err=$(cd "$declared_repo" && "$writer" --dispatch-plan "$declared_plan" --validate-only 2>&1 >/dev/null) || declared_rc=$?
-assert_eq 1 "$declared_rc" 'a repo-declared AGENT_PROTECTED_PATHS pattern is honored'
-assert_contains "$declared_err" 'secrets/prod.env' 'the declared-pattern collision is named'
+declared_out=$(cd "$declared_repo" && "$writer" --dispatch-plan "$declared_plan" --validate-only)
+assert_contains "$declared_out" 'schemaVersion=1 valid' \
+    'a repo-declared protected path remains dispatchable'
+assert_contains "$declared_out" 'issue#586:secrets/prod.env' \
+    'the declared-pattern collision is reported'
 
 # A repo with no such declaration never flags the same path. Run this from a
 # neutral temporary repository -- never the host checkout -- so the negative
@@ -182,10 +204,10 @@ cat >"$dotslash_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-dotslash_rc=0
-dotslash_err=$(cd "$dotslash_repo" && "$writer" --dispatch-plan "$dotslash_plan" --validate-only 2>&1 >/dev/null) || dotslash_rc=$?
-assert_eq 1 "$dotslash_rc" 'a ./-prefixed declared protected pattern still collides with a normal write-set path'
-assert_contains "$dotslash_err" 'secrets/x.env' 'the colliding path is named'
+dotslash_out=$(cd "$dotslash_repo" && "$writer" --dispatch-plan "$dotslash_plan" --validate-only)
+assert_contains "$dotslash_out" 'schemaVersion=1 valid' \
+    'a ./-prefixed declared protected pattern retains the issue'
+assert_contains "$dotslash_out" 'issue#594:secrets/x.env' 'the colliding path is reported'
 
 # --- acceptance: an explicit protectedPathAcknowledgement (entry-level)
 # validates. -------------------------------------------------------------------
@@ -234,14 +256,14 @@ cat >"$clean_plan" <<'EOF'
 }
 EOF
 clean_out=$("$writer" --dispatch-plan "$clean_plan" --validate-only)
-assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid create=none" "$clean_out" \
+assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid create=none protected=0" "$clean_out" \
     'a clean plan with no protected-path collision reports no create entries'
 
-# --- acceptance: --fix never silently "fixes" a protected-path collision --
-# it is a human decision (drop/split/acknowledge), never auto-patched. -------
+# --- acceptance: --fix does not need to alter a retained protected path. ----
 fix_repo="$tmp/fix-repo"
-mkdir -p "$fix_repo/src" "$fix_repo/.agent"
+mkdir -p "$fix_repo/src" "$fix_repo/.agent" "$fix_repo/.github/workflows"
 printf 'source\n' >"$fix_repo/src/main.sh"
+printf 'workflow\n' >"$fix_repo/.github/workflows/ci.yml"
 git init -q -b main "$fix_repo"
 git -C "$fix_repo" config user.email test@example.invalid
 git -C "$fix_repo" config user.name test
@@ -256,10 +278,35 @@ cat >"$fix_plan" <<'EOF'
   "conflictMap": {"pairs": [], "revisions": []}
 }
 EOF
-fix_rc=0
-"$writer" --dispatch-plan "$fix_plan" --chain-base "$fix_repo" --validate-only --fix >/dev/null 2>&1 || fix_rc=$?
-assert_eq 1 "$fix_rc" '--fix cannot resolve a protected-path collision and still exits nonzero'
+fix_out=$("$writer" --dispatch-plan "$fix_plan" --chain-base "$fix_repo" --validate-only --fix)
+assert_contains "$fix_out" 'schemaVersion=1 valid' '--fix keeps a protected-path issue dispatchable'
 assert_eq 'null' "$(jq -r '.entries[0].protectedPathAcknowledgement // "null"' "$fix_plan")" \
     '--fix never auto-writes a protectedPathAcknowledgement'
+
+# A protected root, its queued dependent, and unrelated runnable work all stay
+# represented. Publication state, not path classification, releases the queue.
+retained_plan="$tmp/retained.json"
+cat >"$retained_plan" <<'EOF'
+{
+  "schemaVersion": 1,
+  "selection": {"requested": 3, "eligible": 3, "dispatched": 2, "queued": [612], "tracker": []},
+  "entries": [
+    {"issue": 611, "predictedWriteSet": [".github/workflows/ci.yml"]},
+    {"issue": 612, "predictedWriteSet": ["src/dependent.sh"]},
+    {"issue": 613, "predictedWriteSet": ["src/unrelated.sh"]}
+  ],
+  "conflictMap": {
+    "pairs": [{"issues": [611, 612], "overlap": ["src/dependency-contract.sh"]}],
+    "revisions": []
+  }
+}
+EOF
+retained_out=$("$writer" --dispatch-plan "$retained_plan" --validate-only)
+assert_contains "$retained_out" 'schemaVersion=1 valid' \
+    'protected work, its queued dependent, and unrelated work remain in one valid plan'
+assert_eq '3' "$(jq '.entries | length' "$retained_plan")" \
+    'validation retains every selected issue'
+assert_eq '612' "$(jq -r '.selection.queued[0]' "$retained_plan")" \
+    'validation retains the named dependent in the queue'
 
 finish

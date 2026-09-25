@@ -316,7 +316,10 @@ sibling) and derives each project test root from that tree's declared `AGENT_RUN
 `AGENT_CMD_*_TEST*` commands — declaration-driven only, never from a directory merely named
 `test`. Each proposed root must be inside `predictedWriteSet` or listed in `testRootExclusions` (per entry, or once at
 the top level for the whole plan). One invocation reports every violation with a copy-pasteable `jq`
-patch; `--fix` applies them.
+patch; `--fix` applies them. The same summary reports `protected=N[...]` from the repository's shared
+protected-path policy. Those entries stay selected for preparation; the count discloses a later
+publication boundary. Queue their dependents until the approved commit is pushed while unrelated
+entries continue.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

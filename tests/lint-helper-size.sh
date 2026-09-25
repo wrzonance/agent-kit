@@ -39,7 +39,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
-    [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
+    # #911: exact staged-tree ledger grants authorize prepared protected commits.
+    [skills/.shared/scripts/worktree-commit.sh]="879:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
@@ -221,7 +222,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
-readonly MAX_TREE_TOKENS=479152
+# #911: exact staged-tree authorization plus protected-path preparation handback.
+readonly MAX_TREE_TOKENS=479273
 
 violations=0
 checked=0
