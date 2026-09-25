@@ -31,7 +31,9 @@ declare -A KNOWN_OVERSIZE=(
     # #865: permit bounded reference use when no workflow challenge was delivered.
     # #873: runnable publish recipe (payload, identity) and evidence-producer steps.
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
-    [review-remote-pr]="500:9157:450"
+    # #902: overlap review with CI and gate final-head and accepted-finding evidence.
+    # #902 review: remote attempted spend and classifier-aware finalization.
+    [review-remote-pr]="534:9701:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
@@ -49,7 +51,9 @@ declare -A KNOWN_OVERSIZE=(
     # #875 review: preserve summary evidence and persist an invocation-derived review mode.
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
-    [parallel-issues]="772:16666:500"
+    # #903: concurrent admission, cross-run freshness, and stopped proof contract.
+    # #902: separate launch eligibility and require accepted-finding evidence at finalization.
+    [parallel-issues]="824:17755:500"
 )
 
 readonly MAX_BODY_LINES=500

@@ -595,6 +595,18 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
+assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
+    'the consent holder launches real reviews rather than forwarding consent'
+assert_contains "$text" 'review attempts and native worker reservations share the same atomic admission lock' \
+    'parallel review launch names the executable shared-cap boundary'
+assert_contains "$text" 'launch all currently eligible reviews without waiting for an earlier review result' \
+    'distinct eligible reviews are dispatched concurrently'
+assert_contains "$text" 'available upstream findings' \
+    'fix batches receive known upstream findings without waiting for future results'
+assert_contains "$text" 'confirmed terminal release' \
+    'same-worktree fix and merge-down work waits for confirmed writer release'
+assert_contains "$text" 'Publish one root-owned receipt at a time' \
+    'root publication remains serial across concurrent review and fix completion'
 assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
     'concurrency dispatch carries the canonical session-context loader'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
@@ -1050,8 +1062,8 @@ assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs ma
 assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
     'setup prompt treats a zero-finding loop as success'
 assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
-assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
-assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'ci-observed=' 'setup prompt preserves actual CI beside launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' 'setup prompt names its Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_NNN_code_quality_comments.json' \
     'setup prompt names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -1065,7 +1077,7 @@ assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
 assert_contains "$setup_prompt" 'if ! cq_state=' \
     'setup prompt fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'setup prompt names the unavailable Code Quality terminal marker'
+    'setup prompt names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
@@ -1090,10 +1102,18 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'setup prompt receives stable failing-check names'
 assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
     'setup prompt parses stable failing-check names'
-assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
-    'setup prompt names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'setup prompt preserves a failing CI terminal result'
+assert_contains "$setup_prompt" 'ci_observed="red: $ci_failing_checks"' \
+    'setup prompt names the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'setup prompt appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" 'Rebuild `acceptance_args` inside this root block' \
@@ -1722,6 +1742,12 @@ assert_not_contains "$err" 'spawn refused:' \
     'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
+assert_rc 0 'state-backed admission uses the Codex V2 runtime default when config is absent' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 4 --agent-kind reviewer
+assert_rc 1 'state-backed admission refuses above the Codex V2 runtime default without config' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 5 --agent-kind reviewer
 
 # --- issue #224: named wait bounds (WS1) --------------------------------------
 # The guidance must name a NUMBER per wait class, and every named bound must be
@@ -1913,9 +1939,11 @@ assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
     'the resident call-site table ends before the following single-issue paragraph'
 # Issue #904 adds explicit commit -> full verification -> push recovery steps
 # to both worker contracts so an unchanged candidate is verified only once.
+# #903 adds the concurrent review/fix ownership contract at the dispatch site.
+# #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2243 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2277 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

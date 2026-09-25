@@ -164,11 +164,12 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Snapshot CI once; return pending state to root, which applies shared wait-discipline. Never
-resume setup as a poller. A failing check is a terminal setup result, not a fix batch:
+Snapshot CI once and retain its actual state independently of review launch eligibility. Never
+resume setup as a poller or wait for settlement before launching the immutable snapshot review.
+Continue CI diagnosis independently after launch; a failure does not cancel or restart review:
 
 setup_terminal='launch-ready'
-ci_red=0
+ci_observed='green'
 ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO \
   "${acceptance_args[@]}") || exit 1
 printf '%s\n' "$ci_digest"
@@ -177,15 +178,15 @@ ci_pending=$(sed -n 's/^ci=.*pending=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing_checks=$(sed -n 's/^ci=.*failing=[1-9][0-9]* failing-checks=\(.*\)$/\1/p' <<<"$ci_line")
 if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
-  ci_red=1
   if [[ -n $ci_failing_checks ]]; then
-    setup_terminal="ci-red: $ci_failing_checks"
+    ci_observed="red: $ci_failing_checks"
   else
-    setup_terminal='ci-red: unknown-check'
+    ci_observed='red: unknown-check'
   fi
 elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
-  setup_terminal='ci-pending'
+  ci_observed='pending'
 fi
+printf 'ci-observed=%s\n' "$ci_observed"
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
 second call attributes only persisted PR comments whose path+line is inside the PR diff; the
@@ -198,13 +199,10 @@ if [[ $cq_probe == state=enabled ]]; then
     --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__" \
     --repo-root FULL_PATH); then
     printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
-    setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
   else
     printf '%s\n' "$cq_state"
     cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
-    if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
-      setup_terminal="cq-open: $cq_open source=pr_NNN_code_quality_comments.json"
-    fi
+    [[ ! $cq_open =~ ^[1-9][0-9]*$ ]] || printf 'findings-observed=cq-open:%s\n' "$cq_open"
   fi
 elif [[ $cq_probe == state=not-enabled ]]; then
   printf 'cq-repo: 0\n'
@@ -212,7 +210,6 @@ elif [[ $cq_probe == state=not-enabled ]]; then
 else
   printf 'Code Quality findings unavailable; setup cannot classify findings.\n'
   printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
-  setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
 fi
 
 Classify issue-comment findings once (agent-kit#566): a CodeRabbit/Code-Quality finding posted as
@@ -226,24 +223,11 @@ icf_answered="$state_dir/pr_NNN_issue_comment_answered.ndjson"
 if ! icf_state=$("$agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" count \
   --comments "$state_dir/pr_NNN_issue_comments.json" --answered "$icf_answered"); then
   printf 'icf-open: unavailable source=pr_NNN_issue_comments.json\n'
-  setup_terminal='icf-open: unavailable source=pr_NNN_issue_comments.json'
 else
   icf_open=$(sed -n 's/^open=\([0-9][0-9]*\) .*/\1/p' <<<"$icf_state")
   printf 'icf-open: %s source=pr_NNN_issue_comments.json\n' "${icf_open:-0}"
-  if [[ $icf_open =~ ^[1-9][0-9]*$ ]]; then
-    setup_terminal="icf-open: $icf_open source=pr_NNN_issue_comments.json"
-  fi
+  [[ ! $icf_open =~ ^[1-9][0-9]*$ ]] || printf 'findings-observed=icf-open:%s\n' "$icf_open"
 fi
-if ((ci_red)); then
-  if [[ -n $ci_failing_checks ]]; then
-    setup_terminal="ci-red: $ci_failing_checks"
-  else
-    setup_terminal='ci-red: unknown-check'
-  fi
-elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
-  setup_terminal='ci-pending'
-fi
-
 Run the materiality precheck against the PR's current head before any review spend:
 
 materiality_acceptance_args=()
@@ -268,10 +252,10 @@ $RUN_DIR/setup.result
 Before returning any terminal result, write one `setup.result` line naming the `RUN_DIR` and
 result. If any required state file or `setup.result` is missing or empty, the setup is a contract
 violation: return exactly `BLOCKED: artifacts-missing run-dir=$RUN_DIR` (with the missing paths in
-the compact evidence summary) instead of `launch-ready`, `cq-open`, or `ci-red`.
+the compact evidence summary) instead of `launch-ready`.
 The completion line names the run-dir: every successful terminal completion line must be exactly
 `<terminal-marker> run-dir=$RUN_DIR`, so the root can use the same directory. Never emit a bare
-`launch-ready`, `cq-open`, or `ci-red` completion line.
+`launch-ready` completion line.
 
 Use this final check (after inspecting CI, Code Quality, and materiality) to make the result
 durable and to ensure no earlier evidence line is mistaken for completion:
@@ -293,7 +277,7 @@ fi
 `````
 
 The root's completion-acceptance gate is separate from this worker and runs once before accepting
-`launch-ready` or `cq-open`. It receives the `run-dir=` value from the completion line and must
+`launch-ready`. It receives the `run-dir=` value from the completion line and must
 regenerate missing state once, recording the recovery in that run's evidence:
 
 `````bash
@@ -320,20 +304,15 @@ That root regeneration is bounded to exactly once; a completion is not accepted 
 non-empty threads artifact is present after the retry. `setup-artifacts-missing` in
 `setup.result` is the durable run-evidence marker for the simulated empty-run-dir case.
 
-If CI is red, set the terminal marker to exactly `ci-red: <check>` naming the failing check. If the attribution report
-has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
-`cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
-(agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
-review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
-exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root selects
-direct collection or a justified waiter under shared wait-discipline. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
-evidence line still reaches root regardless of which signal occupies the terminal slot.
-The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
-`ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
-`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, `ci-pending run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
-The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
-findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
-setup outcome, even when `cq-repo: M` is non-zero.
+CI and finding repair never replace launch eligibility. Preserve `ci=`, `ci-observed=`, `cq-open:`,
+`icf-open:`, and `findings-observed=` lines while review, CI repair, and finding repair proceed
+independently. Return exactly `launch-ready`, including with pending/red CI or open Code Quality and
+issue-comment findings; unavailable classification remains visible as unavailable evidence. The
+final completion line is `launch-ready run-dir=$RUN_DIR`. After root classification, write every
+accepted Code Quality or issue-comment record in the existing pr-fix format to `$RUN_DIR/accepted-findings.ndjson`; create it owner-only and explicitly empty only when none are accepted.
+Missing means unknown, never zero. Reuse this exact file for `pr-fix-batch`, replacing open records with validated fixed or declined evidence before final publication.
+The root may dispatch `pr-fix-batch` only when this ledger contains at least one in-diff finding.
+Zero in-diff findings are a successful setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because
 there is nothing to fix.
 ```
@@ -498,6 +477,10 @@ Root owns the immutable pre-dispatch snapshot and Collect; never call `cross-wri
 Return scoped changes and timing/handback evidence; root handles a missing snapshot on every dispatch or resume.
 __ACCEPTED_FINDINGS_SECTION__
 
+The accepted-findings ledger also carries any available upstream findings and fix evidence supplied
+by root. Use that completed evidence to avoid known duplicate work. Do not wait, poll, or contact an
+upstream reviewer for findings that were not available when this batch was composed.
+
 ## How to write a file
 
 Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
@@ -525,6 +508,8 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 
 ## Branch Rules (MANDATORY)
 - Work only in the supplied worktree and confirm the supplied branch before editing.
+- This worker owns the worktree until its terminal lifecycle release. Never invite a second writer;
+  root edits and merge-down wait for that confirmed release.
 - Do not alter branch history or metadata; surface conflicts or branch mismatches to the
   top-level session.
 

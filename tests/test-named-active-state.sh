@@ -11,6 +11,9 @@ TEST_NAME='named active state'
 helper="$root/agentkit/skills/parallel-issues/scripts/named-active-state.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export CODEX_HOME="$tmp/codex-home"
+mkdir -p "$CODEX_HOME"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 
 repo="$tmp/repo"
 ledger="$repo/.agent/runs/active-workers.ndjson"
@@ -206,4 +209,55 @@ assert_contains "$wt_err" 'linked worktrees share its ledger' \
     'the refusal explains that linked worktrees share the primary ledger'
 assert_eq 'absent' "$([[ -e $worker/.agent/runs/active-workers.ndjson ]] && printf present || printf absent)" \
     'the refused worktree-local ledger is never created'
+
+# #903: approved fix batches in distinct worktrees overlap, while a second
+# writer on either worktree remains deferred until terminal release.
+: >"$ledger"
+mkdir -p "$tmp/fix-a" "$tmp/fix-b"
+owner reserve --issue 601 --worktree "$tmp/fix-a" --branch fix/a --run-id fixes \
+    --attempt fix-a >"$tmp/fix-a.reserve" 2>"$tmp/fix-a.err" &
+fix_a_pid=$!
+owner reserve --issue 602 --worktree "$tmp/fix-b" --branch fix/b --run-id fixes \
+    --attempt fix-b >"$tmp/fix-b.reserve" 2>"$tmp/fix-b.err" &
+fix_b_pid=$!
+fix_a_rc=0
+fix_b_rc=0
+wait "$fix_a_pid" || fix_a_rc=$?
+wait "$fix_b_pid" || fix_b_rc=$?
+assert_eq 0 "$fix_a_rc" 'first approved fix batch reserves its worktree concurrently'
+assert_eq 0 "$fix_b_rc" 'second approved fix batch reserves a distinct worktree concurrently'
+assert_rc 0 'first concurrent fix records its returned worker identity' -- record fix-a worker-fix-a
+assert_rc 0 'second concurrent fix records its returned worker identity' -- record fix-b worker-fix-b
+assert_eq 2 "$(owner inventory | jq '[.[] | select(.state == "active")] | length')" \
+    'two approved fixes remain active at the same time'
+assert_rc 2 'same-worktree second writer defers while the first fix is active' -- \
+    owner reserve --issue 603 --worktree "$tmp/fix-a" --branch fix/merge-down --run-id fixes --attempt merge-down
+assert_rc 0 'confirmed completion releases the occupied worktree' -- release fix-a completed
+assert_rc 0 'merge-down acquires only after confirmed writer release' -- \
+    owner reserve --issue 603 --worktree "$tmp/fix-a" --branch fix/merge-down --run-id fixes --attempt merge-down
+
+# An uncertain review may still own a live external process, so it continues
+# consuming the same cap until existing reconciliation proves a terminal state.
+review_registry=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/agentkit-review-attempts
+mkdir -p "$review_registry"
+chmod 700 "$review_registry"
+printf '%s\n' '{"version":1,"state":"unknown-outcome","canonical":true,"repo":"acme/widget","pr":99,"id":"unknown-review","head":"head","payload":"payload","maxDurationSeconds":900,"helperProcess":{"pid":101,"startTicks":"1","bootId":"boot"},"providerProcess":{"pid":102,"startTicks":"2","bootId":"boot"},"events":[{"state":"unknown-outcome","operation":"finish"}]}' >"$review_registry/unknown.json"
+chmod 600 "$review_registry/unknown.json"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 4' >"$CODEX_HOME/config.toml"
+mkdir -p "$tmp/fix-c"
+assert_rc 2 'unknown review outcome blocks a native reservation above the shared cap' -- \
+    owner reserve --issue 604 --worktree "$tmp/fix-c" --branch fix/c --run-id fixes --attempt fix-c
+jq '.stoppedTimeoutProof={schemaVersion:1,repo:.repo,pr:.pr,attemptId:.id,head:.head,payload:.payload,
+        authorization:"",reason:"operator-confirmed-timeout",timeoutSeconds:900,
+        helperProcess:.helperProcess,providerProcess:.providerProcess} |
+    .stoppedTimeoutProofSha256=("a" * 64) |
+    .events += [{state:"unknown-outcome",operation:"confirm-stopped"}]' \
+    "$review_registry/unknown.json" >"$review_registry/unknown.tmp"
+mv "$review_registry/unknown.tmp" "$review_registry/unknown.json"
+review_proof_hash=$(jq -cS .stoppedTimeoutProof "$review_registry/unknown.json" | sha256sum | cut -d' ' -f1)
+jq --arg hash "$review_proof_hash" '.capacityReleaseProofSha256=$hash' \
+    "$review_registry/unknown.json" >"$review_registry/unknown.tmp"
+mv "$review_registry/unknown.tmp" "$review_registry/unknown.json"
+assert_rc 0 'proved-stopped unknown review releases capacity for a native worker' -- \
+    owner reserve --issue 604 --worktree "$tmp/fix-c" --branch fix/c --run-id fixes --attempt fix-c
 finish
