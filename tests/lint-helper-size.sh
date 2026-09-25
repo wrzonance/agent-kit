@@ -41,7 +41,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
-    [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
+    # #901: seal deferred successor finalization against terminal evidence.
+    [skills/parallel-issues/scripts/chain-advance.sh]="1388:18074:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -224,7 +225,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #902: executable final-head receipt gate; exact combined helper tree measurement.
 # #902: validate the root-owned accepted findings ledger at finalization.
-readonly MAX_TREE_TOKENS=480601
+# #901: deferred chain finalization reuses run-state and exact pushed evidence.
+readonly MAX_TREE_TOKENS=485567
 
 violations=0
 checked=0

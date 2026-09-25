@@ -51,7 +51,8 @@ declare -A KNOWN_OVERSIZE=(
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    [parallel-issues]="782:16864:500"
+    # #901: defer successor integration to the topological draft-ready boundary.
+    [parallel-issues]="792:17098:500"
 )
 
 readonly MAX_BODY_LINES=500

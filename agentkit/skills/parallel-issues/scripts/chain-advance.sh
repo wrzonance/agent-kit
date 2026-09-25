@@ -20,6 +20,13 @@ REF=''
 PR=''
 BASE=''
 REPO=''
+RUN_STATE=''
+ISSUE_COMMENTS=''
+PR_STATE_DIGEST=''
+ACCEPTED_FINDINGS=''
+REVIEW_ATTEMPT=''
+PUSHED_BRANCH=''
+PREDECESSOR_PR=''
 GH_BIN=${CHAIN_ADVANCE_GH:-gh}
 RETARGET_APPLIED=false
 BOUNDARY_SOURCE=''
@@ -59,10 +66,20 @@ usage() {
     cat <<EOF
 Usage:
   $PROGNAME --resolve-base REF
+  $PROGNAME --finalization-status --pr N --run-state FILE [--predecessor-pr N]
+  $PROGNAME --finalize-successor --pr N --repo OWNER/REPO --run-state FILE \
+      --issue-comments FILE --pr-state-digest FILE --accepted-findings FILE \
+      --review-attempt FILE --pushed-branch BRANCH [--predecessor-pr N]
   $PROGNAME --retarget --pr N --base B [--repo OWNER/REPO]
   $PROGNAME --recover-closed --pr N --base B [--repo OWNER/REPO]
 
 --resolve-base is read-only and prints the full commit SHA Git resolves for REF.
+--finalization-status is the cheap pre-integration guard. It exits 0 only when
+the current head and immediate predecessor still match the sealed tuple, or 10
+when merge/final verification is needed.
+--finalize-successor validates terminal review, final-head CI, accepted-finding,
+review-lineage, and exact pushed-head evidence, then records the PR tuple in the
+existing run-state file. The caller owns merge/conflict repair and verification.
 --retarget first proves the intended base is not ahead of the current head. It
 then edits the PR base and proves the new base, ancestry, CI, approval, and
 closing-issue linkage before reporting success. Exit 1 means no base edit was
@@ -97,17 +114,24 @@ parse_args() {
                 MODE=resolve
                 if [[ $1 == *=* ]]; then REF=${1#*=}; shift; else REF=$2; shift 2; fi
                 ;;
-            --retarget|--recover-closed)
+            --retarget|--recover-closed|--finalize-successor|--finalization-status)
                 [[ -z $MODE ]] || die "$1 cannot be combined with another mode"
                 MODE=${1#--}
                 shift
                 ;;
-            --pr|--base|--repo)
+            --pr|--base|--repo|--run-state|--issue-comments|--pr-state-digest|--accepted-findings|--review-attempt|--pushed-branch|--predecessor-pr)
                 require_value "$1" "${2-}"
                 case $1 in
                     --pr) PR=$2 ;;
                     --base) BASE=$2 ;;
                     --repo) REPO=$2 ;;
+                    --run-state) RUN_STATE=$2 ;;
+                    --issue-comments) ISSUE_COMMENTS=$2 ;;
+                    --pr-state-digest) PR_STATE_DIGEST=$2 ;;
+                    --accepted-findings) ACCEPTED_FINDINGS=$2 ;;
+                    --review-attempt) REVIEW_ATTEMPT=$2 ;;
+                    --pushed-branch) PUSHED_BRANCH=$2 ;;
+                    --predecessor-pr) PREDECESSOR_PR=$2 ;;
                     *) die "unexpected argument: $1" ;;
                 esac
                 shift 2
@@ -115,6 +139,13 @@ parse_args() {
             --pr=*) PR=${1#*=}; shift ;;
             --base=*) BASE=${1#*=}; shift ;;
             --repo=*) REPO=${1#*=}; shift ;;
+            --run-state=*) RUN_STATE=${1#*=}; shift ;;
+            --issue-comments=*) ISSUE_COMMENTS=${1#*=}; shift ;;
+            --pr-state-digest=*) PR_STATE_DIGEST=${1#*=}; shift ;;
+            --accepted-findings=*) ACCEPTED_FINDINGS=${1#*=}; shift ;;
+            --review-attempt=*) REVIEW_ATTEMPT=${1#*=}; shift ;;
+            --pushed-branch=*) PUSHED_BRANCH=${1#*=}; shift ;;
+            --predecessor-pr=*) PREDECESSOR_PR=${1#*=}; shift ;;
             -h|--help)
                 usage
                 exit 0
@@ -129,13 +160,44 @@ parse_args() {
 }
 
 validate_args() {
-    [[ $MODE == resolve || $MODE == retarget || $MODE == recover-closed ]] ||
-        die 'choose exactly one mode: --resolve-base REF, --retarget, or --recover-closed'
+    [[ $MODE == resolve || $MODE == retarget || $MODE == recover-closed ||
+        $MODE == finalize-successor || $MODE == finalization-status ]] ||
+        die 'choose exactly one mode: --resolve-base REF, --finalization-status, --finalize-successor, --retarget, or --recover-closed'
     if [[ $MODE == resolve ]]; then
         [[ -n $REF && $REF != -* && $REF != *$'\n'* && $REF != *$'\r'* ]] ||
             die '--resolve-base requires a safe single-line ref'
-        [[ -z $PR && -z $BASE && -z $REPO ]] ||
-            die '--resolve-base does not accept --pr, --base, or --repo'
+        [[ -z $PR && -z $BASE && -z $REPO && -z $RUN_STATE && -z $ISSUE_COMMENTS &&
+            -z $PR_STATE_DIGEST && -z $ACCEPTED_FINDINGS && -z $REVIEW_ATTEMPT &&
+            -z $PUSHED_BRANCH && -z $PREDECESSOR_PR ]] ||
+            die '--resolve-base does not accept finalization or PR options'
+        return 0
+    fi
+    if [[ $MODE == finalization-status ]]; then
+        [[ $PR =~ $UINT_RE ]] || die '--pr must be a positive integer'
+        [[ -n $RUN_STATE ]] || die '--finalization-status requires --run-state'
+        [[ -z $PREDECESSOR_PR || ($PREDECESSOR_PR =~ $UINT_RE && $PREDECESSOR_PR != "$PR") ]] ||
+            die '--predecessor-pr must be a different positive integer'
+        [[ -z $REF && -z $BASE && -z $REPO && -z $ISSUE_COMMENTS && -z $PR_STATE_DIGEST &&
+            -z $ACCEPTED_FINDINGS && -z $REVIEW_ATTEMPT && -z $PUSHED_BRANCH ]] ||
+            die '--finalization-status accepts only pr, run-state, and predecessor-pr'
+        command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
+        return 0
+    fi
+    if [[ $MODE == finalize-successor ]]; then
+        [[ $PR =~ $UINT_RE ]] || die '--pr must be a positive integer'
+        [[ $REPO =~ $SLUG_RE ]] || die '--repo must look like OWNER/REPO'
+        [[ -z $BASE ]] || die '--finalize-successor does not accept --base'
+        [[ -n $RUN_STATE && -n $ISSUE_COMMENTS && -n $PR_STATE_DIGEST &&
+            -n $ACCEPTED_FINDINGS && -n $PUSHED_BRANCH ]] ||
+            die '--finalize-successor requires run-state, issue-comments, pr-state-digest, accepted-findings, and pushed-branch evidence'
+        [[ -z $PREDECESSOR_PR || ($PREDECESSOR_PR =~ $UINT_RE && $PREDECESSOR_PR != "$PR") ]] ||
+            die '--predecessor-pr must be a different positive integer'
+        [[ $PUSHED_BRANCH =~ ^[A-Za-z0-9._/-]+$ && $PUSHED_BRANCH != -* &&
+            $PUSHED_BRANCH != /* && $PUSHED_BRANCH != */ && $PUSHED_BRANCH != *..* &&
+            $PUSHED_BRANCH != *//* && $PUSHED_BRANCH != *'@{'* ]] ||
+            die '--pushed-branch must be a safe branch ref'
+        command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
+        command -v sha256sum >/dev/null 2>&1 || die 'sha256sum not found on PATH; evidence unavailable'
         return 0
     fi
     [[ $PR =~ $UINT_RE ]] || die '--pr must be a positive integer'
@@ -144,8 +206,246 @@ validate_args() {
         die '--base must be a safe branch ref'
     [[ -z $REPO || $REPO =~ $SLUG_RE ]] ||
         die '--repo must look like OWNER/REPO'
+    [[ -z $RUN_STATE && -z $ISSUE_COMMENTS && -z $PR_STATE_DIGEST && -z $ACCEPTED_FINDINGS &&
+        -z $REVIEW_ATTEMPT && -z $PUSHED_BRANCH && -z $PREDECESSOR_PR ]] ||
+        die "--$MODE does not accept finalization options"
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
     command -v "$GH_BIN" >/dev/null 2>&1 || die "required tool not found: $GH_BIN"
+}
+
+require_owned_evidence() {
+    local label=$1 path=$2
+    [[ -f $path && ! -L $path && -O $path && -r $path ]] ||
+        die "$label is not an owned readable regular file: $path"
+}
+
+validate_final_digest() {
+    local digest=$1 expected_pr=$2 expected_head=$3 summary summary_count digest_pr digest_head ci_line
+    local root acceptance_file command expected matches classification_line
+    require_owned_evidence 'PR-state digest' "$digest"
+    summary_count=$(grep -cE '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{40}$' "$digest" || true)
+    [[ $summary_count == 1 ]] || die 'PR-state digest requires exactly one canonical PR/head summary'
+    summary=$(grep -E '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{40}$' "$digest")
+    digest_pr=$(sed -nE 's/^pr=([0-9]+) .*$/\1/p' <<<"$summary")
+    digest_head=$(sed -nE 's/^.* sha=([0-9a-f]{40})$/\1/p' <<<"$summary")
+    [[ $digest_pr == "$expected_pr" && $digest_head == "$expected_head" ]] ||
+        die "PR-state digest identity differs: expected pr=$expected_pr head=$expected_head, got pr=$digest_pr head=$digest_head"
+    [[ $(grep -cE '^base: ref=\S+ behind=[0-9]+ stale=no$' "$digest" || true) == 1 ]] ||
+        die 'PR-state digest does not prove a current integrated base'
+    [[ $(grep -cE '^ci=' "$digest" || true) == 1 ]] || die 'PR-state digest requires exactly one CI status line'
+    ci_line=$(grep -E '^ci=' "$digest")
+    [[ $ci_line =~ ^ci=[0-9]+/[0-9]+\ green\ pending=0\ failing=0$ ]] ||
+        die "PR-state digest final-head CI is not green: $ci_line"
+    [[ $(grep -cE '^finding-classification:' "$digest" || true) == 1 ]] ||
+        die 'PR-state digest requires exactly one finding classification line'
+    classification_line=$(grep -E '^finding-classification:' "$digest")
+    [[ $classification_line == 'finding-classification: cq=known icf=known' ]] ||
+        die "PR-state digest finding classification is unavailable: $classification_line"
+    ! grep -qE '^ready-eligible=no( |$)' "$digest" || die 'PR-state digest reports ready-eligible=no'
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'could not resolve the repository root'
+    acceptance_file=$root/.agent/acceptance.txt
+    if [[ -e $acceptance_file || -L $acceptance_file ]]; then
+        [[ -f $acceptance_file && ! -L $acceptance_file && -r $acceptance_file ]] ||
+            die 'declared acceptance commands are unavailable'
+        while IFS= read -r command || [[ -n $command ]]; do
+            [[ -n $command ]] || continue
+            expected="repo-verify=green acceptance=$command:pass"
+            matches=$(awk -v expected="$expected" '$0 == expected { count++ } END { print count + 0 }' "$digest")
+            [[ $matches == 1 ]] || die "PR-state digest lacks one passing record for required acceptance command: $command"
+        done <"$acceptance_file"
+    fi
+    while IFS= read -r command; do
+        [[ $command == repo-verify=green\ acceptance=*':pass' ]] ||
+            die "PR-state digest has an unmet acceptance result: $command"
+    done < <(grep -E '^repo-verify=' "$digest" || true)
+    printf '%s\n' "$ci_line"
+}
+
+prove_exact_push() {
+    local branch=$1 expected=$2 rows count sha ref
+    rows=$(git ls-remote --refs origin "refs/heads/$branch" 2>/dev/null) ||
+        die "could not read exact pushed branch: origin/$branch"
+    count=$(grep -c . <<<"$rows" || true)
+    [[ $count == 1 ]] || die "exact pushed branch proof requires one ref: origin/$branch"
+    IFS=$'\t' read -r sha ref <<<"$rows"
+    [[ $ref == "refs/heads/$branch" && $sha == "$expected" ]] ||
+        die "exact pushed branch differs: origin/$branch=${sha:-missing} final=$expected"
+}
+
+validate_finalization_record() {
+    jq -e '
+      type == "object" and keys == ["acceptedFindingsSha256","ci","finalHead","issueCommentsSha256",
+        "pr","prStateDigestSha256","predecessorFinalHead","predecessorPr","pushedBranch","pushedHead",
+        "receipt","reviewAttemptSha256","reviewCoverage","reviewPayload","reviewedHead","version"] and
+      .version == 1 and (.pr | type) == "number" and .pr > 0 and
+      (.finalHead | test("^[0-9a-f]{40}$")) and .pushedHead == .finalHead and
+      (.reviewedHead | test("^[0-9a-f]{40}$")) and (.reviewPayload | type) == "string" and
+      (.reviewPayload | length) > 0 and (.pushedBranch | type) == "string" and
+      (.receipt == "adversarial" or .receipt == "verified-skip") and
+      (if .receipt == "adversarial" then
+         (.reviewCoverage | startswith("covered-")) and
+         (.reviewAttemptSha256 | test("^[0-9a-f]{64}$"))
+       else
+         .reviewCoverage == "verified-skip" and .reviewAttemptSha256 == null
+       end) and
+      (.ci | test("^ci=[0-9]+/[0-9]+ green pending=0 failing=0$")) and
+      all(.acceptedFindingsSha256,.issueCommentsSha256,.prStateDigestSha256;
+        test("^[0-9a-f]{64}$")) and
+      ((.predecessorPr == null and .predecessorFinalHead == null) or
+       ((.predecessorPr | type) == "number" and .predecessorPr > 0 and
+        (.predecessorFinalHead | test("^[0-9a-f]{40}$"))))
+    ' >/dev/null 2>&1
+}
+
+finalization_status() {
+    local root current_head run_state_script record parent_record parent_head
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'finalization status must run inside a Git worktree'
+    current_head=$(git -C "$root" rev-parse --verify HEAD 2>/dev/null) || die 'could not resolve current HEAD'
+    run_state_script="$SCRIPT_DIR/../../.shared/scripts/run-state.sh"
+    [[ -x $run_state_script ]] || die 'required finalization helper is unavailable'
+    if ! record=$($run_state_script get --file "$RUN_STATE" --path "chainFinalizations.$PR" 2>/dev/null) ||
+        ! validate_finalization_record <<<"$record"; then
+        printf 'finalization=needed pr=%s reason=unsealed\n' "$PR"
+        return 10
+    fi
+    if [[ $(jq -r .pr <<<"$record") != "$PR" || $(jq -r .finalHead <<<"$record") != "$current_head" ]]; then
+        printf 'finalization=needed pr=%s reason=head-changed\n' "$PR"
+        return 10
+    fi
+    prove_exact_push "$(jq -r .pushedBranch <<<"$record")" "$current_head"
+    if [[ -z $PREDECESSOR_PR ]]; then
+        if [[ $(jq -r '.predecessorPr // ""' <<<"$record") != '' ]]; then
+            printf 'finalization=needed pr=%s reason=predecessor-changed\n' "$PR"
+            return 10
+        fi
+    else
+        if ! parent_record=$($run_state_script get --file "$RUN_STATE" \
+            --path "chainFinalizations.$PREDECESSOR_PR" 2>/dev/null) ||
+            ! validate_finalization_record <<<"$parent_record"; then
+            printf 'finalization=needed pr=%s reason=predecessor-unsealed\n' "$PR"
+            return 10
+        fi
+        parent_head=$(jq -r .finalHead <<<"$parent_record")
+        prove_exact_push "$(jq -r .pushedBranch <<<"$parent_record")" "$parent_head"
+        if [[ $(jq -r '.predecessorPr // ""' <<<"$record") != "$PREDECESSOR_PR" ||
+            $(jq -r '.predecessorFinalHead // ""' <<<"$record") != "$parent_head" ]]; then
+            printf 'finalization=needed pr=%s reason=predecessor-changed\n' "$PR"
+            return 10
+        fi
+    fi
+    printf 'finalization=sealed pr=%s head=%s\n' "$PR" "$current_head"
+}
+
+finalize_successor() {
+    local root current_head attempt reviewed_head review_payload receipt_status receipt_kind receipt_body
+    local ledger_out ledger_json entry coverage_status ci_line accepted_status parent_json='' parent_head=''
+    local record old_record='' run_state_script review_ledger post_receipt finding_ledger attempt_hash_json=null
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'finalization must run inside a Git worktree'
+    current_head=$(git -C "$root" rev-parse --verify HEAD 2>/dev/null) || die 'could not resolve current HEAD'
+    require_owned_evidence 'issue comments' "$ISSUE_COMMENTS"
+    require_owned_evidence 'accepted findings' "$ACCEPTED_FINDINGS"
+    ci_line=$(validate_final_digest "$PR_STATE_DIGEST" "$PR" "$current_head")
+    prove_exact_push "$PUSHED_BRANCH" "$current_head"
+
+    run_state_script="$SCRIPT_DIR/../../.shared/scripts/run-state.sh"
+    review_ledger="$SCRIPT_DIR/../../review-remote-pr/scripts/review-ledger.sh"
+    post_receipt="$SCRIPT_DIR/../../review-remote-pr/scripts/post-receipt.sh"
+    finding_ledger="$SCRIPT_DIR/../../review-remote-pr/scripts/finding-ledger.sh"
+    [[ -x $run_state_script && -x $review_ledger && -x $post_receipt && -x $finding_ledger ]] ||
+        die 'required finalization helper is unavailable'
+
+    receipt_status=$($post_receipt status --issue-comments "$ISSUE_COMMENTS") ||
+        die 'terminal adversarial-review receipt is unresolved or unavailable'
+    receipt_kind=${receipt_status#receipt=}
+    receipt_body=$(jq -er --arg marker '<!-- adversarial-review:spent -->' \
+        '[.[] | (.body // "") | select(contains($marker))] | select(length == 1) | .[0]' \
+        "$ISSUE_COMMENTS" 2>/dev/null) || die 'terminal receipt body is unavailable'
+    [[ $(grep -cE "^- Final verified head: $current_head$" <<<"$receipt_body" || true) == 1 ]] ||
+        die 'terminal receipt does not bind the final verified head'
+
+    if [[ $receipt_kind == adversarial ]]; then
+        [[ -n $REVIEW_ATTEMPT ]] || die 'adversarial finalization requires --review-attempt'
+        require_owned_evidence 'review attempt' "$REVIEW_ATTEMPT"
+        attempt=$(jq -ce --arg repo "$REPO" --argjson pr "$PR" '
+            select(.repo == $repo and .pr == $pr and .state == "completed" and .canonical == true) |
+            select(.head | type == "string" and test("^[0-9a-f]{40}$")) |
+            select(.payload | type == "string" and length > 0)' "$REVIEW_ATTEMPT" 2>/dev/null) ||
+            die 'review attempt is not a completed immutable snapshot for this PR'
+        reviewed_head=$(jq -r .head <<<"$attempt")
+        review_payload=$(jq -r .payload <<<"$attempt")
+        [[ $(grep -cE "^- Reviewed head: $reviewed_head$" <<<"$receipt_body" || true) == 1 ]] ||
+            die 'terminal receipt does not bind the reviewed head'
+        ledger_out=$($review_ledger read --repo "$REPO" --pr "$PR" --comments "$ISSUE_COMMENTS" --repo-root "$root") ||
+            die 'review ledger is unavailable'
+        ledger_json=$(sed -n '2,$p' <<<"$ledger_out")
+        entry=$(jq -ce --arg reviewed "$reviewed_head" --arg payload "$review_payload" '
+            [.reviews[] | select(.kind == "adversarial" and .head_sha == $reviewed and
+              (.diff_payload // "") == $payload)] | select(length == 1) | .[0]' <<<"$ledger_json") ||
+            die 'review ledger does not preserve the immutable reviewed head and payload'
+        [[ $(jq -r '.executionState // "completed"' <<<"$entry") == completed ]] ||
+            die 'remote review execution is not completed'
+        coverage_status=$($review_ledger status --repo "$REPO" --pr "$PR" --comments "$ISSUE_COMMENTS" \
+            --head "$current_head" --kind adversarial --repo-root "$root") ||
+            die 'final integrated head is not covered by the original review ledger'
+        attempt_hash_json=$(jq -Rn --arg hash "$(sha256sum "$REVIEW_ATTEMPT" | cut -d' ' -f1)" '$hash')
+    else
+        [[ $receipt_kind == verified-skip ]] || die "unsupported terminal receipt: $receipt_kind"
+        [[ $(grep -cE '^- Reviewed head: [0-9a-f]{40}$' <<<"$receipt_body" || true) == 1 ]] ||
+            die 'verified-skip receipt requires exactly one reviewed head'
+        [[ $(grep -cE '^- Diff payload: .+$' <<<"$receipt_body" || true) == 1 ]] ||
+            die 'verified-skip receipt requires exactly one diff payload'
+        reviewed_head=$(sed -nE 's/^- Reviewed head: ([0-9a-f]{40})$/\1/p' <<<"$receipt_body")
+        review_payload=$(sed -nE 's/^- Diff payload: (.+)$/\1/p' <<<"$receipt_body")
+        coverage_status=verified-skip
+    fi
+
+    accepted_status=$($finding_ledger status --file "$ACCEPTED_FINDINGS" --repo-root "$root" --head "$current_head") ||
+        die 'accepted findings evidence is invalid or its terminal proof is stale'
+    [[ $(jq -r '.remediation // ""' <<<"$accepted_status") == complete ]] ||
+        die 'accepted findings evidence has incomplete or unknown dispositions'
+
+    if [[ -n $PREDECESSOR_PR ]]; then
+        parent_json=$($run_state_script get --file "$RUN_STATE" --path "chainFinalizations.$PREDECESSOR_PR" 2>/dev/null) ||
+            die "predecessor finalization is unresolved for PR #$PREDECESSOR_PR"
+        validate_finalization_record <<<"$parent_json" || die "predecessor finalization is malformed for PR #$PREDECESSOR_PR"
+        [[ $(jq -r .pr <<<"$parent_json") == "$PREDECESSOR_PR" ]] ||
+            die 'predecessor finalization PR identity differs'
+        parent_head=$(jq -r .finalHead <<<"$parent_json")
+        prove_exact_push "$(jq -r .pushedBranch <<<"$parent_json")" "$parent_head"
+        git -C "$root" merge-base --is-ancestor "$parent_head" "$current_head" 2>/dev/null ||
+            die "final head $current_head does not contain predecessor final head $parent_head; integrate and verify once"
+        if [[ $receipt_kind == adversarial ]] &&
+            ! git -C "$root" merge-base --is-ancestor "$parent_head" "$reviewed_head" 2>/dev/null; then
+            jq -e --arg head "$current_head" --arg reason "merge-down:$parent_head" \
+                'any((.coverage // [])[]; .sha == $head and .reason == $reason)' <<<"$entry" >/dev/null ||
+                die "review coverage lacks merge-down:$parent_head for final head $current_head"
+        fi
+    fi
+
+    record=$(jq -cn --argjson pr "$PR" --arg reviewed "$reviewed_head" --arg payload "$review_payload" \
+        --arg final "$current_head" --arg branch "$PUSHED_BRANCH" --arg receipt "$receipt_kind" \
+        --arg coverage "$coverage_status" --arg ci "$ci_line" \
+        --argjson predecessor "${PREDECESSOR_PR:-null}" --arg predecessor_head "$parent_head" \
+        --arg accepted_hash "$(sha256sum "$ACCEPTED_FINDINGS" | cut -d' ' -f1)" \
+        --arg comments_hash "$(sha256sum "$ISSUE_COMMENTS" | cut -d' ' -f1)" \
+        --arg digest_hash "$(sha256sum "$PR_STATE_DIGEST" | cut -d' ' -f1)" \
+        --argjson attempt_hash "$attempt_hash_json" '
+        {version:1,pr:$pr,predecessorPr:$predecessor,
+         predecessorFinalHead:(if $predecessor == null then null else $predecessor_head end),
+         reviewedHead:$reviewed,reviewPayload:$payload,finalHead:$final,pushedHead:$final,
+         pushedBranch:$branch,receipt:$receipt,reviewCoverage:$coverage,ci:$ci,
+         acceptedFindingsSha256:$accepted_hash,issueCommentsSha256:$comments_hash,
+         prStateDigestSha256:$digest_hash,reviewAttemptSha256:$attempt_hash}')
+    validate_finalization_record <<<"$record" || die 'internal finalization record validation failed'
+    old_record=$($run_state_script get --file "$RUN_STATE" --path "chainFinalizations.$PR" 2>/dev/null) || true
+    if [[ -n $old_record && $(jq -Sc . <<<"$old_record") == "$(jq -Sc . <<<"$record")" ]]; then
+        printf 'finalized pr #%s reviewed=%s final=%s predecessor=%s no-op\n' \
+            "$PR" "$reviewed_head" "$current_head" "${parent_head:-none}"
+        return 0
+    fi
+    $run_state_script set --file "$RUN_STATE" --path "chainFinalizations.$PR" --json "$record"
+    printf 'finalized pr #%s reviewed=%s final=%s predecessor=%s receipt=%s coverage=%s\n' \
+        "$PR" "$reviewed_head" "$current_head" "${parent_head:-none}" "$receipt_kind" "$coverage_status"
 }
 
 resolve_base() {
@@ -1078,6 +1378,8 @@ main() {
     validate_args
     case $MODE in
         resolve) resolve_base ;;
+        finalization-status) finalization_status ;;
+        finalize-successor) finalize_successor ;;
         retarget) retarget ;;
         recover-closed) recover_closed ;;
     esac
