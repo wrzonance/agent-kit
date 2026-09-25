@@ -35,7 +35,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
+    # #905 review: split HEAD-bound evidence from its HEAD-independent exclusion lease.
+    [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
     # #903: atomically admit reviews and release proved-stopped external capacity.
     [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
@@ -233,6 +234,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
+# #905 review: validate lease liveness and persist recovery trust provenance.
+# #905 final review: bind root recovery trust to its captured terminal summary.
 # #903: shared reviewer/native admission and its durable inventory checks.
 # #903: shared review/worker capacity and proved-stopped liveness evidence.
 # #902: executable final-head and accepted-finding receipt gates.
@@ -244,8 +247,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
 # #906 review: complete next-action help and inventory-safe dispatch.
 # #909: one-pass draft and saved publication-target enforcement in gh-body.sh.
-# #909 landing: measured combined helper implementations.
-readonly MAX_TREE_TOKENS=496157
+# #905 landing combines the reviewed recovery and dispatch helpers.
+readonly MAX_TREE_TOKENS=501664
 
 violations=0
 checked=0

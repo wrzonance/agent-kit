@@ -151,13 +151,15 @@ ineligible_rc=0
 ineligible_prompt=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
     --worktree "$ineligible_repo" --issue 136 --branch feat/issue-136 \
     --worker-model gpt-5.6-luna --worker-effort high 2>&1) || ineligible_rc=$?
-assert_eq 0 "$ineligible_rc" 'composer emits an actionable block for unavailable structured evidence'
+assert_eq 0 "$ineligible_rc" 'composer emits an actionable native-evidence fallback'
 assert_contains "$ineligible_prompt" 'verification-capability=unavailable' \
     'dispatch prompt identifies the unavailable required command capability'
 assert_contains "$ineligible_prompt" 'missing=AGENT_VERIFY_TEST_MODE=local,AGENT_VERIFY_TEST_TOOLCHAIN' \
     'dispatch prompt names the missing declarations'
-assert_contains "$ineligible_prompt" 'authorize-native-evidence-handoff' \
-    'dispatch prompt names the explicit native-evidence operator choice'
+assert_contains "$ineligible_prompt" 'action=run-full-check-and-return-native-log' \
+    'dispatch prompt directs the worker to collect native evidence without an operator question'
+assert_not_contains "$ineligible_prompt" 'authorize-native-evidence-handoff' \
+    'dispatch prompt does not request redundant native-evidence authorization'
 
 transient_repo="$tmp/verification-inputs-pending"
 make_repo "$transient_repo" "$contract"

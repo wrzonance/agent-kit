@@ -1680,8 +1680,8 @@ assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
 # Issue #901: deferred finalization adds the sealed pre-work guard and skip path.
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18353 ]] && printf yes || printf no)" 'chains reference stays at or under 18353 bytes'
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4091 ]] && printf yes || printf no)" \
-    'trust-and-fencing reference stays at or under 4091 bytes (issue #731 local reuse contract)'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4076 ]] && printf yes || printf no)" \
+    'trust-and-fencing reference stays at or under 4076 bytes (issue #731 local reuse contract)'
 
 # 2026-09-09 issue #607: +23 for proof persistence and the event-kind token
 # (measured; the plan estimated +20, the actual multi-line printf/persist
