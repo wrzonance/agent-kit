@@ -89,6 +89,11 @@ assert_eq 'dispatch' "$(jq -r .next_action <<<"$decision")" \
 assert_eq 1 "$(jq -r .unknown_operations <<<"$decision")" \
     'dispatch keeps the unrelated unknown outcome visible for reconciliation'
 
+unverified_inventory=$(snapshot '["issue-A"]' '[]' '[]' '[]' '["issue-A"]' true false)
+decision=$("$script" next-action --file "$state" --json "$unverified_inventory")
+assert_eq 'reconcile' "$(jq -r .next_action <<<"$decision")" \
+    'actionable work cannot dispatch until the operation inventory is complete'
+
 before_conflict=$(sha256sum "$state")
 conflict=$(snapshot '["issue-A"]' \
     '[{"id":"worker-A","kind":"worker","status":"active","affected":["issue-A"]}]' \
@@ -157,5 +162,21 @@ assert_contains "$missing_err" 'invalid next-action snapshot' \
     'an incomplete snapshot names the evidence failure'
 assert_eq "$before_missing" "$(sha256sum "$state")" \
     'invalid evidence leaves the saved checkpoint unchanged'
+
+help_text=$("$script" --help)
+help_example=$(sed -n 's/^Example: //p' <<<"$help_text")
+assert_contains "$help_text" 'observed_at (YYYY-MM-DDThh:mm:ss[.fff]Z)' \
+    'help names the accepted UTC timestamp shape'
+assert_contains "$help_text" 'actionable_complete, operations_complete' \
+    'help names both mandatory evidence completeness fields'
+assert_contains "$help_text" 'operations require id, kind (worker|reviewer|test|other), status (active|unknown), and affected' \
+    'help names every mandatory operation field and allowed classification'
+assert_contains "$help_text" 'operator_dependencies require question and affected' \
+    'help names every mandatory operator dependency field'
+assert_eq 1 "$(grep -c '^Example: ' <<<"$help_text")" \
+    'help prints one unambiguous snapshot example'
+help_decision=$("$script" next-action --file "$tmp/help-state.json" --json "$help_example")
+assert_eq 'dispatch' "$(jq -r .next_action <<<"$help_decision")" \
+    'the documented nested snapshot example is directly executable'
 
 finish

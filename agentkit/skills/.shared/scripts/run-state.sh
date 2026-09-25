@@ -42,7 +42,8 @@ summary print handoff coverage from durable run state and active-worker lifecycl
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
 dequeue-summary remove one queued issue identity when its dispatch starts (absent is success)
-next-action validate/save SNAPSHOT fields evidence, actionable_work, operations, operator_dependencies, completed_work, and remaining_work; operations require id, kind (worker/reviewer/test/other), status (active/unknown), and affected IDs; print the saved decision
+next-action validate/save evidence, actionable_work, operations, operator_dependencies, completed_work, and remaining_work; evidence requires id, observed_at (YYYY-MM-DDThh:mm:ss[.fff]Z), actionable_complete, operations_complete; operations require id, kind (worker|reviewer|test|other), status (active|unknown), and affected IDs; operator_dependencies require question and affected IDs; print the saved decision
+Example: {"evidence":{"id":"e","observed_at":"2026-09-24T12:00:00Z","actionable_complete":true,"operations_complete":true},"actionable_work":["B"],"operations":[{"id":"o","kind":"reviewer","status":"unknown","affected":["A"]}],"operator_dependencies":[{"question":"q","affected":["A"]}],"completed_work":[],"remaining_work":["A","B"]}
 The file must be absent or an owned, non-symlink regular file holding exactly one JSON object;
 anything else (unparseable, empty, or more than one JSON value) exits 1 (never read as empty).
 Writes are atomic (temp file beside it, mode 0600, rename).
@@ -441,7 +442,7 @@ select_next_action() {
         ($snapshot.operations | map(select(.status == "active")) | length) as $active |
         ($snapshot.operations | map(select(.status == "unknown")) | length) as $unknown |
         ([$snapshot.operator_dependencies[].affected[]] | unique) as $operator_affected |
-        (if ($snapshot.actionable_work | length) > 0 then "dispatch"
+        (if ($snapshot.actionable_work | length) > 0 and $snapshot.evidence.operations_complete then "dispatch"
          elif $unknown > 0 then "reconcile"
          elif $active > 0 then "collect"
          elif (($snapshot.evidence.actionable_complete and $snapshot.evidence.operations_complete) | not)
