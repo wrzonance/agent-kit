@@ -36,10 +36,11 @@ EOF
 
 script="$root/agentkit/skills/parallel-issues/scripts/issue-paths.sh"
 out=$("$script" --issue 202 --repo-root "$repo" --body-file "$body")
-assert_eq $'create .editorconfig\ncreate .gitignore\ncreate NEW.md\ncreate docs/new-guide.md\ncreate tools/bootstrap-worktree.sh\nexists README.md\nexists src/existing.sh' "$out" \
+assert_eq $'create .editorconfig\ncreate .github/workflows/new.yml\ncreate .gitignore\ncreate NEW.md\ncreate docs/new-guide.md\ncreate tools/bootstrap-worktree.sh\nexists README.md\nexists src/existing.sh' "$out" \
     'the issue body yields deterministic literal exists/create predictions'
 assert_not_contains "$out" 'link/escape.sh' 'a symlink ancestor cannot escape the repository tree'
-assert_not_contains "$out" '.github/workflows' 'protected paths are excluded'
+assert_contains "$out" '.github/workflows/new.yml' \
+    'protected paths remain available for preparation and scoped publication approval'
 assert_not_contains "$out" '../' 'traversal is excluded'
 assert_not_contains "$out" '*' 'glob-shaped text is not reported as a literal path'
 assert_not_contains "$out" 'dry-run' 'a command option is not reported as a path'

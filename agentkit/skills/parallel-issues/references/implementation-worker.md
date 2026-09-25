@@ -134,6 +134,14 @@ At FINISH, checkpoint the completed candidate before its publication verificatio
    consumes unchanged proof without rerunning it; changed code or relevant inputs require new
    proof. Root owns the draft PR, board, and review actions.
 
+If the helper parks staged protected paths (exit 3), preserve the worktree and return the diff,
+protected paths, rationale, focused check results, limitations, and reported `approval_scope`. Resume
+the same worker after a covering ledger decision exists. The resumed worker commits through the same
+helper, runs fresh full verification against the committed HEAD, and only then pushes. Prepared checks
+never stand in for that final committed-head verification.
+For a generated proposal-only boundary, `protected-patch.sh scope` derives the same concrete tree from
+a patch without writing live config; only its grant-checking `apply` mode may write it after approval.
+
 **History freeze — binding on first push.** After pushing, do not amend, rebase, reset, or force-push.
 Pushed commits can be a successor base; stranding that successor is the cost of every rewrite.
 Add a follow-up commit or report the problem and stop.
@@ -215,8 +223,8 @@ When root supplies runId, attempt, and workerId, use the fields in
 `parallel-issues/references/worker-prompts.md#structured-result-contract` and run
 `.shared/scripts/worker-result.sh write --input INPUT --output RESULT`; finish with `worker-result=ABSOLUTE_PATH`; set each `verification[].command` to the composed runbook's bare `cmd_name`, not its runnable `cmd` line.
 Do not invent IDs or verification fingerprints. Missing filesystem/native support uses a text handback with
-`evidence=unknown` and the precise remaining action. Structured acceptance blocks unavailable capability and names missing declarations plus the authorized native-evidence handoff.
-Report the final runner log path, but never copy a digest from output, narration, or the worker-writable `.sha256` sidecar into worker JSON; without independently observed runner output, root keeps verification unknown. Its root-review, root-ci and draft-pr obligations remain unresolved.
+`evidence=unknown` and the precise remaining action. When cache declarations are absent, run the full declared check and return its native log; structured acceptance validates that execution without an operator question.
+Report the final runner log path, but never copy a digest from output, narration, or the worker-writable `.sha256` sidecar into worker JSON. Root observes the terminal summary or performs the single retained recovery when proof is missing. Its root-review, root-ci and draft-pr obligations remain unresolved.
 
 Return the six-step/review/finish status and the completion report (branch, full commit SHA,
 diffstat, green verification log path) — or, on an environment refusal, the fallback

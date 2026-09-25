@@ -27,6 +27,8 @@ fresh execution follows. Only `verification current` and `verification reused` a
 Running or unknown records return their handle with status 75; inspect it, then use `--force` for
 appropriate recovery. `--force` never starts a duplicate while the lease is held. Compose
 collisions and permitted transient retries remain retryable. Legacy cache and log formats remain.
+Cache-ineligible checks retain evidence in `.agent/run-records/` without granting
+reuse. Acceptance collects an active run or spends one run-state recovery per check and candidate head.
 
 During red/green, run focused suites. Commit the completed candidate, then run the required
 unfocused full suite on that clean committed HEAD before push. The worker returns its SHA and

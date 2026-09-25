@@ -35,7 +35,10 @@ declare -A KNOWN_OVERSIZE=(
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
-    [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
+    # #905 review: split HEAD-bound evidence from its HEAD-independent exclusion lease.
+    [skills/.shared/scripts/agent-run.sh]="2112:23111:800"
+    # #905 final recovery binding plus #910 immutable accepted-publication projection.
+    [skills/.shared/scripts/worker-result.sh]="678:10258:800"
     # #903: atomically admit reviews and release proved-stopped external capacity.
     [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
@@ -43,12 +46,16 @@ declare -A KNOWN_OVERSIZE=(
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
-    [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
+    # #911: exact staged-tree ledger grants authorize prepared protected commits.
+    # #911 review: classify an unresolved index before protected-tree scope derivation.
+    [skills/.shared/scripts/worktree-commit.sh]="891:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     # #901: seal deferred successor finalization against terminal evidence.
     # #901 parent integration: bind completed remote entry to canonical attempt.
     # #901 review: distinguish proved tip movement from unavailable push evidence.
     [skills/parallel-issues/scripts/chain-advance.sh]="1438:18461:800"
+    # Combined #904/#910: protected worker handoff and join-base composition.
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="769:10031:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -240,11 +247,19 @@ readonly MAX_HELPER_TOKENS=10000
 # #901: deferred chain finalization reuses run-state and exact pushed evidence.
 # #907: durable run binding and stall-output ledger alias protection.
 # #906: validated durable next-action boundary prevents operator-only wait loops.
-# #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #906 + finalized #907: 1,931,635 helper bytes / 4; exact combined total.
 # #906 review: complete next-action help and inventory-safe dispatch.
 # #909: one-pass draft and saved publication-target enforcement in gh-body.sh.
-readonly MAX_TREE_TOKENS=490931
+# #905: native-log validation and one durable missing-evidence recovery add measured helper code.
+# #911: exact staged-tree authorization plus protected-path preparation handback.
+# #907 review: exact-run rebind validates fresh authority without losing durable state.
+# #905 review: validate lease liveness and persist recovery trust provenance.
+# #905 final review: bind root recovery trust to its captured terminal summary.
+# #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
+# #910: complete resumable join assembly and resolution-worker composition.
+# #910 review: distinguish fresh publication equality from recorded-base reachability.
+# Integration of finalized #901-#913 heads: exact combined helper tree.
+readonly MAX_TREE_TOKENS=509102
 
 violations=0
 checked=0

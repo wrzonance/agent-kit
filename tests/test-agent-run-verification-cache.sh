@@ -524,6 +524,27 @@ out=$(local_run)
 assert_contains "$out" 'verification reuse disabled: mode-not-local; executing fresh' \
     'external/default state names why reuse is disabled and promises fresh execution'
 assert_contains "$out" 'PASS:' 'default command is freshly executed'
+native_key=$("$real_run_sh" --dir "$local_repo" --cmd test --execution-key)
+assert_eq '64' "${#native_key}" 'native execution query returns a stable sha256 identity'
+native_result="$local_repo/.agent/run-records/$native_key/result"
+assert_eq yes "$([[ -f $native_result && ! -L $native_result ]] && printf yes || printf no)" \
+    'cache-ineligible execution retains a native result in the existing run record'
+native_fields=$(tr '\0' '\n' < "$native_result")
+assert_contains "$native_fields" $'native-v1\nrc\n0\ncommand\ntest' \
+    'native result binds successful exit and declared command'
+assert_contains "$native_fields" $'head\n'"$(git -C "$local_repo" rev-parse HEAD)" \
+    'native result binds the committed candidate head'
+assert_contains "$native_fields" $'scope\nfull\nclean\n' \
+    'native result binds full scope and records start cleanliness'
+logs_before=$(find "$local_repo/.agent/logs" -maxdepth 1 -type f -name '*.log' | wc -l | tr -d ' ')
+assert_eq "$native_key" "$("$real_run_sh" --dir "$local_repo" --cmd test --execution-key)" \
+    'unchanged execution inputs retain the same native identity'
+logs_after=$(find "$local_repo/.agent/logs" -maxdepth 1 -type f -name '*.log' | wc -l | tr -d ' ')
+assert_eq "$logs_before" "$logs_after" 'native execution query creates no log or execution'
+printf '\n' >> "$local_repo/tools/run"
+changed_native_key=$("$real_run_sh" --dir "$local_repo" --cmd test --execution-key)
+assert_eq no "$([[ $native_key == "$changed_native_key" ]] && printf yes || printf no)" \
+    'changed executable bytes cannot inherit a native execution identity'
 
 printf 'AGENT_CMD_TEST=tools/run\nAGENT_VERIFY_TEST_MODE=local\n' > "$local_repo/.agent/config.env"
 out=$(local_run)
