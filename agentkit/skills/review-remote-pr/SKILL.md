@@ -7,15 +7,15 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
+Standalone invocation: run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
 stdout begins `skills=` (contract, not registry proof).
-Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run it once.
+Require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr` before work.
+Delegated: reuse the owning workflow's receipt and preflight; do not run or acknowledge review-remote-pr preflight. Standalone `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
-a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Work and receipt survive restart/resume; new sessions need their own.
+Mismatch diagnostics name bounded read/search forms.
 
 ### No delivered challenge = no run
 
