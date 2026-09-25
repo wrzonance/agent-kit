@@ -306,16 +306,12 @@ conflict analysis. The plan uses this schema:
 }
 ```
 
-The dispatch-time artifact stays at schema version 1 while PR numbers and
-pushed heads do not exist. Immediately after atomically persisting it, run
-`"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`;
-the dispatch must not begin unless the helper prints `schemaVersion=1 valid`. The validator resolves
-every glob against the chain-base tree (a glob matching nothing fails closed and names the nearest
-sibling) and derives each project test root from that tree's declared `AGENT_RUNDIR_*_TEST*`/
-`AGENT_CMD_*_TEST*` commands — declaration-driven only, never from a directory merely named
-`test`. Each proposed root must be inside `predictedWriteSet` or listed in `testRootExclusions` (per entry, or once at
-the top level for the whole plan). One invocation reports every violation with a copy-pasteable `jq`
-patch; `--fix` applies them.
+The dispatch artifact stays at schema 1 until PR numbers and pushed heads exist. Persist it atomically,
+then run `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`; dispatch requires `schemaVersion=1 valid`.
+The validator resolves globs and declared test roots against the chain-base tree, requiring each root
+in `predictedWriteSet` or `testRootExclusions`; it reports all violations and `--fix` remedies. Its
+`protected=N[...]` summary is a publication-boundary disclosure: keep those entries for preparation,
+continue unrelated work, and queue dependents until the approved commit is pushed.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

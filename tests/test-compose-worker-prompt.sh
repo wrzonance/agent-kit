@@ -1428,15 +1428,16 @@ assert_eq 'nonzero' "$( ((ledger_non_issue_lead_rc != 0)) && printf nonzero || p
 assert_contains "$ledger_non_issue_lead_err" 'only valid for the issue-lead template' \
     'the refusal names the template restriction'
 
-ledger_non_yolo_err=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
+ledger_attended_prompt=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
     --boundary private-trusted --ledger "$tmp/session-ledger.ndjson" --run-id run-563 \
-    --ledger-scope auto 2>&1 >/dev/null)
-ledger_non_yolo_rc=$?
-assert_eq 'nonzero' "$( ((ledger_non_yolo_rc != 0)) && printf nonzero || printf zero )" \
-    '--ledger is refused outside --boundary yolo-trusted'
-assert_contains "$ledger_non_yolo_err" 'require --boundary yolo-trusted' \
-    'the refusal names the boundary requirement'
+    --ledger-scope protected-tree:0123456789012345678901234567890123456789)
+assert_contains "$ledger_attended_prompt" 'ledger_scope=protected-tree:' \
+    'an attended resume carries the durable protected-diff grant'
+assert_contains "$ledger_attended_prompt" 'prepared checks' \
+    'the resumed prompt distinguishes preparation evidence from final verification'
+assert_contains "$ledger_attended_prompt" 'committed HEAD' \
+    'the resumed prompt requires final verification against the protected commit'
 
 ledger_partial_err=$(bash "$compose" --template issue-lead --write-set 'src/**' --worktree "$repo" \
     --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \

@@ -127,6 +127,12 @@ When FINISH's fresh full verification is green, publish the branch yourself:
 3. Push the branch: `git push -u origin feat/issue-NNN`.
 4. Report branch, SHA, diffstat, and the marker-bearing green log path. Root owns the draft PR, board, and review actions.
 
+If the helper parks staged protected paths (exit 3), preserve the worktree and return the diff,
+protected paths, rationale, focused check results, limitations, and reported `approval_scope`. Resume
+the same worker after a covering ledger decision exists. The resumed worker commits through the same
+helper, runs fresh full verification against the committed HEAD, and only then pushes. Prepared checks
+never stand in for that final committed-head verification.
+
 **History freeze — binding on first push.** After pushing, do not amend, rebase, reset, or force-push.
 Pushed commits can be a successor base; stranding that successor is the cost of every rewrite.
 Add a follow-up commit or report the problem and stop.

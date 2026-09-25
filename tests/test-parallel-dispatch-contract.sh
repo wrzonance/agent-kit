@@ -1920,8 +1920,11 @@ prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
 # session, and ledger operands; 14 lines keep those fields visibly distinct.
-assert_eq yes "$([[ $prose_lines -le 2243 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+# #911 adds the protected preparation/approval/resume contract at the worker
+# and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
+# #910 assembly preserves both additions in one measured prose ceiling.
+assert_eq yes "$([[ $prose_lines -le 2244 ]] && printf yes || printf no)" \
+    'issue #910 prose files stay below their combined workflow line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \
