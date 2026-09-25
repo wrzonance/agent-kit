@@ -612,6 +612,19 @@ if ((validate_only)); then
         ((.protectedPathAcknowledgement | type) == "array" and
           (.protectedPathAcknowledgement | length) > 0 and
           all(.protectedPathAcknowledgement[]; path));
+      def join_fields:
+        if (has("expectedPredecessors") or has("integrationBaseSha")) | not then true
+        else
+          .issue as $issue |
+          has("expectedPredecessors") and has("integrationBaseSha") and
+          ((.expectedPredecessors | type) == "array") and
+          all(.expectedPredecessors[]; uint) and
+          ((.expectedPredecessors | unique | length) == (.expectedPredecessors | length)) and
+          ((.expectedPredecessors | index($issue)) == null) and
+          ((.integrationBaseSha == null) or
+            ((.integrationBaseSha | type) == "string" and
+              (.integrationBaseSha | test("^[0-9a-f]{40}$"))))
+        end;
       def issue_set_or_count:
         (type == "number" and . >= 0 and floor == .) or
         (type == "array" and all(.[]; uint) and (map(.) | unique | length) == length);
@@ -638,7 +651,7 @@ if ((validate_only)); then
         ((.predictedWriteSet | type) == "array" and
           (.predictedWriteSet | length) > 0) and
         all(.predictedWriteSet[]; path) and
-        work_shape and test_root_exclusions and protected_path_acknowledgement) and
+        work_shape and test_root_exclusions and protected_path_acknowledgement and join_fields) and
       ((.entries | map(.issue) | unique | length) == (.entries | length)) and
       ((.conflictMap | type) == "object") and
       ((.conflictMap.pairs | type) == "array") and

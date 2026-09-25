@@ -603,6 +603,23 @@ def store_receipt(a,receipt):
     command([str(HELPERS/'run-state.sh'),'set','--file',a.state,'--path','results.'+a.attempt,'--json',json.dumps(receipt)])
     return reused
 
+def record_initial_publication(a,r):
+    if r['push']!='pushed': return
+    path='initialPublications.'+str(a.issue)
+    observed={'attempt':r['attempt'],'branch':r['branch'],'headSha':r['headSha']}
+    old=subprocess.run([str(HELPERS/'run-state.sh'),'get','--file',a.state,'--path',path],
+                       capture_output=True,text=True,timeout=20)
+    if old.returncode==11:
+        command([str(HELPERS/'run-state.sh'),'set','--file',a.state,'--path',path,
+                 '--json',json.dumps(observed)])
+        return
+    if old.returncode!=0: raise Unknown('initial publication state unavailable; preserve accepted result')
+    initial=json.loads(old.stdout)
+    require(isinstance(initial,dict) and set(initial)=={'attempt','branch','headSha'} and
+            text(initial['attempt']) and text(initial['branch']) and
+            bool(re.fullmatch(r'[0-9a-f]{40}',initial['headSha'])),
+            'initial publication state is invalid; preserve it for recovery')
+
 def main():
     p=argparse.ArgumentParser(prog='worker-result.sh',
                               description='Write or independently validate worker-result v1 with bounded native-evidence recovery.')
@@ -644,6 +661,7 @@ def main():
                  'obligations':r['obligations'],'blocker':r['blocker'],'evidence':evidence_type}
         if suggestion: receipt['suggestion']=suggestion
         reused=store_receipt(a,receipt)
+        if status=='accepted': record_initial_publication(a,r)
         print(json.dumps(dict(receipt,reused=reused))); return 0 if status=='accepted' else 3
     except (Rejected,Unknown,OSError,ValueError,TypeError,KeyError,AttributeError,subprocess.TimeoutExpired) as e:
         unknown=isinstance(e,(Unknown,OSError,subprocess.TimeoutExpired)); status='unknown' if unknown else 'rejected'

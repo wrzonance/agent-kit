@@ -1678,10 +1678,12 @@ assert_eq '1' "$(wc -l <"$tmp/ledger.log")" \
 
 # Issue #707: disclose absent CI on stacked target branches.
 # Issue #901: deferred finalization adds the sealed pre-work guard and skip path.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 18353 ]] && printf yes || printf no)" 'chains reference stays at or under 18353 bytes'
+# Issue #910: document complete join assembly and the automatic conflict handoff.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/chains.md") -le 19029 ]] && printf yes || printf no)" 'chains reference stays at or under 19029 bytes'
 
+# Issue #910 extends local reuse fencing to the complete-join integration base.
 assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/trust-and-fencing.md") -le 4076 ]] && printf yes || printf no)" \
-    'trust-and-fencing reference stays at or under 4076 bytes (issue #731 local reuse contract)'
+    'trust-and-fencing reference stays at or under 4076 bytes'
 
 # 2026-09-09 issue #607: +23 for proof persistence and the event-kind token
 # (measured; the plan estimated +20, the actual multi-line printf/persist

@@ -368,12 +368,26 @@ base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_roo
 # A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
 # git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"
-setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session")
+setup_args=(--repo-root "$repository_root" --issue "$issue_number" --base "$base" --activation-session "$activation_session" \
+  --dispatch-plan "$dispatch_plan" --run-id "$RUN_ID")
 [[ -z $chain_base_sha ]] || setup_args+=(--chain-base "$chain_base_sha")
-"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}"
+setup_rc=0
+"$agentkit/parallel-issues/scripts/create-issue-worktree.sh" "${setup_args[@]}" || setup_rc=$?
+((setup_rc == 0)) || exit "$setup_rc"
 ```
 
 The helper prints `resumable: yes|no untracked=N modified=M`; existing state requires `--resume`. Its `worktree=` line identifies the checkout; paste that contract, not Step 0's.
+
+Exit 3 with `join-conflict ... next=resolution-worker-then-resume` is an automatic
+continuation, not an operator checkpoint. Dispatch a resolution-only worker as the named
+active sole writer in that same worktree. It verifies `MERGE_HEAD`, compares both complete
+blobs and predecessor intent, combines independent behavior, runs the affected declared
+checks, and commits through `worktree-commit.sh`; it must not start issue implementation.
+Then rerun the same setup arguments with `--resume`. A failed resolver returns the existing
+structured BLOCKED handback; classify it with
+`$agentkit/.shared/scripts/validate-handback.sh --classify-completion`,
+preserve `partial-blockers.list`, keep this issue queued, and continue independent work.
+Only `setup_rc=0` with the printed `join-base=` may proceed to implementation dispatch.
 
 The setup command runs through `agent-run.sh`, which supplies the run's cache directories and CA bundle. A missing declaration is a valid no-op for repositories that need no dependency bootstrap.
 

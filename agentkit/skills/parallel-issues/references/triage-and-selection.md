@@ -288,6 +288,8 @@ conflict analysis. The plan uses this schema:
     {
       "issue": 167,
       "publicationTarget": "feat/issue-164",
+      "expectedPredecessors": [164, 166],
+      "integrationBaseSha": null,
       "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"],
       "workerEffort": "xhigh",
       "effortReason": "novel cache-ownership rewrite; three prior attempts failed",
@@ -295,6 +297,9 @@ conflict analysis. The plan uses this schema:
     },
     {
       "issue": 172,
+      "publicationTarget": "main",
+      "expectedPredecessors": [],
+      "integrationBaseSha": null,
       "predictedWriteSet": ["docs/research/**"],
       "workShape": "no-code",
       "holdReason": "issue body: 'do not open a pull request for this analysis'"
@@ -306,6 +311,14 @@ conflict analysis. The plan uses this schema:
   }
 }
 ```
+
+`expectedPredecessors` is the complete ordered set of issue IDs derived from
+the dependency plan; a caller-supplied `--chain-base` never replaces or narrows it.
+`integrationBaseSha` starts null and setup replaces it with the published join head
+only after every predecessor's immutable initial publication is proven reachable.
+`publicationTarget` is the PR's single target branch and remains separate: targeting
+one predecessor branch is not evidence that a multi-input join contains the others.
+The schema-2 upgrade preserves all three entry fields unchanged.
 
 The dispatch artifact stays at schema 1 until PR numbers and pushed heads exist. Persist it atomically,
 then run `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`; dispatch requires `schemaVersion=1 valid`.
