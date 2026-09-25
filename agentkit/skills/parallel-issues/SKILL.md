@@ -720,7 +720,8 @@ RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 # After the runner returns 0, run the ledger command once per outcome:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
-finalize_args=(finalize --run-id "$RUN_ID" --repo-root "$worktree" --pr "$PR" \
+finalize_args=(finalize --run-id "$RUN_ID" --run-repo-root "$repository_root" \
+  --repo-root "$worktree" --pr "$PR" \
     --repo "$REPO" --agent-identity "$AGENT_IDENTITY")
 [[ -z ${MODE_REASON:-} ]] || finalize_args+=(--mode-reason "$MODE_REASON")
 "$agentkit/parallel-issues/scripts/pr-stage.sh" "${finalize_args[@]}"
