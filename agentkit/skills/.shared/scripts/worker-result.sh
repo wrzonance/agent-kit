@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Atomic worker-result v1 artifacts; root independently checks every claim.
+# Atomic worker-result v1 artifacts; root independently checks every claim and
+# performs at most one retained native-evidence recovery per check and head.
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 if ! command -v python3 >/dev/null 2>&1; then
@@ -17,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 HELPERS = Path(sys.argv[1])
 RESULT_FIELDS = ('schemaVersion','runId','attempt','workerId','issue','worktree','branch','baseSha',
@@ -24,6 +26,7 @@ RESULT_FIELDS = ('schemaVersion','runId','attempt','workerId','issue','worktree'
 COMMAND_PATTERN = '[a-z][a-z0-9-]*'
 class Rejected(Exception): pass
 class Unknown(Exception): pass
+class RecoveryNeeded(Unknown): pass
 
 def require(condition, reason):
     if not condition: raise Rejected(reason)
@@ -134,11 +137,174 @@ def verification_capability(root, name):
     except (OSError,subprocess.TimeoutExpired) as e: raise Unknown(f'verification capability query unavailable: {name}') from e
     fingerprint=p.stdout.decode(errors='replace').strip()
     error=p.stderr.decode(errors='replace').strip()
-    if p.returncode and 'verification capability unavailable:' in error:
-        raise Unknown(f'verification capability unavailable: {error or name}')
+    if p.returncode and 'reason=mode-not-local' in error and \
+            'declarations=mode-absent,toolchain-absent' in error:
+        return None,error
     if p.returncode or not re.fullmatch('[0-9a-f]{64}',fingerprint):
         raise Unknown(f'verification capability query failed: {name} (exit {p.returncode})')
-    return fingerprint
+    return fingerprint,None
+
+def execution_key(root, name):
+    argv=[str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,'--execution-key']
+    try: p=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+    except (OSError,subprocess.TimeoutExpired) as e: raise Unknown(f'native execution query unavailable: {name}') from e
+    key=p.stdout.decode(errors='replace').strip()
+    if p.returncode or not re.fullmatch('[0-9a-f]{64}',key):
+        raise Unknown(f'native execution capability unavailable: {name} (exit {p.returncode})')
+    return key
+
+def native_record(path):
+    fields=read(path).split(b'\0')
+    if fields and fields[-1]==b'': fields.pop()
+    if not fields or fields.pop(0)!=b'native-v1' or len(fields)%2:
+        raise Unknown(f'invalid native execution record: {path}')
+    try: decoded=[part.decode() for part in fields]
+    except UnicodeDecodeError as e: raise Unknown(f'invalid native execution record encoding: {path}') from e
+    record={}
+    for key,value in zip(decoded[::2],decoded[1::2]):
+        if key in record: raise Unknown(f'duplicate native execution field: {key}')
+        record[key]=value
+    expected={'rc','command','key','head','worktree','scope','clean','log','sha256'}
+    if set(record)!=expected: raise Unknown(f'invalid native execution record fields: {path}')
+    return record
+
+def recovery_id(root, name, head):
+    return hashlib.sha256(json.dumps([str(root),name,head]).encode()).hexdigest()
+
+def load_native_recovery(a, root, name, head):
+    recovery=recovery_id(root,name,head)
+    old=subprocess.run([str(HELPERS/'run-state.sh'),'get','--file',a.state,
+                        '--path','nativeRecoveries.'+recovery],capture_output=True,text=True,timeout=20)
+    if old.returncode not in (0,11): raise Unknown('native recovery state unavailable; preserve existing state')
+    prior=json.loads(old.stdout) if old.returncode==0 else None
+    require(prior is None or isinstance(prior,dict), 'native recovery state must be an object')
+    return recovery,prior
+
+def persist_recovery(a, recovery, prior, reason):
+    command([str(HELPERS/'run-state.sh'),'set','--file',a.state,
+             '--path','nativeRecoveries.'+recovery,'--json',json.dumps(prior)])
+    receipt={'status':'unknown','reason':reason,'claims':a.claims,'reused':False,
+             'obligations':['root-review','root-ci','draft-pr','root-push']}
+    store_receipt(a,receipt)
+
+def collect_native_recovery(root, name, key, a):
+    head=command(['git','-C',str(root),'rev-parse','HEAD']).decode().strip()
+    recovery,prior=load_native_recovery(a,root,name,head)
+    handle=root/'.agent/run-records'/key
+    running=handle/'running'
+    if os.path.lexists(running):
+        info=running.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution running record must be owned and non-symlink: {name}')
+    process=None
+    if prior is not None:
+        if not isinstance(prior,dict) or prior.get('command')!=name or prior.get('head')!=head:
+            raise Unknown(f'invalid retained native recovery state: {name}')
+        if prior.get('key')!=key:
+            raise Unknown(f'native recovery already used for this check and candidate head: {name}')
+        if prior.get('status') in ('pass','fail'):
+            a.root_digests[name]=prior.get('sha256','')
+            return prior.get('log','')
+        if prior.get('status')!='started':
+            raise Unknown(f'native recovery already exhausted with status={prior.get("status")}: {name}')
+    else:
+        prior={'command':name,'head':head,'key':key,'status':'started'}
+        persist_recovery(a,recovery,prior,f'native recovery started: {name}')
+        if not os.path.lexists(running):
+            try:
+                process=subprocess.Popen([str(HELPERS/'agent-run.sh'),'--dir',str(root),'--cmd',name,
+                                          '--force','--summary'],stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL,start_new_session=True)
+            except OSError as e: raise Unknown(f'native recovery unavailable: {name}') from e
+    deadline=time.monotonic()+a.native_recovery_timeout_seconds
+    while time.monotonic()<deadline:
+        if process is not None:
+            if process.poll() is not None: break
+        elif not os.path.lexists(running): break
+        time.sleep(0.1)
+    if (process is not None and process.poll() is None) or (process is None and os.path.lexists(running)):
+        persist_recovery(a,recovery,prior,f'native recovery still active after bounded wait: {name}')
+        raise Unknown(f'native recovery still active after bounded wait: {name}')
+    try: record=native_record(handle/'result')
+    except Unknown:
+        prior['status']='incomplete'
+        persist_recovery(a,recovery,prior,f'native recovery produced no complete record: {name}')
+        raise
+    prior.update(status='pass' if record['rc']=='0' else 'fail',log=record['log'],sha256=record['sha256'])
+    persist_recovery(a,recovery,prior,f'native recovery completed status={prior["status"]}: {name}')
+    a.root_digests[name]=record['sha256']
+    return record['log']
+
+def trusted_log(a, name, fingerprint, log, record_digest, source):
+    identity_fields=[name,fingerprint,str(log)] if source=='verification-cache' else [source,name,fingerprint,str(log)]
+    identity=hashlib.sha256(json.dumps(identity_fields).encode()).hexdigest()
+    pin=a.trusted_logs.get(identity); supplied=a.root_digests.get(name)
+    if pin is not None:
+        require(isinstance(pin,dict) and pin.get('command')==name and pin.get('fingerprint')==fingerprint and
+                pin.get('log')==str(log) and isinstance(pin.get('sha256'),str) and
+                re.fullmatch('[0-9a-f]{64}',pin['sha256']), 'invalid trusted log pin in root receipt')
+        if supplied is not None and supplied!=pin['sha256']:
+            raise Unknown(f'conflicting root digest cannot replace retained execution pin: {name}')
+        if pin.get('invalidated'):
+            raise Unknown(f'retained log was invalidated; observe a new execution: {name}')
+    elif supplied is None:
+        raise Unknown(f'original log digest unavailable; root must observe an execution: {name}')
+    expected_digest=pin['sha256'] if pin is not None else supplied
+    try:
+        data=read(log)
+        if hashlib.sha256(data).hexdigest()!=expected_digest:
+            raise Unknown(f'retained log bytes changed; observe a new execution: {name}')
+    except Unknown:
+        if pin is not None: pin['invalidated']=True
+        raise
+    if record_digest!=expected_digest:
+        raise Unknown(f'completed verification digest differs from root pin: {name}')
+    a.trusted_logs[identity]=dict(command=name,fingerprint=fingerprint,log=str(log),sha256=expected_digest)
+    return data,expected_digest
+
+def verify_native(root, v, name, key, a, recovered_log=None):
+    handle=root/'.agent/run-records'/key
+    for directory in (root/'.agent',handle.parent,handle):
+        try: info=directory.lstat()
+        except OSError as e: raise RecoveryNeeded(f'native execution record unavailable: {name}') from e
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution directory must be owned and non-symlink: {directory}')
+    running=handle/'running'
+    if os.path.lexists(running):
+        info=running.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():
+            raise Unknown(f'native execution running record must be owned and non-symlink: {name}')
+        raise RecoveryNeeded(f'native verification is running or interrupted: {name}')
+    if not os.path.lexists(handle/'result'):
+        raise RecoveryNeeded(f'native execution result unavailable: {name}')
+    record=native_record(handle/'result')
+    if record['rc']!='0': raise Rejected(f'verification failed: {name} (exit {record["rc"]})')
+    head=command(['git','-C',str(root),'rev-parse','HEAD']).decode().strip()
+    expected=dict(command=name,key=key,head=head,worktree=str(root),scope='full',clean='yes')
+    for field,value in expected.items():
+        if record[field]!=value: raise Unknown(f'native execution {field} differs from current check: {name}')
+    log=Path(recovered_log if recovered_log is not None else v.get('log',''))
+    if str(log)!=record['log'] or not log.is_absolute() or root not in log.resolve().parents or \
+            log.parent.resolve()!=(root/'.agent/logs').resolve():
+        raise RecoveryNeeded(f'log must match the native record inside worktree .agent/logs: {name}')
+    if not re.fullmatch('[0-9a-f]{64}',record['sha256']):
+        raise Unknown(f'invalid native execution digest: {name}')
+    identity=hashlib.sha256(json.dumps(['native-log',name,key,str(log)]).encode()).hexdigest()
+    if a.trusted_logs.get(identity) is None and a.root_digests.get(name) is None:
+        raise RecoveryNeeded(f'original native log digest unavailable: {name}')
+    data,digest=trusted_log(a,name,key,log,record['sha256'],'native-log')
+    lines=data.splitlines()
+    expected_meta=f'=== execution-v1 command={name} key={key} scope=full'.encode()
+    started=(rb'=== started \S+  pid=[0-9]+  process-start=\S+  epoch=[0-9]+  cwd=' +
+             re.escape(os.fsencode(str(root))) + rb'  concurrent-suites=[0-9]+  head=' +
+             head.encode() + rb'  tracked-clean=yes')
+    if len(lines)<4 or not lines[0].startswith(b'=== agent-run ') or not re.fullmatch(started,lines[1]) or \
+            lines[2]!=expected_meta or not re.fullmatch(rb'=== agent-run exited rc=0 after [0-9]+s',lines[-1]):
+        raise Unknown(f'native log does not prove a completed clean full execution: {name}')
+    try: sidecar=read(Path(str(log)+'.sha256')).decode().strip()
+    except Unknown as e: raise RecoveryNeeded(f'native log receipt unavailable: {name}') from e
+    if sidecar!=digest: raise Unknown(f'native log receipt differs from root pin: {name}')
+    return [name,key,digest,'native-log']
 
 def matches(path, glob):
     # * never crosses a slash; **/ also matches zero directory components.
@@ -147,25 +313,45 @@ def matches(path, glob):
 
 def verify(root, r, git, a):
     """Validate current full-checkout evidence."""
-    observed=[]; fingerprints={}
+    observed=[]; capabilities={}; sources=[]; suggestions=[]
     for v in r['verification']:
         if v['status']=='fail': raise Rejected(f"verification failed: {v['command']}")
-        if v['status']!='pass': raise Unknown(f"verification {v['command']} is {v['status']}: {v['reason']}")
         name=v['command']
         if name not in ('test','lint','typecheck','coverage','verify','check'):
             raise Unknown(f'unsupported verification command: {name}')
-        fingerprints[name]=verification_capability(root,name)
-    cache=read(root/'.agent/verification-cache').decode()
+        capabilities[name]=verification_capability(root,name)
+        if v['status']!='pass' and not (v['status']=='unknown' and capabilities[name][0] is None):
+            raise Unknown(f"verification {name} is {v['status']}: {v['reason']}")
+    cache=None
     for v in r['verification']:
         name=v['command']
+        fingerprint,_diagnostic=capabilities[name]
+        if fingerprint is None:
+            key=execution_key(root,name)
+            head=git('rev-parse','HEAD').decode().strip(); recovered_log=None
+            _recovery,prior=load_native_recovery(a,root,name,head)
+            if prior is not None:
+                if not isinstance(prior,dict) or prior.get('key')!=key:
+                    raise Unknown(f'native recovery already used for this check and candidate head: {name}')
+                if prior.get('status') in ('pass','fail'):
+                    a.root_digests[name]=prior.get('sha256',''); recovered_log=prior.get('log','')
+            try:
+                native=verify_native(root,v,name,key,a,recovered_log)
+            except RecoveryNeeded:
+                recovered_log=collect_native_recovery(root,name,key,a)
+                native=verify_native(root,v,name,key,a,recovered_log)
+            observed.append(native); sources.append('native-log')
+            upper=name.upper().replace('-','_')
+            suggestions.append(f'configure AGENT_VERIFY_{upper}_MODE=local and AGENT_VERIFY_{upper}_TOOLCHAIN to enable cache reuse')
+            continue
         # Match the tested state.
-        fingerprint=fingerprints[name]
         if not re.fullmatch('[0-9a-f]{64}',fingerprint):
             raise Unknown(f'invalid current verification fingerprint: {name}')
         if v.get('fingerprint')!=fingerprint: raise Unknown(f'stale or unsupported tested-state fingerprint: {name}')
         log=Path(v.get('log',''))
         if not log.is_absolute() or root not in log.resolve().parents or log.parent.resolve()!= (root/'.agent/logs').resolve():
             raise Unknown(f'log must be inside worktree .agent/logs: {name}')
+        if cache is None: cache=read(root/'.agent/verification-cache').decode()
         expected=f'{fingerprint} cmd={name} log={log} at='
         if not any(line.startswith(expected) and line.endswith(' focus=') for line in cache.splitlines()):
             raise Unknown(f'no matching full-command verification record: {name}')
@@ -179,34 +365,13 @@ def verify(root, r, git, a):
         completed=read(handle/'result').decode().splitlines()
         if len(completed)!=3 or completed[0]!='0' or completed[1]!=str(log) or not re.fullmatch('[0-9a-f]{64}',completed[2]):
             raise Unknown(f'no matching completed successful verification: {name}')
-        identity=hashlib.sha256(json.dumps([name,fingerprint,str(log)]).encode()).hexdigest()
-        pin=a.trusted_logs.get(identity)
-        supplied=a.root_digests.get(name)
-        if pin is not None:
-            require(isinstance(pin,dict) and pin.get('command')==name and pin.get('fingerprint')==fingerprint and
-                    pin.get('log')==str(log) and isinstance(pin.get('sha256'),str) and
-                    re.fullmatch('[0-9a-f]{64}',pin['sha256']), 'invalid trusted log pin in root receipt')
-            if supplied is not None and supplied!=pin['sha256']:
-                raise Unknown(f'conflicting root digest cannot replace retained execution pin: {name}')
-            if pin.get('invalidated'):
-                raise Unknown(f'retained log was invalidated; observe a new execution: {name}')
-        elif supplied is None:
-            raise Unknown(f'original log digest unavailable; root must observe an execution: {name}')
-        expected_digest=pin['sha256'] if pin is not None else supplied
-        try:
-            data=read(log)
-            if hashlib.sha256(data).hexdigest()!=expected_digest:
-                raise Unknown(f'retained log bytes changed; observe a new execution: {name}')
-            if not data.splitlines() or not re.fullmatch(rb'=== agent-run exited rc=0 after [0-9]+s', data.splitlines()[-1]):
-                raise Unknown(f'log has no final successful completion marker: {name}')
-        except Unknown:
-            if pin is not None: pin['invalidated']=True
-            raise
+        data,expected_digest=trusted_log(a,name,fingerprint,log,completed[2],'verification-cache')
+        if not data.splitlines() or not re.fullmatch(rb'=== agent-run exited rc=0 after [0-9]+s', data.splitlines()[-1]):
+            raise Unknown(f'log has no final successful completion marker: {name}')
         if completed[2]!=expected_digest:
             raise Unknown(f'completed verification digest differs from root pin: {name}')
-        a.trusted_logs[identity]=dict(command=name,fingerprint=fingerprint,log=str(log),sha256=expected_digest)
-        observed.append([name,fingerprint,expected_digest])
-    return observed
+        observed.append([name,fingerprint,expected_digest,'verification-cache']); sources.append('verification-cache')
+    return observed,sources,suggestions
 
 def validate(a,r,claims):
     root=Path(a.worktree).resolve(strict=True)
@@ -259,12 +424,13 @@ def validate(a,r,claims):
     require(not dirty or r['blocker'] is not None,'dirty or mixed worktree cannot be accepted as complete')
     require(not r['findings'],'unresolved findings prevent acceptance')
     claims['implementation']='dirty' if dirty else 'valid'
-    if r['blocker'] is not None: return 'blocked', [owner,entry,r], 'preserve work; '+r['blocker']['remainingAction']
+    if r['blocker'] is not None:
+        return 'blocked',[owner,entry,r],'preserve work; '+r['blocker']['remainingAction'],'none',''
     # Push and local verification are independent: inspect both before returning
     # one actionable failure, so changing a remote cannot erase valid local work.
     failures=[]
     try:
-        evidence=verify(root,r,git,a); claims['verification']='valid'
+        evidence,sources,suggestions=verify(root,r,git,a); claims['verification']='valid'
     except (Rejected,Unknown) as e: failures.append(e)
     try:
         if r['push']=='unknown': raise Unknown('push evidence is unknown')
@@ -283,7 +449,11 @@ def validate(a,r,claims):
         claims['push']='valid'
     except (Rejected,Unknown) as e: failures.append(e)
     if failures: raise next((e for e in failures if isinstance(e,Rejected)),failures[0])
-    return 'accepted', [owner,entry,r,evidence,remote], 'implementation handoff validated; root obligations remain open'
+    evidence_type='native-log' if 'native-log' in sources else 'verification-cache'
+    suggestion='; '.join(suggestions)
+    return ('accepted',[owner,entry,r,evidence,remote],
+            f'implementation handoff validated; evidence={evidence_type}; root obligations remain open',
+            evidence_type,suggestion)
 
 def load_receipt(a):
     require(re.fullmatch(r'[A-Za-z0-9_-]+',a.attempt), 'invalid root attempt identifier')
@@ -301,14 +471,15 @@ def store_receipt(a,receipt):
     pins=old.get('trustedLogs',{})
     require(isinstance(pins,dict), 'trusted log pins must be an object')
     pins.update(getattr(a,'trusted_logs',{}))
-    receipt.update(result=str(Path(a.result).absolute()),runId=a.run_id,workerId=a.worker_id,trustedLogs=pins)
+    receipt.update(result=str(Path(a.result).absolute()),runId=a.run_id,workerId=a.worker_id,
+                   trustedLogs=pins)
     reused=old==receipt and receipt['status']=='accepted'
     command([str(HELPERS/'run-state.sh'),'set','--file',a.state,'--path','results.'+a.attempt,'--json',json.dumps(receipt)])
     return reused
 
 def main():
     p=argparse.ArgumentParser(prog='worker-result.sh',
-                              description='Write or independently validate worker-result v1; never execute worker commands.')
+                              description='Write or independently validate worker-result v1 with bounded native-evidence recovery.')
     sub=p.add_subparsers(dest='action',required=True)
     write_help=(f"Schema-check and atomically write worker-result v1. Required fields: {', '.join(RESULT_FIELDS)}. "
                 f'verification[].command is the declared NAME passed to agent-run.sh --cmd, matching {COMMAND_PATTERN}, not the command line.')
@@ -322,11 +493,17 @@ def main():
     v.add_argument('--issue',type=int,required=True)
     v.add_argument('--required-check',action='append',required=True)
     v.add_argument('--log-sha256',action='append',default=[],help='root-observed original COMMAND=SHA256; never worker JSON or sidecar')
+    v.add_argument('--native-recovery-timeout-seconds',type=float,default=1800,
+                   help=argparse.SUPPRESS)
     a=p.parse_args(sys.argv[2:]); claims={k:'unknown' for k in ('ownership','implementation','push','verification')}
     try:
         if a.action=='validate':
-            a.trusted_logs=load_receipt(a).get('trustedLogs',{})
+            prior=load_receipt(a)
+            a.trusted_logs=prior.get('trustedLogs',{})
             require(isinstance(a.trusted_logs,dict), 'trusted log pins must be an object')
+            require(0<a.native_recovery_timeout_seconds<=1800,
+                    'native recovery timeout must be greater than zero and at most 1800 seconds')
+            a.claims=claims
             a.root_digests={}
             for item in a.log_sha256:
                 name,separator,digest=item.partition('=')
@@ -335,10 +512,11 @@ def main():
                 a.root_digests[name]=digest
         r=document(a.input if a.action=='write' else a.result); schema(r)
         if a.action=='write': atomic(a.output,r); print(json.dumps({'result':a.output})); return 0
-        status,evidence,reason=validate(a,r,claims)
+        status,evidence,reason,evidence_type,suggestion=validate(a,r,claims)
         fingerprint=hashlib.sha256(json.dumps(evidence,sort_keys=True).encode()).hexdigest()
         receipt={'status':status,'claims':claims,'reason':reason,'fingerprint':fingerprint,
-                 'obligations':r['obligations'],'blocker':r['blocker']}
+                 'obligations':r['obligations'],'blocker':r['blocker'],'evidence':evidence_type}
+        if suggestion: receipt['suggestion']=suggestion
         reused=store_receipt(a,receipt)
         print(json.dumps(dict(receipt,reused=reused))); return 0 if status=='accepted' else 3
     except (Rejected,Unknown,OSError,ValueError,TypeError,KeyError,AttributeError,subprocess.TimeoutExpired) as e:

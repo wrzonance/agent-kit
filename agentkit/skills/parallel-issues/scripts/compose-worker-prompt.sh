@@ -281,7 +281,7 @@ yield_cap_ms=${yield_cap_ms%% *}
 emit_verify_runbook() {
     local collect read=once-at-marker
     [[ -n $verify_command ]] || { printf 'verify= unavailable reason=no-scoped-command\n'; return; }
-    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=block-structured-acceptance-or-authorize-native-evidence-handoff\n' "$verification_capability_diagnostic"
+    [[ -z $verification_capability_diagnostic ]] || printf 'verification-capability=unavailable %s action=run-full-check-and-return-native-log\n' "$verification_capability_diagnostic"
     case $harness_name in
         codex) collect='shell:write_stdin,cell:functions.wait' ;;
         claude) collect=completion-notification; read=returned-output-file ;;
