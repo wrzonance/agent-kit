@@ -20,6 +20,8 @@ shared_wait_discipline="$root/agentkit/skills/.shared/wait-discipline.md"
 shared_six_step_loop="$root/agentkit/skills/.shared/six-step-loop.md"
 verification_isolation="$root/agentkit/skills/parallel-issues/references/verification-isolation.md"
 reference_manifest="$root/agentkit/skills/references.md"
+pr_stage="$root/agentkit/skills/parallel-issues/scripts/pr-stage.sh"
+pr_stage_text=$(<"$pr_stage")
 ci_workflow="$root/.github/workflows/ci.yml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -906,7 +908,7 @@ assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-roo
     'queue producers persist issue identities idempotently'
 assert_contains "$normalized_text" 'dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"' \
     'dispatch and refill remove the issue from durable queue coverage'
-assert_contains "$normalized_text" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
+assert_contains "$pr_stage_text" 'record-summary --run-id "$RUN_ID"' \
     'draft publication persists PR identities idempotently'
 assert_contains "$normalized_text" 'recoverable' \
     'Collect classifies recoverable blocked leads'
@@ -945,7 +947,7 @@ assert_contains "$normalized_text" 'both completion paths' \
 # and one-shot -- gated by a run-state.sh get that must exit 11 (absent)
 # before the redrive runs, with the set write recorded only after it succeeds.
 blocked_bullet=$(grep '^- \*\*BLOCKED\*\*' "$skill")
-assert_contains "$blocked_bullet" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
+assert_contains "$blocked_bullet" 'same one-call open stage' \
     'partial-pushed draft publication records the PR in durable coverage'
 assert_contains "$blocked_bullet" 'exit 11 (absent)' \
     'the BLOCKED bullet names the absent-key exit code before redriving'
@@ -1262,15 +1264,15 @@ assert_contains "$normalized_root_publication" 'Invoke returned argv once, then 
 assert_contains "$normalized_root_publication" 'Environment-refusal fallback only' \
     'the root push step lives inside the environment-refusal fallback'
 normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
-assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
-    'the normal completion branch names the canonical PR body composer inline'
-assert_contains "$normal_completion_branch" 'gh-body.sh" pr create' \
-    'the normal completion branch names the verified policy-enforcing PR creation transport inline'
-assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
-    'the normal completion branch preserves the complete PR identity record command'
+assert_contains "$normal_completion_branch" 'pr-stage.sh open' \
+    'the normal completion branch names the one-call publication stage inline'
+assert_contains "$normal_completion_branch" 'composes the four approved sections' \
+    'the normal completion branch preserves canonical body composition'
+assert_contains "$normal_completion_branch" 'registers `opened_prs`' \
+    'the normal completion branch preserves durable PR identity recording'
 blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
-assert_contains "$blocked_completion_branch" 'compose-pr-body.sh' \
-    'the BLOCKED completion branch names the same canonical PR body composer'
+assert_contains "$blocked_completion_branch" 'same one-call open stage' \
+    'the BLOCKED completion branch names the same publication stage'
 assert_contains "$text" 'compose_args+=(--write-set "$glob")' \
     'the dispatch recipe passes each write-set glob as its own repeated flag'
 assert_contains "$text" 'open a DRAFT PR' 'root opens the draft PR after publication'
@@ -1341,30 +1343,32 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
-assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file"' \
-    'draft PR publication uses the byte-verifying policy-enforcing body transport'
-assert_contains "$publication_section" '--run-id "$RUN_ID" --repo-root "$repository_root"' \
+assert_contains "$publication_section" '"$agentkit/parallel-issues/scripts/pr-stage.sh" open' \
+    'draft PR publication uses the resumable one-call stage'
+assert_contains "$publication_section" '--run-id "$RUN_ID"' \
     'draft PR publication attributes the created PR to the invocation run'
-assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --plan-issue "$issue_number"' \
+assert_contains "$publication_section" '--repo-root "$repository_root"' \
+    'draft PR publication binds run state to the repository root'
+assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --issue "$issue_number"' \
     'draft PR publication binds its target to the current issue saved in the dispatch plan'
 assert_not_contains "$publication_section" '--title "$pr_title" --base "$base"' \
     'draft PR publication does not duplicate or guess the recorded target'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
-assert_contains "$publication_section" 'compose-pr-body.sh' \
+assert_contains "$pr_stage_text" 'COMPOSE_SH=' \
     'draft PR publication uses the canonical body composer'
 assert_contains "$publication_section" '--why-file "$pr_why_file"' \
     'draft PR publication supplies the root-approved Why file'
 assert_contains "$publication_section" '--testing-file "$pr_testing_file"' \
     'draft PR publication supplies the root-approved Testing file'
-assert_contains "$publication_section" '--expect-closing-issue "$issue_number"' \
+assert_contains "$pr_stage_text" '--expect-closing-issue "$ISSUE"' \
     'default-branch PR publication verifies GitHub closing linkage'
 assert_contains "$publication_section" 'This was written agentically; verify its assertions:' \
     'canonical composer documents the fixed attribution banner'
 assert_contains "$publication_section" 'Never pass a multiline PR body through inline `--body`' \
     'draft PR publication forbids inline multiline body strings'
-assert_contains "$publication_section" '--scratch-label pr-body' \
-    'draft PR publication allocates an owner-private body file beneath trusted repository state'
+assert_contains "$pr_stage_text" 'body=$run_dir/pr-stage-$ISSUE-body.md' \
+    'draft PR publication keeps the intended body beneath trusted run state'
 assert_contains "$publication_section" 'agent_identity=${agent_identity:?' \
     'draft PR publication requires an LLM/service/model identity'
 assert_contains "$publication_section" 'pr_why_file=${pr_why_file:?' \
@@ -1694,7 +1698,7 @@ for _pub_i in "${!pub_lines[@]}"; do
     if ((diff_facts_idx < 0)) && [[ $_pub_line == *'"$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree"'* ]]; then
         diff_facts_idx=$_pub_i
     fi
-    if ((compose_idx < 0)) && [[ $_pub_line == *'"$agentkit/parallel-issues/scripts/compose-pr-body.sh"'* ]]; then
+    if ((compose_idx < 0)) && [[ $_pub_line == *'"$agentkit/parallel-issues/scripts/pr-stage.sh" open'* ]]; then
         compose_idx=$_pub_i
     fi
 done
@@ -1703,7 +1707,7 @@ assert_eq yes "$([[ $decisions_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff
 assert_eq yes "$([[ $resolver_guard_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -gt $resolver_guard_idx ]] && printf yes || printf no)" \
     'the disclosure recipe runs after the resolver establishes $agentkit, never before'
 assert_eq yes "$([[ $compose_idx -ge 0 && $diff_facts_idx -ge 0 && $diff_facts_idx -lt $compose_idx ]] && printf yes || printf no)" \
-    'the disclosure recipe runs before compose-pr-body.sh consumes the Decisions file'
+    'the disclosure recipe runs before pr-stage.sh consumes the Decisions file'
 
 v1_home="$tmp/v1-home"
 mkdir -p "$v1_home"

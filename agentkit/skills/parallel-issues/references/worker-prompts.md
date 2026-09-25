@@ -357,8 +357,6 @@ pr_decisions_file=${pr_decisions_file:?set the root-approved Decisions section f
 pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
-pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
-trap 'rm -f -- "$pr_body_file"' EXIT
 printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
 "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
     --base "${chain_base_sha:-origin/$base}" >> "$pr_decisions_file"
@@ -370,12 +368,12 @@ baseline_args=()
 baseline_exclusion_args=()
 [[ -f "${worktree:-}/.agent/baseline-exclusion.md" ]] &&
     baseline_exclusion_args+=(--baseline-exclusion-file "$worktree/.agent/baseline-exclusion.md")
-"$agentkit/parallel-issues/scripts/compose-pr-body.sh" \
-  --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
-  --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
-  "${baseline_args[@]}" --agent "$agent_identity" "${baseline_exclusion_args[@]}" --output "$pr_body_file"
-"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file" --title "$pr_title" --head "$branch" \
-  --run-id "$RUN_ID" --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --plan-issue "$issue_number" --expect-closing-issue "$issue_number"
+"$agentkit/parallel-issues/scripts/pr-stage.sh" open --run-id "$RUN_ID" \
+  --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --issue "$issue_number" \
+  --repo "$REPO" --head "$branch" --title "$pr_title" --why-file "$pr_why_file" \
+  --what-file "$pr_what_file" --decisions-file "$pr_decisions_file" \
+  --testing-file "$pr_testing_file" "${baseline_args[@]}" --agent "$agent_identity" \
+  "${baseline_exclusion_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front

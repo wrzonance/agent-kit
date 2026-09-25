@@ -227,7 +227,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #902: executable final-head receipt gate; exact combined helper tree measurement.
 # #902: validate the root-owned accepted findings ledger at finalization.
 # #908 assembly: #902 and #909/#907 combined helper tree; exact measurement.
-readonly MAX_TREE_TOKENS=483964
+# #908: resumable PR open/finalize composition removes 8-12 root calls; exact tree measurement.
+readonly MAX_TREE_TOKENS=488372
 
 violations=0
 checked=0

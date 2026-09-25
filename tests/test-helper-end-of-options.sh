@@ -29,8 +29,8 @@ marker_rejection() {
 # Owner execution is the shipped contract. Secure checkouts may remove group
 # and world permissions while preserving the executable bit tracked by Git.
 mapfile -t helpers < <(find "$root/agentkit/skills" -type f -name '*.sh' -perm -100 | sort)
-# 72: #782 adds issue-paths.sh with the same end-of-options contract.
-assert_eq 72 "${#helpers[@]}" 'the contract covers every executable shipped helper'
+# 73: #908 adds pr-stage.sh with the same end-of-options contract.
+assert_eq 73 "${#helpers[@]}" 'the contract covers every executable shipped helper'
 
 for helper in "${helpers[@]}"; do
     args=(--)
