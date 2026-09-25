@@ -96,7 +96,7 @@ command with no approval step and no trust record — `--yolo` only ever governe
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
 
-**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness; reused evidence is not fresh execution. Run focused suites while iterating; use `--force` for the required fresh full suite before commit. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
+**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness. Run focused suites while iterating; commit the completed candidate, then run the required unfocused full suite on that clean committed HEAD before push. Root validation and resume consume unchanged proof without scheduling the suite again. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
 
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 

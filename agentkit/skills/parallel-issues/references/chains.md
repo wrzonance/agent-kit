@@ -130,8 +130,8 @@ rebase and not a promise that the old checks still describe the child:
 2. Starting at the immediate successor, merge that new predecessor head into the successor
    branch with `git merge --no-commit --no-ff <full-SHA>`. Inspect conflicts. A conflict stops
    the cascade for human resolution; it is never papered over with an arbitrary merge base.
-3. Commit and publish the resolved successor, then re-verify it against that exact new full
-   SHA before moving to the next descendant. Repeat the merge, publish, and verification for
+3. Commit the resolved successor, re-verify it against that exact new SHA, then publish it
+   before moving to the next descendant. Repeat the merge, verification, and publication for
    every descendant in order. A successful old check or approval is not evidence for the new
    tree — re-verify on the merged tree itself. Publish before handing the commit to the next
    descendant or to review; see "Publishing a locally-built chain base" above for why a

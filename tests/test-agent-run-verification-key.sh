@@ -41,6 +41,10 @@ with tempfile.TemporaryDirectory() as temp:
         assert not counter.exists(), 'capability query executed the declared command'
         assert all(fragment in p.stderr for fragment in fragments),(p.stderr,fragments)
     first=query(); assert query()==first
+    git('commit','--allow-empty','-qm','candidate checkpoint')
+    committed=query()
+    assert committed!=first, 'a new committed HEAD cannot inherit proof from an identical tree'
+    first=committed
     assert list(agent.iterdir())==[config], 'query created durable directories'
     (repo/'input').write_text('two\n'); assert query()!=first
     (repo/'input').write_text('one\n'); assert query()==first
