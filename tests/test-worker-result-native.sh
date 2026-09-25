@@ -158,10 +158,12 @@ with tempfile.TemporaryDirectory() as temp:
     old_execution,old_lease=native_ids(repo)
     owner=subprocess.Popen([str(runner),'--dir',str(repo),'--cmd','test','--summary'],
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=os.environ.copy())
+    # A running record precedes the runner's initial git status/index refresh.
+    # Wait for the declared command before changing HEAD, avoiding its index lock.
     for _ in range(100):
-        if list((repo/'.agent/run-records').rglob('running')): break
+        if list((repo/'.agent/run-records').rglob('running')) and Path(os.environ['ACTIVE_DIR']).is_dir(): break
         time.sleep(0.02)
-    else: raise AssertionError('held-head fixture did not publish its running record')
+    else: raise AssertionError('held-head fixture did not start its declared command')
     (repo/'a.txt').write_text('new head while running\n')
     subprocess.check_call(['git','-C',str(repo),'commit','-qam','new head while running'])
     new_execution,new_lease=native_ids(repo)
