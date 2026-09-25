@@ -122,8 +122,8 @@ assert_contains "$parallel_text$fast_text$triage_text" 'stale-active=1[#' \
     'fast mode example prints stale-active issue identity'
 assert_contains "$parallel_text$fast_text$triage_text" 'held-active:#' \
     'fast mode example prints held-active issue identity'
-assert_contains "$triage_text" '.agent/runs/active-workers.ndjson' \
-    'named active adjudication names one repository-wide durable ledger'
+assert_contains "$triage_text" 'worker_ledger' \
+    'named active adjudication consumes the repository-wide ledger restored by run binding'
 assert_contains "$triage_text" 'confirmed terminal evidence releases ownership' \
     'named active ledger releases only confirmed terminal workers'
 assert_contains "$triage_text" 'Neither interruption requests nor parking' \

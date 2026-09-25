@@ -219,8 +219,8 @@ after its immediate predecessor's commit is pushed. A fast-mode disclosure there
 ### Named active issue adjudication
 
 Account for each named issue. Check the triage digest's open PR first, including
-`In progress`/`In review` issues, then the root-owned, repository-wide ledger at
-`$repository_root/.agent/runs/active-workers.ndjson`, shared across runs and resumptions.
+`In progress`/`In review` issues, then the root-owned, repository-wide `worker_ledger`
+restored by the run binding, shared across runs and resumptions.
 It is owner-only (`0600`), append-only NDJSON: one transition per line; legacy version 1
 rows remain readable.
 
@@ -244,10 +244,9 @@ calls them stale. Park and report missing reconciliation; legacy terminal rows p
 Run the boundary helper for every operator-named triage record whose verdict is `active`:
 
 ```bash
-active_workers="$repository_root/.agent/runs/active-workers.ndjson"
 open_pr=${triage_pr:-none}
 "$agentkit/parallel-issues/scripts/named-active-state.sh" \
-    --repo-root "$repository_root" --ledger "$active_workers" \
+    --repo-root "$repository_root" --ledger "$worker_ledger" \
     --issue "$issue_number" --open-pr "$open_pr" \
     --fresh-hours "${AGENT_ACTIVE_FRESH_HOURS:-2}"
 ```

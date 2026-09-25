@@ -20,6 +20,7 @@ First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh
 stdout begins `skills=` (contract, not registry proof).
 Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
 `check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
+Retain that acknowledged harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
@@ -117,9 +118,24 @@ The scope, flags, repository, and base are fixed before the first receipt and su
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
 `RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
-After establishing `RUN_ID`, run `"$agentkit/.shared/scripts/run-state.sh" init-summary --run-id "$RUN_ID" --repo-root "$repository_root"`; it preserves existing records. Persist the fixed invocation fact, never an unset shell default: when the invocation carried `--auto-review`, run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json true`; otherwise run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json false`. The handoff summary can then enforce review coverage after compaction.
+At initial startup `RUN_ID` is already set by that recipe; after compaction it is unset. In either case,
+recover the complete context with the same call (the explicit ID upgrades an older unbound record):
+
+```bash
+bind_args=(--repo-root "$repository_root" --activation-session "$activation_session")
+[[ -z ${RUN_ID:-} ]] || bind_args+=(--run-id "$RUN_ID")
+run_context=$("$agentkit/.shared/scripts/run-state.sh" bind "${bind_args[@]}") || exit 1
+RUN_ID=$(jq -er '.run_id | select(type == "string" and length > 0)' <<<"$run_context") || exit 1
+activation_session=$(jq -er '.activation_session | select(type == "string" and length > 0)' <<<"$run_context") || exit 1
+repository_root=$(jq -er '.repository_root | select(type == "string" and length > 0)' <<<"$run_context") || exit 1
+LEDGER=$(jq -er '.decision_ledger | select(type == "string" and length > 0)' <<<"$run_context") || exit 1
+worker_ledger=$(jq -er '.worker_ledger | select(type == "string" and length > 0)' <<<"$run_context") || exit 1; [[ -n $LEDGER && -n $worker_ledger ]] || exit 1
+```
+
+`bind` also initializes only missing summary collections and preserves all existing decisions,
+results, and retry state. Persist the fixed invocation fact, never an unset shell default: when the invocation carried `--auto-review`, run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json true`; otherwise run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json false`. The handoff summary can then enforce review coverage after compaction.
 `QUOTE` is the human's verbatim quote; never put secrets or credentials in any field.
-After any compaction/resume, before taking another action, run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
+After any compaction/resume, restore the binding above, then run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
 
 **Authorization is checked once per run, not per command.** Record each grant with a stable
 decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
@@ -340,7 +356,6 @@ Resolve `dependency_bootstrap` from the contract's resolved `instructions=` file
 set -euo pipefail
 
 issue_number=123 # Replace with the approved issue number.
-activation_session=SESSION_ID # Replace with Step 0's acknowledged session ID.
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 repository_root=$contract_root
 base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1

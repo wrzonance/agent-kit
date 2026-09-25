@@ -221,7 +221,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
-readonly MAX_TREE_TOKENS=479152
+# #907: durable run binding and stall-output ledger alias protection.
+readonly MAX_TREE_TOKENS=481177
 
 violations=0
 checked=0

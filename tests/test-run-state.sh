@@ -11,9 +11,25 @@ root=$(dirname -- "$here")
 source "$here/lib/assert.sh"
 
 script="$root/agentkit/skills/.shared/scripts/run-state.sh"
+activation_sh="$root/agentkit/skills/.shared/scripts/workflow-activation.sh"
+activation_hook="$root/agentkit/hooks/user-prompt-submit.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 state="$tmp/run-state.json"
+
+activate_parallel() {
+    local repo=$1 session=$2 record nonce
+    jq -nc --arg cwd "$repo" --arg session "$session" \
+        '{cwd:$cwd,session_id:$session,hook_event_name:"UserPromptSubmit",prompt:"$agentkit:parallel-issues 907"}' |
+        "$activation_hook" >/dev/null
+    record="$repo/.agent/activation/$(printf '%s' "$session" | sha256sum | cut -d' ' -f1).json"
+    nonce=$(jq -r .nonce "$record")
+    "$activation_sh" ack --repo-root "$repo" --session "$session" \
+        --skill parallel-issues --nonce "$nonce" >/dev/null
+    jq -nc --arg cwd "$repo" --arg session "$session" \
+        '{cwd:$cwd,session_id:$session,hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"true"}}' |
+        "$activation_sh" hook >/dev/null
+}
 
 assert_rc 0 'set creates the state file' -- "$script" set --file "$state" --path redrive.52 --value 1
 assert_eq '1' "$("$script" get --file "$state" --path redrive.52)" 'get reads back what set wrote'
@@ -115,6 +131,118 @@ assert_rc 0 '--run-id resolves the file through run-dir.sh' -- \
     "$script" set --run-id wave4-run --repo-root "$repo" --path redrive.7 --value 1
 assert_eq '1' "$(jq -r '.redrive["7"]' "$repo/.agent/evidence/run-wave4-run/run-state.json")" \
     'the run-scoped state lives at <run dir>/run-state.json'
+
+# Issue #907: one bind call initializes durable run identity, and the same
+# call without --run-id resumes only the run bound to the actual session.
+binding_repo="$tmp/binding-repo"
+git init -q -b main "$binding_repo"
+git -C "$binding_repo" config user.name test
+git -C "$binding_repo" config user.email test@example.invalid
+printf 'seed\n' >"$binding_repo/seed"
+git -C "$binding_repo" add seed
+git -C "$binding_repo" commit -qm seed
+activate_parallel "$binding_repo" actual-session
+assert_rc 0 'legacy run state exists before binding' -- \
+    "$script" set --run-id resume-run --repo-root "$binding_repo" --path redrive.17
+assert_rc 0 'completed results exist before binding' -- \
+    "$script" set --run-id resume-run --repo-root "$binding_repo" --path results --json '{"done":[17]}'
+bind_json=$("$script" bind --run-id resume-run --repo-root "$binding_repo" \
+    --activation-session actual-session)
+assert_eq 'resume-run' "$(jq -r '.run_id' <<<"$bind_json")" \
+    'bind returns the workflow run ID distinctly'
+assert_eq 'actual-session' "$(jq -r '.activation_session' <<<"$bind_json")" \
+    'bind returns the activation session distinctly'
+assert_eq "$(realpath -e "$binding_repo")" "$(jq -r '.repository_root' <<<"$bind_json")" \
+    'bind records the canonical primary repository identity'
+assert_eq "$(realpath -e "$binding_repo")/.agent/session-ledger.ndjson" \
+    "$(jq -r '.decision_ledger' <<<"$bind_json")" \
+    'bind derives the existing session-ledger recipe path'
+assert_eq "$(realpath -e "$binding_repo")/.agent/runs/active-workers.ndjson" \
+    "$(jq -r '.worker_ledger' <<<"$bind_json")" \
+    'bind derives the existing active-worker ledger path'
+assert_eq '[17]' "$(jq -c '.results.done' "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
+    'binding a legacy record preserves completed results'
+assert_eq 'true' "$(jq -c '.redrive["17"]' "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
+    'binding a legacy record preserves retry state'
+
+decision_ledger=$(jq -r '.decision_ledger' <<<"$bind_json")
+mkdir -p "$(dirname -- "$decision_ledger")"
+printf '%s\n' '{"decision":"keep"}' >"$decision_ledger"
+chmod 600 "$decision_ledger"
+decision_before=$(sha256sum "$decision_ledger")
+activate_parallel "$binding_repo" other-session
+assert_rc 0 'another session can bind a distinct run' -- \
+    "$script" bind --run-id other-run --repo-root "$binding_repo" --activation-session other-session
+touch -d '2039-09-16 01:00:00' "$binding_repo/.agent/evidence/run-other-run/run-state.json"
+touch -d '2029-09-16 01:00:00' "$binding_repo/.agent/evidence/run-resume-run/run-state.json"
+resume_json=$("$script" bind --repo-root "$binding_repo" --activation-session actual-session)
+assert_eq 'resume-run' "$(jq -r '.run_id' <<<"$resume_json")" \
+    'resume selects the exact session binding instead of the newest mtime'
+assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
+    'resume leaves recorded operator decisions byte-for-byte unchanged'
+assert_eq 'true' "$(jq -c '.redrive["17"]' "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
+    'resume leaves bounded retry state unchanged'
+
+activate_parallel "$binding_repo" fresh-session
+wrong_session_rc=0
+wrong_session_err=$("$script" bind --repo-root "$binding_repo" \
+    --activation-session fresh-session 2>&1 >/dev/null) || wrong_session_rc=$?
+assert_eq 1 "$wrong_session_rc" 'a different actual session cannot inherit an old binding'
+assert_contains "$wrong_session_err" 'no run binding matches repository and activation session' \
+    'session mismatch asks for an explicit current-run recovery decision'
+
+assert_rc 0 'ambiguous fixture binds a second run to the same session' -- \
+    "$script" bind --run-id duplicate-session-run --repo-root "$binding_repo" \
+    --activation-session actual-session
+ambiguous_rc=0
+ambiguous_err=$("$script" bind --repo-root "$binding_repo" \
+    --activation-session actual-session 2>&1 >/dev/null) || ambiguous_rc=$?
+assert_eq 1 "$ambiguous_rc" 'resume refuses multiple runs bound to one session'
+assert_contains "$ambiguous_err" 'multiple run bindings match repository and activation session' \
+    'ambiguous resume names the required explicit selection'
+
+wrong_explicit_rc=0
+wrong_explicit_err=$("$script" bind --run-id resume-run --repo-root "$binding_repo" \
+    --activation-session fresh-session 2>&1 >/dev/null) || wrong_explicit_rc=$?
+assert_eq 1 "$wrong_explicit_rc" 'an acknowledged different session cannot overwrite an existing binding'
+assert_contains "$wrong_explicit_err" 'belongs to a different activation session' \
+    'wrong-session explicit selection explains the identity mismatch'
+assert_eq 'actual-session' "$(jq -r '.binding.activation_session' \
+    "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
+    'wrong-session explicit selection leaves the saved activation identity unchanged'
+assert_eq "$decision_before" "$(sha256sum "$decision_ledger")" \
+    'wrong-session explicit selection leaves recorded operator decisions unchanged'
+assert_eq 'true' "$(jq -c '.redrive["17"]' "$binding_repo/.agent/evidence/run-resume-run/run-state.json")" \
+    'wrong-session explicit selection leaves bounded retry state unchanged'
+
+assert_rc 0 'unacknowledged legacy fixture has ordinary state' -- \
+    "$script" set --run-id unacknowledged-run --repo-root "$binding_repo" --path redrive.23
+unacknowledged_rc=0
+unacknowledged_err=$("$script" bind --run-id unacknowledged-run --repo-root "$binding_repo" \
+    --activation-session never-acknowledged 2>&1 >/dev/null) || unacknowledged_rc=$?
+assert_eq 1 "$unacknowledged_rc" 'legacy binding requires authoritative current-session activation evidence'
+assert_contains "$unacknowledged_err" 'no receipt at activation origin for session' \
+    'unacknowledged legacy refusal names the missing current-session receipt'
+assert_eq false "$(jq 'has("binding")' \
+    "$binding_repo/.agent/evidence/run-unacknowledged-run/run-state.json")" \
+    'unacknowledged legacy refusal does not invent a binding'
+
+damaged_repo="$tmp/damaged-binding-repo"
+git init -q -b main "$damaged_repo"
+activate_parallel "$damaged_repo" damaged-session
+assert_rc 0 'damaged binding fixture begins as a valid binding' -- \
+    "$script" bind --run-id damaged-run --repo-root "$damaged_repo" \
+    --activation-session damaged-session
+damaged_state="$damaged_repo/.agent/evidence/run-damaged-run/run-state.json"
+jq 'del(.binding.worker_ledger)' "$damaged_state" >"$damaged_state.next"
+mv "$damaged_state.next" "$damaged_state"
+chmod 600 "$damaged_state"
+damaged_rc=0
+damaged_err=$("$script" bind --repo-root "$damaged_repo" \
+    --activation-session damaged-session 2>&1 >/dev/null) || damaged_rc=$?
+assert_eq 1 "$damaged_rc" 'resume refuses damaged required binding data'
+assert_contains "$damaged_err" 'damaged run binding for run damaged-run' \
+    'damaged binding refusal names the affected run'
 
 assert_rc 0 'an older run can record opened PRs' -- \
     "$script" set --run-id older --repo-root "$repo" --path opened_prs --json '[7]'

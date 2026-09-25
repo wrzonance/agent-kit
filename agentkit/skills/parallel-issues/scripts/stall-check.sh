@@ -57,6 +57,22 @@ done
 [[ ! -L $state_file ]] || die 'state file must not be a symlink'
 worktree=$(cd -P -- "$worktree" && pwd -P) || die 'could not canonicalize the worktree'
 state_canonical=$(realpath -m -- "$state_file") || die 'could not canonicalize the state path'
+primary_root=$worktree
+checkout_root=$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n $checkout_root && $(realpath -e -- "$checkout_root" 2>/dev/null || true) == "$worktree" ]]; then
+    resolved_primary=$(git -C "$worktree" worktree list --porcelain 2>/dev/null |
+        awk '/^worktree / { sub(/^worktree /, ""); print; exit }')
+    [[ -z $resolved_primary ]] || primary_root=$(realpath -e -- "$resolved_primary") ||
+        die 'could not canonicalize the primary checkout'
+fi
+for reserved_state in "$primary_root/.agent/session-ledger.ndjson" \
+    "$primary_root/.agent/runs/active-workers.ndjson"; do
+    reserved_canonical=$(realpath -m -- "$reserved_state") || die 'could not canonicalize a reserved workflow ledger'
+    if [[ $state_canonical == "$reserved_canonical" ||
+        (-e $state_file && -e $reserved_state && $state_file -ef $reserved_state) ]]; then
+        die "--state must not alias a reserved workflow ledger: $reserved_canonical"
+    fi
+done
 
 # Newest mtime under the worktree, .git excluded: git metadata churns for
 # reasons that are not worker progress (fetches, lock probes), while every
