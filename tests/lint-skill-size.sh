@@ -31,7 +31,8 @@ declare -A KNOWN_OVERSIZE=(
     # #865: permit bounded reference use when no workflow challenge was delivered.
     # #873: runnable publish recipe (payload, identity) and evidence-producer steps.
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
-    [review-remote-pr]="500:9157:450"
+    # #904 landing retains #912 delegated activation; final sprint trim ratchets down.
+    [review-remote-pr]="500:9170:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
