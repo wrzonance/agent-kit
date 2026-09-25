@@ -311,8 +311,9 @@ The dispatch artifact stays at schema 1 until PR numbers and pushed heads exist.
 then run `"$agentkit/parallel-issues/scripts/write-merge-plan.sh" --dispatch-plan "$dispatch_plan" --chain-base "${chain_base_sha:-$repository_root}" --validate-only`; dispatch requires `schemaVersion=1 valid`.
 The validator resolves globs and declared test roots against the chain-base tree, requiring each root
 in `predictedWriteSet` or `testRootExclusions`; it reports all violations and `--fix` remedies. Its
-`protected=N[...]` summary is a publication-boundary disclosure: keep those entries for preparation,
-continue unrelated work, and queue dependents until the approved commit is pushed.
+`protected=N[...]` keeps those entries for preparation. A `proposal=N[...]` subset must use the
+temporary-index patch boundary before writing Git/harness config. Continue unrelated work, and queue
+dependents until the exact approved commit is pushed.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

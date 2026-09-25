@@ -159,6 +159,7 @@ sandbox_comparator_lib=$script_dir/../../.shared/scripts/lib/sandbox-comparator.
 harness_tools_lib=$script_dir/../../.shared/scripts/lib/harness-tools.sh
 contract_cache_lib=$script_dir/../../.shared/scripts/lib/contract-cache.sh
 yield_cap_lib=$script_dir/../../.shared/scripts/lib/yield-cap.sh
+protected_paths_lib=$script_dir/../../.shared/scripts/lib/protected-paths.sh
 wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -f $template_file && ! -L $template_file ]] || die "missing template: $template_file"
 [[ -x $repo_config ]] || die "missing repo-config.sh: $repo_config"
@@ -168,6 +169,7 @@ wait_discipline_file=$script_dir/../../.shared/wait-discipline.md
 [[ -r $harness_tools_lib ]] || die "missing harness-tools.sh: $harness_tools_lib"
 [[ -r $contract_cache_lib ]] || die "missing contract-cache.sh: $contract_cache_lib"
 [[ -r $yield_cap_lib ]] || die "missing yield-cap.sh: $yield_cap_lib"
+[[ -r $protected_paths_lib ]] || die "missing protected-path policy: $protected_paths_lib"
 [[ -f $wait_discipline_file && ! -L $wait_discipline_file ]] || die "missing wait-discipline.md: $wait_discipline_file"
 fence_script=$script_dir/fence-untrusted-data.sh
 [[ -x $fence_script ]] || die "fence-untrusted-data.sh is missing or not executable: $fence_script"
@@ -182,6 +184,14 @@ worker_wait_bound_seconds=$(grep -oE '\*\*[0-9]+ s\*\*' <<< "$worker_wait_bound_
 # Resolve the current-harness contract; the bare name is its legacy fallback.
 # shellcheck disable=SC1090,SC1091
 source "$contract_cache_lib"
+# shellcheck source=../../.shared/scripts/lib/protected-paths.sh
+source "$protected_paths_lib"
+declare -a preparation_restricted_globs=()
+for glob in ${write_set_globs[@]+"${write_set_globs[@]}"}; do
+    shared_write_set_collision "$glob" \
+        "${SHARED_PREPARATION_RESTRICTED_PATTERNS[@]}" >/dev/null || continue
+    preparation_restricted_globs+=("$glob")
+done
 contract=$(contract_cache_contract_file "$worktree")
 spec=
 prior_art=

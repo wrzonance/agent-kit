@@ -32,6 +32,8 @@ assert_contains "$literal_out" 'schemaVersion=1 valid' \
 assert_contains "$literal_out" 'protected=1' 'the retained protected-path count is reported'
 assert_contains "$literal_out" 'issue#583:.github/workflows/ci.yml' \
     'the retained protected issue and concrete path are reported'
+assert_contains "$literal_out" 'proposal=0' \
+    'a CI workflow can be prepared normally before its publication approval'
 
 # --- a directory-prefix glob over a protected directory is flagged too. -----
 glob_plan="$tmp/glob.json"
@@ -76,6 +78,8 @@ EOF
 actual_policy_out=$("$writer" --dispatch-plan "$actual_policy_plan" --validate-only)
 assert_contains "$actual_policy_out" 'protected=1[issue#595:.claude/settings.json]' \
     'classification follows the shared protected policy instead of incident path guesses'
+assert_contains "$actual_policy_out" 'proposal=1[issue#595:.claude/settings.json]' \
+    'a retained harness-config issue is marked for safe patch proposal before approval'
 assert_not_contains "$actual_policy_out" '.github/CODEOWNERS' \
     'ordinary .github content is not promoted to protected'
 assert_not_contains "$actual_policy_out" 'docs/adrs/decision.md' \
@@ -256,7 +260,7 @@ cat >"$clean_plan" <<'EOF'
 }
 EOF
 clean_out=$("$writer" --dispatch-plan "$clean_plan" --validate-only)
-assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid create=none protected=0" "$clean_out" \
+assert_eq "dispatch-plan=$clean_plan schemaVersion=1 valid create=none protected=0 proposal=0" "$clean_out" \
     'a clean plan with no protected-path collision reports no create entries'
 
 # --- acceptance: --fix does not need to alter a retained protected path. ----
