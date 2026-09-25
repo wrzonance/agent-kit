@@ -13,14 +13,14 @@ readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
         if .p and (.c | type) == "object" and (.c | has($seg)) then {p: true, c: .c[$seg]}
         else {p: false, c: null} end)
     | .p;'
-ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''
+ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''; REBIND=0
 ACTIVATION_SESSION=''; DECISION_LEDGER=''; WORKER_LEDGER=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME get|set|append|append-unique|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
        $PROGNAME latest --repo-root DIR --path a.b.c
-       $PROGNAME bind --repo-root DIR --activation-session ID [--run-id ID]
+       $PROGNAME bind --repo-root DIR --activation-session ID [--run-id ID [--rebind]]
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
        $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
@@ -35,7 +35,8 @@ unset   remove --path
 latest  select the newest trusted run state and print {"run_id":ID,"value":VALUE};
         exit 11 when no run state or requested path exists
 bind    with --run-id, initialize/validate one run binding; without it, recover the unique
-        binding for this repository and activation session. Prints the compact binding JSON.
+        binding for this repository and activation session. --rebind explicitly moves the exact
+        selected run to an independently authorized current session. Prints compact binding JSON.
 summary print handoff coverage from durable run state and active-worker lifecycle evidence
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
@@ -66,6 +67,7 @@ parse_args() {
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --reports-dir) require_value "$1" "${2:-}"; REPORTS_DIR=$2; shift 2 ;;
             --activation-session) require_value "$1" "${2:-}"; ACTIVATION_SESSION=$2; shift 2 ;;
+            --rebind) REBIND=1; shift ;;
             --path) require_value "$1" "${2:-}"; KEY_PATH=$2; shift 2 ;;
             --value) require_value "$1" "${2:-}"; VALUE=$2; VALUE_SET=1; shift 2 ;;
             --json) require_value "$1" "${2:-}"; JSON_VALUE=$2; VALUE_SET=1; shift 2 ;;
@@ -82,6 +84,7 @@ parse_args() {
             die_usage '--activation-session must be one line (maximum 256 characters)'
         [[ -z $KEY_PATH && $VALUE_SET == 0 && -z $REPORTS_DIR ]] ||
             die_usage 'bind takes no --path/--value/--json/--reports-dir'
+        ((REBIND == 0)) || [[ -n $RUN_ID ]] || die_usage '--rebind requires an exact --run-id selection'
     elif [[ $ACTION == summary ]]; then
         [[ -z $FILE ]] || die_usage 'summary requires --run-id, not --file'
         [[ -n $RUN_ID ]] || die_usage 'summary requires --run-id'
@@ -118,6 +121,7 @@ parse_args() {
         [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
     fi
     [[ $ACTION == bind || -z $ACTIVATION_SESSION ]] || die_usage '--activation-session is valid only with bind'
+    [[ $ACTION == bind || $REBIND -eq 0 ]] || die_usage '--rebind is valid only with bind'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
 }
 
@@ -349,13 +353,21 @@ initialize_summary_state() {
 }
 
 initialize_binding() {
-    local binding next
+    local binding existing next rebind_command
     binding=$(expected_binding) || die 'could not construct run binding'
     if jq -e 'has("binding")' <<<"$STATE" >/dev/null; then
         validate_binding "$RUN_ID" "$STATE"
-        [[ $(jq -c '.binding' <<<"$STATE") == "$binding" ]] ||
-            die "run binding for run $RUN_ID belongs to a different activation session; select the current run"
-        next=$STATE
+        existing=$(jq -c '.binding' <<<"$STATE")
+        if [[ $existing == "$binding" ]]; then
+            next=$STATE
+        elif ((REBIND)); then
+            next=$(jq -c --argjson binding "$binding" '.binding=$binding' <<<"$STATE") ||
+                die 'could not rebind the selected run'
+        else
+            printf -v rebind_command '%q ' "$0" bind --run-id "$RUN_ID" --repo-root "$REPO_ROOT" \
+                --activation-session "$ACTIVATION_SESSION" --rebind
+            die "run binding for run $RUN_ID belongs to a different activation session; retry: ${rebind_command% }"
+        fi
     else
         next=$(jq -c --argjson binding "$binding" '.binding=$binding' <<<"$STATE") ||
             die 'could not initialize run binding'

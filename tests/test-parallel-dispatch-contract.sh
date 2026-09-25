@@ -908,6 +908,12 @@ assert_contains "$normalized_text" 'run-state.sh" bind "${bind_args[@]}"' \
     'startup and resume recover durable context through one run-state operation'
 assert_contains "$normalized_text" '--activation-session "$activation_session"' \
     'run binding keys recovery to the actual acknowledged harness session'
+assert_contains "$normalized_text" '--rebind' \
+    'a known run can explicitly recover under an independently authorized new session'
+assert_contains "$normalized_text" 'candidate IDs' \
+    'ambiguous recovery explains how to use the candidate IDs already emitted by the helper'
+assert_contains "$normalized_text" 'Never choose by modification time' \
+    'resume guidance preserves deterministic selection without an mtime fallback'
 for binding_field in run_id activation_session repository_root decision_ledger worker_ledger; do
     assert_contains "$normalized_text" ".$binding_field" \
         "run setup restores the $binding_field binding field"
@@ -1933,7 +1939,7 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
 # #907: the one-call startup/resume binding recipe replaces remembered run,
-# session, and ledger operands; 14 lines keep those fields visibly distinct.
+# session, ledger, and explicit rebind operands; keep those boundaries visible.
 # #911 adds the protected preparation/approval/resume contract at the worker
 # and dispatch-plan boundaries; keep that deliberate growth ratcheted here.
 # #910 adds the complete join/resolution recipe that prevents partial-base

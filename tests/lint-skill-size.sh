@@ -50,6 +50,7 @@ declare -A KNOWN_OVERSIZE=(
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
+    # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
     # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
     [parallel-issues]="790:17021:500"
 )

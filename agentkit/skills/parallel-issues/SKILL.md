@@ -118,7 +118,7 @@ The scope, flags, repository, and base are fixed before the first receipt and su
 changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
 `auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
 `RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
-At initial startup `RUN_ID` is already set by that recipe; after compaction it is unset. In either case,
+At initial startup `RUN_ID` is already set by that recipe; after compaction it may be unavailable. In either case,
 recover the complete context with the same call (the explicit ID upgrades an older unbound record):
 
 ```bash
@@ -131,6 +131,12 @@ repository_root=$(jq -er '.repository_root | select(type == "string" and length 
 LEDGER=$(jq -er '.decision_ledger | select(type == "string" and length > 0)' <<<"$run_context") || exit 1
 worker_ledger=$(jq -er '.worker_ledger | select(type == "string" and length > 0)' <<<"$run_context") || exit 1; [[ -n $LEDGER && -n $worker_ledger ]] || exit 1
 ```
+
+Without an explicit ID, `bind` recovers only one exact repository/session match. An ambiguity
+refusal already prints its candidate IDs: use one only when durable invocation context proves it;
+an older unbound record likewise needs its known deterministic `RUN_ID`. If an exact known run
+belongs to the prior harness session, rerun the refusal's command with `--rebind`; the helper first
+requires independent current-session activation and changes only the binding. Never choose by modification time.
 
 `bind` also initializes only missing summary collections and preserves all existing decisions,
 results, and retry state. Persist the fixed invocation fact, never an unset shell default: when the invocation carried `--auto-review`, run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json true`; otherwise run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json false`. The handoff summary can then enforce review coverage after compaction.
