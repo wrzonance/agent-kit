@@ -5,6 +5,7 @@ readonly PROGNAME=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)
 readonly SCRIPT_DIR
 RUN_DIR_SH=${RUN_STATE_RUN_DIR_SH:-$SCRIPT_DIR/../../review-remote-pr/scripts/run-dir.sh}
+ACTIVATION_SH=${RUN_STATE_ACTIVATION_SH:-$SCRIPT_DIR/workflow-activation.sh}
 readonly PATH_RE='^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'
 # shellcheck disable=SC2016
 readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
@@ -12,12 +13,14 @@ readonly PATH_EXISTS_DEF='def path_exists($p): . as $d | reduce $p[] as $seg
         if .p and (.c | type) == "object" and (.c | has($seg)) then {p: true, c: .c[$seg]}
         else {p: false, c: null} end)
     | .p;'
-ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''
+ACTION=''; FILE=''; RUN_ID=''; REPO_ROOT=''; REPORTS_DIR=''; KEY_PATH=''; VALUE=''; JSON_VALUE=''; VALUE_SET=0; LEDGER=''; REBIND=0
+ACTIVATION_SESSION=''; DECISION_LEDGER=''; WORKER_LEDGER=''
 
 usage() {
     cat <<EOF
 Usage: $PROGNAME get|set|append|append-unique|unset (--file FILE | --run-id ID [--repo-root DIR]) --path a.b.c [--value V | --json J]
        $PROGNAME latest --repo-root DIR --path a.b.c
+       $PROGNAME bind --repo-root DIR --activation-session ID [--run-id ID [--rebind]]
        $PROGNAME init-summary --run-id ID [--repo-root DIR]
        $PROGNAME record-summary --run-id ID [--repo-root DIR] --path COLLECTION --json POSITIVE_INTEGER
        $PROGNAME dequeue-summary --run-id ID [--repo-root DIR] --json POSITIVE_INTEGER
@@ -31,6 +34,9 @@ append-unique  append only when the same JSON value is not already present; pres
 unset   remove --path
 latest  select the newest trusted run state and print {"run_id":ID,"value":VALUE};
         exit 11 when no run state or requested path exists
+bind    with --run-id, initialize/validate one run binding; without it, recover the unique
+        binding for this repository and activation session. --rebind explicitly moves the exact
+        selected run to an independently authorized current session. Prints compact binding JSON.
 summary print handoff coverage from durable run state and active-worker lifecycle evidence
 init-summary create only missing summary collections, preserving every existing value
 record-summary append one unique producer identity to a required summary collection
@@ -48,7 +54,7 @@ require_value() { [[ -n ${2:-} ]] || die_usage "option $1 requires a value"; }
 parse_args() {
     (($#)) || die_usage 'a subcommand is required'
     case $1 in
-        get|set|append|append-unique|unset|latest|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
+        get|set|append|append-unique|unset|latest|bind|init-summary|record-summary|dequeue-summary|summary) ACTION=$1; shift ;;
         --) shift; (($# == 0)) || die_usage "unexpected argument after --: $1"; die_usage 'a subcommand is required' ;;
         -h|--help) usage; exit 0 ;;
         *) die_usage "unknown subcommand: $1" ;;
@@ -60,6 +66,8 @@ parse_args() {
             --run-id) require_value "$1" "${2:-}"; RUN_ID=$2; shift 2 ;;
             --repo-root) require_value "$1" "${2:-}"; REPO_ROOT=$2; shift 2 ;;
             --reports-dir) require_value "$1" "${2:-}"; REPORTS_DIR=$2; shift 2 ;;
+            --activation-session) require_value "$1" "${2:-}"; ACTIVATION_SESSION=$2; shift 2 ;;
+            --rebind) REBIND=1; shift ;;
             --path) require_value "$1" "${2:-}"; KEY_PATH=$2; shift 2 ;;
             --value) require_value "$1" "${2:-}"; VALUE=$2; VALUE_SET=1; shift 2 ;;
             --json) require_value "$1" "${2:-}"; JSON_VALUE=$2; VALUE_SET=1; shift 2 ;;
@@ -68,7 +76,16 @@ parse_args() {
         esac
     done
     [[ -z $VALUE || -z $JSON_VALUE ]] || die_usage '--value and --json are mutually exclusive'
-    if [[ $ACTION == summary ]]; then
+    if [[ $ACTION == bind ]]; then
+        [[ -z $FILE ]] || die_usage 'bind accepts --repo-root, not --file'
+        [[ -n $REPO_ROOT ]] || die_usage 'bind requires --repo-root'
+        [[ -n $ACTIVATION_SESSION ]] || die_usage 'bind requires --activation-session'
+        ((${#ACTIVATION_SESSION} <= 256)) && [[ $ACTIVATION_SESSION != *$'\n'* && $ACTIVATION_SESSION != *$'\r'* ]] ||
+            die_usage '--activation-session must be one line (maximum 256 characters)'
+        [[ -z $KEY_PATH && $VALUE_SET == 0 && -z $REPORTS_DIR ]] ||
+            die_usage 'bind takes no --path/--value/--json/--reports-dir'
+        ((REBIND == 0)) || [[ -n $RUN_ID ]] || die_usage '--rebind requires an exact --run-id selection'
+    elif [[ $ACTION == summary ]]; then
         [[ -z $FILE ]] || die_usage 'summary requires --run-id, not --file'
         [[ -n $RUN_ID ]] || die_usage 'summary requires --run-id'
         [[ -z $KEY_PATH && $VALUE_SET == 0 ]] || die_usage 'summary takes no --path/--value/--json'
@@ -103,7 +120,32 @@ parse_args() {
         if [[ -n $FILE && -n $RUN_ID ]]; then die_usage '--file and --run-id are mutually exclusive'; fi
         [[ -n $FILE || -n $RUN_ID ]] || die_usage 'either --file or --run-id is required'
     fi
+    [[ $ACTION == bind || -z $ACTIVATION_SESSION ]] || die_usage '--activation-session is valid only with bind'
+    [[ $ACTION == bind || $REBIND -eq 0 ]] || die_usage '--rebind is valid only with bind'
     command -v jq >/dev/null 2>&1 || die 'jq not found on PATH; evidence unavailable'
+}
+
+resolve_binding_paths() {
+    local selected_root checkout_root primary_root
+    [[ -d $REPO_ROOT ]] || die_usage "--repo-root is not a directory: $REPO_ROOT"
+    selected_root=$(cd -P -- "$REPO_ROOT" && pwd -P) || die 'could not resolve --repo-root'
+    checkout_root=$(git -C "$selected_root" rev-parse --show-toplevel 2>/dev/null) ||
+        die '--repo-root must be a Git checkout'
+    checkout_root=$(realpath -e -- "$checkout_root") || die 'could not resolve the Git checkout root'
+    [[ $selected_root == "$checkout_root" ]] || die_usage '--repo-root must name the Git checkout root'
+    primary_root=$(git -C "$checkout_root" worktree list --porcelain |
+        awk '/^worktree / && !found { sub(/^worktree /, ""); primary=$0; found=1 } END { if (found) print primary }')
+    [[ -n $primary_root ]] || die 'could not resolve the primary checkout for run binding'
+    primary_root=$(realpath -e -- "$primary_root") || die 'could not resolve the primary checkout'
+    REPO_ROOT=$primary_root
+    DECISION_LEDGER=$primary_root/.agent/session-ledger.ndjson
+    WORKER_LEDGER=$primary_root/.agent/runs/active-workers.ndjson
+}
+
+validate_activation_session() {
+    [[ -x $ACTIVATION_SH ]] || die "workflow-activation.sh not found at $ACTIVATION_SH; binding unavailable"
+    "$ACTIVATION_SH" check --require pre-tool-use --repo-root "$REPO_ROOT" \
+        --session "$ACTIVATION_SESSION" --skill parallel-issues >/dev/null
 }
 
 resolve_summary_ledger() {
@@ -222,6 +264,119 @@ write_state() {
     mv -f -- "$staged" "$FILE" || { rm -f -- "$staged"; die "could not replace the state file: $FILE"; }
 }
 
+expected_binding() {
+    jq -nc --arg run_id "$RUN_ID" --arg activation_session "$ACTIVATION_SESSION" \
+        --arg repository_root "$REPO_ROOT" --arg decision_ledger "$DECISION_LEDGER" \
+        --arg worker_ledger "$WORKER_LEDGER" \
+        '{run_id:$run_id,activation_session:$activation_session,repository_root:$repository_root,
+          decision_ledger:$decision_ledger,worker_ledger:$worker_ledger}'
+}
+
+validate_binding() {
+    local run_id=$1 state=$2
+    jq -e --arg run_id "$run_id" --arg repository_root "$REPO_ROOT" \
+        --arg decision_ledger "$DECISION_LEDGER" --arg worker_ledger "$WORKER_LEDGER" '
+        .binding as $b |
+        ($b | type) == "object" and
+        ($b.run_id == $run_id) and
+        ($b.activation_session | type) == "string" and ($b.activation_session | length) > 0 and
+        ($b.repository_root == $repository_root) and
+        ($b.decision_ledger == $decision_ledger) and
+        ($b.worker_ledger == $worker_ledger)
+    ' <<<"$state" >/dev/null 2>&1 || die "damaged run binding for run $run_id; operator recovery is required before retrying"
+}
+
+resume_binding() {
+    local roots='' roots_rc=0 evidence candidate state_file mode run_id seen_run_id
+    local matched_state='' matched_run_id=''
+    local -a seen_run_ids=() matched_run_ids=()
+    [[ -x $RUN_DIR_SH ]] || die "run-dir.sh not found at $RUN_DIR_SH; evidence unavailable"
+    roots=$("$RUN_DIR_SH" --list-run-roots --repo-root "$REPO_ROOT") || roots_rc=$?
+    case $roots_rc in 0) ;; 11) die 'no run binding matches repository and activation session; select a current run with --run-id' ;; *) die 'could not resolve trusted run-state roots' ;; esac
+    shopt -s nullglob
+    while IFS= read -r evidence; do
+        [[ -n $evidence ]] || continue
+        for candidate in "$evidence"/run-*; do
+            [[ ! -L $candidate ]] || die "candidate run directory must not be a symlink: $candidate"
+            [[ -d $candidate && -O $candidate ]] || die "candidate run must be an owned directory: $candidate"
+            mode=$(stat -c %a -- "$candidate") || die "candidate run mode was unreadable: $candidate"
+            [[ $mode == 700 ]] || die "candidate run must be owner-private (mode 0700): $candidate"
+            run_id=${candidate##*/run-}
+            for seen_run_id in "${seen_run_ids[@]}"; do
+                [[ $seen_run_id != "$run_id" ]] || die "duplicate run ID across trusted run-state roots: $run_id"
+            done
+            seen_run_ids+=("$run_id")
+            state_file=$candidate/run-state.json
+            [[ ! -L $state_file ]] || die "state file must not be a symlink: $state_file"
+            [[ -e $state_file ]] || continue
+            FILE=$state_file
+            read_state
+            jq -e 'has("binding")' <<<"$STATE" >/dev/null || continue
+            validate_binding "$run_id" "$STATE"
+            if [[ $(jq -r '.binding.activation_session' <<<"$STATE") == "$ACTIVATION_SESSION" ]]; then
+                matched_run_ids+=("$run_id")
+                matched_run_id=$run_id
+                matched_state=$STATE
+            fi
+        done
+    done <<<"$roots"
+    ((${#matched_run_ids[@]} > 0)) ||
+        die 'no run binding matches repository and activation session; select a current run with --run-id'
+    ((${#matched_run_ids[@]} == 1)) ||
+        die "multiple run bindings match repository and activation session (${matched_run_ids[*]}); select one with --run-id"
+    RUN_ID=$matched_run_id
+    jq -c '.binding' <<<"$matched_state"
+}
+
+initialize_summary_state() {
+    jq -ec '
+        def valid_ids($name):
+            (has($name) | not) or
+            ((.[$name] | type) == "array" and all(.[$name][]; type == "number" and . > 0 and floor == .) and
+            ((.[$name] | length) == (.[$name] | unique | length)));
+        if valid_ids("opened_prs") and valid_ids("queued") and
+           valid_ids("receipt_prs") and valid_ids("skipped_prs") and
+           ((has("root_turns") | not) or
+            ((.root_turns | type) == "array" and all(.root_turns[]; . == true))) and
+           ((has("first_completion") | not) or (.first_completion | type) == "boolean")
+        then .
+            | if has("opened_prs") then . else .opened_prs=[] end
+            | if has("queued") then . else .queued=[] end
+            | if has("receipt_prs") then . else .receipt_prs=[] end
+            | if has("skipped_prs") then . else .skipped_prs=[] end
+            | if has("first_completion") then . else .first_completion=false end
+            | if ((.receipt_prs - .opened_prs) | length) > 0 or ((.skipped_prs - .opened_prs) | length) > 0 or
+                 ((.receipt_prs + .skipped_prs | length) != (.receipt_prs + .skipped_prs | unique | length))
+              then error("inconsistent summary collections") else . end
+        else error("invalid summary collection") end
+    ' <<<"$1" 2>/dev/null
+}
+
+initialize_binding() {
+    local binding existing next rebind_command
+    binding=$(expected_binding) || die 'could not construct run binding'
+    if jq -e 'has("binding")' <<<"$STATE" >/dev/null; then
+        validate_binding "$RUN_ID" "$STATE"
+        existing=$(jq -c '.binding' <<<"$STATE")
+        if [[ $existing == "$binding" ]]; then
+            next=$STATE
+        elif ((REBIND)); then
+            next=$(jq -c --argjson binding "$binding" '.binding=$binding' <<<"$STATE") ||
+                die 'could not rebind the selected run'
+        else
+            printf -v rebind_command '%q ' "$0" bind --run-id "$RUN_ID" --repo-root "$REPO_ROOT" \
+                --activation-session "$ACTIVATION_SESSION" --rebind
+            die "run binding for run $RUN_ID belongs to a different activation session; retry: ${rebind_command% }"
+        fi
+    else
+        next=$(jq -c --argjson binding "$binding" '.binding=$binding' <<<"$STATE") ||
+            die 'could not initialize run binding'
+    fi
+    next=$(initialize_summary_state "$next") || die 'could not initialize invalid summary collections'
+    [[ $next == "$STATE" ]] || write_state "$next"
+    printf '%s\n' "$binding"
+}
+
 print_summary() {
     local counts ledger_mode parked_rows parked_count
     counts=$(jq -er '
@@ -329,6 +484,14 @@ print_summary() {
 
 main() {
     parse_args "$@"
+    if [[ $ACTION == bind ]]; then
+        resolve_binding_paths
+        validate_activation_session
+        if [[ -z $RUN_ID ]]; then
+            resume_binding
+            return
+        fi
+    fi
     resolve_summary_ledger
     if [[ $ACTION == latest ]]; then
         latest_state
@@ -337,7 +500,7 @@ main() {
     resolve_file
     local parent lock lock_fd
     [[ ! -L $FILE ]] || die "state file must not be a symlink: $FILE"
-    if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||
+    if [[ $ACTION == bind || $ACTION == set || $ACTION == append || $ACTION == append-unique || $ACTION == unset ||
         $ACTION == init-summary || $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         parent=$(cd -P -- "$(dirname -- "$FILE")" && pwd -P) || die 'state directory unavailable'
         FILE=$parent/$(basename -- "$FILE")
@@ -348,12 +511,15 @@ main() {
     fi
     read_state
     local path='' next present value=''
-    [[ $ACTION == summary || $ACTION == init-summary ]] || path=$(jq_path)
+    [[ $ACTION == bind || $ACTION == summary || $ACTION == init-summary ]] || path=$(jq_path)
     if [[ $ACTION == set || $ACTION == append || $ACTION == append-unique ||
         $ACTION == record-summary || $ACTION == dequeue-summary ]]; then
         value=$(value_json) || exit $?
     fi
     case $ACTION in
+        bind)
+            initialize_binding
+            ;;
         get)
             present=$(jq -r --argjson p "$path" "$PATH_EXISTS_DEF"' path_exists($p) | if . then "present" else "absent" end' <<< "$STATE")
             [[ $present == present ]] || exit 11
@@ -388,27 +554,7 @@ main() {
             write_state "$next"
             ;;
         init-summary)
-            next=$(jq -ec '
-                def valid_ids($name):
-                    (has($name) | not) or
-                    ((.[$name] | type) == "array" and all(.[$name][]; type == "number" and . > 0 and floor == .) and
-                    ((.[$name] | length) == (.[$name] | unique | length)));
-                if valid_ids("opened_prs") and valid_ids("queued") and
-                   valid_ids("receipt_prs") and valid_ids("skipped_prs") and
-                   ((has("root_turns") | not) or
-                    ((.root_turns | type) == "array" and all(.root_turns[]; . == true))) and
-                   ((has("first_completion") | not) or (.first_completion | type) == "boolean")
-                then .
-                    | if has("opened_prs") then . else .opened_prs=[] end
-                    | if has("queued") then . else .queued=[] end
-                    | if has("receipt_prs") then . else .receipt_prs=[] end
-                    | if has("skipped_prs") then . else .skipped_prs=[] end
-                    | if has("first_completion") then . else .first_completion=false end
-                    | if ((.receipt_prs - .opened_prs) | length) > 0 or ((.skipped_prs - .opened_prs) | length) > 0 or
-                         ((.receipt_prs + .skipped_prs | length) != (.receipt_prs + .skipped_prs | unique | length))
-                      then error("inconsistent summary collections") else . end
-                else error("invalid summary collection") end
-            ' <<<"$STATE" 2>/dev/null) || die 'could not initialize invalid summary collections'
+            next=$(initialize_summary_state "$STATE") || die 'could not initialize invalid summary collections'
             write_state "$next"
             ;;
         record-summary|dequeue-summary)

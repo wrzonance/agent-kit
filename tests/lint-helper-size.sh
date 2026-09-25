@@ -231,12 +231,15 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
+# #907: durable run binding and stall-output ledger alias protection.
+# #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #903: shared reviewer/native admission and its durable inventory checks.
 # #903: shared review/worker capacity and proved-stopped liveness evidence.
 # #902: executable final-head and accepted-finding receipt gates.
 # #902 review: cross-clone spend and classifier finalization boundaries.
 # #901: deferred chain finalization reuses run-state and exact pushed evidence.
-readonly MAX_TREE_TOKENS=490931
+# #907 landing combines the existing reviewed helper implementations.
+readonly MAX_TREE_TOKENS=493153
 
 violations=0
 checked=0
