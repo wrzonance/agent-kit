@@ -6,6 +6,9 @@ source "$here/lib/assert.sh"
 script="$here/../agentkit/skills/review-remote-pr/scripts/review-ledger.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+export CODEX_HOME="$tmp/codex-home"
+mkdir -p "$CODEX_HOME"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 git init -q "$tmp/repo"
 entry="$tmp/entry.json"
 jq -n --arg result "$tmp/result.json" --arg launcher "$script" \
@@ -116,6 +119,11 @@ assert_rc 0 'transient inspection lock contention does not lose process registra
 wait "$holder"
 assert_rc 0 'a sent attempt records unknown outcome' -- attempt finish --id "$unsent_id" --pid "$$" --state unknown-outcome
 assert_rc 1 'unknown actual-send outcome cannot recover' -- attempt recover --id "$unsent_id"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 2' >"$CODEX_HOME/config.toml"
+jq '.pr=99 | .result=$result' --arg result "$tmp/unknown-capacity-result.json" "$entry" >"$tmp/unknown-capacity-entry.json"
+assert_rc 1 'unknown review outcome conservatively retains shared capacity' -- \
+    "$script" attempt reserve --repo-root "$tmp/repo" --entry-file "$tmp/unknown-capacity-entry.json"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 10' >"$CODEX_HOME/config.toml"
 before_timeout=$(attempt read)
 rm "$tmp/locked"
 python3 - "$lock_path" "$tmp/locked" <<'PY' &
@@ -133,4 +141,118 @@ assert_eq 1 "$lock_rc" 'long lock contention fails within a bounded acquisition 
 assert_contains "$(cat "$tmp/lock.err")" 'outcome unknown' 'lock timeout reports unavailable evidence explicitly'
 wait "$holder"
 assert_eq "$before_timeout" "$(attempt read)" 'lock timeout never mutates or finalizes the attempt'
+
+# #903: reviewer attempts and native workers share one atomic capacity claim.
+# Hold real durable reservations for separate PRs, then race the final review
+# slot against a native worker reservation.
+capacity_repo="$tmp/capacity-repo"
+git init -q -b main "$capacity_repo"
+git -C "$capacity_repo" config user.email test@example.invalid
+git -C "$capacity_repo" config user.name test
+printf '%s\n' base >"$capacity_repo/README.md"
+git -C "$capacity_repo" add README.md
+git -C "$capacity_repo" commit -qm base
+capacity_ledger="$capacity_repo/.agent/runs/active-workers.ndjson"
+attempt_dir=$(git -C "$capacity_repo" rev-parse --path-format=absolute --git-common-dir)/agentkit-review-attempts
+mkdir -p "$capacity_repo/.agent/runs" "$tmp/capacity-worker" "$tmp/stale-worker"
+printf '%s\n' \
+    '{"version":1,"issue":90,"worktree":"/old-worker","branch":"old","state":"active","heartbeatEpoch":1}' \
+    "{\"version\":2,\"issue\":90,\"worktree\":\"$tmp/stale-worker\",\"branch\":\"old\",\"runId\":\"old\",\"attempt\":\"stale\",\"workerId\":\"old-worker\",\"state\":\"active\",\"disposition\":\"returned\",\"evidence\":\"\",\"heartbeatEpoch\":1}" \
+    '{"version":2,"issue":91,"worktree":"/finished-worker","branch":"old","runId":"old","attempt":"old","workerId":"done","state":"terminal","disposition":"completed","evidence":"receipt","heartbeatEpoch":2}' \
+    >"$capacity_ledger"
+chmod 600 "$capacity_ledger"
+capacity_helper="$here/../agentkit/skills/parallel-issues/scripts/named-active-state.sh"
+capacity_entry() {
+    local pr=$1 path=$2 run_id=${3:-}
+    jq -n --argjson pr "$pr" --arg result "$tmp/result-$pr.json" --arg launcher "$script" --arg run_id "$run_id" \
+        '{repo:"acme/capacity",pr:$pr,head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",payload:("digest-"+($pr|tostring)),
+          provider:"anthropic",model:"claude-opus-5",effort:"high",launcher:$launcher,
+          launcherPid:1,result:$result} +
+          (if $run_id == "" then {} else {runId:$run_id} end)' >"$path"
+}
+capacity_attempt() {
+    local entry_file=$1 operation=$2
+    shift 2
+    "$script" attempt "$operation" --repo-root "$capacity_repo" --entry-file "$entry_file" "$@"
+}
+
+# No parallel run context means old native-run rows are unrelated. Outstanding
+# review attempts still count separately in every launch context.
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 2' >"$CODEX_HOME/config.toml"
+capacity_entry 99 "$tmp/capacity-99.json"
+standalone_capacity=$(capacity_attempt "$tmp/capacity-99.json" reserve)
+assert_eq reserved "$(jq -r .state <<<"$standalone_capacity")" \
+    'standalone review ignores unrelated stale native-run ownership'
+assert_rc 0 'standalone review releases normally' -- capacity_attempt "$tmp/capacity-99.json" finish \
+    --id "$(jq -r .id <<<"$standalone_capacity")" --state failed
+
+# Remove old rows before exercising named-active-state itself: its durable
+# ownership contract intentionally requires explicit reconciliation across runs.
+printf '%s\n' \
+    '{"version":1,"issue":90,"worktree":"/old-worker","branch":"old","state":"active","heartbeatEpoch":1}' \
+    '{"version":2,"issue":91,"worktree":"/finished-worker","branch":"old","runId":"old","attempt":"old","workerId":"done","state":"terminal","disposition":"completed","evidence":"receipt","heartbeatEpoch":2}' \
+    >"$capacity_ledger"
+chmod 600 "$capacity_ledger"
+
+# An outstanding native reservation must be visible to a review invocation
+# carrying the same parallel run. Refusal happens before a durable identity.
+mkdir -p "$tmp/capacity-blocker"
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 2' >"$CODEX_HOME/config.toml"
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action reserve \
+    --issue 500 --worktree "$tmp/capacity-blocker" --branch fix/blocker --run-id capacity \
+    --attempt worker-blocker >/dev/null
+capacity_entry 100 "$tmp/capacity-100.json" capacity
+before_capacity_refusal=$(find "$attempt_dir" -maxdepth 1 -name '*.json' -type f | wc -l)
+assert_rc 1 'active parallel-issues reservation blocks a review that would exceed the shared cap' -- \
+    capacity_attempt "$tmp/capacity-100.json" reserve
+assert_eq "$before_capacity_refusal" "$(find "$attempt_dir" -maxdepth 1 -name '*.json' -type f | wc -l)" \
+    'capacity refusal creates no review identity that could later be sent'
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action release \
+    --attempt worker-blocker --disposition rejected --evidence 'worker was not launched' >/dev/null
+
+printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 3' >"$CODEX_HOME/config.toml"
+capacity_entry 101 "$tmp/capacity-101.json" capacity
+capacity_entry 102 "$tmp/capacity-102.json" capacity
+capacity_entry 103 "$tmp/capacity-103.json" capacity
+first_capacity=$(capacity_attempt "$tmp/capacity-101.json" reserve)
+second_capacity=$(capacity_attempt "$tmp/capacity-102.json" reserve)
+assert_eq reserved "$(jq -r .state <<<"$first_capacity")" \
+    'first distinct reviewer reserves shared capacity'
+assert_eq reserved "$(jq -r .state <<<"$second_capacity")" \
+    'second distinct reviewer overlaps before either finishes'
+assert_eq yes "$([[ $(jq -r .id <<<"$first_capacity") != "$(jq -r .id <<<"$second_capacity")" ]] && printf yes || printf no)" \
+    'overlapping reviewers retain distinct durable identities despite old inactive worker rows'
+assert_rc 0 'first reviewer enters running state' -- capacity_attempt "$tmp/capacity-101.json" start \
+    --id "$(jq -r .id <<<"$first_capacity")" --pid "$$"
+assert_rc 0 'second reviewer enters running state' -- capacity_attempt "$tmp/capacity-102.json" start \
+    --id "$(jq -r .id <<<"$second_capacity")" --pid "$$"
+assert_rc 1 'overflow reviewer is refused before it can reserve or send' -- \
+    capacity_attempt "$tmp/capacity-103.json" reserve
+assert_rc 0 'completed reviewer releases one slot' -- capacity_attempt "$tmp/capacity-101.json" finish \
+    --id "$(jq -r .id <<<"$first_capacity")" --pid "$$" --state failed
+third_capacity=$(capacity_attempt "$tmp/capacity-103.json" reserve)
+assert_eq reserved "$(jq -r .state <<<"$third_capacity")" \
+    'queued reviewer refills released capacity'
+
+# One remaining reviewer leaves one slot at cap=3. A native worker reserve and
+# another PR review race for it; the shared lock must admit exactly one.
+# Native admission holds ledger->capacity; reviewer admission holds
+# per-PR->capacity and reads only the ledger's atomic-replace snapshot, so no
+# reverse capacity->ledger-lock edge exists.
+assert_rc 0 'second reviewer releases before the mixed admission race' -- \
+    capacity_attempt "$tmp/capacity-102.json" finish --id "$(jq -r .id <<<"$second_capacity")" \
+    --pid "$$" --state failed
+capacity_entry 104 "$tmp/capacity-104.json" capacity
+capacity_attempt "$tmp/capacity-104.json" reserve >"$tmp/review-race.out" 2>"$tmp/review-race.err" &
+review_race_pid=$!
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action reserve \
+    --issue 501 --worktree "$tmp/capacity-worker" --branch fix/capacity --run-id capacity \
+    --attempt worker-race >"$tmp/worker-race.out" 2>"$tmp/worker-race.err" &
+worker_race_pid=$!
+mixed_winners=0
+wait "$review_race_pid" && mixed_winners=$((mixed_winners + 1))
+wait "$worker_race_pid" && mixed_winners=$((mixed_winners + 1))
+assert_eq 1 "$mixed_winners" \
+    'review and native reservations cannot both claim the same final slot'
 finish

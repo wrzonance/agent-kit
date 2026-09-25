@@ -147,6 +147,66 @@ def save(path, value):
         finally: os.close(fd)
     finally:
         if os.path.exists(temp): os.unlink(temp)
+def acquire_lock(path, timeout=2):
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    lock_stat = os.fstat(fd)
+    if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_uid != os.getuid():
+        os.close(fd); raise ValueError('unsafe capacity lock')
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd); raise TimeoutError('capacity lock unavailable after 2s; outcome unknown')
+            time.sleep(0.02)
+def active_worker_count(repo_root, run_id):
+    if not run_id: return 0
+    if (len(run_id) > 128 or not run_id[0].isalnum()
+            or any(not (char.isalnum() or char in '._:-') for char in run_id)):
+        raise ValueError('invalid parallel run ID in review attempt')
+    primary = subprocess.check_output(['git', '-C', repo_root, 'worktree', 'list', '--porcelain'], text=True).splitlines()[0]
+    if not primary.startswith('worktree '): raise ValueError('could not resolve primary worktree')
+    ledger = pathlib.Path(primary[9:]) / '.agent/runs/active-workers.ndjson'
+    if not ledger.exists(): return 0
+    latest = {}
+    for raw in safe_file(ledger).splitlines():
+        try: row = json.loads(raw)
+        except json.JSONDecodeError as error: raise ValueError('malformed active-worker evidence') from error
+        if not isinstance(row, dict): raise ValueError('malformed active-worker evidence')
+        if row.get('version') != 2: continue
+        if row.get('runId') != run_id: continue
+        worktree, state = row.get('worktree'), row.get('state')
+        if not isinstance(worktree, str) or not worktree.startswith('/') or state not in ('unknown', 'active', 'terminal'):
+            raise ValueError('malformed active-worker reservation')
+        latest[os.path.realpath(worktree)] = row
+    return sum(row['state'] != 'terminal' for row in latest.values())
+def active_review_count(directory, own_path):
+    count = 0
+    for candidate in directory.glob('*.json'):
+        if candidate == own_path: continue
+        value = json.loads(safe_file(candidate))
+        if value.get('version') != 1 or value.get('state') not in (
+                'reserved', 'running', 'completed', 'failed', 'unknown-outcome', 'parser-rejected'):
+            raise ValueError('malformed durable review attempt in capacity inventory')
+        if value['state'] in ('reserved', 'running', 'unknown-outcome'): count += 1
+    return count
+def admit_capacity(directory, own_path, entry):
+    lock_fd = acquire_lock(directory / 'capacity.lock')
+    try:
+        total = 1 + active_worker_count(a.repo_root, entry.get('runId', '')) + active_review_count(directory, own_path) + 1
+        cap = pathlib.Path(entry['launcher']).resolve().parents[2] / 'parallel-issues/scripts/concurrency-cap.sh'
+        if not cap.is_file() or not os.access(cap, os.X_OK):
+            raise ValueError('shared concurrency-cap.sh is unavailable')
+        result = subprocess.run([str(cap), '--spawn-capable', '--assert-count', str(total),
+            '--agent-kind', 'reviewer'], text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise ValueError((result.stderr.strip() or 'shared concurrency capacity refused review'))
+        return lock_fd
+    except Exception:
+        os.close(lock_fd)
+        raise
 try:
     entry = json.loads(safe_file(a.entry_file))
     common = pathlib.Path(subprocess.check_output(['git', '-C', a.repo_root,
@@ -340,9 +400,13 @@ try:
             raise ValueError('payload gate evidence mismatch')
         result = json.loads(safe_file(entry['result']))
         if result.get('attemptId') != record['id']: raise ValueError('result attempt identity mismatch')
+    capacity_fd = None
+    if a.operation in ('reserve', 'retry', 'recover') and record.get('state') == 'reserved':
+        capacity_fd = admit_capacity(directory, path, entry)
     if a.operation not in ('read', 'validate'):
         record['events'].append({'state': record['state'], 'operation': a.operation, 'at': now})
         save(path, record)
+    if capacity_fd is not None: os.close(capacity_fd)
     if a.operation == 'read': record['recoverableUnsent'] = unsent(record)
     if a.operation == 'read' and record['state'] == 'running':
         identity = process_identity(record.get('helperPid', 0))
@@ -501,6 +565,9 @@ reserve_review_attempt() {
     prepare_owned_artifact "$ATTEMPT_ENTRY"
     local retry_id=${RETRY_ATTEMPT_ID:-} budget=${MAX_BUDGET_USD:-5.00}
     local tokens=${MAX_OUTPUT_TOKENS:-} duration=${MAX_DURATION_SECONDS:-900}
+    local parallel_run_id=${AGENTKIT_PARALLEL_RUN_ID:-}
+    [[ -z $parallel_run_id || $parallel_run_id =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+        die 'AGENTKIT_PARALLEL_RUN_ID must be a valid existing run ID'
     if [[ -n $retry_id || -n ${RETRY_AUTHORIZATION:-} ]]; then
         [[ -n $retry_id && -n ${RETRY_AUTHORIZATION:-} ]] ||
             die 'retry requires paired attempt and authorization'
@@ -518,7 +585,7 @@ reserve_review_attempt() {
         --arg authorization "$OVERRIDE_AUTHORIZATION" --argjson pid "$$" \
         --arg launcher "$LAUNCHER_PATH" --arg result "$RUN_DIR/adversarial.result.json" \
         --arg retry_id "$retry_id" --arg budget "$budget" --arg tokens "$tokens" \
-        --arg duration "$duration" \
+        --arg duration "$duration" --arg run_id "$parallel_run_id" \
         '{repo:$repo,pr:$pr,payload:$payload,head:$head,base:$base,reviewBase:$review_base,
           reviewBaseOverride:($review_base_override == "1"),provider:$provider,repoRoot:$repo_root,
           model:$model,effort:$effort,mode:$mode,configuredReviewer:$configured,override:$override,
@@ -526,7 +593,8 @@ reserve_review_attempt() {
         exclusionCount:$exclusion_count,excludedSha256:$excluded_sha256,
         overrideAuthorization:$authorization,launcher:$launcher,launcherPid:$pid,result:$result,
         canonical:true,procedure:"one-shot diff review; no contract-blind or two-pass attestation",
-          enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted"}
+          enforcement:"supported-helper-only; raw CLI bypass cannot be intercepted",
+          runId:(if $run_id == "" then null else $run_id end)}
         + {maxBudgetUsd:(if $provider == "anthropic" then ($budget|tonumber) else null end),
             maxOutputTokens:(if $provider == "anthropic" and $tokens != "" then ($tokens|tonumber) else null end),
             maxDurationSeconds:($duration|tonumber)}' >"$ATTEMPT_ENTRY"

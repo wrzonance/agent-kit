@@ -81,7 +81,15 @@ if [[ $spawn_mode == no ]]; then
 fi
 
 command -v awk >/dev/null 2>&1 || die 'Unable to advertise concurrency: awk is missing; cannot inspect runtime concurrency'
-[[ -e $config_file ]] || die "Unable to advertise concurrency: runtime config is absent: $config_file"
+if [[ ! -e $config_file ]]; then
+    if [[ $count_set == yes ]]; then
+        ((10#$count <= MAX)) ||
+            die "spawn refused: cap=$MAX observed=$count agent-kind=$kind helper=$PROGRAM"
+        printf 'effective concurrency cap: %s total threads, including the root (hard maximum; runtime config absent)\n' "$MAX"
+        exit 0
+    fi
+    die "Unable to advertise concurrency: runtime config is absent: $config_file"
+fi
 [[ -f $config_file && -r $config_file ]] ||
     die "Unable to advertise concurrency: runtime config is unreadable or not a regular file: $config_file"
 

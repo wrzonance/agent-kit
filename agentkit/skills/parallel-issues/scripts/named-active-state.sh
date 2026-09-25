@@ -4,6 +4,9 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM=${0##*/}
+script_source=${BASH_SOURCE[0]}
+[[ $script_source == */* ]] || script_source=./$script_source
+script_dir=$(cd -P -- "${script_source%/*}" && pwd -P)
 
 repo_root=''
 ledger=''
@@ -190,6 +193,41 @@ if [[ $action != classify ]]; then
             'all(.[]; .attempt != $a) and (group_by(.worktree) | map(last) |
              all(.[]; (.worktree != $p and .issue != $i) or .state == "terminal"))' \
             <<<"$rows" >/dev/null || die 'ownership held or attempt already used; reconcile before retry'
+        common_dir=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir) ||
+            die 'could not resolve Git common directory for shared capacity'
+        capacity_dir="$common_dir/agentkit-review-attempts"
+        if [[ ! -e $capacity_dir && ! -L $capacity_dir ]]; then
+            mkdir -m 700 -- "$capacity_dir" 2>/dev/null || [[ -d $capacity_dir ]] ||
+                die 'could not create shared capacity directory'
+        fi
+        [[ -d $capacity_dir && ! -L $capacity_dir && -O $capacity_dir ]] ||
+            die 'unsafe shared capacity directory'
+        capacity_mode=$(stat -c %a -- "$capacity_dir") || die 'could not inspect shared capacity directory'
+        (( (8#$capacity_mode & 8#077) == 0 )) || die 'shared capacity directory must be owner-private'
+        capacity_lock="$capacity_dir/capacity.lock"
+        [[ ! -L $capacity_lock && (! -e $capacity_lock || (-f $capacity_lock && -O $capacity_lock)) ]] ||
+            die 'unsafe shared capacity lock'
+        exec {capacity_fd}>>"$capacity_lock"
+        flock -w 2 "$capacity_fd" || die 'shared capacity lock unavailable after 2 seconds'
+        review_count=0
+        shopt -s nullglob
+        for review_record in "$capacity_dir"/*.json; do
+            [[ -f $review_record && ! -L $review_record && -O $review_record ]] ||
+                die 'unsafe durable review attempt in capacity inventory'
+            review_state=$(jq -er 'select(.version == 1) | .state |
+                select(. == "reserved" or . == "running" or . == "completed" or . == "failed" or
+                . == "unknown-outcome" or . == "parser-rejected")' \
+                "$review_record") || die 'malformed durable review attempt in capacity inventory'
+            [[ $review_state != reserved && $review_state != running && $review_state != unknown-outcome ]] ||
+                review_count=$((review_count + 1))
+        done
+        shopt -u nullglob
+        worker_count=$(jq '[group_by(.worktree) | map(last)[] |
+            select(.version == 2 and .state != "terminal")] | length' <<<"$rows") ||
+            die 'could not count active worker reservations'
+        prospective_total=$((1 + worker_count + review_count + 1))
+        "$script_dir/concurrency-cap.sh" --spawn-capable --assert-count "$prospective_total" \
+            --agent-kind worker >/dev/null || die 'shared concurrency capacity refused worker reservation'
         next=$(jq -nc --argjson i "$issue" --arg p "$worktree" --arg b "$branch" \
             --arg r "$run_id" --arg a "$attempt" --argjson t "$now_epoch" \
             '{version:2, issue:$i, worktree:$p, branch:$b, runId:$r, attempt:$a,
