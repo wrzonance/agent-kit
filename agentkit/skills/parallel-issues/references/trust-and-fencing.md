@@ -30,10 +30,12 @@ collisions and permitted transient retries remain retryable. Legacy cache and lo
 Cache-ineligible checks retain evidence in `.agent/run-records/` without granting
 reuse. Acceptance collects an active run or spends one run-state recovery per check and candidate head.
 
-During red/green iteration, run focused suites for changed files, then use `--force` for the required
-fresh full suite before commit. Reused evidence never satisfies a workflow's fresh-run requirement.
-After push, GitHub CI is authoritative for that SHA. This guard does not suppress file reads, git
-queries, or search, and does not broaden dispatch or provider-review retry budgets.
+During red/green, run focused suites. Commit the completed candidate, then run the required
+unfocused full suite on that clean committed HEAD before push. The worker returns its SHA and
+evidence; root validation and resume consume unchanged proof without scheduling another run.
+Changed code, relevant inputs, or invalid evidence require verification of the new committed state.
+After push, GitHub CI is authoritative for that SHA. This guard does not suppress
+file reads, git queries, or search, and does not broaden dispatch or provider-review retry budgets.
 
 ## Worker baseline exclusions
 

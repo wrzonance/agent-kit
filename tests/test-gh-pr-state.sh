@@ -1592,6 +1592,8 @@ assert_contains "$full_output" "saved: $full_output_dir/pr_14_" \
     '--full reports the private evidence artifact location'
 assert_contains "$full_output" 'receipts: pr_14_issue_comments.json' \
     '--full names the issue-comments artifact consumed by receipt helpers'
+assert_contains "$full_output" 'finding-classification: cq=known icf=known' \
+    'fresh persisted artifacts record successful required finding classification'
 for artifact in reviews comments issue_comments threads code_quality_comments; do
     assert_eq '600' "$(stat -c %a -- "$full_output_dir/pr_14_${artifact}.json" 2>/dev/null || stat -f %Lp -- "$full_output_dir/pr_14_${artifact}.json")" \
         "--full $artifact artifact is owner-private"
@@ -1649,6 +1651,26 @@ assert_contains "$icf_answered_output" 'issue-comment-findings: 0 open' \
     '--issue-comment-answered excludes a finding already recorded in the local answered ledger'
 assert_not_contains "$icf_answered_output" 'next: issue-comment-findings' \
     'a fully-answered issue-comment-findings lane prints no next hint'
+
+# Required finding classifiers can be unavailable without delaying immutable
+# review launch. The digest preserves that provenance so final publication can
+# refuse an invented empty accepted-findings ledger later.
+classifier_agentkit="$tmp/classifier-agentkit"
+cp -a -- "$root/agentkit" "$classifier_agentkit"
+for classifier in classify-issue-comment-findings.sh code-quality-state.sh; do
+    cat >"$classifier_agentkit/skills/review-remote-pr/scripts/$classifier" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$classifier_agentkit/skills/review-remote-pr/scripts/$classifier"
+done
+classifier_unavailable_output=$(PATH="$tmp:$PATH" bash \
+    "$classifier_agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh" \
+    --pr 14 --repo owner/repo)
+assert_contains "$classifier_unavailable_output" 'issue-comment-findings: unavailable' \
+    'issue-comment classifier failure remains explicit without aborting the review-eligibility digest'
+assert_contains "$classifier_unavailable_output" 'finding-classification: cq=unavailable icf=unavailable' \
+    'the canonical digest preserves both unavailable classifier results for finalization'
 
 # --digest-out (issue #584): the printed digest must also land in an owned,
 # mode-600 file byte-for-byte -- this is the artifact merge-gate.sh's
@@ -1719,7 +1741,7 @@ assert_rc 1 '--digest-out= (empty) is rejected, not silently accepted' -- \
     --pr 14 --repo owner/repo --digest-out=
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh") -le 1210 ]] && printf yes || printf no)" \
-    'gh-pr-state.sh stays at or under 1210 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/gh-pr-state.sh") -le 1245 ]] && printf yes || printf no)" \
+    'gh-pr-state.sh stays at or under 1245 lines'
 
 finish

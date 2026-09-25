@@ -150,7 +150,10 @@ with tempfile.TemporaryDirectory() as temp:
     assert validate(digest=observed_digest)['status'] == 'accepted', 'harmless stderr must not corrupt the stdout fingerprint'
     os.environ.pop('LC_ALL')
     assert validate(digest=observed_digest)['status'] == 'accepted'
+    logs_before_resume={p.name:p.read_bytes() for p in (repo/'.agent/logs').iterdir()}
     assert validate()['reused'] is True
+    assert {p.name:p.read_bytes() for p in (repo/'.agent/logs').iterdir()}==logs_before_resume, \
+        'root validation and resume consume unchanged proof without executing verification again'
     # Durable execution state cannot be replaced by the legacy green index.
     record=repo/'.agent/verification-records'/key/'result'
     saved_record=record.read_bytes()

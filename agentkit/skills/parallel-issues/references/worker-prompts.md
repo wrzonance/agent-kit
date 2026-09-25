@@ -163,11 +163,12 @@ First fetch the complete PR state and evidence into that durable directory:
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO --repo-root FULL_PATH --full \
   --tmpdir "$state_dir" "${acceptance_args[@]}"
 
-Snapshot CI once; return pending state to root, which applies shared wait-discipline. Never
-resume setup as a poller. A failing check is a terminal setup result, not a fix batch:
+Snapshot CI once and retain its actual state independently of review launch eligibility. Never
+resume setup as a poller or wait for settlement before launching the immutable snapshot review.
+Continue CI diagnosis independently after launch; a failure does not cancel or restart review:
 
 setup_terminal='launch-ready'
-ci_red=0
+ci_observed='green'
 ci_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr NNN --repo OWNER/REPO \
   "${acceptance_args[@]}") || exit 1
 printf '%s\n' "$ci_digest"
@@ -176,15 +177,15 @@ ci_pending=$(sed -n 's/^ci=.*pending=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing=$(sed -n 's/^ci=.*failing=\([0-9][0-9]*\).*$/\1/p' <<<"$ci_line")
 ci_failing_checks=$(sed -n 's/^ci=.*failing=[1-9][0-9]* failing-checks=\(.*\)$/\1/p' <<<"$ci_line")
 if [[ $ci_failing =~ ^[1-9][0-9]*$ ]]; then
-  ci_red=1
   if [[ -n $ci_failing_checks ]]; then
-    setup_terminal="ci-red: $ci_failing_checks"
+    ci_observed="red: $ci_failing_checks"
   else
-    setup_terminal='ci-red: unknown-check'
+    ci_observed='red: unknown-check'
   fi
 elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
-  setup_terminal='ci-pending'
+  ci_observed='pending'
 fi
+printf 'ci-observed=%s\n' "$ci_observed"
 
 Probe and triage Code Quality once. `state=not-enabled` is clean evidence. When enabled, the
 second call attributes only persisted PR comments whose path+line is inside the PR diff; the
@@ -197,13 +198,10 @@ if [[ $cq_probe == state=enabled ]]; then
     --comments-file "$state_dir/pr_NNN_code_quality_comments.json" --diff-base "__MATERIALITY_BASE__" \
     --repo-root FULL_PATH); then
     printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
-    setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
   else
     printf '%s\n' "$cq_state"
     cq_open=$(sed -n 's/^cq-open: \([0-9][0-9]*\) source=.*/\1/p' <<<"$cq_state")
-    if [[ $cq_open =~ ^[1-9][0-9]*$ ]]; then
-      setup_terminal="cq-open: $cq_open source=pr_NNN_code_quality_comments.json"
-    fi
+    [[ ! $cq_open =~ ^[1-9][0-9]*$ ]] || printf 'findings-observed=cq-open:%s\n' "$cq_open"
   fi
 elif [[ $cq_probe == state=not-enabled ]]; then
   printf 'cq-repo: 0\n'
@@ -211,7 +209,6 @@ elif [[ $cq_probe == state=not-enabled ]]; then
 else
   printf 'Code Quality findings unavailable; setup cannot classify findings.\n'
   printf 'cq-open: unavailable source=pr_NNN_code_quality_comments.json\n'
-  setup_terminal='cq-open: unavailable source=pr_NNN_code_quality_comments.json'
 fi
 
 Classify issue-comment findings once (agent-kit#566): a CodeRabbit/Code-Quality finding posted as
@@ -225,24 +222,11 @@ icf_answered="$state_dir/pr_NNN_issue_comment_answered.ndjson"
 if ! icf_state=$("$agentkit/review-remote-pr/scripts/classify-issue-comment-findings.sh" count \
   --comments "$state_dir/pr_NNN_issue_comments.json" --answered "$icf_answered"); then
   printf 'icf-open: unavailable source=pr_NNN_issue_comments.json\n'
-  setup_terminal='icf-open: unavailable source=pr_NNN_issue_comments.json'
 else
   icf_open=$(sed -n 's/^open=\([0-9][0-9]*\) .*/\1/p' <<<"$icf_state")
   printf 'icf-open: %s source=pr_NNN_issue_comments.json\n' "${icf_open:-0}"
-  if [[ $icf_open =~ ^[1-9][0-9]*$ ]]; then
-    setup_terminal="icf-open: $icf_open source=pr_NNN_issue_comments.json"
-  fi
+  [[ ! $icf_open =~ ^[1-9][0-9]*$ ]] || printf 'findings-observed=icf-open:%s\n' "$icf_open"
 fi
-if ((ci_red)); then
-  if [[ -n $ci_failing_checks ]]; then
-    setup_terminal="ci-red: $ci_failing_checks"
-  else
-    setup_terminal='ci-red: unknown-check'
-  fi
-elif [[ $ci_pending =~ ^[1-9][0-9]*$ ]]; then
-  setup_terminal='ci-pending'
-fi
-
 Run the materiality precheck against the PR's current head before any review spend:
 
 materiality_acceptance_args=()
@@ -267,10 +251,10 @@ $RUN_DIR/setup.result
 Before returning any terminal result, write one `setup.result` line naming the `RUN_DIR` and
 result. If any required state file or `setup.result` is missing or empty, the setup is a contract
 violation: return exactly `BLOCKED: artifacts-missing run-dir=$RUN_DIR` (with the missing paths in
-the compact evidence summary) instead of `launch-ready`, `cq-open`, or `ci-red`.
+the compact evidence summary) instead of `launch-ready`.
 The completion line names the run-dir: every successful terminal completion line must be exactly
 `<terminal-marker> run-dir=$RUN_DIR`, so the root can use the same directory. Never emit a bare
-`launch-ready`, `cq-open`, or `ci-red` completion line.
+`launch-ready` completion line.
 
 Use this final check (after inspecting CI, Code Quality, and materiality) to make the result
 durable and to ensure no earlier evidence line is mistaken for completion:
@@ -292,7 +276,7 @@ fi
 `````
 
 The root's completion-acceptance gate is separate from this worker and runs once before accepting
-`launch-ready` or `cq-open`. It receives the `run-dir=` value from the completion line and must
+`launch-ready`. It receives the `run-dir=` value from the completion line and must
 regenerate missing state once, recording the recovery in that run's evidence:
 
 `````bash
@@ -319,20 +303,15 @@ That root regeneration is bounded to exactly once; a completion is not accepted 
 non-empty threads artifact is present after the retry. `setup-artifacts-missing` in
 `setup.result` is the durable run-evidence marker for the simulated empty-run-dir case.
 
-If CI is red, set the terminal marker to exactly `ci-red: <check>` naming the failing check. If the attribution report
-has in-diff findings, return its terminal `cq-open: N source=pr_N_code_quality_comments.json` line;
-`cq-repo: M` is reported separately and never gates. If any classified issue-comment finding
-(agent-kit#566) is still open, return `icf-open: N source=pr_NNN_issue_comments.json` — there is no
-review thread behind it, so it never shows up as a `threads:`/`cq-open:` count. Otherwise return
-exactly `launch-ready` only when CI is settled. Pending CI returns `ci-pending` so root selects
-direct collection or a justified waiter under shared wait-discipline. Precedence is `ci-red`, then `ci-pending`, then `cq-open`/`icf-open`; every printed
-evidence line still reaches root regardless of which signal occupies the terminal slot.
-The final completion line appends `run-dir=$RUN_DIR` to that marker (for example,
-`ci-red: <check> run-dir=$RUN_DIR`, `cq-open: N source=pr_NNN_code_quality_comments.json run-dir=$RUN_DIR`,
-`icf-open: N source=pr_NNN_issue_comments.json run-dir=$RUN_DIR`, `ci-pending run-dir=$RUN_DIR`, or `launch-ready run-dir=$RUN_DIR`).
-The terminal line is the root's gate: it may dispatch `pr-fix-batch` only when its accepted
-findings ledger contains at least one in-diff finding. Zero in-diff findings are a successful
-setup outcome, even when `cq-repo: M` is non-zero.
+CI and finding repair never replace launch eligibility. Preserve `ci=`, `ci-observed=`, `cq-open:`,
+`icf-open:`, and `findings-observed=` lines while review, CI repair, and finding repair proceed
+independently. Return exactly `launch-ready`, including with pending/red CI or open Code Quality and
+issue-comment findings; unavailable classification remains visible as unavailable evidence. The
+final completion line is `launch-ready run-dir=$RUN_DIR`. After root classification, write every
+accepted Code Quality or issue-comment record in the existing pr-fix format to `$RUN_DIR/accepted-findings.ndjson`; create it owner-only and explicitly empty only when none are accepted.
+Missing means unknown, never zero. Reuse this exact file for `pr-fix-batch`, replacing open records with validated fixed or declined evidence before final publication.
+The root may dispatch `pr-fix-batch` only when this ledger contains at least one in-diff finding.
+Zero in-diff findings are a successful setup outcome, even when `cq-repo: M` is non-zero.
 Return the terminal line plus a compact evidence summary; never return BLOCKED merely because
 there is nothing to fix.
 ```
@@ -348,10 +327,8 @@ Put scope decisions, standing limitations, and unrelated failures in `## Decisio
 The body starts with `This was written agentically; verify its assertions:`.
 Never pass a multiline PR body through inline `--body`; the composer writes a private file for verified transport.
 
-For a chained issue, pass the predecessor branch as the PR base (`--base feat/issue-<A>` instead
-of `--base "$base"`) and keep the `Stacked on #<PR>` disclosure in the approved Why or Decisions
-section. GitHub's closing keyword is dormant while the PR is stacked; after the predecessor
-merges, use `chain-advance.sh --retarget` and require its linkage proof before merging.
+For a chained issue, record the predecessor branch as `publicationTarget` and keep `Stacked on #<PR>`
+in Why or Decisions. After it merges, use `chain-advance.sh --retarget` and require linkage proof.
 
 ### Diff-size disclosure
 
@@ -377,7 +354,14 @@ pr_why_file=${pr_why_file:?set the root-approved Why section file}
 pr_what_file=${pr_what_file:?set the root-approved What section file}
 pr_decisions_file=${pr_decisions_file:?set the root-approved Decisions section file}
 pr_testing_file=${pr_testing_file:?set the root-approved Testing section file}
-default_branch=${default_branch:?set the repository default branch}
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
+base=${base:?set the repository default branch from the environment contract}
+[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan && -r $dispatch_plan && -O $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
+publication_target=$(jq -er --argjson issue "$issue_number" \
+  '[.entries[]? | select(.issue == $issue) | .publicationTarget] | select(length == 1) | .[0] | select(type == "string" and length > 0)' \
+  "$dispatch_plan") || { printf '%s\n' "no reliable publication target for issue #$issue_number" >&2; exit 1; }
+closing_issue_args=()
+[[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 pr_body_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label pr-body --repo-root "$repository_root") || exit 1
@@ -397,10 +381,8 @@ baseline_exclusion_args=()
   --issue "$issue_number" --why-file "$pr_why_file" --what-file "$pr_what_file" \
   --decisions-file "$pr_decisions_file" --testing-file "$pr_testing_file" \
   "${baseline_args[@]}" --agent "$agent_identity" "${baseline_exclusion_args[@]}" --output "$pr_body_file"
-linkage_args=()
-[[ $base == "$default_branch" ]] && linkage_args+=(--expect-closing-issue "$issue_number")
-"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file" \
-  --title "$pr_title" --base "$base" --head "$branch" --run-id "$RUN_ID" --repo-root "$repository_root" "${linkage_args[@]}"
+"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file" --title "$pr_title" --head "$branch" \
+  --run-id "$RUN_ID" --repo-root "$repository_root" --dispatch-plan "$dispatch_plan" --plan-issue "$issue_number" "${closing_issue_args[@]}"
 ```
 
 The same verified transport covers issue mutations. Every issue body file uses the same front
@@ -497,6 +479,10 @@ Root owns the immutable pre-dispatch snapshot and Collect; never call `cross-wri
 Return scoped changes and timing/handback evidence; root handles a missing snapshot on every dispatch or resume.
 __ACCEPTED_FINDINGS_SECTION__
 
+The accepted-findings ledger also carries any available upstream findings and fix evidence supplied
+by root. Use that completed evidence to avoid known duplicate work. Do not wait, poll, or contact an
+upstream reviewer for findings that were not available when this batch was composed.
+
 ## How to write a file
 
 Use, in preference order: your own edit/patch tool; a whole-file shell write when that tool is
@@ -524,6 +510,8 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 
 ## Branch Rules (MANDATORY)
 - Work only in the supplied worktree and confirm the supplied branch before editing.
+- This worker owns the worktree until its terminal lifecycle release. Never invite a second writer;
+  root edits and merge-down wait for that confirmed release.
 - Do not alter branch history or metadata; surface conflicts or branch mismatches to the
   top-level session.
 
@@ -544,20 +532,27 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 3. Follow this composed verification runbook:
    __VERIFY_RUNBOOK__
    Run every verification command through `agent-run.sh`; use focused checks during TDD, but
-   commit the repair before the final unfocused run. Do not rerun a failed command outside the wrapper.
-4. When focused verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
+   do not add a focused pass solely because the final full verification follows. Do not rerun
+   a failed command outside the wrapper.
+4. Commit the repair with `"$shared/worktree-commit.sh"` (explicit file
    operands, Conventional Commit subject, the expanded `--trailer "$worker_attribution"`
-   -- or omitted, letting the helper derive it from the contract). Run the unfocused full command
-   through `agent-run.sh` on that clean commit, retain its green marker-bearing log, and
-   push the branch only after that clean committed-HEAD run passes. If unrelated dirt appears, stop and surface its files, diffstat, and
-   whether the checkpoint manifest explains it — never commit it.
-5. Return a completion report: branch, full commit SHA from the helper's success line,
+   -- or omitted, letting the helper derive it from the contract). If unrelated dirt appears,
+   stop and surface its files, diffstat, and whether the checkpoint manifest explains it —
+   never commit it.
+5. Run each required unfocused full verification command exactly once through `agent-run.sh`
+   on that clean commit and retain its green marker-bearing log.
+   A failed full run stops publication: repair with focused TDD, create a new local commit, and
+   verify that new HEAD.
+6. Push the branch only after that clean committed-HEAD run passes. Return a completion report:
+   branch, full commit SHA from the helper's success line,
    diffstat, and the green verification log path. If the helper exits 2 (nothing
    committed), return the classic publication handback (the exact ready-to-run commit
    command with the expanded trailer) instead and stop; if the commit succeeded but the
    push was refused, report the commit SHA and the exact ready-to-run push command — never
    a commit command the root cannot rerun.
-6. Do not contact external services beyond pushing the assigned branch, and do not alter
+   Root validates and consumes unchanged proof without rerunning it; changed code or relevant
+   inputs require new proof.
+7. Do not contact external services beyond pushing the assigned branch, and do not alter
    forge metadata; phase leads hand privileged actions to the root.
 
 **History freeze — binding the moment you push.** After your first push, do not amend, rebase, reset, or force-push
