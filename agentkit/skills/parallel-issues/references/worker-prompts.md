@@ -530,20 +530,27 @@ metadata, comments, replies, board moves, ready-flips — stays with the root.
 3. Follow this composed verification runbook:
    __VERIFY_RUNBOOK__
    Run every verification command through `agent-run.sh`; use focused checks during TDD, but
-   commit the repair before the final unfocused run. Do not rerun a failed command outside the wrapper.
-4. When focused verification is green, commit with `"$shared/worktree-commit.sh"` (explicit file
+   do not add a focused pass solely because the final full verification follows. Do not rerun
+   a failed command outside the wrapper.
+4. Commit the repair with `"$shared/worktree-commit.sh"` (explicit file
    operands, Conventional Commit subject, the expanded `--trailer "$worker_attribution"`
-   -- or omitted, letting the helper derive it from the contract). Run the unfocused full command
-   through `agent-run.sh` on that clean commit, retain its green marker-bearing log, and
-   push the branch only after that clean committed-HEAD run passes. If unrelated dirt appears, stop and surface its files, diffstat, and
-   whether the checkpoint manifest explains it — never commit it.
-5. Return a completion report: branch, full commit SHA from the helper's success line,
+   -- or omitted, letting the helper derive it from the contract). If unrelated dirt appears,
+   stop and surface its files, diffstat, and whether the checkpoint manifest explains it —
+   never commit it.
+5. Run each required unfocused full verification command exactly once through `agent-run.sh`
+   on that clean commit and retain its green marker-bearing log.
+   A failed full run stops publication: repair with focused TDD, create a new local commit, and
+   verify that new HEAD.
+6. Push the branch only after that clean committed-HEAD run passes. Return a completion report:
+   branch, full commit SHA from the helper's success line,
    diffstat, and the green verification log path. If the helper exits 2 (nothing
    committed), return the classic publication handback (the exact ready-to-run commit
    command with the expanded trailer) instead and stop; if the commit succeeded but the
    push was refused, report the commit SHA and the exact ready-to-run push command — never
    a commit command the root cannot rerun.
-6. Do not contact external services beyond pushing the assigned branch, and do not alter
+   Root validates and consumes unchanged proof without rerunning it; changed code or relevant
+   inputs require new proof.
+7. Do not contact external services beyond pushing the assigned branch, and do not alter
    forge metadata; phase leads hand privileged actions to the root.
 
 **History freeze — binding the moment you push.** After your first push, do not amend, rebase, reset, or force-push
