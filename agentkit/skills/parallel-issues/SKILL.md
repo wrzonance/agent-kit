@@ -624,7 +624,12 @@ review, consent, replies, and publication — and never initiates a provider rev
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
-Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
+Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL
+lands; after conflicts/base freshness are handled, the ONE adversarial review launches against its
+immutable snapshot without waiting for pending or red CI. CI repair and review collection continue
+independently; neither a mid-review failure nor a repair push cancels or relaunches the review. The
+agent reports "draft phase complete" only after fresh final-head CI is green and all findings are
+fixed/declined with evidence, WITHOUT marking the PR ready.
 
 **Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
 `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.
@@ -691,8 +696,9 @@ case "$precheck_rc" in
     *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
 esac
 ```
-After all confirmed findings are fixed or explicitly declined, push those fixes; the receipt is
-published **after fixes are pushed** and **before draft-phase-complete handoff**, as exactly one
+After all confirmed findings are fixed or explicitly declined, push and refresh final PR state once.
+Required green CI bound to current HEAD verifies it; declared local acceptance adds mandatory pass
+records. Publish after fixes are pushed and green CI and **before draft-phase-complete handoff**, as exactly one
 durable top-level PR comment — a review or skip without it is never complete. It records provider,
 model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
 `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
@@ -700,7 +706,11 @@ or the `verified-skip rationale` + oracle. The order is executable: the successf
 `$agentkit/review-remote-pr/scripts/adversarial-run.sh` result must precede `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`, and publication consumes only
 that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
 skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
-the pre-launch gate above, and the precheck must never fall through to a placeholder receipt:
+the pre-launch gate above, and the precheck must never fall through to a placeholder receipt.
+Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
+format to `$RUN_DIR/accepted-findings.ndjson`; create it explicitly empty only after accepting none.
+Reuse it for repair and terminal evidence. Missing, open, legacy-terminal, or stale evidence blocks
+publication, while raw untriaged thread counts remain non-gating:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
@@ -711,9 +721,20 @@ receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 # After the runner returns 0, run the ledger command once per outcome:
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
 "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
+acceptance_args=()
+if [[ -f "$worktree/.agent/acceptance.txt" && ! -L "$worktree/.agent/acceptance.txt" ]]; then
+  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
+    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
+  done < "$worktree/.agent/acceptance.txt"
+fi
+final_digest="$RUN_DIR/state/pr_${PR}_final.digest"
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO" \
+  --repo-root "$worktree" --full --no-cache --tmpdir "$RUN_DIR/state" \
+  --digest-out "$final_digest" "${acceptance_args[@]}" || exit 1
 publish_rc=0
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
+    --pr-state-digest "$final_digest" \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?

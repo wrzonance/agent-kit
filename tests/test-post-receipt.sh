@@ -27,10 +27,11 @@ cat >"$script" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
-dir=${RUN_DIR:-} repo='' pr='' provider='' model='' effort='' head='' payload='' skip=0
+dir=${RUN_DIR:-} repo='' pr='' provider='' model='' effort='' head='' payload='' digest='' skip=0
 while (($#)); do
     case $1 in
         --findings-file) dir=$(dirname -- "$2"); shift 2 ;;
+        --pr-state-digest) digest=$2; shift 2 ;;
         --run-dir) dir=$2; shift 2 ;;
         --repo) repo=$2; shift 2 ;;
         --pr) pr=$2; shift 2 ;;
@@ -43,6 +44,21 @@ while (($#)); do
         *) shift ;;
     esac
 done
+if [[ -z $digest && -n $pr ]]; then
+    digest="$RECEIPT_FIXTURE_ROOT/final-pr-state-$pr.digest"
+    current_head=$(git rev-parse HEAD)
+    {
+        printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$current_head"
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+    } >"$digest"
+    chmod 600 -- "$digest"
+    args+=(--pr-state-digest "$digest")
+fi
+accepted="$dir/accepted-findings.ndjson"
+if [[ -d $dir && ${RECEIPT_ACCEPTED_FIXTURE:-empty} == empty && ! -e $accepted ]]; then
+    : >"$accepted"
+    chmod 600 -- "$accepted"
+fi
 result="$dir/adversarial.result.json"
 if [[ $skip == 0 && -n $repo && -n $pr && -f $result && ! -L $result ]] &&
     jq -se 'length == 1 and .[0].status == "completed" and .[0].exitCode == 0' "$result" >/dev/null 2>&1; then
@@ -95,6 +111,23 @@ findings_file="$tmp/findings.ndjson"
 
 reset_findings() {
     : >"$findings_file"
+}
+
+append_declined_finding() {
+    local title=$1 severity=$2 rationale=$3
+    jq -cn --arg title "$title" --arg severity "$severity" --arg rationale "$rationale" \
+        '{schemaVersion:2,title:$title,severity:$severity,verdict:"declined",rationale:$rationale,
+          evidence:{finding:$title,decision:"rejected",rationale:$rationale}}' >>"$findings_file"
+}
+
+write_green_digest() {
+    local path=$1 pr=$2 head
+    head=$(git rev-parse HEAD)
+    {
+        printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$head"
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+    } >"$path"
+    chmod 600 -- "$path"
 }
 
 # post-receipt.sh now requires the runner's validated result beside the ledger,
@@ -287,8 +320,28 @@ EOF
 chmod +x "$tmp/gh"
 
 run_publish() {
+    local pr='' arg final_head final_digest="$tmp/final-pr-state.digest"
+    local -a publish_args=("$@")
+    for ((arg = 0; arg < ${#publish_args[@]}; arg++)); do
+        if [[ ${publish_args[$arg]} == --pr ]]; then
+            pr=${publish_args[$((arg + 1))]}
+            break
+        fi
+    done
+    final_head=$(git rev-parse HEAD)
+    {
+        printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$final_head"
+        printf 'base: ref=main behind=0 stale=no\n'
+        case ${RECEIPT_FINAL_CI:-green} in
+            green) printf 'ci=1/1 green pending=0 failing=0\n' ;;
+            pending) printf 'ci=0/1 pending pending=1 failing=0\n' ;;
+            failing) printf 'ci=0/1 failing pending=0 failing=1 failing-checks=tests\n' ;;
+        esac
+    } >"$final_digest"
+    chmod 600 -- "$final_digest"
     GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
-        "$script" publish --findings-file "$findings_file" "$@"
+        "$script" publish --findings-file "$findings_file" \
+        --pr-state-digest "$final_digest" "${publish_args[@]}"
 }
 
 # publish now records the spend into the artifact it was handed, so a second
@@ -303,17 +356,162 @@ rendered_body() {
     jq -r '.body' "$tmp/payload.json"
 }
 
+# -- publish: finalization requires fresh green evidence for the final head --
+
+accepted_findings="$tmp/accepted-findings.ndjson"
+rm -f -- "$accepted_findings"
+reset_not_spent
+reset_findings
+accepted_out=$(RECEIPT_ACCEPTED_FIXTURE=missing run_publish --pr 14 --repo owner/repo \
+    --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
+    --effort high --mode cross-provider --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses missing accepted-findings evidence'
+assert_contains "$accepted_out" 'accepted findings' \
+    'missing accepted-findings refusal names the required artifact'
+
+printf '%s\n' \
+    '{"schemaVersion":2,"title":"repair pending","severity":"P1","verdict":"open","rationale":"fix it"}' \
+    >"$accepted_findings"
+chmod 600 -- "$accepted_findings"
+reset_not_spent
+accepted_out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses an open accepted non-adversarial finding'
+assert_contains "$accepted_out" 'accepted findings' \
+    'open accepted-finding refusal names the incomplete artifact'
+
+printf '%s\n' \
+    '{"title":"legacy fix","severity":"P1","verdict":"fixed","sha":"abcdef1"}' \
+    >"$accepted_findings"
+reset_not_spent
+accepted_out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'finalization refuses a bare fixed accepted finding without terminal evidence'
+assert_contains "$accepted_out" 'accepted findings' \
+    'legacy accepted-finding refusal names the incomplete artifact'
+
+jq -cn '{schemaVersion:2,title:"not applicable",severity:"P2",verdict:"declined",
+    rationale:"not a defect",evidence:{finding:"not applicable",decision:"rejected",rationale:"not a defect"}}' \
+    >"$accepted_findings"
+accepted_comments="$tmp/accepted-terminal-comments.json"
+printf '%s\n' '[]' >"$accepted_comments"
+run_publish --pr 15 --repo owner/repo --issue-comments "$accepted_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' >/dev/null
+assert_eq 0 "$?" 'terminal evidence completes accepted non-adversarial findings'
+: >"$accepted_findings"
+
+for final_ci in pending failing; do
+    : >"$tmp/gh.log"
+    reset_not_spent
+    reset_findings
+    final_out=$(RECEIPT_FINAL_CI=$final_ci run_publish --pr 14 --repo owner/repo \
+        --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
+        --effort high --mode cross-provider --p1 0 --p2 0 \
+        --agent-identity 'Claude Opus 5' 2>&1)
+    final_rc=$?
+    assert_eq 1 "$final_rc" "publish refuses $final_ci final-head CI"
+    assert_contains "$final_out" 'finalization evidence' \
+        "$final_ci refusal names the finalization evidence gate"
+    assert_eq '' "$(cat "$tmp/gh.log")" \
+        "$final_ci finalization never reaches receipt transport"
+done
+
+final_head=$(git rev-parse HEAD)
+unavailable_ci_digest="$tmp/unavailable-ci.digest"
+{
+    printf 'pr=14 draft=true mergeable=MERGEABLE head=test sha=%s\n' "$final_head"
+    printf 'base: ref=main behind=0 stale=no\n'
+} >"$unavailable_ci_digest"
+chmod 600 -- "$unavailable_ci_digest"
+assert_rc 1 'finalization refuses unavailable final-head CI evidence' -- \
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$unavailable_ci_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
+
+concealed_digest="$tmp/concealed-pending.digest"
+{
+    printf 'pr=14 draft=true mergeable=MERGEABLE head=test sha=%s\n' "$final_head"
+    printf 'base: ref=main behind=0 stale=no\n'
+    printf 'ci=0/1 pending pending=1 failing=0\n'
+    printf 'ci=1/1 green pending=0 failing=0\n'
+} >"$concealed_digest"
+chmod 600 -- "$concealed_digest"
+assert_rc 1 'a green line cannot conceal a pending CI line' -- \
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$concealed_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
+
+missing_head_digest="$tmp/missing-head.digest"
+printf '%s\n' 'ci=1/1 green pending=0 failing=0' >"$missing_head_digest"
+chmod 600 -- "$missing_head_digest"
+assert_rc 1 'finalization refuses a digest with no final-head identity' -- \
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$missing_head_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
+
+mismatched_head_digest="$tmp/mismatched-head.digest"
+{
+    printf '%s\n' 'pr=14 draft=true mergeable=MERGEABLE head=test sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    printf '%s\n' 'ci=1/1 green pending=0 failing=0'
+} >"$mismatched_head_digest"
+chmod 600 -- "$mismatched_head_digest"
+assert_rc 1 'finalization refuses CI evidence for a different head' -- \
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$mismatched_head_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5'
+
+acceptance_repo="$tmp/acceptance-repo"
+mkdir -p "$acceptance_repo/.agent"
+git init -q "$acceptance_repo"
+git -C "$acceptance_repo" -c user.name=test -c user.email=test@example.invalid \
+    commit -qm fixture --allow-empty
+printf '%s\n' 'npm run test:browser' >"$acceptance_repo/.agent/acceptance.txt"
+acceptance_digest="$tmp/acceptance-pr-state.digest"
+acceptance_comments="$tmp/acceptance-comments.json"
+printf '%s\n' '[]' >"$acceptance_comments"
+acceptance_out=$(
+    cd "$acceptance_repo" || exit 1
+    write_green_digest "$acceptance_digest" 14
+    GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json" \
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$acceptance_digest" \
+        --pr 14 --repo owner/repo --issue-comments "$acceptance_comments" \
+        --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+        --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1
+)
+assert_eq 1 "$?" 'finalization refuses missing evidence for a declared acceptance command'
+assert_contains "$acceptance_out" 'npm run test:browser' \
+    'missing acceptance evidence names the required command'
+
+reset_findings
+printf '%s\n' '[]' >"$acceptance_comments"
+acceptance_rc=0
+(
+    cd "$acceptance_repo" || exit 1
+    printf '%s\n' 'repo-verify=green acceptance=npm run test:browser:pass' >>"$acceptance_digest"
+    export GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD="$tmp/payload.json"
+    "$script" publish --findings-file "$findings_file" --pr-state-digest "$acceptance_digest" \
+        --pr 14 --repo owner/repo --issue-comments "$acceptance_comments" \
+        --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+        --p1 0 --p2 0 --agent-identity 'Claude Opus 5' >/dev/null
+) || acceptance_rc=$?
+assert_eq 0 "$acceptance_rc" 'one passing digest line satisfies the declared acceptance command'
+
 # -- publish: renders every field, exactly one marker ----------------------
 
 : >"$tmp/gh.log"
 reset_not_spent
 reset_findings
-jq -cn '{title:"Missing input validation",severity:"P1",verdict:"fixed",sha:"abc1234,def5678"}' \
-    >"$findings_file"
-jq -cn '{title:"Debatable naming",severity:"P2",verdict:"declined",rationale:"style preference, no behavior change"}' \
-    >>"$findings_file"
-jq -cn '{title:"Unrelated cleanup",severity:"P2",verdict:"declined",rationale:"not required for this change"}' \
-    >>"$findings_file"
+append_declined_finding 'Missing input validation' P1 'accepted risk for fixture'
+append_declined_finding 'Debatable naming' P2 'style preference, no behavior change'
+append_declined_finding 'Unrelated cleanup' P2 'not required for this change'
 out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason 'peer CLI available' \
@@ -340,6 +538,10 @@ assert_contains "$body" 'reason: peer CLI available' 'publish body records the m
 assert_contains "$body" 'P1=1' 'publish body records the P1 count'
 assert_contains "$body" 'P2=2' 'publish body records the P2 count'
 assert_contains "$body" 'total=3' 'publish body computes the total from P1+P2'
+assert_contains "$body" "Final verified head: $(git rev-parse HEAD)" \
+    'publish body identifies the final head proven by CI evidence'
+assert_contains "$body" 'Final CI: ci=1/1 green pending=0 failing=0' \
+    'publish body preserves the final CI state separately from review eligibility'
 assert_contains "$body" 'Co-authored by Claude Opus 5.' 'publish body credits the agent identity'
 
 marker_count=$(grep -o -- "$marker" <<<"$body" | wc -l | tr -d ' ')
@@ -347,6 +549,7 @@ assert_eq '1' "$marker_count" 'publish body carries exactly one spent marker'
 
 raw_publish() {
     "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 14 --repo owner/repo \
+        --pr-state-digest "$tmp/final-pr-state.digest" \
         --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
         --effort high --mode cross-provider --mode-reason 'peer CLI available' \
         --p1 1 --p2 2 --agent-identity 'Claude Opus 5'
@@ -369,9 +572,7 @@ assert_contains "$body" 'Procedure: one-shot diff review' 'receipt attests only 
 
 assert_contains "$body" 'Confirmed finding: Missing input validation' \
     'publish body renders the fixed finding title'
-assert_contains "$body" 'verdict=fixed' 'publish body records the fixed verdict'
-assert_contains "$body" 'fix commit SHA(s)=abc1234,def5678' \
-    'publish body records the fix commit SHAs'
+assert_contains "$body" 'verdict=declined' 'publish body records a terminal disposition'
 assert_contains "$body" 'Confirmed finding: Debatable naming' \
     'publish body renders the declined finding title'
 assert_contains "$body" 'verdict=declined' 'publish body records the declined verdict'
@@ -552,7 +753,7 @@ assert_eq '' "$(cat "$tmp/gh.log" 2>/dev/null || true)" \
 
 reset_not_spent
 reset_findings
-jq -cn '{title:"R&D failure",severity:"P2",verdict:"fixed",sha:"abc1234"}' >"$findings_file"
+append_declined_finding 'R&D failure' P2 'accepted risk for fixture'
 run_publish --pr 19 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 1 \
@@ -595,8 +796,7 @@ assert_contains "$marker_out" 'must not contain the receipt marker' \
 
 reset_not_spent
 reset_findings
-jq -cn '{title:"Exactly once",severity:"P2",verdict:"fixed",sha:"abc1234"}' \
-    >"$findings_file"
+append_declined_finding 'Exactly once' P2 'accepted risk for fixture'
 : >"$tmp/gh.log"
 run_publish --pr 22 --repo owner/repo --comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high \
@@ -1146,6 +1346,7 @@ postfix_rc=0
     REPO=owner/repo PR=900
     gh() { printf '%s\n' "$repair_head"; }
     eval "$recipe"
+    write_green_digest "$tmp/postfix-pr-state.digest" 900
     # This fixture must not depend on a developer's authenticated gh session.
     export REVIEW_LEDGER_GH=/definitely/missing/gh REVIEW_LEDGER_VIEWER=''
     GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" AGENT_IDENTITY=claude \
@@ -1153,19 +1354,22 @@ postfix_rc=0
         "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
         --comments "$postfix_comments" --provider anthropic --model claude-opus-5 --effort high \
         --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' \
-        --head-sha "$rhs" --diff-payload "$diff_payload" --harness claude
+        --head-sha "$rhs" --diff-payload "$diff_payload" --harness claude \
+        --pr-state-digest "$tmp/postfix-pr-state.digest"
 ) >"$tmp/postfix.out" 2>"$tmp/postfix.err" || postfix_rc=$?
 [[ $postfix_rc == 0 ]] || cat "$tmp/postfix.err" >&2
 assert_eq 0 "$postfix_rc" 'canonical post-fix receipt publishes with original reviewed identity'
 assert_eq 4 "$(cat "$head_gh_dir/count")" 'offline post-fix publication emits both receipt and ledger'
 postfix_body=$(jq -r '.body' "$head_gh_dir/payload-3.json" 2>/dev/null)
 assert_contains "$postfix_body" "$head_sha" 'post-fix receipt retains original reviewed head'
-assert_not_contains "$postfix_body" "$repair_head" 'post-fix receipt does not attest an unreviewed descendant'
+assert_not_contains "$postfix_body" "- Reviewed head: $repair_head" \
+    'post-fix receipt does not replace the original reviewed snapshot with its final head'
 postfix_ledger=$(jq -r '.body' "$head_gh_dir/payload-4.json" 2>/dev/null)
 assert_contains "$postfix_ledger" "$head_sha" 'post-fix ledger retains original paid review identity'
 assert_not_contains "$postfix_ledger" "$repair_head" 'post-fix ledger does not add unsupported descendant coverage'
 assert_rc 1 'an arbitrary descendant cannot replace the original reviewed head' -- \
     "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
+    --pr-state-digest "$tmp/postfix-pr-state.digest" \
     --comments "$head_comments" --provider anthropic --model claude-opus-5 --effort high \
     --mode cross-provider --mode-reason ok --p1 0 --p2 0 --agent-identity 'Claude Opus 5' --head-sha "$repair_head"
 
@@ -1183,18 +1387,22 @@ jq -cn --arg sha "$repair_head" --arg log "$repair_log" --arg digest "$repair_di
 fixed_rc=0
 (
     cd "$receipt_repo" || exit 1
+    write_green_digest "$tmp/fixed-pr-state.digest" 900
     GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" GH_PAYLOAD_DIR="$head_gh_dir" \
         REVIEW_LEDGER_VIEWER=ledger-test-author AGENT_IDENTITY=claude \
         "$REAL_RECEIPT" publish --findings-file "$findings_file" --pr 900 --repo owner/repo \
         --comments "$fixed_comments" --provider anthropic --model claude-opus-5 --effort high \
         --mode cross-provider --mode-reason ok --p1 1 --p2 0 --agent-identity 'Claude Opus 5' \
-        --head-sha "$head_sha" --diff-payload "$diff_payload" --harness claude
+        --head-sha "$head_sha" --diff-payload "$diff_payload" --harness claude \
+        --pr-state-digest "$tmp/fixed-pr-state.digest"
 ) >"$tmp/fixed.out" 2>"$tmp/fixed.err" || fixed_rc=$?
 [[ $fixed_rc == 0 ]] || cat "$tmp/fixed.err" >&2
 assert_eq 0 "$fixed_rc" 'validated descendant repair publishes against current checkout'
 fixed_body=$(jq -r '.body' "$head_gh_dir/payload-5.json" 2>/dev/null)
 assert_contains "$fixed_body" 'Remediation: complete' 'validated descendant repair completes remediation'
 assert_contains "$fixed_body" "- Reviewed head: $head_sha" 'repair receipt still names original reviewed head'
+assert_contains "$fixed_body" "- Final verified head: $repair_head" \
+    'repair receipt identifies the newer final verified head'
 # shellcheck disable=SC2016  # sed's end-of-file address is intentionally literal.
 fixed_entry=$(jq -r '.body' "$head_gh_dir/payload-6.json" 2>/dev/null | sed -n '/```json/,/```/p' | sed '1d;$d' | jq -c '.reviews[0]')
 assert_eq "$head_sha" "$(jq -r .head_sha <<<"$fixed_entry")" 'repair ledger keeps reviewed A distinct from repaired B'
@@ -1235,6 +1443,7 @@ mkdir -p "$git_fixture/.agent"
 git init -q "$git_fixture"
 git -C "$git_fixture" config user.email test@example.com
 git -C "$git_fixture" config user.name test
+git -C "$git_fixture" commit -qm fixture --allow-empty
 configured_author='configured-ledger-author'
 printf 'AGENT_LEDGER_AUTHOR=%s\n' "$configured_author" >"$git_fixture/.agent/config.env"
 
@@ -1400,11 +1609,10 @@ assert_eq '1' "$identity_recovery_rc" \
 assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt marker' \
     'identity-aware recovery names the absence of a current-diff marker'
 
-# 2026-09-08 size wave two: hold the helper at its measured line count.
-# Issue #706 adds evidence-backed model substitution to receipt and ledger.
-# Review follow-up refuses verified-skip substitution before artifact mutation.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1002 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 1002 lines'
+# Issue #902 composes the existing gh-pr-state and finding-ledger evidence at
+# publication so pending/red/stale final heads cannot claim draft completion.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1086 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 1086 lines'
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'
@@ -1413,13 +1621,11 @@ jq -cn 'range(1;9) | {title:("confirmed-"+tostring),severity:"P1",schemaVersion:
     verdict:"open",rationale:"dispatch repair"}' >"$findings_file"
 out=$(run_publish --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
     --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
-    --p1 8 --p2 0 --agent-identity 'Codex')
-assert_eq 0 "$?" 'eight confirmed open findings can publish review execution'
-body=$(rendered_body)
-assert_contains "$body" 'Remediation: incomplete' 'publication does not claim remediation completion'
-assert_contains "$body" 'verdict=open' 'receipt preserves actionable findings'
-assert_contains "$body" 'dispatch repair' 'receipt names next repair action'
-assert_rc 0 'open receipt still consumes exactly one review' -- "$script" precheck \
+    --p1 8 --p2 0 --agent-identity 'Codex' 2>&1)
+assert_eq 1 "$?" 'confirmed open findings block successful finalization'
+assert_contains "$out" 'unresolved adversarial findings' \
+    'open-finding refusal names the unresolved finalization requirement'
+assert_rc 10 'blocked finalization does not consume another review' -- "$script" precheck \
     --issue-comments "$not_spent_comments"
 
 finish

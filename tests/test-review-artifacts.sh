@@ -612,7 +612,9 @@ assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, o
 # Issue #717 documents durable attempt accounting and truthful receipt provenance.
 # #873: finding IDs, cover preconditions and the evidence producer.
 # #873 review: evidence names the repair and reviewed head; the log decides the tested head.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 32255 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 32255 bytes'
+# Issue #902 documents that completed snapshot review evidence survives CI
+# repair and that publication consumes a fresh final-head digest.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 32429 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 32429 bytes'
 
 finish

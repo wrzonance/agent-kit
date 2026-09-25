@@ -31,7 +31,8 @@ declare -A KNOWN_OVERSIZE=(
     # #865: permit bounded reference use when no workflow challenge was delivered.
     # #873: runnable publish recipe (payload, identity) and evidence-producer steps.
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
-    [review-remote-pr]="500:9157:450"
+    # #902: overlap review with CI and gate final-head and accepted-finding evidence.
+    [review-remote-pr]="532:9663:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
@@ -50,7 +51,9 @@ declare -A KNOWN_OVERSIZE=(
     # #875 follow-up: Collect restores that durable review mode in resumed shells.
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
-    [parallel-issues]="776:16786:500"
+    # #902: separate launch eligibility and require accepted-finding evidence at finalization.
+    # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
+    [parallel-issues]="797:17119:500"
 )
 
 readonly MAX_BODY_LINES=500

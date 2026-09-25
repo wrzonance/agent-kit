@@ -44,6 +44,12 @@ assert_receipt_contract() {
     assert_contains "$section" 'finding-ledger.sh add' "$label records ledger-first disposition capture"
     assert_contains "$section" '--findings-file' "$label publishes from the findings ledger"
     assert_contains "$section" '--require-pushed' "$label enforces pushed fixes at publication"
+    assert_contains "$section" '--pr-state-digest' "$label binds publication to final-head CI evidence"
+    assert_contains "$section" '--digest-out' "$label refreshes the final digest exactly at publication"
+    assert_contains "$section" '$RUN_DIR/accepted-findings.ndjson' \
+        "$label names the canonical accepted non-adversarial findings artifact"
+    assert_contains "$section" 'explicitly empty' \
+        "$label requires a positive zero-findings record"
     assert_contains "$normalized" 'after fixes are pushed' "$label orders receipt after fixes"
     assert_contains "$normalized" 'before draft-phase-complete handoff' "$label orders receipt before handoff"
 
@@ -97,6 +103,12 @@ assert_contains "$parallel_text" 'consent-record.sh" payload' \
     'parallel-issues derives the current canonical diff payload before precheck'
 assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
     'parallel-issues passes the current diff payload into precheck'
+assert_contains "$parallel_text" 'without waiting for pending or red CI' \
+    'parallel-issues launches snapshot review before CI settlement'
+assert_contains "$parallel_text" 'cancels or relaunches the review' \
+    'parallel-issues retains the original review through mid-review CI failure'
+assert_contains "$review_text" 'state/launch-attempted' \
+    'review-remote-pr records launch identity before any CI-settlement wait'
 
 # Each precheck recipe is a fresh shell boundary. Every value supplied by an
 # earlier setup step must therefore be guarded before it is interpolated into
@@ -184,7 +196,19 @@ EOF
 chmod +x "$rd_tmp/gh"
 
 run_rd_publish() {
-    GH_COMMENT_GH="$rd_tmp/gh" GH_PAYLOAD="$rd_tmp/payload.json" "$script" publish "$@"
+    local pr='' arg digest="$rd_tmp/final-pr-state.digest" head
+    local -a args=("$@")
+    for ((arg = 0; arg < ${#args[@]}; arg++)); do
+        [[ ${args[$arg]} != --pr ]] || { pr=${args[$((arg + 1))]}; break; }
+    done
+    head=$(git rev-parse HEAD)
+    {
+        printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$head"
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+    } >"$digest"
+    chmod 600 -- "$digest"
+    GH_COMMENT_GH="$rd_tmp/gh" GH_PAYLOAD="$rd_tmp/payload.json" "$script" publish \
+        --pr-state-digest "$digest" "${args[@]}"
 }
 
 prime_attempt() {
@@ -218,7 +242,9 @@ prime_attempt "$valid_run_dir" 301
 # -- RUN_DIR-derived findings file resolves when --findings-file is omitted --
 
 : >"$valid_run_dir/findings.ndjson"
+: >"$valid_run_dir/accepted-findings.ndjson"
 chmod 600 -- "$valid_run_dir/findings.ndjson"
+chmod 600 -- "$valid_run_dir/accepted-findings.ndjson"
 reset_rd_not_spent
 rd_out=$(RUN_DIR="$valid_run_dir" run_rd_publish \
     --pr 301 --repo owner/repo --comments "$rd_not_spent" \
@@ -238,6 +264,8 @@ mkdir -p "$override_dir"
 chmod 600 "$override_dir" 2>/dev/null || true # deliberately not 0700; never consulted
 override_findings="$rd_tmp/override-findings.ndjson"
 : >"$override_findings"
+: >"$rd_tmp/accepted-findings.ndjson"
+chmod 600 -- "$rd_tmp/accepted-findings.ndjson"
 printf '%s\n' '{"status":"completed","exitCode":0,"requestedModel":"m","transcript":"t","verdict":{"verdict":"no_findings","findings":[]}}' \
     >"$rd_tmp/adversarial.result.json"
 chmod 600 -- "$rd_tmp/adversarial.result.json"
