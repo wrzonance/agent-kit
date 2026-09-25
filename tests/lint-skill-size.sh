@@ -33,7 +33,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873 review: receipt fields derived from records; skip-safe head; full fixed-verdict add.
     # #902: overlap review with CI and gate final-head and accepted-finding evidence.
     # #902 review: remote attempted spend and classifier-aware finalization.
-    [review-remote-pr]="534:9701:450"
+    # #902 landing: exact combined reviewed prose; final sprint trim follows.
+    [review-remote-pr]="535:9789:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
     [pr-to-green]="333:5317:450"
@@ -53,7 +54,8 @@ declare -A KNOWN_OVERSIZE=(
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #903: concurrent admission, cross-run freshness, and stopped proof contract.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    [parallel-issues]="824:17755:500"
+    # #902 landing: exact combined reviewed prose; final sprint trim follows.
+    [parallel-issues]="824:17828:500"
 )
 
 readonly MAX_BODY_LINES=500
