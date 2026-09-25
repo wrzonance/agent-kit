@@ -22,9 +22,9 @@ cat >"$plan" <<'EOF'
 {
   "schemaVersion": 1,
   "entries": [
-    {"issue": 11, "predictedWriteSet": ["src/a"]},
-    {"issue": 12, "predictedWriteSet": ["src/b"]},
-    {"issue": 13, "predictedWriteSet": ["src/c"]}
+    {"issue": 11, "publicationTarget": "main", "predictedWriteSet": ["src/a"]},
+    {"issue": 12, "publicationTarget": "feat/root", "predictedWriteSet": ["src/b"]},
+    {"issue": 13, "publicationTarget": "main", "predictedWriteSet": ["src/c"]}
   ],
   "conflictMap": {"pairs": [], "revisions": []}
 }
@@ -334,6 +334,8 @@ assert_eq '103' "$(jq -r '.independent[0].pr' "$plan")" \
     'writer persists the independent pull request set'
 assert_eq 'src/a' "$(jq -r '.entries[0].predictedWriteSet[0]' "$plan")" \
     'writer preserves the existing dispatch audit record'
+assert_eq 'feat/root' "$(jq -r '.entries[] | select(.issue == 12) | .publicationTarget' "$plan")" \
+    'schema-2 upgrade preserves each recorded PR publication target'
 
 before=$(sha256sum "$plan")
 jq '.chains += [[.chains[0][1]]]' "$merge_plan" >"$tmp/join.json"

@@ -287,6 +287,7 @@ conflict analysis. The plan uses this schema:
   "entries": [
     {
       "issue": 167,
+      "publicationTarget": "feat/issue-164",
       "predictedWriteSet": ["agentkit/skills/parallel-issues/**", "tests/test-*.sh"],
       "workerEffort": "xhigh",
       "effortReason": "novel cache-ownership rewrite; three prior attempts failed",
@@ -316,6 +317,10 @@ sibling) and derives each project test root from that tree's declared `AGENT_RUN
 `test`. Each proposed root must be inside `predictedWriteSet` or listed in `testRootExclusions` (per entry, or once at
 the top level for the whole plan). One invocation reports every violation with a copy-pasteable `jq`
 patch; `--fix` applies them.
+
+Every implementation entry records one `publicationTarget` before dispatch: the normal base,
+linear predecessor branch, or single join publication branch. It is distinct from a join's
+integrated start/review commit and is never inferred from prose, `chainBaseSha`, or predecessors; `no-code` omits it.
 
 `workShape` and `holdReason` are optional and travel together: omitted entirely, an
 entry defaults to `implementation`; present, `workShape` must be `implementation` (with

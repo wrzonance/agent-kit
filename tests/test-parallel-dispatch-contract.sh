@@ -417,6 +417,8 @@ assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
 assert_contains "$triage_and_selection_text" 'predictedWriteSet' \
     'dispatch-plan entries pin predicted write sets'
+assert_contains "$triage_and_selection_text" 'publicationTarget' \
+    'dispatch-plan entries pin the single PR publication target before dispatch'
 assert_contains "$triage_and_selection_text" 'conflictMap.revisions' \
     'dispatch-plan records post-selection conflict-map revisions'
 assert_contains "$triage_and_selection_text" 'shared build config, lockfiles, and generated contracts' \
@@ -1254,8 +1256,8 @@ assert_contains "$normalized_root_publication" 'Environment-refusal fallback onl
 normal_completion_branch=$(grep -F '**Completion report (branch + pushed SHA)**' "$skill")
 assert_contains "$normal_completion_branch" 'compose-pr-body.sh' \
     'the normal completion branch names the canonical PR body composer inline'
-assert_contains "$normal_completion_branch" 'gh-body.sh" pr create --draft' \
-    'the normal completion branch names the verified draft PR creation transport inline'
+assert_contains "$normal_completion_branch" 'gh-body.sh" pr create' \
+    'the normal completion branch names the verified policy-enforcing PR creation transport inline'
 assert_contains "$normal_completion_branch" 'record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs --json "$pr"' \
     'the normal completion branch preserves the complete PR identity record command'
 blocked_completion_branch=$(grep -F '**BLOCKED**' "$skill")
@@ -1331,10 +1333,14 @@ assert_contains "$normalized_text" 'Only after publication does the root inspect
 publication_section=$(
     sed -n '/^## Draft PR body template$/,/^## PR-fix-batch worker prompt$/p' "$worker_prompts"
 )
-assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --draft --body-file "$pr_body_file"' \
-    'draft PR publication uses the byte-verifying body transport'
+assert_contains "$publication_section" '"$agentkit/.shared/scripts/gh-body.sh" pr create --body-file "$pr_body_file"' \
+    'draft PR publication uses the byte-verifying policy-enforcing body transport'
 assert_contains "$publication_section" '--run-id "$RUN_ID" --repo-root "$repository_root"' \
     'draft PR publication attributes the created PR to the invocation run'
+assert_contains "$publication_section" '--dispatch-plan "$dispatch_plan" --plan-issue "$issue_number"' \
+    'draft PR publication binds its target to the current issue saved in the dispatch plan'
+assert_not_contains "$publication_section" '--title "$pr_title" --base "$base"' \
+    'draft PR publication does not duplicate or guess the recorded target'
 assert_not_contains "$publication_section" 'gh pr create --draft --body-file "$pr_body_file"' \
     'draft PR publication does not bypass the byte-verifying transport'
 assert_contains "$publication_section" 'compose-pr-body.sh' \
