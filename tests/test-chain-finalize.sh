@@ -90,7 +90,8 @@ mkdir -m 700 "$artifacts"
 
 write_artifacts() {
     local pr=$1 reviewed=$2 final=$3 payload=$4 predecessor=${5:-} ci=${6:-green}
-    local remote_state=${7:-completed} coverage='[]' covered='[]' ci_line
+    local remote_state=${7:-completed} remote_attempt=${8:-attempt-$pr}
+    local coverage='[]' covered='[]' ci_line
     if [[ $reviewed != "$final" ]]; then
         covered=$(jq -cn --arg final "$final" '[$final]')
         if [[ -n $predecessor ]]; then
@@ -102,8 +103,9 @@ write_artifacts() {
         fi
     fi
     jq -n --arg repo owner/repo --argjson pr "$pr" --arg head "$reviewed" \
+        --arg id "attempt-$pr" \
         --arg payload "$payload" \
-        '{repo:$repo,pr:$pr,head:$head,payload:$payload,state:"completed",canonical:true}' \
+        '{id:$id,repo:$repo,pr:$pr,head:$head,payload:$payload,state:"completed",canonical:true}' \
         >"$artifacts/pr-$pr-attempt.json"
     : >"$artifacts/pr-$pr-accepted-findings.ndjson"
     case $ci in
@@ -126,9 +128,10 @@ write_artifacts() {
     receipt=$(printf '## Adversarial review receipt\n- Reviewed head: %s\n- Final verified head: %s\n<!-- adversarial-review:spent -->' \
         "$reviewed" "$final")
     ledger=$(jq -cn --argjson pr "$pr" --arg reviewed "$reviewed" --arg payload "$payload" \
-        --arg state "$remote_state" --argjson covered "$covered" --argjson coverage "$coverage" \
+        --arg state "$remote_state" --arg attempt "$remote_attempt" \
+        --argjson covered "$covered" --argjson coverage "$coverage" \
         '{version:1,pr:$pr,repo:"owner/repo",reviews:[{kind:"adversarial",provider:"anthropic",
-          head_sha:$reviewed,diff_payload:$payload,executionState:$state,
+          head_sha:$reviewed,diff_payload:$payload,attemptId:$attempt,executionState:$state,
           covered_heads:$covered,coverage:$coverage}]}')
     # Markdown fences are literal bytes.
     # shellcheck disable=SC2016
@@ -219,6 +222,14 @@ set -e
 assert_eq 1 "$attempted_review_rc" 'finalization refuses a remote review that was only attempted'
 assert_contains "$attempted_review_out" 'remote review execution is not completed' \
     'attempted remote review refusal names the incomplete execution state'
+write_artifacts 1 "$a_reviewed" "$a_final" 'owner/repo:1:a' '' green completed wrong-attempt
+set +e
+mismatched_attempt_out=$(finalize 1 feat/issue-1 2>&1)
+mismatched_attempt_rc=$?
+set -e
+assert_eq 1 "$mismatched_attempt_rc" 'finalization refuses a completed remote entry for another attempt'
+assert_contains "$mismatched_attempt_out" 'canonical attempt identity' \
+    'mismatched completed entry refusal names the attempt binding'
 write_artifacts 1 "$a_reviewed" "$a_final" 'owner/repo:1:a'
 root_out=$(finalize 1 feat/issue-1)
 assert_contains "$root_out" "reviewed=$a_reviewed final=$a_final" 'root finalization preserves distinct review and final heads'
@@ -271,19 +282,38 @@ set +e
 moved_tip_out=$(finalization_status 2 1 2>&1)
 moved_tip_rc=$?
 set -e
-assert_eq 1 "$moved_tip_rc" 'sealed status refuses when the recorded exact remote tip moved'
-assert_contains "$moved_tip_out" 'exact pushed branch differs' \
-    'moved remote refusal names the stale pushed-head proof'
+assert_eq 10 "$moved_tip_rc" 'a proved moved successor tip requires finalization work'
+assert_contains "$moved_tip_out" 'finalization=needed pr=2 reason=head-changed' \
+    'moved successor tip receives the documented actionable status'
+set +e
+moved_tip_finalize_out=$(finalize 2 feat/issue-2 1 2>&1)
+moved_tip_finalize_rc=$?
+set -e
+assert_eq 1 "$moved_tip_finalize_rc" 'terminal sealing still fails hard on a moved remote tip'
+assert_contains "$moved_tip_finalize_out" 'exact pushed branch differs' \
+    'terminal sealing retains its exact-push refusal'
 push_branch feat/issue-2
+
+origin_url=$(git -C "$repo" remote get-url origin)
+git -C "$repo" remote set-url origin "$tmp/unavailable-origin.git"
+set +e
+unavailable_tip_out=$(finalization_status 2 1 2>&1)
+unavailable_tip_rc=$?
+set -e
+assert_eq 1 "$unavailable_tip_rc" 'unavailable remote evidence remains a hard status failure'
+assert_contains "$unavailable_tip_out" 'could not read exact pushed branch' \
+    'unavailable remote evidence is not misclassified as a changed tip'
+git -C "$repo" remote set-url origin "$origin_url"
 
 git -C "$repo" push -q --force origin "$a_reviewed:refs/heads/feat/issue-1"
 set +e
 moved_parent_out=$(finalization_status 2 1 2>&1)
 moved_parent_rc=$?
 set -e
-assert_eq 1 "$moved_parent_rc" 'sealed status refuses a stale parent exact-push tuple'
-assert_contains "$moved_parent_out" 'exact pushed branch differs' \
-    'moved parent refusal names the stale parent branch proof'
+assert_eq 10 "$moved_parent_rc" 'a proved moved parent tip requires predecessor re-finalization'
+assert_contains "$moved_parent_out" \
+    'finalization=needed pr=2 reason=predecessor-changed action=finalize-predecessor-first' \
+    'moved parent status requires re-finalizing the predecessor before integration'
 push_branch feat/issue-1
 
 drive_b_finalization "$tmp/b-repeat.out"

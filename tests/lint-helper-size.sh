@@ -34,6 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
     [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
+    # #903: atomically admit reviews and release proved-stopped external capacity.
+    [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -42,7 +44,9 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     # #901: seal deferred successor finalization against terminal evidence.
-    [skills/parallel-issues/scripts/chain-advance.sh]="1388:18074:800"
+    # #901 parent integration: bind completed remote entry to canonical attempt.
+    # #901 review: distinguish proved tip movement from unavailable push evidence.
+    [skills/parallel-issues/scripts/chain-advance.sh]="1438:18461:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -58,9 +62,11 @@ declare -A KNOWN_OVERSIZE=(
     [skills/pr-to-green/scripts/merge-gate.sh]="899:11809:800"
     # Issue #706: preserve selected invalid model provenance through the result.
     # #717: durable reservation and canonical resume integration; exact size.
-    [skills/review-remote-pr/scripts/adversarial-run.sh]="1016:12762:800"
+    # #902 review: persist cross-clone attempted spend before provider execution.
+    [skills/review-remote-pr/scripts/adversarial-run.sh]="1049:13325:800"
     # #728 separates optional CI outcomes from required acceptance execution.
-    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1208:14622:800"
+    # #902 review: preserve executable CQ/ICF classification availability.
+    [skills/review-remote-pr/scripts/gh-pr-state.sh]="1245:14867:800"
     # #896: tolerate ordinary filler words between provider/model/purpose in
     # an operator-instruction authorization clause, and name an unparsed
     # clause instead of misreporting it as a missing purpose.
@@ -76,10 +82,12 @@ declare -A KNOWN_OVERSIZE=(
     # #706 skip-provenance refusal plus #707 observed CI evidence.
     # #717: validated attempt provenance in receipts and remote ledger entries.
     # #902: compose final-head CI, acceptance, and all finding evidence before publication.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="1086:12728:800"
+    # #902 review: reject unavailable classification and complete remote attempts.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="1096:12909:800"
     # #727: independently validated remediation and repair resume.
     # #873: cover states its preconditions and binds fix:<id> via finding-ledger ids.
-    [skills/review-remote-pr/scripts/review-ledger.sh]="829:10284:800"
+    # #902 review: distinguish attempted spend from completed coverage and upsert it.
+    [skills/review-remote-pr/scripts/review-ledger.sh]="874:10957:800"
 )
 
 # 800 lines is code.md's hard cap for any file; 10,000 tokens is what ~800
@@ -223,10 +231,12 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 fix round: whole-instruction ordered check; exact tree measurement.
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
-# #902: executable final-head receipt gate; exact combined helper tree measurement.
-# #902: validate the root-owned accepted findings ledger at finalization.
+# #903: shared reviewer/native admission and its durable inventory checks.
+# #903: shared review/worker capacity and proved-stopped liveness evidence.
+# #902: executable final-head and accepted-finding receipt gates.
+# #902 review: cross-clone spend and classifier finalization boundaries.
 # #901: deferred chain finalization reuses run-state and exact pushed evidence.
-readonly MAX_TREE_TOKENS=485567
+readonly MAX_TREE_TOKENS=490931
 
 violations=0
 checked=0

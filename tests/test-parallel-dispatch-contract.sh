@@ -429,10 +429,20 @@ assert_contains "$normalized_chains_text" 'chain-advance.sh --finalization-statu
     'the driver checks sealed evidence before any repeated integration work'
 assert_contains "$normalized_chains_text" 'commit -> full verification -> push' \
     'the documented driver verifies the committed head before pushing it'
+assert_contains "$normalized_chains_text" '--include-staged --yolo --allow-base-inherited' \
+    'deferred merge commits retain the sanctioned protected-path recipe'
+assert_contains "$normalized_chains_text" 'git rev-parse MERGE_HEAD' \
+    'the inherited-path allowance binds the active merge head'
 assert_contains "$normalized_chains_text" 'verified-skip' \
     'normal review-policy skips remain an explicit supported finalization path'
 assert_not_contains "$normalized_chains_text" 'The response is a merge-down cascade' \
     'chain repair no longer prescribes eager merge-down cascades'
+retarget_heading_line=$(grep -n '^## Merge order and the stacked-PR retarget$' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
+    'retarget-only proof exceptions stay inside the retarget section'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
@@ -617,6 +627,18 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
+assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
+    'the consent holder launches real reviews rather than forwarding consent'
+assert_contains "$text" 'review attempts and native worker reservations share the same atomic admission lock' \
+    'parallel review launch names the executable shared-cap boundary'
+assert_contains "$text" 'launch all currently eligible reviews without waiting for an earlier review result' \
+    'distinct eligible reviews are dispatched concurrently'
+assert_contains "$text" 'available upstream findings' \
+    'fix batches receive known upstream findings without waiting for future results'
+assert_contains "$text" 'confirmed terminal release' \
+    'same-worktree fix and merge-down work waits for confirmed writer release'
+assert_contains "$text" 'Publish one root-owned receipt at a time' \
+    'root publication remains serial across concurrent review and fix completion'
 assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
     'concurrency dispatch carries the canonical session-context loader'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
@@ -1752,6 +1774,12 @@ assert_not_contains "$err" 'spawn refused:' \
     'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
+assert_rc 0 'state-backed admission uses the Codex V2 runtime default when config is absent' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 4 --agent-kind reviewer
+assert_rc 1 'state-backed admission refuses above the Codex V2 runtime default without config' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 5 --agent-kind reviewer
 
 # --- issue #224: named wait bounds (WS1) --------------------------------------
 # The guidance must name a NUMBER per wait class, and every named bound must be
@@ -1938,9 +1966,11 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+# #903 adds the concurrent review/fix ownership contract at the dispatch site.
+# #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2239 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2287 ]] && printf yes || printf no)" \
     'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

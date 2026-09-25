@@ -129,7 +129,8 @@ registry.
 
 Before any merge or full run, call `chain-advance.sh --finalization-status --pr N --run-state
 "$RUN_DIR/run-state.json" --predecessor-pr P`. Exit 0 (`finalization=sealed`) ends the driver
-without work. Exit 10 means the recorded child head or immediate-parent tuple changed, so continue.
+without work. Exit 10 means the recorded child head or immediate-parent tuple changed. Re-finalize
+a moved predecessor first; unavailable or malformed remote evidence remains a hard failure.
 
 Finalize in dependency order at the draft-ready boundary:
 
@@ -143,7 +144,9 @@ Finalize in dependency order at the draft-ready boundary:
    head, no integration is needed. Otherwise the successor's sole writer resolves that exact SHA
    with `--resolve-base`, runs `git merge --no-commit --no-ff <full-SHA>`, and inspects every
    conflict. Preserve independent intent from both sides; never select a side merely from
-   `ours`/`theirs` labels. Commit the deliberate result.
+   `ours`/`theirs` labels. Commit the deliberate result. If the merge carries a protected path
+   forward unchanged, use `worktree-commit.sh --include-staged --yolo --allow-base-inherited
+   "$(git rev-parse MERGE_HEAD)" -- <paths>`; this allowance applies only during the active merge.
 3. Keep the driver order `commit -> full verification -> push`: run the successor's full
    integration verification once on the committed combined head, push that exact head, refresh
    final-head CI, and disposition accepted findings against the resulting code. For an adversarial
@@ -165,19 +168,6 @@ implementation checks and CI are separate. If A advances again, B becomes stale 
 finalization; C and D remain untouched until their immediate predecessor is finalized again. This
 topological walk preserves useful successor work and removes the eager all-descendant cascade.
 
-Two proofs tolerate evidence a retarget can never make current (issue #577), and the proof line
-reports them ahead of `closing-issues=`:
-
-- `behind=N generated-only=yes|no` — a `behind_by` gap confined entirely to declared
-  `AGENT_GENERATED_PATHS` is reported, not refused; any undeclared path in the gap refuses.
-- `provider-check=<names>|none|unreadable` — a stale check is excused only when its check-run's own
-  `.app.slug` belongs to a provider in `AGENT_REVIEW_PROVIDERS`; unreadable grants nothing.
-- `approval=current:post-retarget|residue:stale|none|unknown` — recorded, never a gate (issue #455):
-  formal approval is provider policy and settles at the ready/provider transition.
-
-Both exemptions read *this checkout's* `.agent/config.env` and print
-`exemptions=disabled reason=repo-mismatch` when the checkout's own slug differs from `--repo`.
-
 ## Merge order and the stacked-PR retarget
 
 The ready-flip handoff must state each chain's merge order explicitly, base PR first —
@@ -196,6 +186,19 @@ predecessor's (now-merged) branch merges into that branch, not into the trunk �
 never reach the default branch, and nothing fails loudly to say so. State all of this
 explicitly in the handoff; a reader who only sees "merge order: #67, #68" will not reconstruct
 the retarget step on their own.
+
+Two proofs tolerate evidence a retarget can never make current (issue #577), and the proof line
+reports them ahead of `closing-issues=`:
+
+- `behind=N generated-only=yes|no` — a `behind_by` gap confined entirely to declared
+  `AGENT_GENERATED_PATHS` is reported, not refused; any undeclared path in the gap refuses.
+- `provider-check=<names>|none|unreadable` — a stale check is excused only when its check-run's own
+  `.app.slug` belongs to a provider in `AGENT_REVIEW_PROVIDERS`; unreadable grants nothing.
+- `approval=current:post-retarget|residue:stale|none|unknown` — recorded, never a gate (issue #455):
+  formal approval is provider policy and settles at the ready/provider transition.
+
+Both exemptions read *this checkout's* `.agent/config.env` and print
+`exemptions=disabled reason=repo-mismatch` when the checkout's own slug differs from `--repo`.
 
 For an interactive human merge, deleting the merged head may make GitHub close a draft or
 not-cleanly-mergeable successor instead of retargeting it (#484, #561, issue #564).

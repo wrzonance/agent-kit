@@ -27,6 +27,8 @@ ACCEPTED_FINDINGS=''
 REVIEW_ATTEMPT=''
 PUSHED_BRANCH=''
 PREDECESSOR_PR=''
+EXACT_PUSH_OBSERVED=''
+EXACT_PUSH_ERROR=''
 GH_BIN=${CHAIN_ADVANCE_GH:-gh}
 RETARGET_APPLIED=false
 BOUNDARY_SOURCE=''
@@ -261,15 +263,41 @@ validate_final_digest() {
     printf '%s\n' "$ci_line"
 }
 
-prove_exact_push() {
+check_exact_push() {
     local branch=$1 expected=$2 rows count sha ref
-    rows=$(git ls-remote --refs origin "refs/heads/$branch" 2>/dev/null) ||
-        die "could not read exact pushed branch: origin/$branch"
+    EXACT_PUSH_OBSERVED=''
+    EXACT_PUSH_ERROR=''
+    if ! rows=$(git ls-remote --refs origin "refs/heads/$branch" 2>/dev/null); then
+        EXACT_PUSH_ERROR="could not read exact pushed branch: origin/$branch"
+        return 1
+    fi
     count=$(grep -c . <<<"$rows" || true)
-    [[ $count == 1 ]] || die "exact pushed branch proof requires one ref: origin/$branch"
+    if [[ $count == 0 ]]; then
+        EXACT_PUSH_OBSERVED=missing
+        return 10
+    fi
+    if [[ $count != 1 ]]; then
+        EXACT_PUSH_ERROR="exact pushed branch proof requires one ref: origin/$branch"
+        return 1
+    fi
     IFS=$'\t' read -r sha ref <<<"$rows"
-    [[ $ref == "refs/heads/$branch" && $sha == "$expected" ]] ||
-        die "exact pushed branch differs: origin/$branch=${sha:-missing} final=$expected"
+    if [[ $ref != "refs/heads/$branch" || ! $sha =~ $SHA_RE ]]; then
+        EXACT_PUSH_ERROR="exact pushed branch proof is malformed: origin/$branch"
+        return 1
+    fi
+    EXACT_PUSH_OBSERVED=$sha
+    [[ $sha == "$expected" ]] || return 10
+}
+
+prove_exact_push() {
+    local branch=$1 expected=$2 rc
+    if check_exact_push "$branch" "$expected"; then
+        return 0
+    else
+        rc=$?
+    fi
+    ((rc != 10)) || die "exact pushed branch differs: origin/$branch=$EXACT_PUSH_OBSERVED final=$expected"
+    die "$EXACT_PUSH_ERROR"
 }
 
 validate_finalization_record() {
@@ -298,7 +326,7 @@ validate_finalization_record() {
 }
 
 finalization_status() {
-    local root current_head run_state_script record parent_record parent_head
+    local root current_head run_state_script record parent_record parent_head branch push_rc
     root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'finalization status must run inside a Git worktree'
     current_head=$(git -C "$root" rev-parse --verify HEAD 2>/dev/null) || die 'could not resolve current HEAD'
     run_state_script="$SCRIPT_DIR/../../.shared/scripts/run-state.sh"
@@ -312,7 +340,16 @@ finalization_status() {
         printf 'finalization=needed pr=%s reason=head-changed\n' "$PR"
         return 10
     fi
-    prove_exact_push "$(jq -r .pushedBranch <<<"$record")" "$current_head"
+    branch=$(jq -r .pushedBranch <<<"$record")
+    push_rc=0
+    check_exact_push "$branch" "$current_head" || push_rc=$?
+    if ((push_rc != 0)); then
+        if ((push_rc == 10)); then
+            printf 'finalization=needed pr=%s reason=head-changed\n' "$PR"
+            return 10
+        fi
+        die "$EXACT_PUSH_ERROR"
+    fi
     if [[ -z $PREDECESSOR_PR ]]; then
         if [[ $(jq -r '.predecessorPr // ""' <<<"$record") != '' ]]; then
             printf 'finalization=needed pr=%s reason=predecessor-changed\n' "$PR"
@@ -326,7 +363,16 @@ finalization_status() {
             return 10
         fi
         parent_head=$(jq -r .finalHead <<<"$parent_record")
-        prove_exact_push "$(jq -r .pushedBranch <<<"$parent_record")" "$parent_head"
+        branch=$(jq -r .pushedBranch <<<"$parent_record")
+        push_rc=0
+        check_exact_push "$branch" "$parent_head" || push_rc=$?
+        if ((push_rc != 0)); then
+            if ((push_rc == 10)); then
+                printf 'finalization=needed pr=%s reason=predecessor-changed action=finalize-predecessor-first\n' "$PR"
+                return 10
+            fi
+            die "$EXACT_PUSH_ERROR"
+        fi
         if [[ $(jq -r '.predecessorPr // ""' <<<"$record") != "$PREDECESSOR_PR" ||
             $(jq -r '.predecessorFinalHead // ""' <<<"$record") != "$parent_head" ]]; then
             printf 'finalization=needed pr=%s reason=predecessor-changed\n' "$PR"
@@ -337,7 +383,7 @@ finalization_status() {
 }
 
 finalize_successor() {
-    local root current_head attempt reviewed_head review_payload receipt_status receipt_kind receipt_body
+    local root current_head attempt attempt_id reviewed_head review_payload receipt_status receipt_kind receipt_body
     local ledger_out ledger_json entry coverage_status ci_line accepted_status parent_json='' parent_head=''
     local record old_record='' run_state_script review_ledger post_receipt finding_ledger attempt_hash_json=null
     root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'finalization must run inside a Git worktree'
@@ -368,11 +414,13 @@ finalize_successor() {
         require_owned_evidence 'review attempt' "$REVIEW_ATTEMPT"
         attempt=$(jq -ce --arg repo "$REPO" --argjson pr "$PR" '
             select(.repo == $repo and .pr == $pr and .state == "completed" and .canonical == true) |
+            select(.id | type == "string" and length > 0) |
             select(.head | type == "string" and test("^[0-9a-f]{40}$")) |
             select(.payload | type == "string" and length > 0)' "$REVIEW_ATTEMPT" 2>/dev/null) ||
             die 'review attempt is not a completed immutable snapshot for this PR'
         reviewed_head=$(jq -r .head <<<"$attempt")
         review_payload=$(jq -r .payload <<<"$attempt")
+        attempt_id=$(jq -r .id <<<"$attempt")
         [[ $(grep -cE "^- Reviewed head: $reviewed_head$" <<<"$receipt_body" || true) == 1 ]] ||
             die 'terminal receipt does not bind the reviewed head'
         ledger_out=$($review_ledger read --repo "$REPO" --pr "$PR" --comments "$ISSUE_COMMENTS" --repo-root "$root") ||
@@ -382,6 +430,8 @@ finalize_successor() {
             [.reviews[] | select(.kind == "adversarial" and .head_sha == $reviewed and
               (.diff_payload // "") == $payload)] | select(length == 1) | .[0]' <<<"$ledger_json") ||
             die 'review ledger does not preserve the immutable reviewed head and payload'
+        [[ $(jq -r '.attemptId // ""' <<<"$entry") == "$attempt_id" ]] ||
+            die 'review ledger does not preserve the canonical attempt identity'
         [[ $(jq -r '.executionState // "completed"' <<<"$entry") == completed ]] ||
             die 'remote review execution is not completed'
         coverage_status=$($review_ledger status --repo "$REPO" --pr "$PR" --comments "$ISSUE_COMMENTS" \

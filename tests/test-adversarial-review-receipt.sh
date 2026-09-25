@@ -204,7 +204,8 @@ run_rd_publish() {
     head=$(git rev-parse HEAD)
     {
         printf 'pr=%s draft=true mergeable=MERGEABLE head=test sha=%s\n' "$pr" "$head"
-        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0'
+        printf '%s\n' 'base: ref=main behind=0 stale=no' 'ci=1/1 green pending=0 failing=0' \
+            'finding-classification: cq=known icf=known'
     } >"$digest"
     chmod 600 -- "$digest"
     GH_COMMENT_GH="$rd_tmp/gh" GH_PAYLOAD="$rd_tmp/payload.json" "$script" publish \
