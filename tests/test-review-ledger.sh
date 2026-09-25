@@ -453,6 +453,47 @@ assert_contains "$updated_body" "$head1" \
 assert_contains "$updated_body" "$head2" \
     'append adds the new entry alongside the original (append-only)'
 
+# -- attempted remote spend blocks coverage/resend until the matching final
+#    receipt replaces it. The spend is PR-wide even when HEAD has changed. --
+
+attempt_id='attempt-remote-1'
+attempted_reviews=$(jq -cn --arg head "$head1" --arg payload "$payload" --arg id "$attempt_id" \
+    '[{kind:"adversarial",provider:"anthropic",head_sha:$head,diff_payload:$payload,
+       attemptId:$id,executionState:"attempted",attempted_at:"2026-09-24T00:00:00Z"}]')
+attempted_comments="$tmp/attempted-comments.json"
+make_comments "$attempted_comments" "$(ledger_body "$attempted_reviews")" 84
+
+attempted_out=$("$script" status --repo owner/repo --pr 1 --comments "$attempted_comments" \
+    --head "$head2" --diff-payload "$payload_other" --kind adversarial 2>"$tmp/attempted.err")
+attempted_rc=$?
+assert_eq 20 "$attempted_rc" 'an attempted remote spend blocks another review even after HEAD changes'
+assert_eq attempted "$attempted_out" 'attempted remote spend is distinct from completed review coverage'
+
+completed_entry="$tmp/completed-entry.json"
+jq -cn --arg head "$head1" --arg payload "$payload" --arg id "$attempt_id" \
+    '{kind:"adversarial",provider:"anthropic",head_sha:$head,diff_payload:$payload,
+      attemptId:$id,executionState:"completed",findings:[],reviewed_at:"2026-09-24T00:01:00Z"}' \
+    >"$completed_entry"
+GH_COMMENT_STUB_OUT="$tmp/completed-body.txt" "$script" append --repo owner/repo --pr 1 \
+    --comments "$attempted_comments" --entry-file "$completed_entry" --agent-identity 'Claude Opus 5' \
+    --gh-comment-script "$gh_comment_stub" >/dev/null
+completed_body=$(cat "$tmp/completed-body.txt")
+assert_eq 1 "$(grep -o -- \"$attempt_id\" <<<"$completed_body" | wc -l | tr -d ' ')" \
+    'the completed final receipt replaces its attempted marker instead of duplicating it'
+assert_contains "$completed_body" '"executionState": "completed"' \
+    'the reconciled remote entry records completed execution'
+assert_not_contains "$completed_body" '"executionState": "attempted"' \
+    'the reconciled remote entry no longer leaves an open attempted spend'
+assert_contains "$completed_body" '"attempted_at": "2026-09-24T00:00:00Z"' \
+    'completion preserves the original pre-send timestamp for audit'
+
+completed_comments="$tmp/completed-comments.json"
+make_comments "$completed_comments" "$completed_body" 84
+completed_out=$("$script" status --repo owner/repo --pr 1 --comments "$completed_comments" \
+    --head "$head1" --kind adversarial)
+assert_eq 0 "$?" 'a reconciled completed entry proves review coverage'
+assert_eq covered-head "$completed_out" 'completed remote evidence retains the original reviewed head'
+
 # -- append: refuses a malformed entry ---------------------------------------
 
 bad_entry="$tmp/bad-entry.json"
@@ -762,8 +803,8 @@ assert_rc 1 'resume cannot omit an unresolved obligation' -- "$script" cover --r
 assert_rc 1 'legacy unknown cannot become resolved by supplying an empty ledger' -- "$script" cover \
     --repo owner/repo --pr 1 --comments "$cover_base_comments" --head "$lineage_b" --reason "merge-down:$lineage_a" \
     --findings-file "$tmp/empty-migration.ndjson" --repo-root "$lineage_repo" --gh-comment-script "$gh_comment_stub"
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 829 ]] && printf yes || printf no)" \
-    'review-ledger.sh stays at or under 829 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/review-ledger.sh") -le 874 ]] && printf yes || printf no)" \
+    'review-ledger.sh stays at or under 874 lines'
 
 # -- cover: finding IDs and --findings-file preconditions (issue #873) --------
 id_reviews=$(jq -cn --arg a "$lineage_a" \

@@ -411,6 +411,38 @@ assert_contains "$normalized_chains_text" 'queued=1[#6]' \
     'depth-six fixture reports the queued tail at the funnel'
 assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
     'depth-six fixture dispatches the tail after predecessor push'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalize-successor' \
+    'chain draft finalization uses the executable evidence boundary'
+assert_contains "$normalized_chains_text" 'does not enumerate or update descendants' \
+    'a predecessor repair causes no eager descendant cascade'
+assert_contains "$normalized_chains_text" 'chainFinalizations.<pr>' \
+    'topological finalization reuses the existing run-state PR namespace'
+assert_contains "$normalized_chains_text" 'merge-down:<exact-predecessor-final-head>' \
+    'review coverage bridges the original snapshot to the integrated head'
+assert_contains "$normalized_chains_text" '--pr-state-digest' \
+    'finalization inherits the final-head CI digest contract'
+assert_contains "$normalized_chains_text" '--accepted-findings' \
+    'finalization inherits the explicit accepted-finding proof contract'
+assert_contains "$normalized_chains_text" 'known code-quality and inline-comment classifications' \
+    'finalization requires both persisted finding channels to be available'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalization-status' \
+    'the driver checks sealed evidence before any repeated integration work'
+assert_contains "$normalized_chains_text" 'commit -> full verification -> push' \
+    'the documented driver verifies the committed head before pushing it'
+assert_contains "$normalized_chains_text" '--include-staged --yolo --allow-base-inherited' \
+    'deferred merge commits retain the sanctioned protected-path recipe'
+assert_contains "$normalized_chains_text" 'git rev-parse MERGE_HEAD' \
+    'the inherited-path allowance binds the active merge head'
+assert_contains "$normalized_chains_text" 'verified-skip' \
+    'normal review-policy skips remain an explicit supported finalization path'
+assert_not_contains "$normalized_chains_text" 'The response is a merge-down cascade' \
+    'chain repair no longer prescribes eager merge-down cascades'
+retarget_heading_line=$(grep -n '^## Merge order and the stacked-PR retarget$' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
+    'retarget-only proof exceptions stay inside the retarget section'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
@@ -595,6 +627,18 @@ assert_contains "$text" 'max_concurrent_threads_per_session' \
     'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
+assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
+    'the consent holder launches real reviews rather than forwarding consent'
+assert_contains "$text" 'review attempts and native worker reservations share the same atomic admission lock' \
+    'parallel review launch names the executable shared-cap boundary'
+assert_contains "$text" 'launch all currently eligible reviews without waiting for an earlier review result' \
+    'distinct eligible reviews are dispatched concurrently'
+assert_contains "$text" 'available upstream findings' \
+    'fix batches receive known upstream findings without waiting for future results'
+assert_contains "$text" 'confirmed terminal release' \
+    'same-worktree fix and merge-down work waits for confirmed writer release'
+assert_contains "$text" 'Publish one root-owned receipt at a time' \
+    'root publication remains serial across concurrent review and fix completion'
 assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
     'concurrency dispatch carries the canonical session-context loader'
 assert_contains "$concurrency_help" 'agentkit_provenance' \
@@ -993,7 +1037,7 @@ assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
 assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
-assert_contains "$issue_lead_prompt" 'once against the final tree state' \
+assert_contains "$issue_lead_prompt" 'exactly once through `agent-run.sh`' \
     'the final tree receives one unfocused full-suite run'
 assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
     'Code Quality evidence failure stops before no-findings processing'
@@ -1064,8 +1108,8 @@ assert_contains "$setup_prompt" 'materiality-check.sh' 'setup prompt performs ma
 assert_contains "$setup_prompt" 'Zero in-diff findings are a successful' \
     'setup prompt treats a zero-finding loop as success'
 assert_contains "$setup_prompt" 'launch-ready' 'setup prompt names its launch-ready terminal line'
-assert_contains "$setup_prompt" 'ci-red: <check>' 'setup prompt names its CI-red terminal line'
-assert_contains "$setup_prompt" 'cq-open: N' 'setup prompt names its Code Quality terminal line'
+assert_contains "$setup_prompt" 'ci-observed=' 'setup prompt preserves actual CI beside launch eligibility'
+assert_contains "$setup_prompt" 'cq-open:' 'setup prompt names its Code Quality finding signal'
 assert_contains "$setup_prompt" 'source=pr_NNN_code_quality_comments.json' \
     'setup prompt names the PR-scoped Code Quality source artifact'
 assert_contains "$setup_prompt" 'cq-repo: M' \
@@ -1079,7 +1123,7 @@ assert_contains "$setup_prompt" '--repo-root FULL_PATH' \
 assert_contains "$setup_prompt" 'if ! cq_state=' \
     'setup prompt fails closed when Code Quality attribution fails'
 assert_contains "$setup_prompt" 'cq-open: unavailable' \
-    'setup prompt names the unavailable Code Quality terminal marker'
+    'setup prompt names unavailable Code Quality evidence'
 assert_contains "$setup_prompt" 'in-diff findings' \
     'setup prompt gates only on in-diff Code Quality findings'
 assert_contains "$setup_prompt" 'never return BLOCKED merely because' \
@@ -1104,10 +1148,18 @@ assert_contains "$setup_prompt" 'failing-checks=' \
     'setup prompt receives stable failing-check names'
 assert_contains "$setup_prompt" 'ci_failing_checks=$(sed -n' \
     'setup prompt parses stable failing-check names'
-assert_contains "$setup_prompt" 'setup_terminal="ci-red: $ci_failing_checks"' \
-    'setup prompt names the failing check in its terminal marker'
-assert_contains "$setup_prompt" 'ci-red:' \
-    'setup prompt preserves a failing CI terminal result'
+assert_contains "$setup_prompt" 'ci_observed="red: $ci_failing_checks"' \
+    'setup prompt names the failing check in observed CI evidence'
+assert_not_contains "$setup_prompt" 'setup_terminal="ci-red:' \
+    'failing CI does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="cq-open:' \
+    'Code Quality findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='cq-open:" \
+    'unavailable Code Quality evidence does not replace review launch eligibility'
+assert_not_contains "$setup_prompt" 'setup_terminal="icf-open:' \
+    'issue-comment findings do not replace review launch eligibility'
+assert_not_contains "$setup_prompt" "setup_terminal='icf-open:" \
+    'unavailable issue-comment evidence does not replace review launch eligibility'
 assert_contains "$setup_prompt" "printf '%s run-dir=%s\\n'" \
     'setup prompt appends the run-dir to every terminal line'
 assert_contains "$setup_prompt" 'Rebuild `acceptance_args` inside this root block' \
@@ -1185,7 +1237,7 @@ assert_contains "$text" 'set its working directory to the assigned worktree' 'di
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
-assert_contains "$draft_loop_prompt" 'push the branch' 'phase lead pushes its own branch'
+assert_contains "$draft_loop_prompt" 'Push the branch' 'phase lead pushes its own branch'
 issue_lead_flat=$(tr '\n' ' ' <<<"$issue_lead_prompt" | tr -s '[:space:]' ' ')
 draft_loop_flat=$(tr '\n' ' ' <<<"$draft_loop_prompt" | tr -s '[:space:]' ' ')
 assert_contains "$issue_lead_flat" 'worktree-commit.sh" --message' \
@@ -1736,6 +1788,12 @@ assert_not_contains "$err" 'spawn refused:' \
     'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
+assert_rc 0 'state-backed admission uses the Codex V2 runtime default when config is absent' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 4 --agent-kind reviewer
+assert_rc 1 'state-backed admission refuses above the Codex V2 runtime default without config' -- \
+    "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
+    --assert-count 5 --agent-kind reviewer
 
 # --- issue #224: named wait bounds (WS1) --------------------------------------
 # The guidance must name a NUMBER per wait class, and every named bound must be
@@ -1922,12 +1980,17 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+call_site_boundary=$(sed -n '/^## Resident call-site map$/,/^\*\*Single issue/p' "$skill")
+assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
+    'the resident call-site table ends before the following single-issue paragraph'
+# Issue #904 adds explicit commit -> full verification -> push recovery steps
+# to both worker contracts so an unchanged candidate is verified only once.
+# #903 adds the concurrent review/fix ownership contract at the dispatch site.
+# #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-# #907: the one-call startup/resume binding recipe replaces remembered run,
-# session, ledger, and explicit rebind operands; 20 lines keep those boundaries visible.
-assert_eq yes "$([[ $prose_lines -le 2249 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+assert_eq yes "$([[ $prose_lines -le 2321 ]] && printf yes || printf no)" \
+    'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \

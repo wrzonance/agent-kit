@@ -5,7 +5,7 @@
 - Building the chain graph
 - Publishing a locally-built chain base
 - Deferred dispatch
-- Merge-down after a predecessor advances
+- Deferred draft finalization after a predecessor advances
 - Merge order and the stacked-PR retarget
 - Post-squash-merge conflicts
 - Never send a post-push instruction that reads as a rewrite
@@ -118,62 +118,55 @@ do not consume a slot for a tail whose base is not published. If a run ends befo
 successor's predecessor publishes, print the still-queued IDs, their `chain-depth` reason, and
 the exact command that resumes the original selection with those IDs.
 
-## Merge-down after a predecessor advances
+## Deferred draft finalization after a predecessor advances
 
-A predecessor can advance after a successor already exists: a post-review fix, CI repair, or
-generator change may publish a new head. The response is a merge-down cascade, not a blind
-rebase and not a promise that the old checks still describe the child:
+A predecessor can advance after a successor review starts: a review fix, CI repair, or generator
+change may publish a new head. Record the predecessor's final evidence, but do not merge, verify,
+or relaunch reviews across its descendants. `chain-advance.sh --finalize-successor` acts only on
+the PR named by the caller and does not enumerate or update descendants. The existing run-state
+file stores the sealed tuple at `chainFinalizations.<pr>`; this is resume evidence, not a new
+registry.
 
-1. Resolve the predecessor's short branch ref to its actual full SHA with
-   `chain-advance.sh --resolve-base <ref>`. The helper is read-only; models must never expand
-   or copy a SHA by hand.
-2. Starting at the immediate successor, merge that new predecessor head into the successor
-   branch with `git merge --no-commit --no-ff <full-SHA>`. Inspect conflicts. A conflict stops
-   the cascade for human resolution; it is never papered over with an arbitrary merge base.
-3. Commit and publish the resolved successor, then re-verify it against that exact new full
-   SHA before moving to the next descendant. Repeat the merge, publish, and verification for
-   every descendant in order. A successful old check or approval is not evidence for the new
-   tree — re-verify on the merged tree itself. Publish before handing the commit to the next
-   descendant or to review; see "Publishing a locally-built chain base" above for why a
-   worker's own interim check does not need this. If the merge carries a protected path
-   forward unchanged, commit it with `worktree-commit.sh --include-staged --yolo --allow-base-inherited
-   <full-SHA>` — the same full SHA from step 1. Nothing has to carry that SHA in the dispatch
-   prompt for this: `--allow-base-inherited` only ever applies while a merge is active, and
-   its `verify_base_inherited` check requires the named commit to equal the worktree's own
-   `MERGE_HEAD`, which the worker can read straight back with `git rev-parse MERGE_HEAD` at
-   commit time. A worktree created from a chain base (`create-issue-worktree.sh
-   --chain-base`) commits its own ordinary, non-merge changes exactly like a trunk-based
-   worktree does — the protected-path guard never engages outside an active merge, so that
-   initial base commit is never needed by `worktree-commit.sh` either, named in a prompt or
-   otherwise.
-4. Record the refreshed base for every stacked PR in the handoff. The record names the full
-   SHA used for the merge and the new PR base, so the next operator can distinguish a checked
-   cascade from a branch that merely moved.
+Before any merge or full run, call `chain-advance.sh --finalization-status --pr N --run-state
+"$RUN_DIR/run-state.json" --predecessor-pr P`. Exit 0 (`finalization=sealed`) ends the driver
+without work. Exit 10 means the recorded child head or immediate-parent tuple changed. Re-finalize
+a moved predecessor first; unavailable or malformed remote evidence remains a hard failure.
 
-The cascade is complete only when each descendant has been verified against the new head that
-was merged into it. `chain-advance.sh --retarget --pr N --base B` then performs the agent-driven
-retarget proof: it re-reads `baseRefName`, checks `B...head` ancestry, requires settled green CI,
-and proves `closingIssuesReferences` is non-empty. Because `gh pr edit --base` leaves
-`headRefOid` untouched, and both the check rollup and provider approvals hang off the head
-commit, head-bound evidence produced against the *old* base survives the retarget — so the
-helper additionally stamps a retarget boundary from the provider's own clock and requires every
-check to postdate it. The helper exits non-zero when ancestry, CI freshness, or closing linkage
-is missing or stale, including when that provenance cannot be read at all. A base change does
-not re-run the workflow (`pull_request` fires on opened/synchronize/reopened, not `edited`), so
-this refusal is expected until CI is genuinely re-run against the new base.
+Finalize in dependency order at the draft-ready boundary:
 
-Two proofs tolerate evidence a retarget can never make current (issue #577), and the proof line
-reports them ahead of `closing-issues=`:
+1. Finish the predecessor first. Its tuple must bind a terminal receipt, immutable reviewed
+   head/payload, green final-head `--pr-state-digest` with known code-quality and inline-comment
+   classifications, explicit `--accepted-findings` evidence, final verified head, and the exact
+   remote branch SHA. A normal-policy `verified-skip` receipt binds its reviewed head and payload
+   directly and does not require a paid-review ledger. An ancestry relation alone is never a
+   finalized-parent proof.
+2. If the predecessor's recorded final head is already an ancestor of the successor's reviewed
+   head, no integration is needed. Otherwise the successor's sole writer resolves that exact SHA
+   with `--resolve-base`, runs `git merge --no-commit --no-ff <full-SHA>`, and inspects every
+   conflict. Preserve independent intent from both sides; never select a side merely from
+   `ours`/`theirs` labels. Commit the deliberate result. If the merge carries a protected path
+   forward unchanged, use `worktree-commit.sh --include-staged --yolo --allow-base-inherited
+   "$(git rev-parse MERGE_HEAD)" -- <paths>`; this allowance applies only during the active merge.
+3. Keep the driver order `commit -> full verification -> push`: run the successor's full
+   integration verification once on the committed combined head, push that exact head, refresh
+   final-head CI, and disposition accepted findings against the resulting code. For an adversarial
+   receipt, extend the existing ledger with `review-ledger.sh cover --reason
+   merge-down:<exact-predecessor-final-head>`. The original reviewed head and payload stay
+   immutable; the cover bridges them to the final integrated head without another review spend.
+4. Invoke `chain-advance.sh --finalize-successor --pr N --predecessor-pr P --repo OWNER/REPO
+   --run-state "$RUN_DIR/run-state.json" --issue-comments "$RUN_DIR/state/pr_N_issue_comments.json"
+   --pr-state-digest "$RUN_DIR/state/pr_N_final.digest" --accepted-findings
+   "$RUN_DIR/accepted-findings.ndjson" --review-attempt "$RUN_DIR/state/review-attempt.json"
+   --pushed-branch feat/issue-N`. Omit `--review-attempt` only for a terminal verified skip. It
+   refuses unresolved parent evidence, stale lineage, red or pending CI, incomplete findings, and
+   a remote branch whose exact tip differs. An unchanged
+   successful tuple prints `no-op` and does not rewrite state, run verification, or launch review.
 
-- `behind=N generated-only=yes|no` — a `behind_by` gap confined entirely to declared
-  `AGENT_GENERATED_PATHS` is reported, not refused; any undeclared path in the gap refuses.
-- `provider-check=<names>|none|unreadable` — a stale check is excused only when its check-run's own
-  `.app.slug` belongs to a provider in `AGENT_REVIEW_PROVIDERS`; unreadable grants nothing.
-- `approval=current:post-retarget|residue:stale|none|unknown` — recorded, never a gate (issue #455):
-  formal approval is provider policy and settles at the ready/provider transition.
-
-Both exemptions read *this checkout's* `.agent/config.env` and print
-`exemptions=disabled reason=repo-mismatch` when the checkout's own slug differs from `--repo`.
+For A -> B -> C -> D with several A fixes before finalization and no later changes, this produces
+three successor integration verifications: B after A, C after B, and D after C. Initial
+implementation checks and CI are separate. If A advances again, B becomes stale when B next reaches
+finalization; C and D remain untouched until their immediate predecessor is finalized again. This
+topological walk preserves useful successor work and removes the eager all-descendant cascade.
 
 ## Merge order and the stacked-PR retarget
 
@@ -193,6 +186,19 @@ predecessor's (now-merged) branch merges into that branch, not into the trunk �
 never reach the default branch, and nothing fails loudly to say so. State all of this
 explicitly in the handoff; a reader who only sees "merge order: #67, #68" will not reconstruct
 the retarget step on their own.
+
+Two proofs tolerate evidence a retarget can never make current (issue #577), and the proof line
+reports them ahead of `closing-issues=`:
+
+- `behind=N generated-only=yes|no` — a `behind_by` gap confined entirely to declared
+  `AGENT_GENERATED_PATHS` is reported, not refused; any undeclared path in the gap refuses.
+- `provider-check=<names>|none|unreadable` — a stale check is excused only when its check-run's own
+  `.app.slug` belongs to a provider in `AGENT_REVIEW_PROVIDERS`; unreadable grants nothing.
+- `approval=current:post-retarget|residue:stale|none|unknown` — recorded, never a gate (issue #455):
+  formal approval is provider policy and settles at the ready/provider transition.
+
+Both exemptions read *this checkout's* `.agent/config.env` and print
+`exemptions=disabled reason=repo-mismatch` when the checkout's own slug differs from `--repo`.
 
 For an interactive human merge, deleting the merged head may make GitHub close a draft or
 not-cleanly-mergeable successor instead of retargeting it (#484, #561, issue #564).
