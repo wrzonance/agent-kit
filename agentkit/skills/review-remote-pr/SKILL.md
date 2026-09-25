@@ -7,15 +7,15 @@ description: Use when asked to review, babysit, monitor, or clean up a remote PR
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
+Standalone invocation: run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
 stdout begins `skills=` (contract, not registry proof).
-Before work, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run it once.
+Require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr` before work.
+Delegate only when dispatched inside active `parallel-issues`/`pr-to-green` and `check` reports that owner: reuse its receipt/preflight; do not run or acknowledge review-remote-pr preflight. Otherwise standalone native/natural-language activation delivers its own challenge. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run once.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Restart/resume retains the receipt;
-a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Work and receipt survive restart/resume; new sessions need their own.
+Mismatch diagnostics name bounded read/search forms.
 
 ### No delivered challenge = no run
 
@@ -266,7 +266,7 @@ worker_attribution=$("$agentkit/.shared/scripts/contract-read.sh" \
 git push   # upstream set in 0a; fork PRs push to the fork via gh pr checkout's config
 ```
 
-Run only declared `agent-run.sh --cmd` commands, directly, no approval step: a focused suite during red/green, full suite before commit, never push without local verification. Commit-helper exit 2 needs the elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip to `agent-run.sh --cmd test` then `git push`.
+Run only declared `agent-run.sh --cmd` commands, directly, no approval step: use focused suites during red/green, then the full suite after commit and before push. Never push without successful local verification of that clean committed HEAD. Commit-helper exit 2 needs the elevated retry. 2a/3a reuse this whenever `base:` reads `stale=yes`; a clean merge auto-commits — skip to `agent-run.sh --cmd test` then `git push`.
 
 ### 0c — Resolve the durable per-PR review-artifact directory
 
@@ -372,7 +372,7 @@ Follow [wait-discipline](../.shared/wait-discipline.md) for direct helper waits,
 
 ### Adversarial-review receipt:
 
-Record confirmed unfixed findings as `open` with a next repair action. A receipt may publish execution evidence while remediation is incomplete; it does not authorize draft-phase completion or readiness. When fixes exist, publish **after fixes are pushed** and **before draft-phase-complete handoff**, as one durable top-level PR comment. It records provider, model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one `confirmed finding` line per finding (open next action, validated `fix commit`, or evidenced `decline rationale`), or the `verified-skip rationale` + oracle.
+Record unfixed findings as `open` with next action; receipts prove execution, never draft completion/readiness. Publish **after fixes are pushed** and **before draft-phase-complete handoff** in one durable top-level comment. Include provider/model/effort/mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total, each `confirmed finding` (open action, validated `fix commit`, or evidenced `decline rationale`), or `verified-skip rationale` + oracle.
 Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` must return `0` before `$agentkit/review-remote-pr/scripts/finding-ledger.sh add` records any disposition (exit `13` = review missing/incomplete), and publication consumes that ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip.
 `post-receipt.sh publish` derives it from RUN_DIR like `finding-ledger.sh` does, refusing evidence-unavailable if RUN_DIR is bad. Terminal evidence and later resume follow [the evidence contract](references/adversarial-review.md#terminal-evidence-and-resume); never use a pending repair as a terminal decline.
 
