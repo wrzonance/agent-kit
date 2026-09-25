@@ -615,6 +615,16 @@ immutable snapshot without waiting for pending or red CI. CI repair and review c
 independently; neither a mid-review failure nor a repair push cancels or relaunches the review. The
 agent reports "draft phase complete" only after fresh final-head CI is green and all findings are
 fixed/declined with evidence, WITHOUT marking the PR ready.
+For a chain, predecessor fixes never trigger eager descendant merges. At draft finalization, walk
+the chain in dependency order. Call `"$agentkit/parallel-issues/scripts/chain-advance.sh"` with
+`--finalization-status` before merge or full verification; a sealed tuple stops the driver.
+Otherwise use `--finalize-successor` with the terminal receipt, final digest, accepted-finding
+ledger, exact pushed branch, immediate predecessor's `chainFinalizations.<pr>` tuple, and immutable
+review attempt when a review ran. The successor's sole writer performs any merge/conflict repair,
+commits, runs one final integrated verification, pushes, and, for an adversarial receipt, invokes
+`"$agentkit/review-remote-pr/scripts/review-ledger.sh"` with `cover --reason
+merge-down:<exact-predecessor-final-head>` before this boundary may pass. See
+[references/chains.md](references/chains.md#deferred-draft-finalization-after-a-predecessor-advances).
 
 **Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
 `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.

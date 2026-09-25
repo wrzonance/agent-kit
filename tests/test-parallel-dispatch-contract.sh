@@ -411,6 +411,38 @@ assert_contains "$normalized_chains_text" 'queued=1[#6]' \
     'depth-six fixture reports the queued tail at the funnel'
 assert_contains "$normalized_chains_text" 'dispatch #6 from #5' \
     'depth-six fixture dispatches the tail after predecessor push'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalize-successor' \
+    'chain draft finalization uses the executable evidence boundary'
+assert_contains "$normalized_chains_text" 'does not enumerate or update descendants' \
+    'a predecessor repair causes no eager descendant cascade'
+assert_contains "$normalized_chains_text" 'chainFinalizations.<pr>' \
+    'topological finalization reuses the existing run-state PR namespace'
+assert_contains "$normalized_chains_text" 'merge-down:<exact-predecessor-final-head>' \
+    'review coverage bridges the original snapshot to the integrated head'
+assert_contains "$normalized_chains_text" '--pr-state-digest' \
+    'finalization inherits the final-head CI digest contract'
+assert_contains "$normalized_chains_text" '--accepted-findings' \
+    'finalization inherits the explicit accepted-finding proof contract'
+assert_contains "$normalized_chains_text" 'known code-quality and inline-comment classifications' \
+    'finalization requires both persisted finding channels to be available'
+assert_contains "$normalized_chains_text" 'chain-advance.sh --finalization-status' \
+    'the driver checks sealed evidence before any repeated integration work'
+assert_contains "$normalized_chains_text" 'commit -> full verification -> push' \
+    'the documented driver verifies the committed head before pushing it'
+assert_contains "$normalized_chains_text" '--include-staged --yolo --allow-base-inherited' \
+    'deferred merge commits retain the sanctioned protected-path recipe'
+assert_contains "$normalized_chains_text" 'git rev-parse MERGE_HEAD' \
+    'the inherited-path allowance binds the active merge head'
+assert_contains "$normalized_chains_text" 'verified-skip' \
+    'normal review-policy skips remain an explicit supported finalization path'
+assert_not_contains "$normalized_chains_text" 'The response is a merge-down cascade' \
+    'chain repair no longer prescribes eager merge-down cascades'
+retarget_heading_line=$(grep -n '^## Merge order and the stacked-PR retarget$' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
+    "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
+assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
+    'retarget-only proof exceptions stay inside the retarget section'
 assert_contains "$normalized_text" 'test files or prose does not serialize' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
@@ -1943,8 +1975,8 @@ assert_contains "$call_site_boundary" $'lazy references |\n\n**Single issue' \
 # #902 review adds evidence-bearing terminal recipes and remote-spend reuse flags.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2291 ]] && printf yes || printf no)" \
-    'issue #784 prose files stay below their inherited aggregate line count'
+assert_eq yes "$([[ $prose_lines -le 2301 ]] && printf yes || printf no)" \
+    'issue #901 prose files stay below their measured aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'
 assert_contains "$normalized_text" 'merge updated default down and push' \
