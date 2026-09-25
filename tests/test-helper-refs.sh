@@ -221,7 +221,9 @@ printf '%s\n' 'Run `$agentkit/demo/scripts/own-helper.sh` once.' \
     > "$hfixture/demo/SKILL.md"
 assert_rc 0 'a helper shipped in the skill scripts/ directory may go bare before its path in a section' -- "$lint" "$hfixture"
 
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/six-step-loop.md") -le 6100 ]] && printf yes || printf no)" \
-    'six-step-loop policy stays at or under 6100 bytes'
+# #904: the shared finish contract now spells out commit -> one full run -> push,
+# failed-candidate recovery, and root proof reuse for every worker prompt.
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/.shared/six-step-loop.md") -le 6440 ]] && printf yes || printf no)" \
+    'six-step-loop policy stays at or under 6440 bytes'
 
 finish

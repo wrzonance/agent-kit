@@ -16,16 +16,14 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command;
-stdout begins `skills=` (contract, not registry proof).
+First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command; stdout begins `skills=` (contract, not registry proof).
 Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
 `check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
 Retain that acknowledged harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`.
 Missing challenge: report `agentkit: activation-unavailable` and stop without substituting unless the
 user's own message explicitly requests the no-delivery reference use described below.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Client restart/conversation resume retains
-the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
+Fresh acknowledgement preserves saved work. Client restart/conversation resume retains the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
 
 ### No delivered challenge = no run
@@ -58,15 +56,17 @@ Coordinate independent issues through Project validation, conflict analysis, use
 
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
-Follow [shared reading discipline](../.shared/reading-discipline.md): use
-`"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
+## Resident call-site map
+| Boundary | Authority |
+|---|---|
+| Phase A/C review loop, adversarial receipt, finding ledger, run-dir | `../review-remote-pr/SKILL.md` and its lazy references |
 
 **Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` adjudication sections only when its digest flags them, and `references/implementation-worker.md` only when composing the issue lead. The template carries the loop from `.shared/six-step-loop.md`; root reads that file only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation
-line only — nothing infers them from tone, urgency, or a previous run.
+Four flags decide how much this skill stops to ask. They are read from the invocation line only — nothing infers them from tone, urgency, or a previous run.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
@@ -97,7 +97,7 @@ command with no approval step and no trust record — `--yolo` only ever governe
 issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
 commands run.
 
-**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness; reused evidence is not fresh execution. Run focused suites while iterating; use `--force` for the required fresh full suite before commit. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
+**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness. Run focused suites while iterating; commit the completed candidate, then run the required unfocused full suite on that clean committed HEAD before push. Root validation and resume consume unchanged proof without scheduling the suite again. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
 
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
 
@@ -629,7 +629,22 @@ review, consent, replies, and publication — and never initiates a provider rev
 Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
-Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL lands; the agent runs review-remote-pr Phase A (CI green, conflicts resolved, then the ONE end-of-draft adversarial cross-review with findings fixed/declined + documented) and reports back "draft phase complete" WITHOUT marking the PR ready.
+Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL
+lands; after conflicts/base freshness are handled, the ONE adversarial review launches against its
+immutable snapshot without waiting for pending or red CI. CI repair and review collection continue
+independently; neither a mid-review failure nor a repair push cancels or relaunches the review. The
+agent reports "draft phase complete" only after fresh final-head CI is green and all findings are
+fixed/declined with evidence, WITHOUT marking the PR ready.
+For a chain, predecessor fixes never trigger eager descendant merges. At draft finalization, walk
+the chain in dependency order. Call `"$agentkit/parallel-issues/scripts/chain-advance.sh"` with
+`--finalization-status` before merge or full verification; a sealed tuple stops the driver.
+Otherwise use `--finalize-successor` with the terminal receipt, final digest, accepted-finding
+ledger, exact pushed branch, immediate predecessor's `chainFinalizations.<pr>` tuple, and immutable
+review attempt when a review ran. The successor's sole writer performs any merge/conflict repair,
+commits, runs one final integrated verification, pushes, and, for an adversarial receipt, invokes
+`"$agentkit/review-remote-pr/scripts/review-ledger.sh"` with `cover --reason
+merge-down:<exact-predecessor-final-head>` before this boundary may pass. See
+[references/chains.md](references/chains.md#deferred-draft-finalization-after-a-predecessor-advances).
 
 **Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
 `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.
@@ -646,7 +661,7 @@ obtains interactive approval in the consent-holding context. Do not forward the 
 loop: a relayed grant manufactures child-context consent. The loop prechecks, hands launch-ready
 state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
 
-### Step 3b: Dispatch review-remote-pr agents (parallel)
+### Step 3b: Dispatch concurrent reviews and approved fix batches
 
 The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
 cap includes the root and active issue leads; reserve those before deriving child capacity. The
@@ -666,12 +681,40 @@ printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
     "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
 
-Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill after
-prior loop reaches completion marker. Do not reserve nested-worker slots; the loop uses
-the documented spawn-unavailable path for root-approved fix batches. This dispatch-time counter
-enforces the cap.
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill
+after a prior loop reaches its completion marker. A setup loop releases its slot when root accepts
+that terminal result. It never remains active while root launches its reviewer or fix worker.
 Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
 `origin/${base_branch}`, and chains pass `--materiality-base`.
+
+Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ... --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" --reaffirm-if-covered`. Never forward the consent,
+auto-review flag, or launch to a child. After launch-ready setup results arrive, launch all currently eligible reviews without waiting for an earlier review result. A stacked successor is eligible once
+its own pushed snapshot is fixed; its predecessor's review may still be running. Give every PR its
+own `RUN_DIR`; collect review completions independently and preserve every returned attempt/result
+identity when another launch fails or has an unknown outcome. An existing or uncertain attempt is
+never resent. Queue a capacity refusal and refill it only after a confirmed terminal release.
+
+The executable boundary is shared: review attempts and native worker reservations share the same atomic admission lock.
+Both call `concurrency-cap.sh` against root, outstanding version-2 reservations from the bound run,
+other-run reservations with a nonfuture heartbeat inside the standard two-hour freshness window,
+and reserved/running/unreconciled unknown review attempts. This is the existing total cap, never a
+review-only budget. The lock covers admission and its durable state write only; provider execution
+and worker work run without it. Standalone review remains valid when there is no current worker
+reservation; an old run's stale row does not consume capacity even when its worktree remains registered. A
+validated `attempt confirm-stopped` proof releases capacity while preserving unknown spend state.
+
+Once root approves findings, reserve `pr-fix-batch` with `$agentkit/parallel-issues/scripts/named-active-state.sh` before submission,
+record its returned worker ID, and release it only with confirmed terminal evidence. Dispatch
+approved batches for different worktrees immediately, even while other reviews or fixes run.
+A second fix worker, root edit, or merge-down targeting an occupied worktree waits for confirmed
+terminal release; requesting an interrupt is not release evidence. At batch composition, include
+available upstream findings and fix evidence from predecessor work that has already completed.
+Missing future findings never delay dispatch. Reconcile independently completed fixes against the
+integrated tree in dependency order.
+
+Review and fix completion may arrive in any order. Publish one root-owned receipt at a time, and
+serialize every other shared-state or forge publication. Neither a review result nor a fix result
+alone makes a draft ready.
 
 ### Adversarial-review receipt:
 
@@ -696,8 +739,9 @@ case "$precheck_rc" in
     *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
 esac
 ```
-After all confirmed findings are fixed or explicitly declined, push those fixes; the receipt is
-published **after fixes are pushed** and **before draft-phase-complete handoff**, as exactly one
+After all confirmed findings are fixed or explicitly declined, push and refresh final PR state once.
+Required green CI bound to current HEAD verifies it; declared local acceptance adds mandatory pass
+records. Publish after fixes are pushed and green CI and **before draft-phase-complete handoff**, as exactly one
 durable top-level PR comment — a review or skip without it is never complete. It records provider,
 model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
 `confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
@@ -705,7 +749,12 @@ or the `verified-skip rationale` + oracle. The order is executable: the successf
 `$agentkit/review-remote-pr/scripts/adversarial-run.sh` result must precede `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`, and publication consumes only
 that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
 skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
-the pre-launch gate above, and the precheck must never fall through to a placeholder receipt:
+the pre-launch gate above, and the precheck must never fall through to a placeholder receipt.
+Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
+format to `$RUN_DIR/accepted-findings.ndjson`; create it explicitly empty only after accepting none.
+Reuse it for repair and terminal evidence. Missing, open, legacy-terminal, or stale evidence blocks
+publication. An unavailable `finding-classification: cq=... icf=...` digest result blocks publication
+without delaying the earlier immutable review launch; raw untriaged thread counts remain non-gating:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
@@ -713,12 +762,36 @@ the pre-launch gate above, and the precheck must never fall through to a placeho
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
-# After the runner returns 0, run the ledger command once per outcome:
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed --sha SHA
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE'
+# After the runner returns 0, produce terminal proof before each disposition:
+fixed_evidence="$RUN_DIR/evidence-fixed.json"
+"$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE' \
+  --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
+  --repair-sha REPAIR_SHA >"$fixed_evidence" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
+  --title 'SHORT_TITLE' --severity P1 --verdict fixed \
+  --sha "$(jq -r .repairSha "$fixed_evidence")" --evidence "$fixed_evidence" \
+  --repo-root "$worktree" --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
+decline_evidence="$RUN_DIR/evidence-declined.json"
+jq -cn --arg finding 'OTHER_TITLE' --arg rationale 'RATIONALE' \
+  '{finding:$finding,decision:"rejected",rationale:$rationale}' >"$decline_evidence" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
+  --title 'OTHER_TITLE' --severity P2 --verdict declined --rationale 'RATIONALE' \
+  --evidence "$decline_evidence" --repo-root "$worktree" \
+  --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
+acceptance_args=()
+if [[ -f "$worktree/.agent/acceptance.txt" && ! -L "$worktree/.agent/acceptance.txt" ]]; then
+  while IFS= read -r acceptance_command || [[ -n $acceptance_command ]]; do
+    [[ -n $acceptance_command ]] && acceptance_args+=(--acceptance-command "$acceptance_command")
+  done < "$worktree/.agent/acceptance.txt"
+fi
+final_digest="$RUN_DIR/state/pr_${PR}_final.digest"
+"$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO" \
+  --repo-root "$worktree" --full --no-cache --tmpdir "$RUN_DIR/state" \
+  --digest-out "$final_digest" "${acceptance_args[@]}" || exit 1
 publish_rc=0
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/post-receipt.sh" publish \
     --pr "$PR" --repo "$REPO" --issue-comments "$receipt_comments" --require-pushed \
+    --pr-state-digest "$final_digest" \
     --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
     --mode "$MODE" --mode-reason "$MODE_REASON" --p1 "$P1_COUNT" --p2 "$P2_COUNT" \
     --agent-identity "$AGENT_IDENTITY" || publish_rc=$?

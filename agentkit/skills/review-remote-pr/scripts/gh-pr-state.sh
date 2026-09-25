@@ -72,6 +72,8 @@ CI_WORD=""
 THREADS_AVAILABLE=1
 CI_NONE_CONFIGURED=0
 REPO_ROOT=""
+ICF_CLASSIFICATION=unavailable
+CQ_CLASSIFICATION=unavailable
 # Set once per run, from either a fresh alert_count() call or a cache hit;
 # print_digest reads this instead of re-invoking alert_count() itself.
 ALERTS_VALUE=""
@@ -100,6 +102,7 @@ EXPECT_CHECKS=""
 # evidence, independent of the GraphQL review-thread capability, so this is
 # invoked unconditionally -- never gated on THREADS_AVAILABLE.
 readonly ISSUE_COMMENT_CLASSIFIER="$SCRIPT_DIR/classify-issue-comment-findings.sh"
+readonly CODE_QUALITY_CLASSIFIER="$SCRIPT_DIR/code-quality-state.sh"
 # Optional local answered-finding ledger; empty means every classified
 # finding reports open (see --issue-comment-answered in usage()).
 ISSUE_COMMENT_ANSWERED=""
@@ -278,8 +281,6 @@ validate_args() {
         die '--digest-out must contain no control characters'
     command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
     command -v jq >/dev/null 2>&1 || die "jq not found on PATH; evidence unavailable"
-    [[ -x $ISSUE_COMMENT_CLASSIFIER ]] ||
-        die "sibling classify-issue-comment-findings.sh not found or not executable: $ISSUE_COMMENT_CLASSIFIER"
     return 0
 }
 
@@ -1094,14 +1095,48 @@ print_issue_comment_findings_line() {
     local -a answered_args=()
     [[ -z $ISSUE_COMMENT_ANSWERED ]] || answered_args=(--answered "$ISSUE_COMMENT_ANSWERED")
     local counts open
+    if [[ ! -x $ISSUE_COMMENT_CLASSIFIER ]]; then
+        printf 'issue-comment-findings: unavailable\n'
+        return 0
+    fi
     counts=$("$ISSUE_COMMENT_CLASSIFIER" count \
-        --comments "$WORK_DIR/issue_comments.json" "${answered_args[@]}") ||
-        die 'issue-comment finding classification failed'
+        --comments "$WORK_DIR/issue_comments.json" "${answered_args[@]}") || {
+        printf 'issue-comment-findings: unavailable\n'
+        return 0
+    }
     open=$(sed -nE 's/^open=([0-9]+) .*$/\1/p' <<<"$counts")
-    [[ $open =~ ^[0-9]+$ ]] || die "issue-comment finding classifier returned an unparseable count: $counts"
+    if [[ ! $open =~ ^[0-9]+$ ]]; then
+        printf 'issue-comment-findings: unavailable\n'
+        return 0
+    fi
+    ICF_CLASSIFICATION=known
     printf 'issue-comment-findings: %s open\n' "$open"
     ((open)) && printf 'next: issue-comment-findings=%s -> reply quoting the finding header + fix SHA, then mark-answered (Step 5)\n' "$open"
     return 0
+}
+
+classify_code_quality_availability() {
+    case $ALERTS_VALUE in
+        not-enabled)
+            CQ_CLASSIFICATION=known
+            return 0
+            ;;
+        n/a)
+            CQ_CLASSIFICATION=unavailable
+            return 0
+            ;;
+    esac
+    [[ -n $REPO_ROOT && -x $CODE_QUALITY_CLASSIFIER ]] || {
+        CQ_CLASSIFICATION=unavailable
+        return 0
+    }
+    if "$CODE_QUALITY_CLASSIFIER" --repo "$REPO" --pr "$PR" \
+        --comments-file "$WORK_DIR/code_quality_comments.json" \
+        --diff-base "origin/$BASE_REF" --repo-root "$REPO_ROOT" >/dev/null 2>&1; then
+        CQ_CLASSIFICATION=known
+    else
+        CQ_CLASSIFICATION=unavailable
+    fi
 }
 
 print_digest() {
@@ -1135,6 +1170,8 @@ print_digest() {
     else
         printf 'alerts: code-scanning open=%s\n' "$alerts"
     fi
+    classify_code_quality_availability
+    printf 'finding-classification: cq=%s icf=%s\n' "$CQ_CLASSIFICATION" "$ICF_CLASSIFICATION"
     ((WANT_FULL)) || return 0
     printf 'saved: %s/pr_%s_{reviews,comments,issue_comments,threads,code_quality_comments}.json\n' \
         "$OUT_DIR" "$PR"
