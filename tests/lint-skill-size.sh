@@ -53,7 +53,8 @@ declare -A KNOWN_OVERSIZE=(
     # #875 integration: retain the inline restore across the final predecessor merge.
     # #903: concurrent admission, cross-run freshness, and stopped proof contract.
     # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    [parallel-issues]="824:17755:500"
+    # #901: defer successor integration to the topological draft-ready boundary.
+    [parallel-issues]="834:17989:500"
 )
 
 readonly MAX_BODY_LINES=500

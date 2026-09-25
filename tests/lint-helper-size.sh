@@ -43,7 +43,10 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
     [skills/.shared/scripts/worktree-commit.sh]="847:8772:800"
     # #852: distinguish configured missing scans at the retarget boundary.
-    [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
+    # #901: seal deferred successor finalization against terminal evidence.
+    # #901 parent integration: bind completed remote entry to canonical attempt.
+    # #901 review: distinguish proved tip movement from unavailable push evidence.
+    [skills/parallel-issues/scripts/chain-advance.sh]="1438:18461:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -232,7 +235,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #903: shared review/worker capacity and proved-stopped liveness evidence.
 # #902: executable final-head and accepted-finding receipt gates.
 # #902 review: cross-clone spend and classifier finalization boundaries.
-readonly MAX_TREE_TOKENS=485578
+# #901: deferred chain finalization reuses run-state and exact pushed evidence.
+readonly MAX_TREE_TOKENS=490931
 
 violations=0
 checked=0
