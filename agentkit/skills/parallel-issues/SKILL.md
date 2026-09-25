@@ -56,11 +56,11 @@ Coordinate independent issues through Project validation, conflict analysis, use
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
 
 Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
-
 ## Resident call-site map
 | Boundary | Authority |
 |---|---|
 | Phase A/C review loop, adversarial receipt, finding ledger, run-dir | `../review-remote-pr/SKILL.md` and its lazy references |
+
 **Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` adjudication sections only when its digest flags them, and `references/implementation-worker.md` only when composing the issue lead. The template carries the loop from `.shared/six-step-loop.md`; root reads that file only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags

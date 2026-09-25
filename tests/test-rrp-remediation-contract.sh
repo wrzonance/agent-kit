@@ -134,10 +134,12 @@ done
 rrp_step0=$(sed -n '/Step 0 prerequisite/,/^Missing challenge/p' "$rrp_skill")
 assert_contains "$rrp_step0" "Standalone invocation: run UserPromptSubmit's exact" \
     'review-remote-pr keeps its own challenge and preflight for standalone invocation'
-assert_contains "$rrp_step0" "Delegated: reuse the owning workflow's receipt and preflight" \
-    'review-remote-pr reuses the delegating workflow activation path'
+assert_contains "$rrp_step0" 'Delegate only when dispatched inside active `parallel-issues`/`pr-to-green` and `check` reports that owner' \
+    'review-remote-pr requires an active named owner before reusing delegated activation'
 assert_contains "$rrp_step0" 'do not run or acknowledge review-remote-pr preflight' \
     'review-remote-pr forbids a competing delegated preflight acknowledgement'
+assert_contains "$rrp_step0" 'Otherwise standalone native/natural-language activation delivers its own challenge' \
+    'review-remote-pr routes every non-owner call through standalone activation'
 
 # --- adversarial findings on #873: the receipt block runs as written ----------
 receipt_section=$(sed -n '/^### Adversarial-review receipt/,/^esac$/p' "$rrp_skill")
