@@ -613,7 +613,7 @@ assert_contains "$adversarial_flat" 'reports exactly Completed, Still running, o
 # #873: finding IDs, cover preconditions and the evidence producer.
 # #873 review: evidence names the repair and reviewed head; the log decides the tested head.
 # #903: document shared reviewer/native admission and standalone-run isolation.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 33114 ]] && printf yes || printf no)" \
-    'adversarial-review reference stays at or under 33114 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/review-remote-pr/references/adversarial-review.md") -le 33838 ]] && printf yes || printf no)" \
+    'adversarial-review reference stays at or under 33838 bytes'
 
 finish

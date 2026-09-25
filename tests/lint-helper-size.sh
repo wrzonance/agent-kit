@@ -34,8 +34,8 @@ declare -A KNOWN_OVERSIZE=(
     # #874 review repair: stable process identity and canonical fallback boundaries.
     # #873 PR repair: fail closed when a clean-start verification dirties its checkout.
     [skills/.shared/scripts/agent-run.sh]="2031:22008:800"
-    # #903: atomically admit reviewer attempts against native worker reservations.
-    [skills/.shared/scripts/lib/review-attempt.sh]="662:10621:800"
+    # #903: atomically admit reviews and release proved-stopped external capacity.
+    [skills/.shared/scripts/lib/review-attempt.sh]="716:11560:800"
     # #865: scope the generated regeneration hint to plugin-backed onboarding.
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
@@ -224,7 +224,8 @@ readonly MAX_HELPER_TOKENS=10000
 # #896 P1 review repair: performative-verb bound; exact tree measurement.
 # #896 round 4: not-affirmative refusal message; exact tree measurement.
 # #903: shared reviewer/native admission and its durable inventory checks.
-readonly MAX_TREE_TOKENS=480879
+# #903: shared review/worker capacity and proved-stopped liveness evidence.
+readonly MAX_TREE_TOKENS=482467
 
 violations=0
 checked=0

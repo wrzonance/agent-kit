@@ -1734,12 +1734,12 @@ assert_not_contains "$err" 'spawn refused:' \
     'cap-advertisement failure remains distinct from capacity refusal'
 assert_eq 'nonzero' "$( (( status != 0 )) && printf nonzero || printf zero )" \
     'missing runtime config exits nonzero so dispatch stops'
-assert_rc 0 'state-backed admission uses the hard maximum when Codex config is absent' -- \
+assert_rc 0 'state-backed admission uses the Codex V2 runtime default when config is absent' -- \
     "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
-    --assert-count 10 --agent-kind reviewer
-assert_rc 1 'state-backed admission refuses above the hard maximum without Codex config' -- \
+    --assert-count 4 --agent-kind reviewer
+assert_rc 1 'state-backed admission refuses above the Codex V2 runtime default without config' -- \
     "$cap_helper" --config "$missing_home/config.toml" --spawn-capable \
-    --assert-count 11 --agent-kind reviewer
+    --assert-count 5 --agent-kind reviewer
 
 # --- issue #224: named wait bounds (WS1) --------------------------------------
 # The guidance must name a NUMBER per wait class, and every named bound must be
@@ -1929,7 +1929,7 @@ assert_contains "$normalized_text" 'unchanged accepted receipts resume without r
 # #903 adds the concurrent review/fix ownership contract at the dispatch site.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2262 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2263 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

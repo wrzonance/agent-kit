@@ -660,11 +660,13 @@ identity when another launch fails or has an unknown outcome. An existing or unc
 never resent. Queue a capacity refusal and refill it only after a confirmed terminal release.
 
 The executable boundary is shared: review attempts and native worker reservations share the same atomic admission lock.
-Both call `concurrency-cap.sh` against root + outstanding version-2 reservations for that run +
-reserved/running/unknown-outcome review attempts. This is the existing total cap, never a
+Both call `concurrency-cap.sh` against root, outstanding version-2 reservations from the bound run,
+other-run reservations with a nonfuture heartbeat inside the standard two-hour freshness window,
+and reserved/running/unreconciled unknown review attempts. This is the existing total cap, never a
 review-only budget. The lock covers admission and its durable state write only; provider execution
 and worker work run without it. Standalone review remains valid when there is no current worker
-reservation; unrelated, terminal, or legacy rows from an old run do not consume its capacity.
+reservation; an old run's stale row does not consume capacity even when its worktree remains registered. A
+validated `attempt confirm-stopped` proof releases capacity while preserving unknown spend state.
 
 Once root approves findings, reserve `pr-fix-batch` with `$agentkit/parallel-issues/scripts/named-active-state.sh` before submission,
 record its returned worker ID, and release it only with confirmed terminal evidence. Dispatch

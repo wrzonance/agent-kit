@@ -35,7 +35,7 @@ cmd_attempt() {
     python3 - "$@" <<'PY'
 import argparse, datetime, fcntl, hashlib, json, os, pathlib, stat, subprocess, sys, tempfile, time, uuid
 p = argparse.ArgumentParser()
-p.add_argument('operation', choices=['reserve', 'retry', 'recover', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'validate'])
+p.add_argument('operation', choices=['reserve', 'retry', 'recover', 'read', 'attach', 'start', 'process', 'finish', 'reconcile', 'confirm-stopped', 'validate'])
 p.add_argument('--repo-root', required=True)
 p.add_argument('--entry-file', required=True)
 p.add_argument('--id', default='')
@@ -162,8 +162,7 @@ def acquire_lock(path, timeout=2):
                 os.close(fd); raise TimeoutError('capacity lock unavailable after 2s; outcome unknown')
             time.sleep(0.02)
 def active_worker_count(repo_root, run_id):
-    if not run_id: return 0
-    if (len(run_id) > 128 or not run_id[0].isalnum()
+    if run_id and (len(run_id) > 128 or not run_id[0].isalnum()
             or any(not (char.isalnum() or char in '._:-') for char in run_id)):
         raise ValueError('invalid parallel run ID in review attempt')
     primary = subprocess.check_output(['git', '-C', repo_root, 'worktree', 'list', '--porcelain'], text=True).splitlines()[0]
@@ -176,12 +175,47 @@ def active_worker_count(repo_root, run_id):
         except json.JSONDecodeError as error: raise ValueError('malformed active-worker evidence') from error
         if not isinstance(row, dict): raise ValueError('malformed active-worker evidence')
         if row.get('version') != 2: continue
-        if row.get('runId') != run_id: continue
         worktree, state = row.get('worktree'), row.get('state')
-        if not isinstance(worktree, str) or not worktree.startswith('/') or state not in ('unknown', 'active', 'terminal'):
+        heartbeat, row_run = row.get('heartbeatEpoch'), row.get('runId')
+        if (not isinstance(worktree, str) or not worktree.startswith('/')
+                or state not in ('unknown', 'active', 'terminal')
+                or not isinstance(row_run, str) or not row_run
+                or (heartbeat is not None and (type(heartbeat) is not int or heartbeat < 0))):
             raise ValueError('malformed active-worker reservation')
         latest[os.path.realpath(worktree)] = row
-    return sum(row['state'] != 'terminal' for row in latest.values())
+    now = int(time.time())
+    fresh_after = now - 2 * 60 * 60
+    return sum(row['state'] != 'terminal' and (
+        (bool(run_id) and row.get('runId') == run_id)
+        or (type(row.get('heartbeatEpoch')) is int
+            and fresh_after <= row['heartbeatEpoch'] <= now))
+        for row in latest.values())
+def capacity_released(value):
+    marker = value.get('capacityReleaseProofSha256')
+    if marker is None: return False
+    proof, source_hash = value.get('stoppedTimeoutProof'), value.get('stoppedTimeoutProofSha256')
+    if (value.get('state') != 'unknown-outcome' or value.get('canonical') is not True
+            or not isinstance(proof, dict) or not isinstance(source_hash, str)
+            or len(source_hash) != 64 or any(char not in '0123456789abcdef' for char in source_hash)
+            or not isinstance(marker, str) or len(marker) != 64
+            or any(char not in '0123456789abcdef' for char in marker)):
+        raise ValueError('malformed stopped-process capacity proof')
+    canonical = (json.dumps(proof, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    if hashlib.sha256(canonical).hexdigest() != marker:
+        raise ValueError('stopped-process capacity proof digest mismatch')
+    expected = dict(schemaVersion=1, repo=value.get('repo'), pr=value.get('pr'),
+        attemptId=value.get('id'), head=value.get('head'), payload=value.get('payload'),
+        authorization='', reason='operator-confirmed-timeout',
+        helperProcess=value.get('helperProcess'), providerProcess=value.get('providerProcess'))
+    if any(proof.get(key) != expected_value for key, expected_value in expected.items()):
+        raise ValueError('stopped-process capacity proof binding mismatch')
+    duration, limit = proof.get('timeoutSeconds'), value.get('maxDurationSeconds')
+    if type(duration) is not int or type(limit) is not int or limit <= 0 or duration < limit:
+        raise ValueError('stopped-process capacity proof duration mismatch')
+    if not any(event.get('operation') == 'confirm-stopped'
+            and event.get('state') == 'unknown-outcome' for event in value.get('events', [])):
+        raise ValueError('stopped-process capacity proof has no durable event')
+    return True
 def active_review_count(directory, own_path):
     count = 0
     for candidate in directory.glob('*.json'):
@@ -190,7 +224,8 @@ def active_review_count(directory, own_path):
         if value.get('version') != 1 or value.get('state') not in (
                 'reserved', 'running', 'completed', 'failed', 'unknown-outcome', 'parser-rejected'):
             raise ValueError('malformed durable review attempt in capacity inventory')
-        if value['state'] in ('reserved', 'running', 'unknown-outcome'): count += 1
+        if value['state'] in ('reserved', 'running') or (
+                value['state'] == 'unknown-outcome' and not capacity_released(value)): count += 1
     return count
 def admit_capacity(directory, own_path, entry):
     lock_fd = acquire_lock(directory / 'capacity.lock')
@@ -236,8 +271,8 @@ try:
             or record.get('repo', '').lower() != entry['repo'].lower() or record.get('pr') != entry['pr']):
         raise ValueError('malformed durable attempt; reconciliation required')
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    if a.stopped_timeout_proof and a.operation != 'retry':
-        raise ValueError('stopped-timeout proof is only valid for an explicit retry')
+    if a.stopped_timeout_proof and a.operation not in ('retry', 'confirm-stopped'):
+        raise ValueError('stopped-timeout proof is only valid for retry or confirm-stopped')
     if a.operation == 'reserve':
         if record is not None:
             print(json.dumps(record)); sys.exit(20)
@@ -260,6 +295,25 @@ try:
         if entry.get('canonical'):
             record['payloadGateSha256'] = digest(pathlib.Path(entry['result']).parent / 'adversarial.payload-size')
             record['runtimeSha256'] = digest(pathlib.Path(entry['launcher']).parents[2] / '.shared/scripts/lib/review-attempt.sh')
+    elif a.operation == 'confirm-stopped':
+        if record is None or record.get('id') != a.id:
+            raise ValueError('confirm-stopped must name the current durable attempt ID')
+        if record.get('state') != 'unknown-outcome' or record.get('canonical') is not True:
+            raise ValueError('confirm-stopped requires a canonical unknown attempt')
+        for field in ('repo', 'pr', 'head', 'payload', 'launcher'):
+            if record.get(field) != entry.get(field):
+                raise ValueError('confirm-stopped input mismatch: ' + field)
+        if not a.stopped_timeout_proof:
+            raise ValueError('confirm-stopped requires stopped-timeout proof')
+        if a.authorization:
+            raise ValueError('confirm-stopped does not authorize a retry')
+        if record.get('capacityReleaseProofSha256') is not None:
+            print(json.dumps(record)); sys.exit(20)
+        stopped_proof, stopped_proof_hash = stopped_timeout(record, entry)
+        record['stoppedTimeoutProof'] = stopped_proof
+        record['stoppedTimeoutProofSha256'] = stopped_proof_hash
+        canonical_proof = (json.dumps(stopped_proof, sort_keys=True, separators=(',', ':')) + '\n').encode()
+        record['capacityReleaseProofSha256'] = hashlib.sha256(canonical_proof).hexdigest()
     elif a.operation == 'retry':
         if record is None or record.get('id') != a.id:
             raise ValueError('retry must name the current durable attempt ID')

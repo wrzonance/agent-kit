@@ -241,10 +241,23 @@ assert_rc 0 'merge-down acquires only after confirmed writer release' -- \
 review_registry=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/agentkit-review-attempts
 mkdir -p "$review_registry"
 chmod 700 "$review_registry"
-printf '%s\n' '{"version":1,"state":"unknown-outcome"}' >"$review_registry/unknown.json"
+printf '%s\n' '{"version":1,"state":"unknown-outcome","canonical":true,"repo":"acme/widget","pr":99,"id":"unknown-review","head":"head","payload":"payload","maxDurationSeconds":900,"helperProcess":{"pid":101,"startTicks":"1","bootId":"boot"},"providerProcess":{"pid":102,"startTicks":"2","bootId":"boot"},"events":[{"state":"unknown-outcome","operation":"finish"}]}' >"$review_registry/unknown.json"
 chmod 600 "$review_registry/unknown.json"
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 4' >"$CODEX_HOME/config.toml"
 mkdir -p "$tmp/fix-c"
 assert_rc 2 'unknown review outcome blocks a native reservation above the shared cap' -- \
+    owner reserve --issue 604 --worktree "$tmp/fix-c" --branch fix/c --run-id fixes --attempt fix-c
+jq '.stoppedTimeoutProof={schemaVersion:1,repo:.repo,pr:.pr,attemptId:.id,head:.head,payload:.payload,
+        authorization:"",reason:"operator-confirmed-timeout",timeoutSeconds:900,
+        helperProcess:.helperProcess,providerProcess:.providerProcess} |
+    .stoppedTimeoutProofSha256=("a" * 64) |
+    .events += [{state:"unknown-outcome",operation:"confirm-stopped"}]' \
+    "$review_registry/unknown.json" >"$review_registry/unknown.tmp"
+mv "$review_registry/unknown.tmp" "$review_registry/unknown.json"
+review_proof_hash=$(jq -cS .stoppedTimeoutProof "$review_registry/unknown.json" | sha256sum | cut -d' ' -f1)
+jq --arg hash "$review_proof_hash" '.capacityReleaseProofSha256=$hash' \
+    "$review_registry/unknown.json" >"$review_registry/unknown.tmp"
+mv "$review_registry/unknown.tmp" "$review_registry/unknown.json"
+assert_rc 0 'proved-stopped unknown review releases capacity for a native worker' -- \
     owner reserve --issue 604 --worktree "$tmp/fix-c" --branch fix/c --run-id fixes --attempt fix-c
 finish

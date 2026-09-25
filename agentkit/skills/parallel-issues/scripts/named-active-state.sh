@@ -214,16 +214,48 @@ if [[ $action != classify ]]; then
         for review_record in "$capacity_dir"/*.json; do
             [[ -f $review_record && ! -L $review_record && -O $review_record ]] ||
                 die 'unsafe durable review attempt in capacity inventory'
-            review_state=$(jq -er 'select(.version == 1) | .state |
-                select(. == "reserved" or . == "running" or . == "completed" or . == "failed" or
-                . == "unknown-outcome" or . == "parser-rejected")' \
+            review_capacity=$(jq -er '
+                select(.version == 1) |
+                select(.state == "reserved" or .state == "running" or .state == "completed" or
+                    .state == "failed" or .state == "unknown-outcome" or .state == "parser-rejected") |
+                has("capacityReleaseProofSha256") as $released |
+                if $released and (.state != "unknown-outcome" or .canonical != true or
+                    (.stoppedTimeoutProof | type) != "object" or
+                    ((.stoppedTimeoutProofSha256 | type) != "string") or
+                    ((.stoppedTimeoutProofSha256 | test("^[0-9a-f]{64}$")) | not) or
+                    ((.capacityReleaseProofSha256 | type) != "string") or
+                    ((.capacityReleaseProofSha256 | test("^[0-9a-f]{64}$")) | not) or
+                    .stoppedTimeoutProof.schemaVersion != 1 or
+                    .stoppedTimeoutProof.repo != .repo or .stoppedTimeoutProof.pr != .pr or
+                    .stoppedTimeoutProof.attemptId != .id or .stoppedTimeoutProof.head != .head or
+                    .stoppedTimeoutProof.payload != .payload or .stoppedTimeoutProof.authorization != "" or
+                    .stoppedTimeoutProof.reason != "operator-confirmed-timeout" or
+                    .stoppedTimeoutProof.helperProcess != .helperProcess or
+                    .stoppedTimeoutProof.providerProcess != .providerProcess or
+                    (.stoppedTimeoutProof.timeoutSeconds | type) != "number" or
+                    (.maxDurationSeconds | type) != "number" or .maxDurationSeconds <= 0 or
+                    .stoppedTimeoutProof.timeoutSeconds < .maxDurationSeconds or
+                    (any(.events[]?; .operation == "confirm-stopped" and .state == "unknown-outcome") | not))
+                then error("malformed stopped-process capacity proof")
+                else [.state, $released, (.capacityReleaseProofSha256 // "")] | @tsv end' \
                 "$review_record") || die 'malformed durable review attempt in capacity inventory'
-            [[ $review_state != reserved && $review_state != running && $review_state != unknown-outcome ]] ||
+            IFS=$'\t' read -r review_state review_stopped review_proof_hash <<<"$review_capacity"
+            if [[ $review_stopped == true ]]; then
+                actual_proof_hash=$(jq -cS '.stoppedTimeoutProof' "$review_record" | sha256sum | cut -d' ' -f1) ||
+                    die 'could not hash stopped-process capacity proof'
+                [[ $actual_proof_hash == "$review_proof_hash" ]] ||
+                    die 'stopped-process capacity proof digest mismatch'
+            fi
+            [[ $review_state != reserved && $review_state != running &&
+                ($review_state != unknown-outcome || $review_stopped == true) ]] ||
                 review_count=$((review_count + 1))
         done
         shopt -u nullglob
-        worker_count=$(jq '[group_by(.worktree) | map(last)[] |
-            select(.version == 2 and .state != "terminal")] | length' <<<"$rows") ||
+        worker_count=$(jq --arg run "$run_id" --argjson now "$now_epoch" --argjson hours 2 \
+            '[group_by(.worktree) | map(last)[] |
+             select(.version == 2 and .state != "terminal") |
+             select(.runId == $run or (.heartbeatEpoch | type == "number" and
+                . >= ($now - $hours * 3600) and . <= $now))] | length' <<<"$rows") ||
             die 'could not count active worker reservations'
         prospective_total=$((1 + worker_count + review_count + 1))
         "$script_dir/concurrency-cap.sh" --spawn-capable --assert-count "$prospective_total" \

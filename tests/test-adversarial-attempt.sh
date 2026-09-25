@@ -154,7 +154,8 @@ git -C "$capacity_repo" add README.md
 git -C "$capacity_repo" commit -qm base
 capacity_ledger="$capacity_repo/.agent/runs/active-workers.ndjson"
 attempt_dir=$(git -C "$capacity_repo" rev-parse --path-format=absolute --git-common-dir)/agentkit-review-attempts
-mkdir -p "$capacity_repo/.agent/runs" "$tmp/capacity-worker" "$tmp/stale-worker"
+mkdir -p "$capacity_repo/.agent/runs" "$tmp/capacity-worker"
+git -C "$capacity_repo" worktree add -q -b old "$tmp/stale-worker"
 printf '%s\n' \
     '{"version":1,"issue":90,"worktree":"/old-worker","branch":"old","state":"active","heartbeatEpoch":1}' \
     "{\"version\":2,\"issue\":90,\"worktree\":\"$tmp/stale-worker\",\"branch\":\"old\",\"runId\":\"old\",\"attempt\":\"stale\",\"workerId\":\"old-worker\",\"state\":\"active\",\"disposition\":\"returned\",\"evidence\":\"\",\"heartbeatEpoch\":1}" \
@@ -180,12 +181,35 @@ capacity_attempt() {
 # No parallel run context means old native-run rows are unrelated. Outstanding
 # review attempts still count separately in every launch context.
 printf '%s\n' '[agents]' 'max_concurrent_threads_per_session = 2' >"$CODEX_HOME/config.toml"
+native_stale=$(
+    "$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action reserve \
+        --issue 498 --worktree "$tmp/capacity-worker" --branch fix/stale-capacity \
+        --run-id current --attempt worker-after-stale
+)
+assert_eq reserved "$(jq -r .disposition <<<"$native_stale")" \
+    'native admission ignores a stale old-run row even while its matching worktree stays registered'
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action release \
+    --attempt worker-after-stale --disposition rejected --evidence 'capacity fixture cleanup' >/dev/null
 capacity_entry 99 "$tmp/capacity-99.json"
 standalone_capacity=$(capacity_attempt "$tmp/capacity-99.json" reserve)
 assert_eq reserved "$(jq -r .state <<<"$standalone_capacity")" \
     'standalone review ignores unrelated stale native-run ownership'
 assert_rc 0 'standalone review releases normally' -- capacity_attempt "$tmp/capacity-99.json" finish \
     --id "$(jq -r .id <<<"$standalone_capacity")" --state failed
+
+# Recent lifecycle evidence is positive occupancy even across run IDs. An
+# omitted or different review run context must not make that worker disappear.
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action reserve \
+    --issue 499 --worktree "$tmp/capacity-worker" --branch fix/live-capacity --run-id live-wave \
+    --attempt worker-live >/dev/null
+capacity_entry 97 "$tmp/capacity-97.json"
+capacity_entry 98 "$tmp/capacity-98.json" other-wave
+assert_rc 1 'standalone review counts a recent worker from an active parallel run' -- \
+    capacity_attempt "$tmp/capacity-97.json" reserve
+assert_rc 1 'review with a different run ID counts the active worker' -- \
+    capacity_attempt "$tmp/capacity-98.json" reserve
+"$capacity_helper" --repo-root "$capacity_repo" --ledger "$capacity_ledger" --action release \
+    --attempt worker-live --disposition rejected --evidence 'worker was not launched' >/dev/null
 
 # Remove old rows before exercising named-active-state itself: its durable
 # ownership contract intentionally requires explicit reconciliation across runs.
