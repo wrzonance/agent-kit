@@ -193,6 +193,28 @@ with tempfile.TemporaryDirectory() as temp:
     validate()  # A wrong-SHA decoy sorts before the valid exact ref.
     initial=json.loads(state.read_text())['initialPublications']['729']
     assert initial == {'attempt':'attempt','branch':'feat/result','headSha':head}, initial
+    # The outstanding-obligation consumer must use the producer's exact saved
+    # projection to release a successor, without a caller-supplied SHA.
+    accepted_state=json.loads(state.read_text())
+    consumer_state=copy.deepcopy(accepted_state)
+    consumer_state['binding']={'run_id':'run'}; consumer_state['queued']=[730]
+    write(state,consumer_state)
+    terminal_owner=copy.deepcopy(owner); terminal_owner.update(
+        state='terminal',disposition='handed-back',evidence='accepted result')
+    write(owners,terminal_owner)
+    consumer_plan={'schemaVersion':1,'entries':[
+        {'issue':729,'predictedWriteSet':['*.txt'],'expectedPredecessors':[]},
+        {'issue':730,'predictedWriteSet':['next/**'],'expectedPredecessors':[729]}],
+        'conflictMap':{'pairs':[],'revisions':[]}}
+    write(plan,consumer_plan)
+    outstanding=json.loads(run(str(helper.with_name('run-state.sh')),'outstanding',
+        '--file',str(state),'--worker-ledger',str(owners),'--dispatch-plan',str(plan)))
+    assert 'queued:730:dispatch-successor' in outstanding['actionable_work'],outstanding
+    assert not any(item['next_action']=='reconcile-predecessor-publication'
+                   for item in outstanding['obligations']),outstanding
+    write(state,accepted_state); write(owners,owner)
+    write(plan,{'schemaVersion':1,'entries':[{'issue':729,'predictedWriteSet':['*.txt']}],
+                'conflictMap':{'pairs':[],'revisions':[]}})
     # A later accepted publication on the same branch is a review fix, not a
     # replacement for the immutable implementation commit successors consume.
     (repo / 'a.txt').write_text('review fix\n'); git('commit','-qam','review fix')

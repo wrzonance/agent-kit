@@ -13,6 +13,13 @@ script="$root/agentkit/skills/.shared/scripts/run-state.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 state="$tmp/run-state.json"
+worker_ledger="$tmp/active-workers.ndjson"
+dispatch_plan="$tmp/dispatch-plan.json"
+: >"$worker_ledger"
+chmod 600 "$worker_ledger"
+printf '%s\n' '{"schemaVersion":1,"entries":[],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+chmod 600 "$dispatch_plan"
 
 snapshot() {
     local actionable=$1 operations=$2 dependencies=$3 completed=$4 remaining=$5
@@ -152,6 +159,201 @@ assert_eq 'complete' "$(jq -r .next_action <<<"$decision")" \
     'only a checkpoint with no remaining obligations reports complete'
 assert_eq true "$(jq -r .task_complete <<<"$decision")" \
     'the drained checkpoint alone marks the task complete'
+
+# A queued operator message starts a new root turn. An accepted pushed result
+# in durable state is authoritative even when the caller replays an empty,
+# formerly-complete snapshot. The receipt maps to its issue through the
+# ownership attempt; absent issue-to-PR evidence stays concrete reconciliation.
+"$script" set --file "$state" --path binding --json \
+    '{"run_id":"wave","activation_session":"session","repository_root":"/repo","decision_ledger":"/repo/decisions","worker_ledger":"/repo/workers"}'
+"$script" set --file "$state" --path results.attempt605 --json \
+    '{"status":"accepted","claims":{"push":"valid"},"fingerprint":"fp","result":"/worker/result.json","runId":"wave","workerId":"worker605","obligations":["root-review","root-ci","draft-pr"]}'
+printf '%s\n' \
+    '{"version":2,"runId":"wave","attempt":"attempt605","workerId":"worker605","issue":605,"worktree":"/repo/.worktrees/605","branch":"fix/605","state":"terminal","disposition":"handed-back","evidence":"receipt","heartbeatEpoch":1}' \
+    >"$worker_ledger"
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":605,"predictedWriteSet":["src/**"],"expectedPredecessors":[]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+
+missing_sources_rc=0
+missing_sources_err=$("$script" next-action --after-steer --file "$state" --json "$drained" \
+    2>&1 >/dev/null) || missing_sources_rc=$?
+assert_eq 2 "$missing_sources_rc" 'after-steer requires authoritative durable source paths'
+assert_contains "$missing_sources_err" '--worker-ledger and --dispatch-plan' \
+    'the required source scan names both missing inputs'
+
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 1 "$(jq -r .outstanding <<<"$outstanding")" \
+    'one accepted pushed result without issue-to-PR evidence is outstanding'
+assert_eq 'result:attempt605:reconcile-publication-mapping' \
+    "$(jq -r '.obligations[0].id' <<<"$outstanding")" \
+    'the durable summary names the exact producer evidence gap'
+
+decision=$("$script" next-action --after-steer --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" --json "$drained")
+assert_eq 'reconcile' "$(jq -r .next_action <<<"$decision")" \
+    'durable result evidence overrides a caller-supplied empty snapshot'
+assert_eq 1 "$(jq -r .outstanding <<<"$decision")" \
+    'the next-action decision retains the derived result obligation'
+assert_eq true "$(jq -r .resume_required <<<"$decision")" \
+    'the derived reconciliation keeps the post-steer turn active'
+
+# Acceptance can become durable before its immutable publication projection.
+# That gap requires reconciliation and must not redispatch the same issue. A
+# rejected result remains a legitimate retry and keeps its queued work ready.
+"$script" set --file "$state" --path queued --json '[605]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 'reconcile-dispatch-readiness' \
+    "$(jq -r '.obligations[] | select(.issue == 605 and .kind == "queue") | .next_action' <<<"$outstanding")" \
+    'accepted same-issue result without its projection cannot redispatch'
+accepted_receipt=$("$script" get --file "$state" --path results.attempt605)
+"$script" set --file "$state" --path results.attempt605 --json \
+    "$(jq -c '.status="rejected" | .claims.push="unknown"' <<<"$accepted_receipt")"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq true "$(jq -r '.actionable_work | index("queued:605:dispatch-successor") != null' <<<"$outstanding")" \
+    'a rejected terminal result leaves its queued retry actionable'
+"$script" set --file "$state" --path results.attempt605 --json "$accepted_receipt"
+
+# Add the other incident records: the accepted initial publication releases a
+# queued successor, while an opened PR lacking a receipt remains publication
+# work. These source records, rather than fabricated snapshot strings, produce
+# the three-obligation resumed wave.
+"$script" set --file "$state" --path initialPublications.605 --json \
+    '{"attempt":"attempt605","branch":"fix/605","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+"$script" set --file "$state" --path opened_prs --json '[604]'
+"$script" set --file "$state" --path receipt_prs --json '[]'
+"$script" set --file "$state" --path skipped_prs --json '[]'
+"$script" set --file "$state" --path queued --json '[605]'
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":604,"predictedWriteSet":["docs/**"],"expectedPredecessors":[]},{"issue":605,"predictedWriteSet":["src/**"],"expectedPredecessors":[]},{"issue":606,"predictedWriteSet":["tests/**"],"expectedPredecessors":[605]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 'reconcile-dispatch-readiness' \
+    "$(jq -r '.obligations[] | select(.issue == 605 and .kind == "queue") | .next_action' <<<"$outstanding")" \
+    'a stale queue row cannot redispatch its accepted published issue'
+assert_eq false "$(jq -r '[.actionable_work[] | contains("queued:605:")] | any' <<<"$outstanding")" \
+    'accepted publication evidence suppresses duplicate same-issue dispatch'
+"$script" set --file "$state" --path queued --json '[606]'
+
+decision=$("$script" next-action --after-steer --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" --json "$drained")
+assert_eq 'dispatch' "$(jq -r .next_action <<<"$decision")" \
+    'fresh post-steer obligations resume the authorized wave'
+assert_eq 3 "$(jq -r .outstanding <<<"$decision")" \
+    'the decision reports every reconciled unfinished obligation'
+assert_eq true "$(jq -r .resume_required <<<"$decision")" \
+    'a post-steer dispatch decision forbids ending the root turn'
+assert_eq false "$(jq -r .wait_allowed <<<"$decision")" \
+    'actionable post-steer work resumes directly instead of entering a wait'
+assert_eq '["pr:604:publish-receipt","queued:606:dispatch-successor","result:attempt605:reconcile-publication-mapping"]' \
+    "$(jq -c '.orchestration.snapshot.remaining_work | sort' "$state")" \
+    'saved next-action state records every source-derived obligation'
+
+# Ambiguous readiness evidence is reconciliation, even when the first duplicate
+# entry alone would make the successor appear ready.
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":605,"predictedWriteSet":["src/**"],"expectedPredecessors":[]},{"issue":606,"predictedWriteSet":["tests/**"],"expectedPredecessors":[]},{"issue":606,"predictedWriteSet":["other/**"],"expectedPredecessors":[999]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 'queued:606:reconcile-dispatch-readiness' \
+    "$(jq -r '.obligations[] | select(.issue == 606) | .id' <<<"$outstanding")" \
+    'duplicate plan entries cannot manufacture successor readiness'
+
+# Once the existing schema-2 plan maps the result issue to its opened PR and
+# the PR has a receipt, the derived obligation is genuinely discharged.
+"$script" set --file "$state" --path receipt_prs --json '[604]'
+"$script" set --file "$state" --path queued --json '[]'
+printf '%s\n' \
+    '{"schemaVersion":2,"entries":[{"issue":605,"predictedWriteSet":["src/**"],"expectedPredecessors":[]}],"conflictMap":{"pairs":[],"revisions":[]},"generatedAt":"2026-09-24T12:07:00Z","independent":[{"issue":605,"pr":604,"branch":"fix/605","chainBaseSha":null,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"chains":[]}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 0 "$(jq -r .outstanding <<<"$outstanding")" \
+    'mapped opened result plus receipt leaves no durable publication obligation'
+
+# A receipt for another opened PR cannot suppress the exact missing receipt.
+"$script" set --file "$state" --path results --json '{}'
+"$script" set --file "$state" --path opened_prs --json '[604,605]'
+"$script" set --file "$state" --path receipt_prs --json '[605]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 1 "$(jq -r .outstanding <<<"$outstanding")" \
+    'one opened PR without its own receipt stays outstanding'
+assert_eq '["pr:604:publish-receipt"]' "$(jq -c .actionable_work <<<"$outstanding")" \
+    'the missing PR receipt is directly actionable'
+"$script" set --file "$state" --path receipt_prs --json '[604,605]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq 0 "$(jq -r .outstanding <<<"$outstanding")" \
+    'receipts for both opened PRs discharge the publication obligations'
+
+# A current-run nonterminal owner is a first-class operation even when the
+# caller supplies no operation. A stale queued row for that same issue cannot
+# dispatch a duplicate, while an independent queued issue remains actionable.
+printf '%s\n' \
+    '{"version":2,"runId":"wave","attempt":"attempt607","workerId":"worker607","issue":607,"worktree":"/repo/.worktrees/607","branch":"fix/607","state":"active","disposition":"returned","evidence":"","heartbeatEpoch":2}' \
+    >>"$worker_ledger"
+"$script" set --file "$state" --path queued --json '[607,608]'
+printf '%s\n' \
+    '{"schemaVersion":1,"entries":[{"issue":607,"predictedWriteSet":["a/**"],"expectedPredecessors":[]},{"issue":608,"predictedWriteSet":["b/**"],"expectedPredecessors":[]}],"conflictMap":{"pairs":[],"revisions":[]}}' \
+    >"$dispatch_plan"
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq '["queued:608:dispatch-successor"]' "$(jq -c .actionable_work <<<"$outstanding")" \
+    'same-issue active ownership blocks only its stale queued dispatch'
+assert_eq 'reconcile-active-owner' \
+    "$(jq -r '.obligations[] | select(.issue == 607 and .kind == "queue") | .next_action' <<<"$outstanding")" \
+    'the stale same-issue queue row remains concrete reconciliation'
+decision=$("$script" next-action --after-steer --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" --json "$drained")
+assert_eq 'dispatch' "$(jq -r .next_action <<<"$decision")" \
+    'independent durable work dispatches beside a same-issue active owner'
+assert_eq 3 "$(jq -r .outstanding <<<"$decision")" \
+    'the active owner, stale queue row, and independent queue row all remain visible'
+assert_eq 'active' "$(jq -r '.orchestration.snapshot.operations[0].status' "$state")" \
+    'the saved operation preserves the worker ledger state'
+
+# Durable operation state wins over a stale caller replay with the same ID.
+printf '%s\n' \
+    '{"version":2,"runId":"wave","attempt":"attempt607","workerId":"worker607","issue":607,"worktree":"/repo/.worktrees/607","branch":"fix/607","state":"unknown","disposition":"returned","evidence":"heartbeat lost","heartbeatEpoch":3}' \
+    >>"$worker_ledger"
+"$script" set --file "$state" --path queued --json '[]'
+stale_active=$(snapshot '[]' \
+    '[{"id":"worker:attempt607","kind":"worker","status":"active","affected":["worker:attempt607"]}]' \
+    '[]' '[]' '["worker:attempt607"]')
+decision=$("$script" next-action --after-steer --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" --json "$stale_active")
+assert_eq 'reconcile' "$(jq -r .next_action <<<"$decision")" \
+    'durable unknown ownership overrides a stale caller active status'
+assert_eq 1 "$(jq -r .unknown_operations <<<"$decision")" \
+    'the saved decision retains the durable unknown operation'
+assert_eq false "$(jq -r .wait_allowed <<<"$decision")" \
+    'unknown durable ownership cannot re-enter collection wait'
+
+# A legacy row for this bound run cannot be accepted and then ignored. Legacy
+# history from another run remains independent from current ready work.
+printf '%s\n' \
+    '{"version":1,"runId":"wave","attempt":"legacy608","issue":608,"state":"active"}' \
+    >"$worker_ledger"
+legacy_rc=0
+legacy_err=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan" 2>&1 >/dev/null) || legacy_rc=$?
+assert_eq 1 "$legacy_rc" 'a bound-run v1 owner is refused instead of disappearing'
+assert_contains "$legacy_err" 'invalid worker ledger row' \
+    'the legacy refusal names the unavailable authoritative ownership'
+printf '%s\n' \
+    '{"version":1,"runId":"old-wave","attempt":"legacy608","issue":608,"state":"active"}' \
+    >"$worker_ledger"
+"$script" set --file "$state" --path queued --json '[608]'
+outstanding=$("$script" outstanding --file "$state" \
+    --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan")
+assert_eq '["queued:608:dispatch-successor"]' "$(jq -c .actionable_work <<<"$outstanding")" \
+    'an unrelated old-run v1 row does not block current independent work'
 
 missing_field=$(jq 'del(.operations)' <<<"$operator_only")
 before_missing=$(sha256sum "$state")
