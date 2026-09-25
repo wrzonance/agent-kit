@@ -41,7 +41,8 @@ declare -A KNOWN_OVERSIZE=(
     # #876 review repair: reject normalized aliases of built-in provider logins.
     [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
     # #911: exact staged-tree ledger grants authorize prepared protected commits.
-    [skills/.shared/scripts/worktree-commit.sh]="879:9400:800"
+    # #911 review: classify an unresolved index before protected-tree scope derivation.
+    [skills/.shared/scripts/worktree-commit.sh]="891:9400:800"
     # #852: distinguish configured missing scans at the retarget boundary.
     [skills/parallel-issues/scripts/chain-advance.sh]="1086:13108:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
@@ -229,6 +230,7 @@ readonly MAX_HELPER_TOKENS=10000
 # #907 review: exact-run rebind validates fresh authority without losing durable state.
 # #905 review: validate lease liveness and persist recovery trust provenance.
 # #905 final review: bind root recovery trust to its captured terminal summary.
+# #911 review: protected-patch.sh scopes approved proposals and keeps patch output outside protected paths.
 # #910: complete resumable join assembly and resolution-worker composition.
 readonly MAX_TREE_TOKENS=488180
 
