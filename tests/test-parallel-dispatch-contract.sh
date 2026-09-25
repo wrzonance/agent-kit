@@ -979,7 +979,7 @@ assert_contains "$issue_lead_prompt" '--only NAME[,NAME...]' \
     'red/green iteration documents the focused suite selector'
 assert_contains "$issue_lead_prompt" 'AGENT_CMD_TEST_FOCUS' \
     'focused iteration is gated by the repository declaration'
-assert_contains "$issue_lead_prompt" 'once against the final tree state' \
+assert_contains "$issue_lead_prompt" 'exactly once through `agent-run.sh`' \
     'the final tree receives one unfocused full-suite run'
 assert_contains "$provider_rules_text" 'if ! "$agentkit/review-remote-pr/scripts/code-quality-state.sh"' \
     'Code Quality evidence failure stops before no-findings processing'
@@ -1171,7 +1171,7 @@ assert_contains "$text" 'set its working directory to the assigned worktree' 'di
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
-assert_contains "$draft_loop_prompt" 'push the branch' 'phase lead pushes its own branch'
+assert_contains "$draft_loop_prompt" 'Push the branch' 'phase lead pushes its own branch'
 issue_lead_flat=$(tr '\n' ' ' <<<"$issue_lead_prompt" | tr -s '[:space:]' ' ')
 draft_loop_flat=$(tr '\n' ' ' <<<"$draft_loop_prompt" | tr -s '[:space:]' ' ')
 assert_contains "$issue_lead_flat" 'worktree-commit.sh" --message' \
@@ -1908,9 +1908,11 @@ assert_contains "$normalized_text" 'Keep root CI/review obligations' \
     'Collect preserves root CI and review duties across resume'
 assert_contains "$normalized_text" 'unchanged accepted receipts resume without repeated work' \
     'Collect reuses only receipts already accepted by root'
+# Issue #904 adds explicit commit -> full verification -> push recovery steps
+# to both worker contracts so an unchanged candidate is verified only once.
 prose_lines=$(wc -l < "$skill")
 prose_lines=$((prose_lines + $(wc -l < "$triage_and_selection") + $(wc -l < "$worker_prompts") + $(wc -l < "$implementation_worker")))
-assert_eq yes "$([[ $prose_lines -le 2229 ]] && printf yes || printf no)" \
+assert_eq yes "$([[ $prose_lines -le 2243 ]] && printf yes || printf no)" \
     'issue #784 prose files stay below their inherited aggregate line count'
 assert_contains "$normalized_text" 'upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`' \
     'ready-flip handoff preserves the in-place lifecycle upgrade'

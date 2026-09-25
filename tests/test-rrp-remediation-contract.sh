@@ -73,9 +73,9 @@ assert_contains "$(cat -- "$worker_gate")" 'clean committed HEAD' \
     'the repair handback requires the log to bind the committed head'
 fix_prompt=$(sed -n '/## PR-fix-batch worker prompt/,/## Exit Report/p' \
     "$skills/parallel-issues/references/worker-prompts.md")
-assert_contains "$fix_prompt" 'commit the repair before the final unfocused run' \
+assert_contains "$fix_prompt" '4. Commit the repair' \
     'the composed fix-worker prompt commits before full verification'
-assert_contains "$fix_prompt" 'push the branch only after that clean committed-HEAD run passes' \
+assert_contains "$fix_prompt" '6. Push the branch only after that clean committed-HEAD run passes' \
     'the composed fix-worker prompt cannot push an unverified commit'
 
 # Step 2's runnable phases must not execute the full suite before the worker
@@ -110,6 +110,52 @@ commit_line=$(grep -nF 'Commit the repair' <<<"$ci_fix_section" | cut -d: -f1 | 
 test_line=$(grep -nF '"$agent_run" --cmd test' <<<"$ci_fix_section" | cut -d: -f1 | head -n1)
 assert_eq yes "$([[ -n $commit_line && -n $test_line && $commit_line -lt $test_line ]] && printf yes || printf no)" \
     'the actual commit step precedes the runnable full-test phase'
+cadence_line=$(grep -F 'Run only declared `agent-run.sh --cmd` commands' "$rrp_skill")
+assert_not_contains "$cadence_line" 'full suite before commit' \
+    'the review workflow no longer contradicts its committed-head runnable fence'
+assert_contains "$cadence_line" 'full suite after commit and before push' \
+    'the review workflow states the same order as its runnable fence'
+
+# Execute the shipped merge-publication chain itself with recording process
+# edges.  This pins both order/count on success and the && failure boundary;
+# it is not a test-local reconstruction of the recipe.
+publication_chain=$(sed -n '/^# Chained:/,/^git push/p' "$rrp_skill")
+publication_kit="$tmp/publication-kit"
+publication_bin="$tmp/publication-bin"
+publication_calls="$tmp/publication-calls"
+mkdir -p "$publication_kit/.shared/scripts" "$publication_bin"
+cat >"$publication_kit/.shared/scripts/worktree-commit.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'commit:%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
+EOF
+cat >"$publication_kit/.shared/scripts/agent-run.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'verify:%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
+[[ ${FAIL_FULL:-0} != 1 || $* != *'--cmd test'* ]]
+EOF
+cat >"$publication_bin/git" <<'EOF'
+#!/usr/bin/env bash
+printf 'push:%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
+EOF
+chmod +x "$publication_kit/.shared/scripts/worktree-commit.sh" \
+    "$publication_kit/.shared/scripts/agent-run.sh" "$publication_bin/git"
+AGENTKIT_RECIPE_CALLS="$publication_calls" agentkit="$publication_kit" \
+    worker_attribution='Co-Authored-By: Test <test@example.invalid>' resolved=src/example.ts \
+    PATH="$publication_bin:$PATH" bash -c "$publication_chain"
+assert_eq $'commit:--message fix(example): resolve merge conflicts with the base branch --trailer Co-Authored-By: Test <test@example.invalid> -- src/example.ts\nverify:--cmd lint --if-declared\nverify:--cmd test\npush:push' \
+    "$(cat "$publication_calls")" \
+    'the shipped publication chain executes commit, one full test, then push'
+assert_eq 1 "$(grep -cF 'verify:--cmd test' "$publication_calls")" \
+    'the shipped publication chain schedules the full test once'
+
+: >"$publication_calls"
+failed_chain_rc=0
+AGENTKIT_RECIPE_CALLS="$publication_calls" FAIL_FULL=1 agentkit="$publication_kit" \
+    worker_attribution='Co-Authored-By: Test <test@example.invalid>' resolved=src/example.ts \
+    PATH="$publication_bin:$PATH" bash -c "$publication_chain" || failed_chain_rc=$?
+assert_eq 1 "$failed_chain_rc" 'a failed full test makes the shipped publication chain fail'
+assert_not_contains "$(cat "$publication_calls")" 'push:' \
+    'a failed full test prevents the shipped publication chain from pushing'
 
 # --- item 6: the spawn contract names the primary checkout's ledger ----------
 assert_contains "$(cat -- "$skills/.shared/spawn-contract.md")" "primary checkout's \`.agent/runs/active-workers.ndjson\`" \
