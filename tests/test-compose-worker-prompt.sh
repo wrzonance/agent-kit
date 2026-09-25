@@ -888,7 +888,7 @@ assert_eq 0 "$?" 'fix batch accepts confirmed open findings before repairs'
 assert_contains "$open_fix_prompt" 'Confirmed repair pending' 'fix batch retains the open obligation'
 assert_contains "$open_fix_prompt" '--evidence' 'fix batch requires terminal repair evidence'
 assert_contains "$open_fix_prompt" 'never purchase another review' 'repair resume preserves the one-review budget'
-assert_contains "$setup_prompt" '$RUN_DIR/accepted-findings.ndjson' \
+assert_contains "$setup_prompt" "\$RUN_DIR/accepted-findings.ndjson" \
     'setup contract canonicalizes root-accepted non-adversarial findings in RUN_DIR'
 assert_not_contains "$fix_prompt" '## Accepted findings' \
     'legacy fix-batch omits the accepted-findings section'
