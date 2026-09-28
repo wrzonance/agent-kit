@@ -284,10 +284,16 @@ assert_not_contains "$spawn_contract_text" '"$shared/repo-config.sh"' \
     'spawn contract does not rely on an undefined shared variable'
 assert_contains "$spawn_contract_text" 'sanctioned no-extra-authorization model set is exactly' \
     'spawn contract defines the sanctioned model gate'
-assert_contains "$spawn_contract_text" 'Validate both resolved `worker_model` and `worker_model_fallback`' \
-    'spawn contract validates preferred and fallback models'
-assert_contains "$spawn_contract_text" 'Any other syntactically safe configured preferred or fallback model' \
-    'spawn contract gates every unsupported configured model'
+# #27: a --yolo root read the sanctioned set as covering a declared roster entry
+# and ended its turn asking which model to use; the recipe's exit decides.
+assert_contains "$spawn_contract_text" 'The set gates singular keys and built-in defaults, never roster entries' \
+    'spawn contract scopes the sanctioned set to singular keys and built-in defaults'
+assert_contains "$spawn_contract_text" 'Run the recipe; obey its exit: an unsanctioned singular model stops for explicit user' \
+    'spawn contract still stops an unsanctioned singular model'
+assert_contains "$spawn_contract_text" 'never ask about a model it resolved' \
+    'spawn contract never stops to ask about a model the recipe accepted'
+assert_not_contains "$spawn_contract_text" 'Any other syntactically safe configured preferred or fallback model' \
+    'spawn contract no longer stops every non-sanctioned configured model, roster entries included'
 assert_contains "$spawn_contract_text" '## Bounded inline corrections' \
     'spawn contract names the bounded inline-correction exception'
 assert_contains "$spawn_contract_text" 'purely mechanical' \

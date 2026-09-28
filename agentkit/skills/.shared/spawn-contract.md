@@ -174,10 +174,10 @@ WORKER_RESOLUTION
 On Codex, the sanctioned no-extra-authorization model set is exactly **`gpt-5.6-luna`** and
 **`gpt-5.6-terra`**; on Claude it is exactly **`claude-sonnet-5`**; OpenCode sanctions any declared
 `provider/model-id` and has no built-in default (a repository that declares nothing there stops for
-configuration). Validate both resolved `worker_model` and `worker_model_fallback` against that set
-before dispatch. Any other syntactically safe configured preferred or fallback model must stop for
-explicit user authorization; never silently substitute a sanctioned model. An empty or malformed
-declaration is reported and falls back to its built-in value (`using built-in default`). The
+configuration). The set gates singular keys and built-in defaults, never roster entries (below).
+Run the recipe; obey its exit: an unsanctioned singular model stops for explicit user
+authorization; never ask about a model it resolved, or silently substitute a sanctioned one. An empty
+or malformed declaration is reported and falls back to its built-in value (`using built-in default`). The
 configured effort is the per-run default; a dispatch-plan entry's `workerEffort` override (with its
 `effortReason`) replaces it for that issue only.
 
