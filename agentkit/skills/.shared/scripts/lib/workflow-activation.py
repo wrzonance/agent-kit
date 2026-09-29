@@ -175,12 +175,13 @@ def activation_origin(root):
     common = git_path(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common or common == git_path(root, "rev-parse", "--path-format=absolute", "--git-dir"):
         return None
-    listing = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain"],
-                             capture_output=True, text=True, check=False).stdout
-    main = listing.split("\n\n")[0].splitlines()
-    if not main or not main[0].startswith("worktree ") or "bare" in main:
+    # NUL-delimited so a path containing a newline cannot misparse the main entry.
+    listing = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain", "-z"],
+                             capture_output=True, check=False).stdout
+    main = listing.split(b"\0\0")[0].split(b"\0")
+    if not main[0].startswith(b"worktree ") or b"bare" in main:
         return None
-    origin = Path(main[0].removeprefix("worktree ")).resolve()
+    origin = Path(os.fsdecode(main[0].removeprefix(b"worktree "))).resolve()
     if git_path(origin, "rev-parse", "--path-format=absolute", "--git-common-dir") != common:
         return None
     return origin
