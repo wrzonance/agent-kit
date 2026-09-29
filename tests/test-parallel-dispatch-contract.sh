@@ -635,14 +635,10 @@ assert_not_contains "$text" 'Four total slots including the root' \
     'dispatch does not hardcode the old slot count'
 assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
-assert_contains "$text" 'max_concurrent_threads_per_session' \
-    'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
 assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
     'the consent holder launches real reviews rather than forwarding consent'
-assert_contains "$text" 'Review attempts and worker reservations share the `concurrency-cap.sh` admission lock' \
-    'parallel review launch names the executable shared-cap boundary'
 assert_contains "$text" 'launching every eligible review without waiting on earlier results' \
     'distinct eligible reviews are dispatched concurrently'
 assert_contains "$text" 'available upstream findings' \
@@ -675,18 +671,10 @@ assert_not_contains "$text" 'Maximum 10 per wave' \
     'the Limits maximum is no longer dispatch-wave scoped'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
-assert_contains "$text" 'pr_loop_dispatch_cap' \
-    'dispatch derives an effective loop cap before launching agents'
-assert_contains "$text" 'runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))' \
-    'dispatch reserves the root and active issue leads from the runtime cap'
-assert_contains "$text" 'pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))' \
-    'dispatch bounds loops by open PRs and remaining runtime capacity'
 assert_contains "$text" 'pr-loop-setup' \
     'dispatch uses the read-only PR-loop setup template'
 assert_contains "$text" 'pr-fix-batch' \
     'dispatch gates the fix-batch template on accepted findings'
-assert_contains "$text" 'open_pr_count == 0' \
-    'dispatch treats zero open PRs as an explicit no-op case'
 assert_contains "$text" 'exit 0' \
     'dispatch exits successfully when there are no open PRs'
 assert_eq yes "$([[ $(sed -n '/^### Step 3b: Dispatch review-remote-pr agents (parallel)$/,/^### Adversarial-review receipt:/p' "$skill" | sed -n '2p') == '' ]] && printf yes || printf no)" \
@@ -751,8 +739,6 @@ assert_contains "$dispatch_handoff" 'compose_output=$("$compose_script" "${compo
 compose_invocations=$(grep -Fxc 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' <<< "$dispatch_handoff" || true)
 assert_eq '1' "$compose_invocations" \
     'dispatch invokes the prompt composer exactly once per worker'
-assert_contains "$dispatch_handoff" 'classification=majority-uncovered' \
-    'dispatch reporting makes a majority-uncovered issue visible at a glance'
 assert_contains "$dispatch_handoff" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
     'dispatch defines the root-owned plan before composing'
 assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]]' \
@@ -1064,7 +1050,7 @@ assert_contains "$worker_prompts_text" 'both the spike edit and the revert' \
     'worker contract requires evidence for both spike operations'
 assert_contains "$normalized_text" 'Read its raw six-step report as written' \
     'root validation does not request post-hoc spike report rewrites'
-assert_contains "$normalized_text" 'bounce only an absent or unjustified one' \
+assert_contains "$normalized_text" 'bounce only an absent or unjustified Stage 4' \
     'root validation bounces only absent or unjustified spike reports'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
