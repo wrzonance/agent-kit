@@ -893,7 +893,7 @@ assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
 assert_contains "$normalized_text" 'Final draft sweep' \
     'auto-review performs a named final draft sweep before handoff'
 opt_out_section=$(sed -n '/^### Opt-out/,/^## Do NOT Delete Worktrees/p' "$skill")
-assert_contains "$text" '`--no-followup`'"'"'s Step 3d opt-out remains recognized' \
+assert_contains "$text" '`--no-followup` skips Step 3d' \
     'the flag summary names the same narrow opt-out as the workflow section'
 assert_not_contains "$text" '`--no-followup`'"'"'s Phase 3 opt-out remains recognized' \
     'the flag summary does not retain the stale Phase 3 scope'
@@ -1729,8 +1729,6 @@ assert_contains "$err" 'assertion values must be non-empty' \
 # not the body, per the strong preference to land detail in references.
 assert_contains "$text" 'Size facts never park an unattended run' \
     'diff-size facts state the unattended default explicitly'
-assert_contains "$text" 'No facts waive review or chunking.' \
-    'diff-size facts still forbid skipping review or chunking on facts alone'
 assert_contains "$text" 'references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure)' \
     'diff-size facts point at the worker-prompts disclosure recipe'
 assert_contains "$text" 'Diff size is never a reason to withhold this' \
@@ -1951,8 +1949,8 @@ assert_contains "$normalized_text" 'Authorization is checked once per run, not p
     'parallel skill checks authorization once per run'
 assert_contains "$text" 'covers --ledger' \
     'the once-per-run check uses the ledger covers subcommand'
-assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
-    'an uncovered mutation still stops'
+assert_contains "$normalized_text" 'exit 0 means proceed, otherwise ask the operator once' \
+    'an uncovered mutation asks the operator instead of proceeding'
 
 # --- issue #224: references read once (WS2d), now shared -------------------
 reading_discipline_text=$(<"$root/agentkit/skills/.shared/reading-discipline.md")

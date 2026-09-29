@@ -16,45 +16,31 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-First run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command; stdout begins `skills=` (contract, not registry proof).
-Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`;
-`check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
-Retain that acknowledged harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`.
+Run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command once; it carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N` and stdout begins `skills=`.
+Keep that harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`. Before dispatch, run `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`.
 Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting;
 a task asked without invoking is reference use (below): proceed, never ask to invoke.
-For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
-Fresh acknowledgement preserves saved work. Client restart/conversation resume retains the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
-Installed files alone never prove session receipt.
+To recover, resubmit `$agentkit:parallel-issues`; a resumed conversation keeps its receipt, a new session needs its own.
 
 ### No delivered challenge = no run
 
 If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
-conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
-own message asks, uninvoked, for a task or this procedure ("just follow the steps"), treat this
-file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
-with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Regardless
-of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers
-that write, touch `.agent/`, or onboard/bootstrap/refresh, unless the user asks for that specific action in
-their own words. Reference use does not create or recover active-run bookkeeping. The workflow's
-authorization, no-bypass, and human-thread protections still apply during reference use. Never repair kit
-state to make a reference read work. If a challenge **was** delivered, everything below applies unchanged.
-
-No current-session activation receipt means no parallel-issues run exists. For ordinary ad-hoc
-work, do not search for or reconstruct a ledger, backlog snapshot,
-proof, fingerprint, or environment contract merely because this repository contains
-state from an older run. The workflow begins only from a current invocation and its
-acknowledged receipt.
-
-Human grants still fail closed: a confirmed queue, recorded approval, or review consent
-must exist before the action it authorizes. Malformed, symlinked, foreign-owned, or
-active-run state still fails closed. The cold path applies only when kit-owned
-bookkeeping for the current workflow was never created.
+conversation, you are not running this workflow. If the user's own message asks, uninvoked, for a task
+or this procedure, treat this file as reference: skip Step 0, preflight, the ledger and receipts, and do
+the task with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority.
+Regardless of command, do not merge, flip ready, trigger review bots, resolve threads, move board items,
+run kit helpers that write, touch `.agent/`, or onboard/bootstrap/refresh, unless the user asks for that
+specific action in their own words. Reference use does not create or recover active-run bookkeeping. The
+workflow's authorization, no-bypass, and human-thread protections still apply during reference use.
+State left by an older run is never a reason to stop ad-hoc work.
 
 Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 
-Coordinate independent issues through Project validation, conflict analysis, user brainstorm (unless `--no-brainstorm`), isolated worktrees, one issue lead per worktree, and parallel draft-phase CI/conflict/review loops. PRs remain drafts until the user marks them ready. Never trigger provider review or post `@coderabbitai review`/`full review`.
+The run: triage → select → conflict analysis → brainstorm (unless `--yolo`) → one issue lead per
+worktree → draft PR → draft-phase loop. PRs stay drafts until the user marks them ready. Never post
+`@coderabbitai review`/`full review` or any provider trigger.
 
-**Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams."
+**Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams." Name the active flags in that line.
 
 Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$agentkit/references.md"` to select exact paths and read only references whose conditions match.
 ## Resident call-site map
@@ -62,64 +48,31 @@ Follow [shared reading discipline](../.shared/reading-discipline.md): use `"$age
 |---|---|
 | Phase A/C review loop, adversarial receipt, finding ledger, run-dir | `../review-remote-pr/SKILL.md` and its lazy references |
 
-**Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` adjudication sections only when its digest flags them, and `references/implementation-worker.md` only when composing the issue lead. The template carries the loop from `.shared/six-step-loop.md`; root reads that file only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
+**Single issue, no chain:** Read `"$agentkit/references.md"` and `.shared/spawn-contract.md` in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only. Read `references/triage-and-selection.md` sections only when the digest flags them, `references/implementation-worker.md` only when composing the issue lead, and `.shared/six-step-loop.md` only to validate a worker report. Defer chain/review references until their conditions apply; never preload review material during dispatch/worker waits.
 
 ## Flags
 
-Four flags decide how much this skill stops to ask. They are read from the invocation line only — nothing infers them from tone, urgency, or a previous run.
+Flags come from the invocation line only.
 
 | Flag | Aliases | Effect |
 |------|---------|--------|
-| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check for this explicit invocation. The operator accepts responsibility for issue-derived instructions. |
-| `--fast-mode` | — | Select without the Step 3 approval gate; hold trackers, promote unblocked Backlog issues, queue overflow. **Requires `--yolo`.** |
-| `--auto-review` | `--auto-approve` | Standing consent for this invocation's diff review. The consent-bearing review launch stays in the consent-holding context (root by default); dispatched loops do not launch it. |
-| `--auto-serialize` | — | Convert Step 3 conflicts into chains instead of drops: the later issue of an ordered pair builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
+| `--yolo` | `--no-brainstorm`, `--skip-brainstorm` | Skip Step 4 and the issue-body trust-boundary check. The operator accepts issue-derived instructions. |
+| `--fast-mode` | — | Select without the Step 3 approval gate; promote unblocked Backlog issues, queue overflow. Needs `--yolo`. |
+| `--auto-review` | `--auto-approve` | Standing consent for this invocation's cross-provider diff review only. The consent-bearing review launch stays in the consent-holding context (root). |
+| `--auto-serialize` | — | Step 3 conflicts become chains instead of drops: the later issue builds on the earlier issue's pushed commit. Ordering evidence is file-conflict pairs and native blocked-by edges inside the selected set; issue-body prose is never an ordering input. |
 
-`--trust-trunk` no longer exists; the ledger keeps the field name (always `false`) for run-ID hash stability.
+`--fast-mode` requires `--yolo`; given it alone, print `--fast-mode requires --yolo. Re-invoke with both, or with neither.` and end.
+`--no-followup` skips Step 3d. Name any other flag in the opening line, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a downstream-owned flag carries into the handoff resume line.
 
-**Unknown-flag disposition.** A `--token` outside the table above and not documented elsewhere in
-this skill (`--no-followup`'s Step 3d opt-out remains recognized) still gets named in the opening
-flag announcement, never silently dropped, e.g. `ignored: --auto-merge (owned by pr-to-green)`; a
-downstream-owned flag also carries into the handoff resume line below.
+With `--auto-review`, dispatched review agents do not launch the reviewer, and dispatched loop agents never stall waiting for consent: they run CI, precheck, and triage around the root's send. Keep `RUN_ID`, the consent record, and the verbatim flag quote at the launch site so a harness denial reaches the user, never via a workaround.
 
-**`--fast-mode` requires `--yolo`.** Given `--fast-mode` alone, stop and say:
-
-```
---fast-mode requires --yolo. A run that will not stop to brainstorm each design
-must not stop to approve the set either; a run that still wants design steering
-has not asked for unattended dispatch. Re-invoke with both, or with neither.
-```
-
-Do not infer one from the other.
-
-**Declared commands run directly.** `$agentkit/.shared/scripts/agent-run.sh --cmd NAME` runs a repository's declared
-command with no approval step and no trust record — `--yolo` only ever governed Step 4's
-issue-body trust-boundary check (above); it has nothing left to do with how `agent-run.sh`
-commands run.
-
-**Verification cache.** `agent-run.sh` reuses evidence only for explicitly declared local verification with complete input/toolchain freshness. Run focused suites while iterating; commit the completed candidate, then run the required unfocused full suite on that clean committed HEAD before push. Root validation and resume consume unchanged proof without scheduling the suite again. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for eligibility and running/unknown handles.
-
+`$agentkit/.shared/scripts/agent-run.sh --cmd NAME` runs a declared command directly. Workers run focused suites while iterating and one full suite on the committed HEAD before push; root reuses that unchanged proof instead of rerunning it. See [references/trust-and-fencing.md](references/trust-and-fencing.md#verification-cache-and-suite-cadence) for cache eligibility.
 Read ["$agentkit/parallel-issues/references/verification-isolation.md"](references/verification-isolation.md) in full when the repository declares a Compose-driven command or any `agent-run.sh` result must be interpreted.
-
-**`--auto-review` is independent.** Valid with or without the other flags; it grants only the
-cross-provider send `review-remote-pr` describes — never brainstorm/approval skips, never a
-repository the user does not own. Typed approval is context-local: root is the default holder,
-dispatched review agents do not launch the reviewer, and dispatched loop agents never stall waiting for consent they
-cannot hold — they run CI, precheck, and triage around the root-owned send. Keep `RUN_ID`, the consent
-record, and the verbatim `--auto-review` quote at the launch site so harness denials surface directly,
-never via a workaround.
 
 ## Session decision ledger
 
-After Step 1 establishes the invocation facts, finalize the requested or selected issue scope and
-set the shared ledger identity before the first receipt. Run `"$agentkit/.shared/scripts/session-ledger.sh" --help` and follow its parallel-issues recipe.
-
-The scope, flags, repository, and base are fixed before the first receipt and survive HEAD or contract
-changes after compaction/resume: `scope=57,54` and `scope=57,62` cannot share an ID, nor can
-`auto-review=false` and `auto-review=true`; the same exact tuple may intentionally resume. Reuse this
-`RUN_ID` for all issues; never use a worker-local value. Immediately append each grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`.
-At initial startup `RUN_ID` is already set by that recipe; after compaction it may be unavailable. In either case,
-recover the complete context with the same call (the explicit ID upgrades an older unbound record):
+After Step 1 fixes scope and flags, run `"$agentkit/.shared/scripts/session-ledger.sh" --help` and follow its parallel-issues recipe. One `RUN_ID` covers every issue. Append each operator grant, steer, or board adjudication with `printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" --procedure-set parallel-issues --decision "$DECISION" --scope "$SCOPE" --quote-stdin || exit 1`; `QUOTE` is the human's verbatim quote, no secrets.
+Bind at startup and after any compaction/resume:
 
 ```bash
 bind_args=(--repo-root "$repository_root" --activation-session "$activation_session")
@@ -132,53 +85,22 @@ LEDGER=$(jq -er '.decision_ledger | select(type == "string" and length > 0)' <<<
 worker_ledger=$(jq -er '.worker_ledger | select(type == "string" and length > 0)' <<<"$run_context") || exit 1; [[ -n $LEDGER && -n $worker_ledger ]] || exit 1
 ```
 
-Without an explicit ID, `bind` recovers only one exact repository/session match. An ambiguity
-refusal already prints its candidate IDs: use one only when durable invocation context proves it;
-an older unbound record likewise needs its known deterministic `RUN_ID`. If an exact known run
-belongs to the prior harness session, rerun the refusal's command with `--rebind`; the helper first
-requires independent current-session activation and changes only the binding. Never choose by modification time.
+An ambiguity refusal prints candidate IDs; pick one only when the invocation context proves it. Never choose by modification time. A known run from a prior harness session: rerun the refusal's command with `--rebind`.
+Then persist the invocation fact: with `--auto-review`, `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json true`; otherwise the same with `--path auto_review --json false`.
+After a resume, `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` is the decision state.
 
-`bind` also initializes only missing summary collections and preserves all existing decisions,
-results, and retry state. Persist the fixed invocation fact, never an unset shell default: when the invocation carried `--auto-review`, run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json true`; otherwise run `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review --json false`. The handoff summary can then enforce review coverage after compaction.
-`QUOTE` is the human's verbatim quote; never put secrets or credentials in any field.
-After any compaction/resume, restore the binding above, then run `"$agentkit/.shared/scripts/session-ledger.sh" read --ledger "$LEDGER" --run-id "$RUN_ID"` and treat its output as the durable decision state.
-
-**Authorization is checked once per run, not per command.** Record each grant with a stable
-decision token (e.g. `authorize:workflow-mutations`). Before a bounded workflow mutation of a
-granted class — worktree branch pushes, draft PR creation, board moves, commits staging a
-protected path the grant names — the check is one ledger query,
-`"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"`,
-passing the same scope the grant was recorded with — a decision token alone must never
-widen a narrower grant. Exit 0 means proceed, no fresh approval round trip. A
-mutation no recorded decision covers still stops — scope stays; permission ceremony goes.
+**Authorization is checked once per run, not per command.** Before a granted mutation class (branch pushes, draft PRs, board moves, a named protected path), run `"$agentkit/.shared/scripts/session-ledger.sh" covers --ledger "$LEDGER" --run-id "$RUN_ID" --decision "$DECISION" --scope "$SCOPE"` with the grant's own scope; exit 0 means proceed, otherwise ask the operator once.
 
 ### Diff-size facts
 
-For size judgments, run `$agentkit/.shared/scripts/diff-facts.sh` with the base ref.
-It reports operational lines (`operational.lines`), generated, lockfile, fixture, and aggregate facts.
-No facts waive review or chunking.
-
-**Size facts never park an unattended run:** open an over-guideline draft with facts in its
-body; trim only by attended or explicit follow-up decision.
-See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure) for the recipe.
-
-Announce active flags in the opening line.
+For size judgments, run `$agentkit/.shared/scripts/diff-facts.sh` with the base ref (operational lines plus generated/lockfile/fixture facts).
+**Size facts never park an unattended run:** open an over-guideline draft with facts in its body. See [references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure) for the recipe.
 
 ## Runtime and provider neutrality
 
-Before any GitHub body mutation, read and follow the shared GitHub body transport policy
-["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md). It governs every `gh` body
-surface used by this skill, not only draft PR creation.
-
-Runtime facts come from the current session contract, not from this procedure. Read its
-`sandbox=`, `network=`, writable-root, and measured-by fields before choosing a path; if a fact is
-absent, say that it is unknown instead of inferring it. A denial or approval in one session does not
-establish the same result in another.
-
-Review-provider behavior is repository and organization configuration. Do not claim that reviews are
-automatic, incremental, or manual-only unless the current provider state establishes it. Never post
-a provider trigger command from this skill; observe the review state and leave any manual trigger or
-ready transition to the user.
+Before any GitHub body mutation, follow ["$agentkit/.shared/github-body-policy.md"](../.shared/github-body-policy.md).
+Runtime facts (`sandbox=`, `network=`, writable roots) come from the session contract; an absent fact is unknown.
+Review-provider behavior is repository configuration; observe it and leave triggers and ready-flips to the user.
 
 ## Phase 1: Sequential Setup (Orchestrator)
 

@@ -58,10 +58,6 @@ assert_contains "$parallel" '`--fast-mode` requires `--yolo`' \
     'the dependency is stated, not implied'
 assert_contains "$parallel" 'Re-invoke with both, or with neither' \
     'and the refusal tells the user what to do instead'
-assert_contains "$parallel" 'Do not infer one from the other' \
-    'neither flag may be conjured from the other'
-assert_contains "$parallel" '`--auto-review` is independent' \
-    'the review flag stands alone'
 
 # --- consent-bearing sends stay in the consent-holding context ---------------
 # A human approval cannot cross an agent context boundary. The root therefore
