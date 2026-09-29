@@ -247,7 +247,17 @@ assert_contains "$spawn_contract_text" 'completed state and the exact remaining 
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
 assert_eq yes "$([[ $spawn_contract_bytes -le 21925 ]] && printf yes || printf no)" \
     "spawn contract stays at or under 21925 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
-resolver_guard_line=$(grep -m1 -nF ': "${agentkit:?' "$spawn_contract" | cut -d: -f1)
+# Only an executed guard statement counts: anchored at line start, so a
+# commented-out guard never satisfies the ordering pin.
+first_agentkit_guard_line() {
+    grep -m1 -nE '^[[:space:]]*: "\$\{agentkit:\?' "$1" | cut -d: -f1
+}
+commented_guard_fixture=$(mktemp)
+printf '%s\n' '# : "${agentkit:?unset}"' 'worker_config_value() {' >"$commented_guard_fixture"
+assert_eq '' "$(first_agentkit_guard_line "$commented_guard_fixture")" \
+    'a commented-out agentkit guard does not satisfy the guard pin'
+rm -f -- "$commented_guard_fixture"
+resolver_guard_line=$(first_agentkit_guard_line "$spawn_contract")
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
     $resolver_guard_line -lt $worker_config_function_line ]]; then
