@@ -118,15 +118,14 @@ assert_contains "$compose_source" \
     'verify= cmd_name="%s" cmd="%s" shell_yield_hint_ms=%s collect=%s' \
     'the runbook separates a shell hint from collection selection'
 
-# The dispatch step in SKILL.md captures that line from the composer's stdout
-# and reprints it beside the same issue's prompt=/issue= digest line, so the
-# orchestrator reads the bound back at the exact call site that names the
-# worker -- no extra model turn or forge call is spent producing it.
-assert_contains "$skill_text" "wait_bound=\$(printf '%s\\n' \"\$compose_output\" | grep -E '^wait-bound= ' || true)" \
-    'the dispatch step captures the composer-emitted wait-bound line'
-# shellcheck disable=SC2016  # the literal source text this test looks for is single-quoted in SKILL.md
-assert_contains "$skill_text" 'printf '\''%s\n'\'' "$wait_bound"' \
-    'the dispatch step reprints the captured wait-bound line at composition time'
+# The dispatch step's single composer call prints that line beside the same
+# issue's published= digest line, so the orchestrator reads the bound back at
+# the exact call site that names the worker -- no extra turn or recipe copy.
+# shellcheck disable=SC2016  # literal SKILL.md source text
+assert_contains "$skill_text" '--output "$prompt_file" --publish' \
+    'the dispatch step runs the composer that emits the wait-bound line'
+assert_contains "$skill_text" "prints the worker's \`wait-bound=\` line" \
+    'the dispatch step names the composer-emitted wait-bound line'
 
 # The polling-discipline prose points at that printed value instead of
 # relying only on the recalled rule, and names each total observation window.

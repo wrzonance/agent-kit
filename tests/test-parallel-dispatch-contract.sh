@@ -730,128 +730,36 @@ assert_contains "$dispatch_handoff" 'Compose once, to a file; the spawn reads th
     'dispatch pins one composition to a file per spawned worker'
 assert_contains "$dispatch_handoff" 'REQUIRED for an issue lead' \
     'dispatch marks write-set globs as required for issue leads'
-assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_number-lead.md"' \
+assert_contains "$dispatch_handoff" 'prompt_file="$worktree/.agent/prompts/issue-$issue_number-lead.md"' \
     'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
-assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
-    'the composed prompt file is not world-readable'
-assert_contains "$dispatch_handoff" 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' \
+compose_call='"$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" "${compose_args[@]}" || exit 1'
+assert_contains "$dispatch_handoff" "$compose_call" \
     'dispatch handoff stops when prompt composition fails'
-compose_invocations=$(grep -Fxc 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' <<< "$dispatch_handoff" || true)
-assert_eq '1' "$compose_invocations" \
+assert_eq '1' "$(grep -Fxc -- "$compose_call" <<< "$dispatch_handoff" || true)" \
     'dispatch invokes the prompt composer exactly once per worker'
 assert_contains "$dispatch_handoff" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
     'dispatch defines the root-owned plan before composing'
-assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]]' \
-    'dispatch validates the plan before passing it to the composer'
-assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
-    'dispatch consumes the composer plan-record report'
-assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_plan"' \
-    'dispatch plan replacement scratch is allocated beside its arbitrary destination'
-assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$plan_sha"' \
-    'dispatch verifies copied replacement bytes before publication'
-assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
-    'dispatch verifies the exact final record before spawn'
-assert_not_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
-    'dispatch does not require parent-shell associative-array state'
-assert_contains "$dispatch_handoff" '${spec_verification:-none}' \
-    'dispatch prints the current coverage report without Bash-only storage'
-assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
-    'dispatch accepts an empty zero-step report while still rejecting multiple report lines'
-assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
-    'dispatch derives durable report storage from the root-owned run plan'
-assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
-    'dispatch defines durable per-issue report persistence'
-assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
-    'dispatch atomically replaces one issue report without overwriting peers'
-assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_report"' \
-    'dispatch report scratch is allocated beside its replacement destination'
-assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
-    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
-
-plan_publish_recipe=$(awk '
-    /^if \[\[ \$plan_update != none \]\]; then/ { capture=1 }
-    capture { print }
-    capture && /^\[\[ \$\(plan_digest "\$dispatch_plan"\)/ { exit }
-' <<< "$dispatch_handoff")
-[[ -n $plan_publish_recipe ]] || _fail 'dispatch plan publication recipe is extractable' 'recipe body is empty'
-same_fs_bin="$tmp/same-fs-bin"
-mkdir -p "$same_fs_bin"
-cat >"$same_fs_bin/mv" <<'SCRIPT'
-#!/usr/bin/env bash
-args=("$@")
-count=${#args[@]}
-source_path=${args[count-2]}
-target_path=${args[count-1]}
-source_dir=$(cd -- "$(dirname -- "$source_path")" && pwd -P) || exit 1
-target_dir=$(cd -- "$(dirname -- "$target_path")" && pwd -P) || exit 1
-[[ $source_dir == "$target_dir" ]] || exit 18
-exec /bin/mv "$@"
-SCRIPT
-chmod +x "$same_fs_bin/mv"
-plan_destination_dir="$tmp/arbitrary absolute destination"
-prompt_dir="$tmp/prompt staging"
-mkdir -p "$plan_destination_dir" "$prompt_dir"
-dispatch_plan="$plan_destination_dir/dispatch-plan.json"
-plan_update="$prompt_dir/issue-57.dispatch-plan-update"
-printf 'old plan\n' >"$dispatch_plan"
-chmod 640 "$dispatch_plan"
-printf 'verified replacement\n' >"$plan_update"
-plan_sha=$(sha256sum -- "$plan_update" | cut -d ' ' -f 1)
-plan_publish_rc=0
-PATH="$same_fs_bin:$PATH" bash -c '
-agentkit=$1; prompt_dir=$2; plan_update=$3; dispatch_plan=$4; plan_sha=$5
-plan_digest() { sha256sum -- "$1" | cut -d " " -f 1; }
-'"$plan_publish_recipe" _ "$root/agentkit/skills" "$prompt_dir" "$plan_update" "$dispatch_plan" "$plan_sha" || plan_publish_rc=$?
-assert_eq 0 "$plan_publish_rc" \
-    'dispatch plan recipe uses a same-directory final rename for an arbitrary absolute destination'
-assert_eq 'verified replacement' "$(<"$dispatch_plan")" \
-    'dispatch plan recipe publishes the verified staged bytes'
-assert_eq 640 "$(stat -c %a -- "$dispatch_plan")" \
-    'dispatch plan recipe preserves the destination mode'
-assert_eq no "$([[ -e $plan_update ]] && printf yes || printf no)" \
-    'dispatch plan recipe removes the original staged update'
-assert_eq 0 "$(find "$plan_destination_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
-    'dispatch plan recipe leaves no destination-adjacent scratch file'
-persist_report_function=$(awk '
-    /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}/ { exit }
-' <<< "$dispatch_handoff")
-[[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
-durable_plan="$tmp/dispatch plan.md"
-: > "$durable_plan"
-durable_repo="$tmp/durable-repo"
-mkdir -p -- "$durable_repo"
-first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
-second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=57; spec_verification=\$2; agentkit=\$3; repository_root=\$4
-persist_dispatch_verification_report" _ "$durable_plan" "$first_report" "$root/agentkit/skills" "$durable_repo"
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=54; spec_verification=\$2; agentkit=\$3; repository_root=\$4
-persist_dispatch_verification_report" _ "$durable_plan" "$second_report" "$root/agentkit/skills" "$durable_repo"
-assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
-    'first shell composition leaves its exact durable report'
-assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
-    'second shell composition preserves its peer and writes its own report'
-zero_step_plan="$tmp/zero-step-plan.md"
-: > "$zero_step_plan"
-zero_step_rc=0
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=72; spec_verification=''; agentkit=\$2
-persist_dispatch_verification_report" _ "$zero_step_plan" "$root/agentkit/skills" || zero_step_rc=$?
-assert_eq 0 "$zero_step_rc" 'zero-step composer output passes the dispatch report consumer'
-assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
-    'zero-step dispatch creates no empty durable report'
+# The plan-update install, final plan digest check, durable report, and
+# prompt digest moved from a transcribed recipe into compose --publish; its
+# behavior is pinned in test-compose-worker-prompt.sh.
+assert_contains "$dispatch_handoff" '--output "$prompt_file" --publish' \
+    'dispatch publishes the plan record and report in the same composer call'
+compose_helper_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")$(<"$root/agentkit/skills/parallel-issues/scripts/lib/dispatch-publish.sh")
+assert_contains "$compose_helper_text" 'dispatch-plan verification failed before spawn' \
+    'the publishing composer verifies the exact final record before spawn'
+assert_contains "$compose_helper_text" '--scratch-near "$plan"' \
+    'the publishing composer allocates plan scratch beside its arbitrary destination'
+assert_contains "$compose_helper_text" '--scratch-near "$report"' \
+    'the publishing composer allocates report scratch beside its destination'
+assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
-# composed body in root context for no dispatch benefit -- twice, under an
-# approval layer that re-executes an approved command. The block emits a digest.
-assert_contains "$dispatch_handoff" "printf 'prompt=%s bytes=%s issue=%s write-set=%s" \
-    'dispatch handoff emits a path + digest instead of the prompt body'
-assert_contains "$dispatch_handoff" 'wc -c < "$prompt_file"' \
-    'the digest carries the composed byte count'
+# composed body in root context for no dispatch benefit; the composer prints a
+# published= digest line instead.
+assert_contains "$compose_helper_text" "printf 'published= issue=%s prompt=%s bytes=%s" \
+    'dispatch emits a path + digest instead of the prompt body'
 for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tail -'; do
     assert_not_contains "$dispatch_handoff" "$_echo" \
         "dispatch handoff never reads the composed prompt back into root context ($_echo)"

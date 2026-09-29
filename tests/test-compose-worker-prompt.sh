@@ -407,17 +407,7 @@ no_steps_report=$(compose_verification_report no-verification-steps \
     $'## Verification\nNo executable verification steps are declared.\n')
 assert_not_contains "$no_steps_report" 'spec-verification=' \
     'zero verification steps emit no empty spec-verification machine line'
-# Matching literal shell source in the runbook.
-# shellcheck disable=SC2016
-dispatch_consumer=$(grep -F -m1 'spec_verification=$(printf' \
-    "$root/agentkit/skills/parallel-issues/SKILL.md")
-zero_step_consumer_rc=0
-zero_step_consumed=$(bash -c "compose_output=\$1; $dispatch_consumer; printf '%s' \"\$spec_verification\"" \
-    _ "$no_steps_report") || zero_step_consumer_rc=$?
-assert_eq 0 "$zero_step_consumer_rc" \
-    'zero-step composer output passes the exact dispatch consumer contract'
-assert_eq '' "$zero_step_consumed" \
-    'dispatch consumer preserves the zero-step report as absent'
+# The --publish zero-step case below proves the dispatch side writes no report.
 
 partially_covered_report=$(compose_verification_report partially-covered \
     $'## Verification\n- `tools/verify`\n- `tools/full-test`\n- `tools/not-declared`\n')
@@ -505,6 +495,82 @@ fully_with_plan_output=$(compose_verification_report fully-covered-with-plan \
 assert_contains "$fully_with_plan_output" \
     'spec-verification-plan= issue=136 status=recorded expected-uncovered=none update=none plan-sha=' \
     'coverage alone never blocks a fully covered dispatch'
+
+# --- --publish: the root's one dispatch call installs and records ----------
+# The staged plan update and the per-issue verification report used to be a
+# transcribed SKILL.md recipe; the composer now owns both behind --publish.
+publish_bin="$tmp/same-fs-bin"
+mkdir -p "$publish_bin"
+cat >"$publish_bin/mv" <<'SCRIPT'
+#!/usr/bin/env bash
+args=("$@")
+count=${#args[@]}
+source_dir=$(cd -- "$(dirname -- "${args[count-2]}")" && pwd -P) || exit 1
+target_dir=$(cd -- "$(dirname -- "${args[count-1]}")" && pwd -P) || exit 1
+[[ $source_dir == "$target_dir" ]] || exit 18
+exec /bin/mv "$@"
+SCRIPT
+chmod +x "$publish_bin/mv"
+publish_compose() {
+    local fixture=$1 spec_body=$2 plan=$3
+    printf '%s' "$spec_body" > "$repo/.agent/fenced-spec.txt"
+    PATH="$publish_bin:$PATH" bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+        --worktree "$repo" --issue 136 --branch feat/issue-136 \
+        --worker-model gpt-5.6-luna --worker-effort high \
+        --dispatch-plan "$plan" --output "$repo/.agent/prompts/$fixture-lead.md" --publish
+}
+publish_dir="$tmp/arbitrary absolute destination"
+mkdir -p "$publish_dir"
+publish_plan="$publish_dir/dispatch-plan.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' > "$publish_plan"
+chmod 640 "$publish_plan"
+mkdir -m 700 "$publish_plan.verification-reports"
+printf 'peer report\n' > "$publish_plan.verification-reports/issue-54.report"
+publish_rc=0
+publish_output=$(publish_compose publish-staged \
+    $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n' "$publish_plan") || publish_rc=$?
+assert_eq 0 "$publish_rc" '--publish installs across an arbitrary absolute destination with same-directory renames'
+assert_eq '[2]' "$(jq -c '.entries[0].uncoveredVerification' "$publish_plan")" \
+    '--publish installs the verified staged uncoveredVerification record'
+assert_eq 640 "$(stat -c %a -- "$publish_plan")" '--publish preserves the dispatch-plan mode'
+assert_eq no "$([[ -e $repo/.agent/prompts/publish-staged-lead.md.dispatch-plan-update ]] && printf yes || printf no)" \
+    '--publish removes the staged update after installing it'
+assert_eq 0 "$(find "$publish_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
+    '--publish leaves no destination-adjacent scratch file'
+assert_eq 600 "$(stat -c %a -- "$repo/.agent/prompts/publish-staged-lead.md")" '--publish keeps the prompt owner-private'
+publish_report="$publish_plan.verification-reports/issue-136.report"
+assert_eq "$(grep -E '^spec-verification= ' <<< "$publish_output")" "$(<"$publish_report")" \
+    '--publish saves the exact spec-verification line as the durable report'
+assert_eq 'peer report' "$(<"$publish_plan.verification-reports/issue-54.report")" \
+    '--publish replaces only its own issue report'
+assert_contains "$publish_output" "published= issue=136 prompt=$repo/.agent/prompts/publish-staged-lead.md bytes=" \
+    '--publish prints one line naming the prompt it wrote'
+assert_contains "$publish_output" "plan=installed report=$publish_report" \
+    '--publish names the installed plan and the saved report'
+assert_contains "$publish_output" "$expected_wait_bound_line" '--publish still prints the worker wait bound'
+assert_not_contains "$publish_output" 'BEGIN UNTRUSTED ISSUE DATA' '--publish never echoes the prompt body'
+recorded_output=$(publish_compose publish-recorded \
+    $'## Verification\n- `tools/verify`\n- `tools/not-declared`\n' "$publish_plan")
+assert_contains "$recorded_output" 'plan=unchanged' '--publish leaves an already-recorded plan untouched'
+zero_step_plan="$tmp/zero-step-plan.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' > "$zero_step_plan"
+zero_step_output=$(publish_compose publish-zero $'## Verification\nNo executable verification steps are declared.\n' "$zero_step_plan")
+assert_contains "$zero_step_output" 'plan=unchanged report=none' '--publish writes no report for zero steps'
+assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
+    'a zero-step publish creates no empty report directory'
+ln -s "$publish_plan" "$tmp/linked-plan.json"
+for bad_publish in stdout symlink; do
+    bad_rc=0
+    if [[ $bad_publish == stdout ]]; then
+        bad_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+            --worktree "$repo" --issue 136 --branch feat/issue-136 --worker-model m --worker-effort high \
+            --dispatch-plan "$publish_plan" --publish 2>&1 >/dev/null) || bad_rc=$?
+    else
+        bad_err=$(publish_compose publish-symlink $'## Verification\n- `tools/verify`\n' "$tmp/linked-plan.json" 2>&1 >/dev/null) || bad_rc=$?
+    fi
+    assert_eq 1 "$bad_rc" "--publish refuses a $bad_publish target"
+    assert_contains "$bad_err" '--publish needs' "the $bad_publish refusal names what --publish needs"
+done
 
 empty_plan_rc=0
 empty_plan_err=$(bash "$compose" --template issue-lead --boundary public-fenced \

@@ -41,8 +41,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873 review: preflight's flag set includes --activation-origin.
     # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
     [pr-to-green]="320:5044:450"
-    # Halved to the go path: deleted prose restating helpers and references; exact measurement.
-    [parallel-issues]="367:9468:500"
+    # Halved to the go path: deleted restated prose; compose --publish owns the dispatch recipe; exact measurement.
+    [parallel-issues]="337:8652:500"
 )
 
 readonly MAX_BODY_LINES=500

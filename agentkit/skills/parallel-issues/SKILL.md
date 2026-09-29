@@ -220,45 +220,15 @@ case "$collect_rc" in 0|10) : ;; *) exit 1 ;; esac # 10: handle named incidents
 Per-issue prompt: **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
 : "${agentkit:?set agentkit to the preflight skills= path}"
-compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"; prompt_dir="$worktree/.agent/prompts"; mkdir -p -- "$prompt_dir" || exit 1; prompt_file="$prompt_dir/issue-$issue_number-lead.md"
-dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
+prompt_file="$worktree/.agent/prompts/issue-$issue_number-lead.md"
+dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 # write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
-compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --dispatch-plan "$dispatch_plan" --output "$prompt_file")
+compose_args=(--template issue-lead --worktree "$worktree" --issue "$issue_number" --branch "$branch" --worker-model "$worker_model" --worker-effort "$worker_effort" --boundary "$boundary_mode" --dispatch-plan "$dispatch_plan" --output "$prompt_file" --publish)
 for glob in "${write_set_globs[@]}"; do compose_args+=(--write-set "$glob"); done
-compose_output=$("$compose_script" "${compose_args[@]}") || exit 1
-chmod 600 -- "$prompt_file" || exit 1
-spec_verification=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification= ' || true); [[ $spec_verification != *$'\n'* ]] || exit 1
-spec_verification_plan=$(printf '%s\n' "$compose_output" | grep -E '^spec-verification-plan= ' || true); [[ -n $spec_verification_plan && $spec_verification_plan != *$'\n'* ]] || exit 1
-wait_bound=$(printf '%s\n' "$compose_output" | grep -E '^wait-bound= ' || true); [[ -n $wait_bound && $wait_bound != *$'\n'* ]] || exit 1
-plan_update=none; case $spec_verification_plan in *\ status=record-required\ *\ update=staged\ *) plan_update="$prompt_file.dispatch-plan-update" ;; *\ status=recorded\ *\ update=none\ *) ;; *) exit 1 ;; esac
-plan_sha=${spec_verification_plan##* plan-sha=}; [[ ${#plan_sha} -eq 64 && $plan_sha != *[!0-9a-f]* ]] || exit 1; plan_digest() { sha256sum -- "$1" | cut -d ' ' -f 1; }
-if [[ $plan_update != none ]]; then
-    [[ $plan_update == "$prompt_dir"/* && -f $plan_update && ! -L $plan_update && $(plan_digest "$plan_update") == "$plan_sha" ]] || exit 1
-    plan_replace_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label dispatch-plan --scratch-near "$dispatch_plan") || { rm -f -- "$plan_update"; exit 1; }
-    plan_replace_rc=0
-    { cat -- "$plan_update" >"$plan_replace_tmp" && chmod --reference="$dispatch_plan" "$plan_replace_tmp" && [[ $(plan_digest "$plan_replace_tmp") == "$plan_sha" ]] && mv -f -- "$plan_replace_tmp" "$dispatch_plan"; } || plan_replace_rc=$?
-    rm -f -- "$plan_update" "$plan_replace_tmp" || ((plan_replace_rc != 0)) || plan_replace_rc=1
-    ((plan_replace_rc == 0)) || exit "$plan_replace_rc"
-fi
-[[ $(plan_digest "$dispatch_plan") == "$plan_sha" ]] || { printf '%s\n' 'dispatch-plan verification failed before spawn' >&2; exit 1; }
-persist_dispatch_verification_report() {
-    local dispatch_reports_dir="$dispatch_plan.verification-reports" dispatch_report dispatch_report_tmp
-    [[ $spec_verification ]] || return 0
-    case $issue_number in ''|*[!0-9]*) return 1 ;; esac; mkdir -m 700 -- "$dispatch_reports_dir" 2>/dev/null || [[ -d $dispatch_reports_dir && ! -L $dispatch_reports_dir && -O $dispatch_reports_dir ]] || return 1
-    chmod 700 -- "$dispatch_reports_dir" || return 1; dispatch_report="$dispatch_reports_dir/issue-$issue_number.report"
-    dispatch_report_tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label "dispatch-report-$issue_number" --scratch-near "$dispatch_report") || return 1
-    if ! { chmod 600 -- "$dispatch_report_tmp" && printf '%s\n' "$spec_verification" > "$dispatch_report_tmp" && mv -f -- "$dispatch_report_tmp" "$dispatch_report"; }; then
-        rm -f -- "$dispatch_report_tmp"; return 1
-    fi
-    [[ -f $dispatch_report && ! -L $dispatch_report && -O $dispatch_report ]] || return 1
-}
-persist_dispatch_verification_report || exit 1
-printf 'dispatch-report= %s\ndispatch-plan-report= %s\n' "${spec_verification:-none}" "$spec_verification_plan"
-printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$prompt_file")" "$issue_number" "${write_set_globs[*]}"
-printf '%s\n' "$wait_bound"
+"$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" "${compose_args[@]}" || exit 1
 ```
 
-The recipe installs and verifies the composer's hashed `uncoveredVerification` candidate before spawn; coverage never blocks.
+`--publish` installs and verifies the staged `uncoveredVerification` plan update, saves any `spec-verification=` report, and prints the worker's `wait-bound=` line and one `published=` line; coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
