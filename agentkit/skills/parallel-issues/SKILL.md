@@ -115,7 +115,7 @@ Digest flags: read [prior-art](references/triage-and-selection.md#prior-art-adju
 | Verdict | Do |
 |---|---|
 | `merged-ref` | read that PR, then apply the prior-art table |
-| `in-flight` | an open PR covers it; do not double-dispatch |
+| `in-flight` | an open PR references it: skip, name it in the handoff; do not double-dispatch |
 | `attempted` | read that PR's review threads |
 | `active` | the active tracker holds; `--fast-mode` re-adjudicates it as held-active or stale-active |
 

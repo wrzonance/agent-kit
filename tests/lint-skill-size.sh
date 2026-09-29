@@ -42,7 +42,7 @@ declare -A KNOWN_OVERSIZE=(
     # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
     [pr-to-green]="320:5044:450"
     # Halved to the go path: deleted restated prose; compose --publish owns the dispatch recipe; exact measurement.
-    [parallel-issues]="337:8652:500"
+    [parallel-issues]="337:8660:500"
 )
 
 readonly MAX_BODY_LINES=500
