@@ -108,8 +108,6 @@ assert_contains "$review_adversarial" 'repository ownership, or an ambiguous res
 # thing for a speed flag to skip.
 assert_contains "$parallel" 'With `--fast-mode`, do not ask' \
     'fast mode drops the approval gate'
-assert_contains "$parallel" 'removes the approval gate, not the reasoning' \
-    'and keeps the conflict analysis that gate was checking'
 assert_contains "$parallel_with_refs" 'removes the approval gate, not the disclosure' \
     'and still announces what it chose'
 

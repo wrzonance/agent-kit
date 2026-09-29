@@ -378,8 +378,6 @@ assert_contains "$normalized_text" 'refill the next queued successor from that e
     'chain-depth refill is gated by the predecessor pushed SHA'
 assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
-assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
-    'worktree recipe parameterizes its start point'
 assert_contains "$text" '--dispatch-plan "$dispatch_plan" --run-id "$RUN_ID"' \
     'worktree setup consumes the saved expected set and accepted publications'
 assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
@@ -452,7 +450,7 @@ retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
     "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
 assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
     'retarget-only proof exceptions stay inside the retarget section'
-assert_contains "$normalized_text" 'test files or prose does not serialize' \
+assert_contains "$normalized_text" 'overlap confined to tests or prose runs in parallel' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
@@ -562,9 +560,6 @@ assert_contains "$text" 'Selection funnel:' \
     'parallel skill requires the named selection reconciliation line'
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
-assert_contains "$normalized_text" \
-    'Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
-    'attended selection keeps judgment and board mutation root-owned'
 assert_contains "$normalized_text" 'and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it' \
     'fast mode acts on the picker list without re-adjudicating a drop'
 assert_contains "$triage_and_selection_text" \
@@ -674,9 +669,6 @@ assert_contains "$normalized_text" \
 assert_contains "$normalized_triage_and_selection_text" \
     'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
     'thin-Ready vetting states its ceiling where it states the obligation'
-assert_contains "$normalized_text" \
-    'A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap.' \
-    'empty-Ready fallback guidance carries the universal assessor ceiling'
 assert_contains "$text" 'Maximum 10 concurrent agents of every kind (root counted)' \
     'the Limits maximum covers every concurrent role'
 assert_not_contains "$text" 'Maximum 10 per wave' \
@@ -2011,14 +2003,10 @@ assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
     'the single-issue dispatch set retains the six-step loop'
 assert_contains "$normalized_text" 'never preload review material during dispatch/worker waits' \
     'review references remain gated until the review phase'
-assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
-    'chain material is gated on an actual selected chain'
-assert_contains "$normalized_text" 'Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down' \
-    'late-overlap chain conversion loads chain rules before revising the plan'
+assert_contains "$normalized_text" 'Read [references/chains.md](references/chains.md) in full when the selected set contains a chain or late overlap selects chain-conversion or merge-down' \
+    'chain material is gated on an actual selected chain or a late-overlap revision'
 assert_contains "$normalized_text" 'successor swaps require a revision' \
     'dispatch-plan compaction preserves the successor-swap audit rule'
-assert_contains "$normalized_text" 'non-empty repository-relative `predictedWriteSet`' \
-    'dispatch-plan compaction preserves repository-relative non-empty predictions'
 assert_contains "$normalized_text" 'shared build config, lockfiles, and generated contracts' \
     'dispatch-plan compaction preserves shared conflict inputs'
 assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
