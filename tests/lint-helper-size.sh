@@ -267,7 +267,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
 # Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
-readonly MAX_TREE_TOKENS=519045
+# Cable-tool #44 (~9 calls, ~1.4M tokens, fence skipped): collect --run-id derives
+# every Collect input from the run; exact tree measurement.
+readonly MAX_TREE_TOKENS=520182
 
 violations=0
 checked=0

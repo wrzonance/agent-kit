@@ -2109,15 +2109,15 @@ awk '
 ' "$skill" >"$cross_write_collect_recipe"
 assert_contains "$(<"$cross_write_snapshot_recipe")" '--run-id "$RUN_ID"' \
     'the pre-dispatch recipe binds the snapshot to the run identity'
-assert_contains "$(<"$cross_write_collect_recipe")" '--baseline-id "$cross_baseline_id"' \
-    'the canonical fence recipe reuses the recorded baseline identity'
+assert_contains "$(<"$cross_write_collect_recipe")" 'collect --run-id "$RUN_ID" --issue "$issue_number"' \
+    'the canonical fence recipe collects by run, transcribing nothing'
 assert_contains "$(<"$cross_write_snapshot_recipe")" 'cross-write-dispatch-$RUN_ID.snapshot' \
     'the canonical fence recipe scopes immutable snapshots to the run identity'
 assert_contains "$normalized_text" 'Never fold dirt first observed inside a dispatch window' \
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$normalized_text" 'date -u +%FT%T.%NZ' \
     'dispatch records worker boundaries with subsecond precision'
-assert_contains "$normalized_text" 'dispatch audit rejects it as ambiguous' \
+assert_contains "$normalized_text" "capture's own second is ambiguous" \
     'dispatch documents fail-closed coarse same-second chronology'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
@@ -2160,21 +2160,31 @@ run_cross_snapshot_recipe() {
         bash -c 'all_dispatched_write_sets=("src/**"); source "$1"' \
         _ "$cross_write_snapshot_recipe"
 }
+# The root's reservation (named-active-state.sh) is Collect's worker record; it
+# lands in a later second than the capture so the epoch start is unambiguous.
+reserve_recipe_worker() {
+    local recipe_run_id=$1 ledger="$recipe_root/.agent/runs/active-workers.ndjson" now
+    now=$(date +%s)
+    while (($(date +%s) == now)); do :; done
+    mkdir -p "${ledger%/*}"
+    jq -nc --arg w "$recipe_worker" --arg r "$recipe_run_id" --argjson t "$(date +%s)" \
+        '{version:2, issue:830, worktree:$w, branch:"feat/recipe", runId:$r, attempt:$r,
+          workerId:null, state:"unknown", disposition:"reserved", evidence:"", heartbeatEpoch:$t}' >>"$ledger"
+    chmod 600 "$ledger"
+}
 run_cross_collect_recipe() {
-    local recipe_run_id=$1 recipe_start=$2
+    local recipe_run_id=$1
     agentkit="$root/agentkit/skills" repository_root="$recipe_root" \
-        RUN_ID="$recipe_run_id" worktree="$recipe_worker" issue_number=830 \
-        worker_started_at="$recipe_start" worker_finished_at=2147483647 \
-        bash -c 'worker_write_sets=("src/**"); source "$1"' \
+        RUN_ID="$recipe_run_id" issue_number=830 bash -c 'source "$1"' \
         _ "$cross_write_collect_recipe"
 }
 snapshot_recipe_rc=0
 run_cross_snapshot_recipe recipe-830 >/dev/null || snapshot_recipe_rc=$?
 assert_eq 0 "$snapshot_recipe_rc" 'the canonical pre-dispatch recipe creates its baseline'
-recipe_start=$(date -u +%FT%T.%NZ)
+reserve_recipe_worker recipe-830
 recipe_out=''
 recipe_rc=0
-recipe_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || recipe_rc=$?
+recipe_out=$(run_cross_collect_recipe recipe-830) || recipe_rc=$?
 assert_eq 0 "$recipe_rc" 'the canonical cross-write recipe completes against real worktrees'
 assert_contains "$recipe_out" 'cross-write=none' \
     'a baseline captured before the worker produces valid clean dispatch evidence'
@@ -2187,7 +2197,7 @@ assert_eq yes "$([[ $recipe_baseline_id =~ ^[0-9a-f]{64}$ ]] && printf yes || pr
 recipe_snapshot="$recipe_root/.agent/cross-write-dispatch-recipe-830.snapshot"
 recipe_snapshot_hash=$(sha256sum "$recipe_snapshot" 2>/dev/null || true)
 resume_rc=0
-resume_out=$(run_cross_collect_recipe recipe-830 "$recipe_start") || resume_rc=$?
+resume_out=$(run_cross_collect_recipe recipe-830) || resume_rc=$?
 assert_eq 0 "$resume_rc" 'same-run resume reuses the recorded dispatch baseline'
 assert_contains "$resume_out" 'cross-write=none' 'same-run resume retains clean dispatch evidence'
 assert_eq "$recipe_snapshot_hash" "$(sha256sum "$recipe_snapshot" 2>/dev/null || true)" \
@@ -2195,8 +2205,8 @@ assert_eq "$recipe_snapshot_hash" "$(sha256sum "$recipe_snapshot" 2>/dev/null ||
 
 second_rc=0
 run_cross_snapshot_recipe recipe-831 >/dev/null || second_rc=$?
-second_start=$(date -u +%FT%T.%NZ)
-second_out=$(run_cross_collect_recipe recipe-831 "$second_start") || second_rc=$?
+reserve_recipe_worker recipe-831
+second_out=$(run_cross_collect_recipe recipe-831) || second_rc=$?
 assert_eq 0 "$second_rc" 'a distinct run creates and uses an independent baseline'
 assert_contains "$second_out" 'cross-write=none' 'a distinct run can produce clean dispatch evidence'
 assert_eq yes "$([[ -f $recipe_root/.agent/cross-write-dispatch-recipe-831.snapshot ]] && printf yes || printf no)" \
@@ -2212,7 +2222,8 @@ orphan_state_rc=0
 assert_eq 11 "$orphan_state_rc" 'refusal never adopts the unrecorded snapshot identity'
 
 missing_rc=0
-run_cross_collect_recipe recipe-missing "$(date +%s)" >/dev/null 2>&1 || missing_rc=$?
+reserve_recipe_worker recipe-missing
+run_cross_collect_recipe recipe-missing >/dev/null 2>&1 || missing_rc=$?
 assert_eq 1 "$missing_rc" 'Collect refuses a run with no persisted baseline identity'
 assert_eq no "$([[ -e $recipe_root/.agent/cross-write-dispatch-recipe-missing.snapshot ]] && printf yes || printf no)" \
     'Collect never creates a missing pre-dispatch baseline'
