@@ -465,8 +465,7 @@ After each worker and at handoff, Collect by run: it reads the baseline, the res
 
 ```bash
 collect_rc=0
-"$agentkit/parallel-issues/scripts/cross-write-check.sh" collect --run-id "$RUN_ID" --issue "$issue_number" \
-    --repo-root "$repository_root" --dispose-duplicates || collect_rc=$?
+"$agentkit/parallel-issues/scripts/cross-write-check.sh" collect --run-id "$RUN_ID" --issue "$issue_number" || collect_rc=$?
 case "$collect_rc" in 0|10) : ;; *) exit 1 ;; esac # 10: handle named incidents
 ```
 

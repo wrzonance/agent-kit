@@ -269,7 +269,7 @@ readonly MAX_HELPER_TOKENS=10000
 # finalization gap with its next command and default the reviewed head; exact tree.
 # Cable-tool #44 (~9 calls, ~1.4M tokens, fence skipped): collect --run-id derives
 # every Collect input from the run; exact tree measurement.
-readonly MAX_TREE_TOKENS=520182
+readonly MAX_TREE_TOKENS=519828
 
 violations=0
 checked=0

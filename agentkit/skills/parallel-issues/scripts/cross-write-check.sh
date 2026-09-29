@@ -774,9 +774,10 @@ command=$1
 shift
 case $command in
     snapshot) snapshot_cmd "$@";;
-    collect) [[ " $* " != *' --run-id '* ]] && { collect_cmd "$@"; exit; }
-        # shellcheck source=lib/cross-write-run.sh
-        source "${SCRIPT_PATH%/*}/lib/cross-write-run.sh" && run_collect_cmd "$@";;
+    collect) for arg; do [[ $arg != --run-id ]] || {
+            # shellcheck source=lib/cross-write-run.sh
+            source "${SCRIPT_PATH%/*}/lib/cross-write-run.sh" && run_collect_cmd "$@"; exit; }; done
+        collect_cmd "$@";;
     dispose) dispose_cmd "$@";;
     dispatch-fence) dispatch_fence_cmd "$@";;
     -h|--help) usage 0;;

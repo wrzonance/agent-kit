@@ -2174,9 +2174,9 @@ reserve_recipe_worker() {
 }
 run_cross_collect_recipe() {
     local recipe_run_id=$1
-    agentkit="$root/agentkit/skills" repository_root="$recipe_root" \
+    (cd "$recipe_root" && agentkit="$root/agentkit/skills" \
         RUN_ID="$recipe_run_id" issue_number=830 bash -c 'source "$1"' \
-        _ "$cross_write_collect_recipe"
+        _ "$cross_write_collect_recipe")
 }
 snapshot_recipe_rc=0
 run_cross_snapshot_recipe recipe-830 >/dev/null || snapshot_recipe_rc=$?

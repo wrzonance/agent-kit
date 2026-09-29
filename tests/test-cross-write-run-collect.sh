@@ -17,7 +17,6 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 checkout="$tmp/checkout"
 worker="$tmp/worker-579"
-other="$tmp/worker-other"
 mkdir -p "$checkout/.agent/runs" "$checkout/src"
 git init -q -b main "$checkout"
 printf '.agent/\n' >>"$checkout/.git/info/exclude"
@@ -25,7 +24,6 @@ printf 'base\n' >"$checkout/src/data.txt"
 git -C "$checkout" add src/data.txt
 git -C "$checkout" -c user.name=t -c user.email=t@example.invalid commit -qm base
 git -C "$checkout" worktree add -q -b feat/issue-579 "$worker"
-git -C "$checkout" worktree add -q -b feat/other "$other"
 
 # Dispatch: the canonical fence snapshot, captured 20s ago so the reservation
 # (10s ago) falls in a later second, and its identity recorded in run state.
@@ -63,15 +61,22 @@ assert_contains "$out" 'cross-write=path=src/leak.txt issue=579 attribute=mtime-
     'the write is attributed to the reserved worker window'
 rm -f -- "$checkout/src/leak.txt"
 
-collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --worker-worktree "$other"
-assert_eq 2 "$rc" 'an explicit worktree that disagrees with the reservation refuses'
-assert_contains "$out" "--worker-worktree $other disagrees with the run's $worker" \
-    'the disagreement names both values'
-collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --worker-worktree "$worker" \
-    --root "$checkout" --snapshot "$snapshot" --baseline-id "$baseline_id"
-assert_eq 0 "$rc" 'explicit flags that restate the run values keep working'
-collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --baseline-id "$(printf '%064d' 0)"
-assert_eq 2 "$rc" 'a mismatched explicit baseline refuses'
+collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --worker-start 1
+assert_eq 11 "$rc" 'explicit flags still pass through to the audited Collect'
+assert_contains "$out" 'invariant=capture-before-dispatch' 'the audit judges the explicit start'
+
+collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --dispose-duplicates
+assert_eq 2 "$rc" 'run mode refuses to dispose without the recorded worker finish'
+assert_contains "$out" '--dispose-duplicates needs --worker-end' 'the refusal names the missing finish'
+
+# Routing reads whole arguments: a legacy snapshot path containing ' --run-id '
+# stays on the legacy Collect.
+odd_dir="$checkout/.agent/x --run-id y"
+mkdir -p "$odd_dir"
+"$cross_write" snapshot --root "$checkout" --output "$odd_dir/legacy.snapshot" --write-set 'src/**' >/dev/null
+collect --root "$checkout" --snapshot "$odd_dir/legacy.snapshot" --worktree "$worker" --issue 579 --write-set 'src/**'
+assert_eq 0 "$rc" 'a legacy snapshot path containing --run-id routes to legacy Collect'
+assert_contains "$out" 'current-state=none' 'legacy Collect prints its own clean marker'
 
 collect --root "$checkout" --snapshot "$snapshot" --worktree "$worker" --issue 579 \
     --worker-start 1790623767 --worker-end "$(date -u +%s)" --write-set 'src/**'
@@ -81,10 +86,12 @@ assert_contains "$out" "dispatch-fence baseline; Collect it with: cross-write-ch
 assert_not_contains "$out" 'captured-at is invalid' 'the refusal no longer blames captured-at'
 
 collect --run-id "$run_id" --issue 580 --repo-root "$checkout"
-assert_eq 1 "$rc" 'an issue with no reservation is missing evidence'
-assert_contains "$out" 'named-active-state.sh' 'the refusal names the reservation helper'
-collect --run-id ghost-run --issue 579 --repo-root "$checkout"
-assert_eq 1 "$rc" 'a run with no recorded baseline is missing evidence'
-assert_contains "$out" 'recorded no cross_write.baseline_id' 'the refusal names the missing record'
+assert_eq 11 "$rc" 'an issue with no reservation has no worker start'
+assert_contains "$out" 'invariant=worker-start-required' 'the existing audit names the missing start'
+unrecorded_row=$(jq -c '.runId = "unrecorded-run"' "$ledger")
+printf '%s\n' "$unrecorded_row" >>"$ledger"
+collect --run-id unrecorded-run --issue 579 --repo-root "$checkout"
+assert_eq 11 "$rc" 'a run with no recorded baseline is unavailable evidence'
+assert_contains "$out" 'invariant=baseline-readable' 'the existing audit names the missing baseline'
 
 finish

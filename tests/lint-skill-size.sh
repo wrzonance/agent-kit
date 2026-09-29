@@ -65,7 +65,7 @@ declare -A KNOWN_OVERSIZE=(
     # #908 final parent integration: exact combined one-call finalization measurement.
     # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
     # Cable-tool #44: Collect by run replaces the transcribed-argument recipe; ceiling lowered.
-    [parallel-issues]="825:18063:500"
+    [parallel-issues]="824:18049:500"
 )
 
 readonly MAX_BODY_LINES=500
