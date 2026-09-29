@@ -21,7 +21,7 @@ Before dispatch, require `$agentkit/.shared/scripts/workflow-activation.sh check
 `check` needs no other flags here. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N`; run it once.
 Retain that acknowledged harness ID as `activation_session`; it is distinct from the workflow `RUN_ID`.
 Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting;
-a task in the user's own words is reference use (below): proceed, never ask to invoke.
+a task asked without invoking is reference use (below): proceed, never ask to invoke.
 For recovery, resubmit `$agentkit:parallel-issues`; advertised natural triggers also deliver.
 Fresh acknowledgement preserves saved work. Client restart/conversation resume retains the receipt; a new session needs its own. Mismatch diagnostics name bounded read/search forms.
 Installed files alone never prove session receipt.
@@ -30,7 +30,7 @@ Installed files alone never prove session receipt.
 
 If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
 conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
-own message asks for a task, or for this procedure anyway ("just follow the steps"), treat this
+own message asks, uninvoked, for a task or this procedure ("just follow the steps"), treat this
 file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
 with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Regardless
 of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers

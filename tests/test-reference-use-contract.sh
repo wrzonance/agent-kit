@@ -16,8 +16,8 @@ reference_trigger='If no `agentkit` activation challenge or `agentkit durable ac
 reference_authority='Reference use carries **none** of the workflow'
 reference_stop='Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting'
 # #31: an ad-hoc task that merely consults the skill proceeds; it never ends the turn asking for an invocation.
-reference_task="a task in the user's own words is reference use (below): proceed, never ask to invoke."
-reference_task_section="own message asks for a task, or for this procedure anyway"
+reference_task="a task asked without invoking is reference use (below): proceed, never ask to invoke."
+reference_task_section="own message asks, uninvoked, for a task or this procedure"
 reference_forbidden='Regardless of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers that write, touch `.agent/`, or onboard/bootstrap/refresh'
 reference_bookkeeping='Reference use does not create or recover active-run bookkeeping.'
 reference_protections="The workflow's authorization, no-bypass, and human-thread protections still apply during reference use."

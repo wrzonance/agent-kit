@@ -12,7 +12,7 @@ stdout begins `skills=` (contract, not registry proof).
 Require `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill review-remote-pr` before work.
 Delegate only when dispatched inside active `parallel-issues`/`pr-to-green` and `check` reports that owner: reuse its receipt/preflight; do not run or acknowledge review-remote-pr preflight. Otherwise standalone native/natural-language activation delivers its own challenge. `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow review-remote-pr --activation-nonce N`; run once.
 Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting;
-a task in the user's own words is reference use (below): proceed, never ask to invoke.
+a task asked without invoking is reference use (below): proceed, never ask to invoke.
 Recovery: resubmit `$agentkit:review-remote-pr`; natural triggers also deliver.
 Work and receipt survive restart/resume; new sessions need their own.
 Mismatch diagnostics name bounded read/search forms.
@@ -21,7 +21,7 @@ Mismatch diagnostics name bounded read/search forms.
 
 If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this
 conversation, you are not running this workflow, whether the plugin is disabled or not. If the user's
-own message asks for a task, or for this procedure anyway ("just follow the steps"), treat this
+own message asks, uninvoked, for a task or this procedure ("just follow the steps"), treat this
 file as reference: skip Step 0, the resolver, preflight, the ledger and receipts, and do the requested task
 with plain `git`/`gh`/CLI commands. Reference use carries **none** of the workflow's authority. Regardless
 of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers
