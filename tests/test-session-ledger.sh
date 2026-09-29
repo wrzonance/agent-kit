@@ -422,7 +422,7 @@ for failing_step in append covers; do
     recipe_calls="$tmp/recipe-$failing_step.calls"
     recipe_rc=0
     env RECIPE_CALLS="$recipe_calls" FAIL_SUBCOMMAND="$failing_step" \
-        repository_root="$tmp/recipe-repo" agentkit="$recipe_kit" agentkit_provenance=ok \
+        repository_root="$tmp/recipe-repo" agentkit="$recipe_kit" \
         repository=wrzonance/agent-kit base=main DECISION=authorize SCOPE=scope QUOTE=quote \
         bash -c "$ledger_recipe" >/dev/null 2>&1 || recipe_rc=$?
     assert_eq 'nonzero' "$([[ $recipe_rc -ne 0 ]] && printf nonzero || printf zero)" \

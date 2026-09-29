@@ -42,9 +42,8 @@ Usage: repo-config.sh [--repo-root DIR] (--export | --get KEY | --get-argv KEY |
 
 Recipe: establish repository facts
   set -euo pipefail
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
-  repository_root=$contract_root
+  : "${agentkit:?set agentkit to the preflight skills= path}"
+  repository_root=$(git rev-parse --show-toplevel) || exit 1
   resolver="$agentkit/.shared/scripts/repo-config.sh"
   [[ -x $resolver ]] && eval "$("$resolver" --repo-root "$repository_root" --export)"
   repository=${AGENT_REPO_SLUG:-}

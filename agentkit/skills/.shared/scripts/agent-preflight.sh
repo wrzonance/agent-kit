@@ -127,7 +127,7 @@ Prints `skills= path=ABSOLUTE_PATH`, then one key per line: skills-content= repo
 Exit: 0 for reported facts; 1 for failed activation or required declarations;
       2 for invalid usage.
 
-Recipe: resolve, rehydrate, and run once
+Recipe: resolve and run once
   agentkit=''
   contract_root="$(git rev-parse --show-toplevel 2>/dev/null)" || contract_root=''
   contract="$contract_root/.agent/env-contract.txt"
@@ -153,16 +153,12 @@ Recipe: resolve, rehydrate, and run once
   fi
   [[ $agentkit == /* ]] || { printf '%s\n' "agentkit: skills path must be absolute: $agentkit" >&2; exit 1; }
   [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-  agentkit_provenance=ok; : "$agentkit_provenance"
 
-Cache rehydration for each later guarded block (replace STEP_0_AGENTKIT):
-  agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
-  [[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
-  contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
+Later blocks: set agentkit=<the skills= path printed above>; shell state does not persist.
 
 Run preflight once:
   set -euo pipefail
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+  : "${agentkit:?set agentkit to the preflight skills= path}"
   repository_root=$contract_root
   shared="$agentkit/.shared/scripts"
   preflight="$shared/agent-preflight.sh"
@@ -179,7 +175,6 @@ Run preflight once:
   [[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
   contract_path=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
   [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
-  "$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
 EOF
 }
 
