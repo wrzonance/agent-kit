@@ -137,11 +137,11 @@ assert_contains "$parallel_with_refs" 'The fast-mode example records a queued is
 # a sandbox escalation goes to the harness, not back to the user as a question.
 assert_contains "$parallel" 'Publishing is part of the dispatch' \
     'branch pushes and draft PRs need no second permission'
-assert_contains "$parallel" 'Do not pause to re-ask for that authorization' \
+assert_contains "$parallel" 'do not pause to re-ask' \
     'and the agent does not ask anyway'
-assert_contains "$parallel" 'request escalation through the harness' \
+assert_contains "$parallel" 'escalation goes through the harness' \
     'a sandbox gate is answered by the harness approval flow'
-assert_contains "$parallel" 'ready-flips, merges' \
+assert_contains "$parallel" 'Ready-flips, merges' \
     'the still-gated actions are named so the authority does not leak'
 
 # --- selection is mechanical where it can be --------------------------------

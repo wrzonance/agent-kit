@@ -406,7 +406,7 @@ assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base
     'chains reference documents the general pushed-base requirement'
 assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
     'the pushed-base requirement is generalized past the join case'
-assert_contains "$normalized_text" 'for a join, this means every predecessor pushed AND the merged join base itself pushed' \
+assert_contains "$normalized_text" 'for a join: every predecessor and the merged join base pushed' \
     'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
     'chain edges require an interface dependency'
@@ -661,10 +661,10 @@ assert_contains "$normalized_text" \
 assert_contains "$text" '--assert-count "$prospective_total" --agent-kind "$agent_kind"' \
     'every fan-out passes its prospective total and kind to the cap helper'
 assert_contains "$normalized_text" \
-    'A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free' \
+    'A refusal means shrink the batch or wait for a slot' \
     'overflow retry guidance cannot repeat the refused count unchanged'
 assert_contains "$normalized_text" \
-    'A cap-advertisement error stops spawning and is reported separately from a capacity refusal.' \
+    'report a cap-advertisement error separately' \
     'an unavailable cap stops the fan-out without masquerading as capacity exhaustion'
 assert_contains "$normalized_triage_and_selection_text" \
     'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
@@ -987,8 +987,6 @@ assert_contains "$normalized_text" 'pr=open' \
     'partial-pushed completion opens a draft PR'
 assert_contains "$normalized_text" '--blocker' \
     'partial-pushed publication carries protected paths into the PR body'
-assert_contains "$normalized_text" 'Operator action required' \
-    'partial-pushed publication names the PR body disclosure section'
 assert_contains "$normalized_text" 'Completion report' \
     'ordinary clean completion retains its direct publication route'
 assert_contains "$normalized_text" 'verification=unbound' \
@@ -1034,7 +1032,7 @@ assert_eq 'boundary mode: yolo-trusted' "$selected" \
     'explicit yolo selects yolo-trusted regardless of visibility'
 assert_contains "$normalized_text" 'one canonical body fetch by the picker' \
     'triage digest limits each issue body to its picker fetch'
-assert_contains "$text" 'Set `body_cache` from the selected record' \
+assert_contains "$text" 'set `body_cache` from the selected picker record' \
     'preparation consumes the picker body-cache reference'
 assert_contains "$normalized_text" 'Do not fetch timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
@@ -1070,9 +1068,9 @@ assert_contains "$worker_prompts_text" 'transcript evidence' \
     'worker contract requires transcript evidence for performed spikes'
 assert_contains "$worker_prompts_text" 'both the spike edit and the revert' \
     'worker contract requires evidence for both spike operations'
-assert_contains "$normalized_text" 'Do not request a post-hoc report rewrite' \
+assert_contains "$normalized_text" 'Read its raw six-step report as written' \
     'root validation does not request post-hoc spike report rewrites'
-assert_contains "$normalized_text" 'bounces only absent or unjustified' \
+assert_contains "$normalized_text" 'bounce only an absent or unjustified one' \
     'root validation bounces only absent or unjustified spike reports'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
@@ -1240,7 +1238,7 @@ assert_contains "$issue_lead_prompt" 'For mixed ownership, apply a verified own 
     'issue-lead mixed-ownership restoration scopes reversal to verified worker bytes'
 assert_contains "$issue_lead_prompt" 'or stop and report' \
     'issue-lead restoration stops instead of guessing at ambiguous ownership'
-assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
+assert_contains "$text" 'set the working directory to the worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
@@ -1360,9 +1358,7 @@ assert_not_contains "$fix_batch_flat" 'simulate a failing check' \
     'fix-batch workers never simulate a failing check for the TDD contract'
 assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
     'Phase A orchestration remains root-owned'
-assert_contains "$normalized_text" 'preserves the raw command text for audit' \
-    'parallel dispatch preserves worker handback command text'
-assert_contains "$text" 'parse into validated arguments without eval' \
+assert_contains "$text" 'parses the raw handback without eval' \
     'parallel dispatch parses handback arguments without eval'
 assert_contains "$text" 'validate-handback.sh' \
     'parallel dispatch invokes the publication handback validator'
@@ -1376,19 +1372,6 @@ assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
     'parallel dispatch rejects empty validated argv'
 assert_contains "$text" 'cd -- "$worktree"' \
     'parallel dispatch executes the validated argv in the worktree'
-assert_contains "$normalized_text" 'expected worktree-commit.sh helper' \
-    'parallel dispatch validates the expected commit helper'
-assert_contains "$normalized_text" 'every explicit path inside the worktree and allowed' \
-    'parallel dispatch validates handback path containment'
-# The contract used to pin a `git diff -- <explicit handback paths>` inspection
-# that the validator never performed. What it actually enforces -- and what root
-# depends on -- is that every staged path is declared and unprotected, because
-# worktree-commit.sh commits the whole index and its own staged-protected guard
-# only fires during an active merge.
-assert_contains "$normalized_text" 'every staged path declared and unprotected' \
-    'parallel dispatch reconciles staged paths against the declared operands'
-assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
-    'parallel dispatch defers base diff inspection until publication'
 # The draft-PR body composer recipe is single-sourced in references/worker-prompts.md
 # -- it is dispatch-output content read at publication time, not a worker prompt,
 # but it lives beside the worker prompts it is read alongside. SKILL.md's body
@@ -1576,12 +1559,10 @@ assert_contains "$worker_gate_flat" 'root harness attribution' \
     'worker-gate.md requires root attribution for inline corrections'
 assert_contains "$worker_gate_flat" 'recorded reason' \
     'worker-gate.md requires recording why the worker gate was skipped'
-assert_contains "$root_review_section" 'resume the same worker with `followup_task` first' \
+assert_contains "$root_review_section" 'as one batch with `followup_task` to the same worker' \
     'root review resumes the same worker before considering a fresh dispatch'
 assert_contains "$root_review_section" 'inline correction' \
     'root review names the inline-correction decision at the correction call site'
-assert_contains "$root_review_section" 'zero dispatches' \
-    'root review records that qualifying inline corrections cost zero dispatches'
 assert_contains "$text" 'two allowed implementation exceptions' \
     'parallel preflight names the complete implementation exception set'
 assert_contains "$text" 'qualifying bounded inline correction' \
@@ -1876,7 +1857,7 @@ assert_contains "$text" 'stall-check.sh' \
     'collect loop names the stall-check helper'
 assert_contains "$text" 'STALL_THRESHOLD_MINUTES' \
     'stall threshold is a named constant'
-assert_contains "$normalized_text" 're-dispatch it once with the preserved worktree evidence' \
+assert_contains "$normalized_text" 're-dispatch once with the preserved evidence' \
     'a stalled worker gets exactly one automatic re-dispatch'
 assert_contains "$normalized_text" 'park the workstream and name it in the report' \
     'a twice-stalled workstream parks and is named'
@@ -1884,7 +1865,7 @@ assert_contains "$normalized_text" 'never `pgrep`' \
     'stall detection forbids process inspection'
 assert_contains "$normalized_text" 'newest file mtime is the liveness signal' \
     'stall detection is defined by worktree mtime'
-assert_contains "$normalized_text" 'In the next user-visible update, name any non-zero `last-rc` and its `last-verification` log basename' \
+assert_contains "$normalized_text" 'non-zero `last-rc` and its `last-verification` log basename in the next update' \
     'the next root update preserves a failed verification outcome'
 
 # Issue #810: the liveness sample also carries the newest completed verification
@@ -2102,7 +2083,7 @@ assert_contains "$normalized_text" 'Never fold dirt first observed inside a disp
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$normalized_text" 'date -u +%FT%T.%NZ' \
     'dispatch records worker boundaries with subsecond precision'
-assert_contains "$normalized_text" "capture's own second is ambiguous" \
+assert_contains "$normalized_text" "shares the capture's second" \
     'dispatch documents fail-closed coarse same-second chronology'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'

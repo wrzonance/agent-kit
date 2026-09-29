@@ -193,70 +193,33 @@ Exit 3 with `next=resolution-worker-then-resume`: dispatch the [resolution-only 
 
 ## Phase 2: Per-Issue Ultracode Leads (background, parallel)
 
-Each approved issue gets one **issue lead** in its isolated worktree, dispatched through whatever subagent mechanism the running CLI provides. The design-first gates are mandatory either way; only the dispatch call differs. Invoking this skill is explicit permission to use multi-agent dispatch for these workstreams.
+Each approved issue gets one **issue lead**, the only writer in its worktree; invoking this skill is permission to dispatch them. Spawned workers cannot spawn, so a lead does every step itself. The root must not implement when a real worker can be dispatched; the two allowed implementation exceptions are spawn unavailable and a qualifying bounded inline correction.
 
-The issue lead is the **only writer** in its worktree, and it is also the only agent in that
-workstream: a spawned worker **cannot itself spawn** (verified — a nested attempt returns `no
-child-worker subagent capability is available`). So an issue lead has no mapper or reviewer
-subagents available to it and performs every step itself, strictly sequentially. Across issues,
-worktrees provide isolation.
+### Implementation-model preflight
 
-### Implementation-model preflight (MANDATORY — before worktrees or board mutations)
-
-Role separation: the root/orchestrator must not implement when a real worker can be dispatched except for two allowed implementation exceptions: spawn unavailable or qualifying bounded inline correction. Primary-source verification and design research are Steps 1–5 work owned by the issue lead; when required, that instruction belongs in the composed worker prompt with the specification and sources. Workers get sole-writer isolation. Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT`. **Effort follows the issue, not the run:** `AGENT_WORKER_EFFORT` is the default; a recorded `workerEffort` may raise one hard issue. Root reviews keep their own effort. Read
-["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md) for dispatch details. Completion table records worker model — or `worker=self (spawn unavailable)`. Each loop step's lead-phase mapping is in
-["$agentkit/.shared/six-step-loop.md"](../.shared/six-step-loop.md).
+Resolve `AGENT_WORKER_MODEL`, `AGENT_WORKER_MODEL_FALLBACK`, and `AGENT_WORKER_EFFORT` per ["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md). **Effort follows the issue, not the run:** a recorded `workerEffort` may raise one hard issue. Primary-source verification and design research are Steps 1–5 work owned by the issue lead; that instruction belongs in the composed worker prompt. The completion table records the worker model, or `worker=self (spawn unavailable)`.
 
 ### Spawn discipline (applies to every spawn in this skill)
 
-Before fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role (read-only included) — set `prospective_total` to root + live + requested and `agent_kind` to role. Run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --help`; pass `--assert-count "$prospective_total" --agent-kind "$agent_kind"`. A cap-advertisement error stops spawning and is reported separately from a capacity refusal. A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free.
+Before any fan-out — issue leads, waiters, assessors, reviewers, draft loops, and any improvised role — run `"$agentkit/parallel-issues/scripts/concurrency-cap.sh" --assert-count "$prospective_total" --agent-kind "$agent_kind"` with root + live + requested. A refusal means shrink the batch or wait for a slot; report a cap-advertisement error separately.
 
 ### Dispatch (one round, then refill slots)
 
-As each lead is dispatched (or each degraded-path issue is started), the root moves that issue's board item. Run `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help` and follow its selected-issue recipe.
-Immediately before each initial/refill dispatch, run `"$agentkit/.shared/scripts/run-state.sh" dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"`; absence succeeds.
+Per lead: run `"$agentkit/.shared/scripts/run-state.sh" dequeue-summary --run-id "$RUN_ID" --repo-root "$repository_root" --json "$issue"` (absence succeeds), then move its board item with the `"$agentkit/parallel-issues/scripts/move-github-project-item.sh" --help` selected-issue recipe. **The printed line is the evidence:** `moved #N -> STATUS` or `no-op: …` completes the move with exit 0; no verification query, no second call.
 
-**The printed line is the evidence.** `move-github-project-item.sh` prints one terminal stdout line per issue and board; every shape returns exit 0 (a board move never fails real work), so only a leading `moved #N -> STATUS` or `no-op: issue #N already "STATUS"` completes that issue's phase — never follow it with a verification query or a second invocation. It needs Projects access (fleet App: `Projects: write`).
+Spawn through the spawn contract's durable sole-writer gate: reserve before submission, persist each returned ID, reconcile unknown outcomes, confirm release before replacement, and set the working directory to the worktree. A task is dispatched once `tools.spawn` returns an identifier. Without spawn, implement serially under the same gate as `worker=self (spawn unavailable)`.
 
-**Chained issues defer on the commit, not the publication.** A successor's worktree is created and its lead
-dispatched as soon as the predecessor's worker has committed and pushed its branch — for a join, this means every predecessor pushed AND the merged join base itself pushed — using the full 40-character
-`chain_base_sha` from the completion report; root review, PR, board, and ledger writes are off that
-critical path. Deferred issues hold no slot; a failed or BLOCKED predecessor parks its chain by name. See
-[references/chains.md](references/chains.md#deferred-dispatch) for the rationale.
+**Publishing is part of the dispatch.** Worktrees, branch pushes, and DRAFT PRs are what the invocation asked for; do not pause to re-ask. Sandbox escalation goes through the harness's own approval flow. Ready-flips, merges, bot triggers, and human-review responses stay gated.
 
-**Publishing is part of the dispatch.** Creating worktrees, pushing issue branches,
-and opening DRAFT PRs are the mechanical output this invocation asked for — the
-draft state is the safety valve, and a human flips it ready. Do not pause to re-ask
-for that authorization, in any mode. When the sandbox requires escalated execution
-for network or forge operations, request escalation through the harness's own
-approval flow (its reviewer can grant it); that is a runtime permission, not a user
-decision to re-litigate. The still-gated actions are unchanged: ready-flips, merges,
-bot triggers, and human-review responses.
-
-Every issue-lead call uses the spawn policy in
-["$agentkit/.shared/spawn-contract.md"](../.shared/spawn-contract.md); fill in the complete prompt below.
-Apply that contract's durable sole-writer gate: reserve before submission, persist each returned
-ID immediately, reconcile unknown outcomes, and confirm release before replacement. Never erase
-partial successes; set its working directory to the assigned worktree when supported.
-A task is dispatched only after `tools.spawn` returns a task/agent identifier. The degraded
-path implements serially with the same ownership gate, labelled `worker=self (spawn unavailable)`.
+**Chained issues defer on the commit, not the publication:** dispatch a successor as soon as the predecessor's worker has committed and pushed its branch (for a join: every predecessor and the merged join base pushed), from the full 40-character `chain_base_sha`. A failed or BLOCKED predecessor parks its chain by name. See [references/chains.md](references/chains.md#deferred-dispatch) for joins.
 
 ### Root canonical issue fetch and fence preparation
 
-The root reuses the selected picker record's private `bodyCache`, validates it, and persists canonical
-fenced bytes before constructing a worker prompt. Workers never fetch issue data.
-
-Run `"$agentkit/parallel-issues/scripts/select-boundary-mode.sh" --help`, then the preparation helper's help. Set `body_cache` from the selected record before following its canonical-artifact recipe. Pass `--prior-art` only for a Step 2 digest; exit `12` uses the printed `--resume` command.
-
-The root is the sole artifact producer: the script fetches, validates, and atomically publishes the
-fenced files, raw payload, and ready marker into excluded `.agent/` state, and the prompt embeds
-those bytes verbatim. Re-running on an existing complete set is refused (exit `12`, with the exact
-remedy printed); `--resume` archives the set under `.agent/evidence/fence-history/<timestamp>/`
-and regenerates without touching implementation files.
+Workers never fetch issue data. Run `"$agentkit/parallel-issues/scripts/select-boundary-mode.sh" --help`, then the preparation helper's help; set `body_cache` from the selected picker record and follow its canonical-artifact recipe, passing `--prior-art` only for a Step 2 digest. Exit `12` prints the `--resume` command to run. The prompt embeds the fenced bytes verbatim.
 
 ### Root-checkout cross-write fence
 
-Before dispatching any worker, persist the run baseline. Pass write-set globs unchanged:
+Before dispatching any worker, persist the run baseline; pass write-set globs unchanged:
 
 ```bash
 fence="$agentkit/parallel-issues/scripts/cross-write-check.sh" state="$agentkit/.shared/scripts/run-state.sh"
@@ -269,7 +232,7 @@ cross_baseline_id=${output##*baseline-id=}
 "$state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id" || exit 1
 ```
 
-After each worker and at handoff, Collect by run: it reads the baseline, the reserved worktree and reservation time (window end: now), and the dispatched write sets. A reservation in the capture's own second is ambiguous; pass `--worker-start "$(date -u +%FT%T.%NZ)"` recorded at spawn instead.
+After each worker and at handoff, collect by run (pass `--worker-start "$(date -u +%FT%T.%NZ)"` recorded at spawn when the reservation shares the capture's second):
 
 ```bash
 collect_rc=0
@@ -277,7 +240,7 @@ collect_rc=0
 case "$collect_rc" in 0|10) : ;; *) exit 1 ;; esac # 10: handle named incidents
 ```
 
-Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-window copies. Never fold dirt first observed inside a dispatch window into unrelated changes; divergent or outside-window dirt blocks clean handoff pending disposition.
+`cross-write=none` is clean; keep incident lines with that worker's evidence and dispose only exact in-window copies. Never fold dirt first observed inside a dispatch window into unrelated changes.
 
 ### Compose the issue-lead prompt
 
@@ -322,64 +285,32 @@ printf 'prompt=%s bytes=%s issue=%s write-set=%s\n' "$prompt_file" "$(wc -c < "$
 printf '%s\n' "$wait_bound"
 ```
 
-Composer publishes once; root installs and verifies its hashed `uncoveredVerification` candidate before spawn. `classification=majority-uncovered` is conspicuous; coverage never blocks.
+The composer publishes once; the recipe installs and verifies its hashed `uncoveredVerification` candidate before spawn. `classification=majority-uncovered` is reported; coverage never blocks.
 
 ### Collect (per-completion — never wait for the slowest issue)
 
-`worker-result=PATH` uses the [result contract](references/worker-prompts.md#structured-result-contract): validate dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence is never green; unchanged accepted receipts resume without repeated work. Text fallbacks stay unknown.
-`agentkit activation-blocked: {...}` keeps ownership. Validate worker, worktree and workflow, then follow `.shared/spawn-contract.md` once to redeliver current bytes to the same context. The leaf acknowledges and resumes; unavailable or repeated delivery parks with work preserved. Before either PR-open path, including after a resumed Collect, restore the fixed invocation fact with `auto_review_state=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review) || exit 1`; validate it with `case $auto_review_state in true|false) ;; *) printf 'invalid durable auto_review: %s\n' "$auto_review_state" >&2; exit 1 ;; esac`.
+`worker-result=PATH` follows the [result contract](references/worker-prompts.md#structured-result-contract): validate dispatch, ownership, Git and logs before accepting. Keep root CI/review obligations; unknown or blocked evidence is never green; unchanged accepted receipts resume without repeated work.
+`agentkit activation-blocked: {...}` keeps ownership: redeliver current bytes once per `.shared/spawn-contract.md`; a repeat parks with work preserved. Before either PR-open path, restore the invocation fact with `auto_review_state=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path auto_review) || exit 1` and `case $auto_review_state in true|false) ;; *) printf 'invalid durable auto_review: %s\n' "$auto_review_state" >&2; exit 1 ;; esac`.
 
-- **Cross-write check first** → run the root-checkout Collect check against the immutable
-  dispatch snapshot before trusting the worker's handback. Keep the helper's incident line,
-  mtime-window attribution, branch byte-compare, and duplicate/divergent disposition with that
-  worker's evidence. A dirty path is never an "unrelated local change" until the check proves
-  otherwise.
+- **Cross-write check first** → run the Collect check above before trusting the handback.
+- **Completion report (branch + pushed SHA)** → review the pushed diff, then run the draft PR body template's single `$agentkit/parallel-issues/scripts/pr-stage.sh open` call: it composes the four approved sections, creates or recovers the draft, registers `opened_prs`, and moves the issue to `In review`. Print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"` and start Phase 3. Diff size is never a reason to withhold this.
+- **BLOCKED** → set `blocker_file="$worktree/.agent/logs/partial-blockers.list"` and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. On `disposition=partial-pushed pr=open blocker-file=written verification=unbound`, review the diff and use the same one-call open stage with `--blocker-file "$blocker_file"`, then print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`; chained successors dispatch from the pushed SHA on both completion paths. Otherwise redrive once: `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` must hit exit 11 (absent); clear the blocker (`write-set`: widen the fence and recheck every active worker; a sole `needs-paths: <glob>[,<glob>...]` drives that recheck); only after the blocker clears, send one `tools.send`, then `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command. `baseline-red` gets one automatic re-drive; other blockers park with the worktree preserved.
+- **Queued issue** → spawn it into the freed slot.
 
-- **Completion report (branch + pushed SHA)** → review pushed diff; run the draft PR body template's single `$agentkit/parallel-issues/scripts/pr-stage.sh open` call. It composes the four approved sections, creates or uniquely recovers the draft, registers `opened_prs`, and moves the issue to `In review`; use its `pr=` result to print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"` and start Phase 3. Diff size is never a reason to withhold this; see Diff-size facts.
-- **BLOCKED** → preserve the text handback, set `blocker_file="$worktree/.agent/logs/partial-blockers.list"`, and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. `disposition=partial-pushed pr=open blocker-file=written verification=unbound` proves the queried remote HEAD, not log attribution: review the diff and use the same one-call open stage with `--blocker-file "$blocker_file"`; use its `pr=` result to print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`. Its `## Operator action required` section preserves blocker paths and discloses limited verification. Dispatch chained successors from the pushed SHA on both completion paths. Otherwise gate redrive on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` and proceed only on exit 11 (absent); clear the blocker (`write-set`: widen the fence, recheck every active worker); only after the blocker clears, run one `tools.send`, then record `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command; other blockers park. `baseline-red` gets one automatic re-drive. A sole `needs-paths: <glob>[,<glob>...]` drives that recheck; otherwise preserve the worktree and blocker evidence.
-- **Queued issue** → spawn it immediately into the freed slot.
-
-**Stall detection:** record the next check at last progress + `STALL_THRESHOLD_MINUTES` (default 12 minutes). Before the threshold elapses, do not call
-`"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`
-At the deadline, sample once; schedule the next sample at least one threshold later. In the next user-visible update, name any non-zero `last-rc` and its `last-verification` log basename, even if the worker later fixes it without reporting it. The newest file mtime is the liveness signal; never `pgrep`, `stat` archaeology,
-or process inspection. Two consecutive quiet checks with no filesystem change for the named
-threshold (`STALL_THRESHOLD_MINUTES`, default 12) print `verdict=stalled`: interrupt that
-worker, re-dispatch it once with the preserved worktree evidence and the exact remaining
-step, and if the re-dispatch stalls too, park the workstream and name it in the report.
+**Stall detection:** Before the threshold elapses, do not call `"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`; sample once at last progress + `STALL_THRESHOLD_MINUTES` (default 12), then no sooner than one threshold later. Name any non-zero `last-rc` and its `last-verification` log basename in the next update. Two quiet checks print `verdict=stalled`: interrupt, re-dispatch once with the preserved evidence and remaining step, and if that stalls too, park the workstream and name it in the report. The newest file mtime is the liveness signal; never `pgrep`.
 
 ### Quiescence gate for root writes
 
-Before any root write in a worker worktree, satisfy `.shared/spawn-contract.md`'s quiescence gate ("Bounded
-inline corrections"); prefer `followup_task`; inline requires `--exact`.
+Before any root write in a worker worktree, satisfy `.shared/spawn-contract.md`'s quiescence gate ("Bounded inline corrections"); prefer `followup_task`; inline requires `--exact`.
 
 ### Root review and draft PR after a worker push
 
-Read the worker's raw six-step report. Do not request a post-hoc report rewrite.
-For Stage 4, accept the
-declared-skip form `SPIKE + REVERT: SKIPPED — extends existing pattern <name>` (or another
-one-line justification for why nothing in the change is novel), the performed form
-`SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`
-when immutable transcript evidence names both operations, or `SPIKE + REVERT: N/A — <concrete
-reason>` for a no-code scope. This read bounces only absent or unjustified Stage 4 reports; it
-never asks workers to rewrite.
+The worker commits and pushes its own branch and returns a completion report. Read its raw six-step report as written. Stage 4 passes as `SPIKE + REVERT: SKIPPED — extends existing pattern <name>`, `SPIKE + REVERT: PERFORMED — transcript evidence: <spike edit reference>; <revert reference>`, or `SPIKE + REVERT: N/A — <concrete reason>`; bounce only an absent or unjustified one.
 
-Design review runs **after** the push. Review the pushed diff once — `git -C "$worktree" diff "origin/$base...HEAD"` (a chained issue diffs
-against its recorded chain base) — through the correctness, repo-rule/security, and write-set
-lenses: every changed path must fall inside the dispatch plan's pinned predictedWriteSet for
-this issue, or the root records one of the sanctioned `chain-conversion`, `merge-down`, or
-`prediction-expansion` dispositions with an evidence-based reason before opening the PR.
-Confirmed findings go back to the same worker as one batch (`followup_task`); at every correction
-call site, resume the same worker with `followup_task` first and make a fresh dispatch the exception.
-Root may make a mechanical, ≤5-line inline correction, review-authored when gate holds; it costs zero dispatches;
-rerun full verification with root attribution and record why dispatch was skipped.
-Then root must open a DRAFT PR with the canonical body composer: Why, What, Decisions,
-checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line; PR URL
-feeds Collect and Step 3a.
+Design review runs **after** the push: review `git -C "$worktree" diff "origin/$base...HEAD"` once (a chain diffs against its chain base) for correctness, repo rules/security, and write set — every changed path sits inside the pinned predictedWriteSet or carries a `chain-conversion`, `merge-down`, or `prediction-expansion` disposition with a reason. Send confirmed findings back as one batch with `followup_task` to the same worker. Root may make a mechanical ≤5-line inline correction under the quiescence gate, rerunning full verification and recording why.
+Then open a DRAFT PR with the canonical body composer: Why, What, Decisions, checkbox-formatted `Testing`, a signature line, and a separate closing-keyword line. The PR URL feeds Collect and Step 3a. Before opening it, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
 
-**Environment-refusal fallback only** — **push refusal**: root verifies the reported commit SHA exists in the worktree and pushes.
-**Commit refusal** (`worktree-commit.sh` exit 2): root preserves the raw command text for audit. Validator: parse into validated arguments without eval;
-validate the expected worktree-commit.sh helper, Conventional Commit, required worker trailer, every explicit path inside the worktree and allowed, and every staged path declared and unprotected; emit NUL argv naming the canonical helper.
-Invoke returned argv once, then push the branch. Only after publication does the root inspect `base...HEAD`; never validate a base diff.
+**Environment-refusal fallback only** — push refusal: root verifies the reported SHA exists in the worktree and pushes. Commit refusal (`worktree-commit.sh` exit 2): the validator parses the raw handback without eval and emits NUL argv for the canonical helper. Invoke returned argv once, then push the branch.
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
@@ -397,22 +328,12 @@ BASH_RECIPE
 )" _ "${agentkit:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
-Before opening a draft PR, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
-
-The worker commits and pushes its own branch and returns a completion report; root reviews the pushed diff and opens the DRAFT PR;
-root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication.
-
 ### Polling discipline (applies to every wait in this skill)
 
-Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before selecting an action or waiting; it owns fresh evidence, `next-action`, durable state, and waits silent until terminal.
-After an operator message, call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"` with fresh evidence; follow its result that turn. `resume_required=true` requires continuation; only `end-turn` or `complete` may stop.
-
-Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**; use live tool caps. Dispatch already printed this worker's own bound as a `wait-bound=` line.
-
-After completion, inspect durable state (worktree `git status`/`log`, then
-`$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO` with acceptance args):
-[.shared/wait-discipline.md](../.shared/wait-discipline.md#durable-state-to-inspect-after-a-completion).
-The digest exits 0 for green, failing, or pending CI — read it and stop.
+Read [.shared/wait-discipline.md](../.shared/wait-discipline.md) before waiting; it owns fresh evidence, `next-action`, and waits silent until terminal.
+After an operator message, call `next-action --after-steer --worker-ledger "$worker_ledger" --dispatch-plan "$dispatch_plan"` with fresh evidence and follow its result that turn; only `end-turn` or `complete` may stop.
+Worker collection windows are **900 s**, draft-loop/review/CI observation windows **600 s**. Dispatch already printed this worker's own bound as a `wait-bound=` line.
+After a completion, inspect durable state (worktree `git status`/`log`, then `$agentkit/review-remote-pr/scripts/gh-pr-state.sh --pr N --repo OWNER/REPO`); the digest exits 0 for green, failing, or pending CI — read it and act.
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
