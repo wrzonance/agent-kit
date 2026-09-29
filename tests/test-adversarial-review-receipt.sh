@@ -66,15 +66,10 @@ assert_receipt_contract() {
     # body in test-post-receipt.sh ("publish body carries exactly one spent
     # marker") rather than against a heredoc in the prose.
     #
-    # Every other script invocation in this tree is gated by the identical
-    # two-line guard (see e.g. every gh-pr-state.sh call site), and
-    # post-receipt.sh's invocation follows that same house convention rather
-    # than re-deriving the full resolver inline. Matched as the COMPLETE guard
-    # expression, never as its halves: the directory fragment also occurs inside
-    # a helper invocation path and the sentinel can occur in a comment, so
-    # matching them independently would accept a block that executes no guard.
-    assert_contains "$section" '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' "$label publication executes the full provenance guard"
-    assert_contains "$section" 'agentkit unresolved: prepend THE CACHE REHYDRATION block' "$label publication fails loudly without cache rehydration"
+    # Like every other helper call site, the publication fails loudly on an
+    # empty $agentkit instead of running "/.shared/..." paths.
+    assert_contains "$section" ': "${agentkit:?set agentkit to the preflight skills= path}"' "$label publication fails loudly on an empty agentkit"
+    assert_not_contains "$section" 'CACHE REHYDRATION' "$label publication needs no cache rehydration"
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'

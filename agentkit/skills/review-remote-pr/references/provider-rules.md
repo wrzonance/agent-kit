@@ -328,7 +328,7 @@ mention, SHA, disposition, attribution, and exact transport.
 **Reply and settle inline comments:**
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 short_sha=$(git rev-parse --short HEAD)
 reasoning_file="$RUN_DIR/reasoning_1234567890.md"
@@ -353,7 +353,7 @@ A `gh pr comment` floats in the conversation, disconnected from the code — Cod
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 nitpick_path=src/example.ts                 # from the nitpick body
 nitpick_line=42                             # must be inside the PR diff

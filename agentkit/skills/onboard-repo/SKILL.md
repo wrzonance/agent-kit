@@ -48,8 +48,6 @@ Run Step 0's bootstrap fence through explicit `bash -c`. Once it resolves `$agen
 
 ## Step 0 — resolve the tree once per session
 
-Warm-up writes data-only `.agent/cache/contract-session.env`; never source it.
-
 ```bash
 # >>> prepend THE RESOLVER (initial warm-up only) <<<
 agentkit=''
@@ -79,7 +77,6 @@ if [[ $contract_ready != yes ]]; then
     [ -n "$agentkit" ] || { printf '%s\n' 'agentkit is not installed in searched plugin caches' >&2; exit 1; }
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-# shellcheck disable=SC2034  # later cache rehydration supplies this value.
 shared="$agentkit/.shared/scripts"
 [[ -n $contract_root ]] || { printf '%s\n' 'Run this skill from a Git repository.' >&2; exit 1; }
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
@@ -90,22 +87,14 @@ contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get sk
 [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
 ```
 
-#### THE CACHE REHYDRATION (prepend to each later guarded block)
-
-Substitute Step 0's remembered absolute `skills=` path; never trust a cache for it.
-
-```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
-[[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
-contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
-```
+`agentkit` is the `skills= path=` value preflight printed. Shell state does not persist: start any later block that calls a helper with `agentkit=<that path>`; nothing else to re-derive.
 
 With the tree resolved, report its onboarding stage, remaining go-live steps, and (before the first
 verification) the same boundary's environment preflight — include its component, package, runtime-pin,
 and setup lines in the handoff:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/onboard-state.sh" --repo-root "$(git rev-parse --show-toplevel)" --report --next-steps --preflight
 ```
 
@@ -114,8 +103,8 @@ Perform only the reported `next` stage.
 ## Step 1 — look before writing
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/bootstrap-repo.sh" --dry-run
+: "${agentkit:?set agentkit to the preflight skills= path}"
+"$agentkit/.shared/scripts/bootstrap-repo.sh" --dry-run
 ```
 
 Report repo, trunk, and Project board; stop for correction if any is wrong. Use `--force` to refresh and `--reset` only by explicit request.
@@ -126,7 +115,7 @@ Report repo, trunk, and Project board; stop for correction if any is wrong. Use 
 guess — ask the user which they want, then:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/board-setup.sh"   # creates a board, canonical columns, links it; --project N re-columns an existing one
 ```
 
@@ -147,8 +136,8 @@ Output one proposed diff/report — conflicts first, duplicates second, repo-spe
 On a subsequent pass, after the user reviewed the instruction audit and approved the proposed onboarding additions, run:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-"$shared/bootstrap-repo.sh"
+: "${agentkit:?set agentkit to the preflight skills= path}"
+"$agentkit/.shared/scripts/bootstrap-repo.sh"
 ```
 
 This writes `.agent/config.env` and `.agent/board.json` and verifies `.agent/*` in `.git/info/exclude`; it adds no tracked `.gitignore` exceptions. Surface legacy tracked declarations; Step 7 decides.
@@ -159,7 +148,7 @@ This writes `.agent/config.env` and `.agent/board.json` and verifies `.agent/*` 
 providers) itself, and `suggestions` is Step 4's candidate list — one call covers both steps:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/detect-toolchains.sh" --format gaps,suggestions
 ```
 
@@ -253,7 +242,7 @@ that first run is the review moment before this skill leaves the command declare
 future session:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/repo-config.sh" --list
 # ...then, once per name you declared, hand this to the user to run themselves:
 "$agentkit/.shared/scripts/agent-run.sh" --cmd verify
