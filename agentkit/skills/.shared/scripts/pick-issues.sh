@@ -273,7 +273,9 @@ fi
 if ((list_mode)); then
     # shellcheck source=lib/protected-paths.sh
     source "$script_dir/lib/protected-paths.sh"
-    declared=$("$script_dir/repo-config.sh" --repo-root "$repo_root" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    rc=0; declared=$("$script_dir/repo-config.sh" --repo-root "$repo_root" --get AGENT_PROTECTED_PATHS 2>/dev/null) || rc=$?
+    ((rc <= 1)) || die 'AGENT_PROTECTED_PATHS is invalid; run repo-config.sh --validate'
+    ((rc == 0)) || declared=''
     IFS=, read -r -a protected_patterns <<<"$declared"
     protected_patterns+=("${SHARED_PROTECTED_DEFAULTS[@]}")
     protected_hits='{}'

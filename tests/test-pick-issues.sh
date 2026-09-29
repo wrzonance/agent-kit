@@ -326,6 +326,31 @@ out=$(run --fast-mode --slot-cap 4 --exclude-text powershell --ready-only --incl
 assert_contains "$out" 'dispatched=0' '--ready-only opts fast mode out of Backlog and wins over --include-backlog'
 assert_not_contains "$out" '#51' 'and no Backlog issue is listed'
 
+# A repository's declared protected paths join the defaults; an invalid
+# declaration refuses selection instead of silently falling back to defaults.
+cp "$repo/.agent/config.env" "$tmp/config.env"
+printf 'AGENT_PROTECTED_PATHS=src/\n' >>"$repo/.agent/config.env"
+assert_contains "$(run --fast-mode --slot-cap 4)" 'dropped #51  protected paths src/' \
+    'a declared protected path drops a candidate that writes under it'
+{ cat "$tmp/config.env"; printf 'AGENT_PROTECTED_PATHS=../outside\n'; } >"$repo/.agent/config.env"
+rc=0
+out=$(run --fast-mode --slot-cap 4) || rc=$?
+assert_eq '1' "$rc" 'an invalid protected-path declaration refuses selection'
+assert_contains "$out" 'AGENT_PROTECTED_PATHS is invalid; run repo-config.sh --validate' 'and names the fix'
+cp "$tmp/config.env" "$repo/.agent/config.env"
+
+# A glob owns the directory before its first wildcard component, so it collides
+# with a literal file it could match rather than slipping past a prefix compare.
+decide() {
+    jq -c --argjson cap 4 --argjson protected '{}' --argjson exclude '[]' \
+        -f "$root/agentkit/skills/.shared/scripts/lib/pick-dispatch-list.jq" <<<"$1"
+}
+glob_rec() { printf '{"number":%s,"title":"t","workShape":"implementation","blockers":[],"blockerTotal":0,"blockerRead":0,"predictedWriteSet":["%s"]}' "$1" "$2"; }
+assert_contains "$(decide "[$(glob_rec 60 'src/foo*.ts'),$(glob_rec 61 src/foo.ts)]")" 'dropped #61  write-set collision with #60' \
+    'a wildcard file pattern collides with a literal file in its directory'
+assert_contains "$(decide "[$(glob_rec 62 'src/**'),$(glob_rec 63 lib/a.sh)]")" '"dispatched":2' \
+    'disjoint directories still dispatch together'
+
 # --- a truncated board read refuses to select -------------------------------
 # The regression this issue exists for: a board bigger than --limit must never
 # produce a plausible-looking subset. "candidates=3 of=123" reads as a
@@ -404,10 +429,10 @@ assert_rc 3 'a symlinked repository agent directory is rejected before cache pub
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-# fast-mode dispatch list (+36): --exclude-text, the protected-path pass, and fast
-# mode implying Backlog, replacing the root's per-candidate --json re-reads (field
+# fast-mode dispatch list (+38): --exclude-text, the protected-path pass (refusing an
+# invalid declaration), and fast mode implying Backlog, replacing the root's per-candidate --json re-reads (field
 # run: 35 calls, 2.6M tokens) and a thin-Ready empty wave (#270).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 311 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 311 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 313 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 313 lines'
 
 finish

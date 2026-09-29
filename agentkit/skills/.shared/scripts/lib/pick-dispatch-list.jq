@@ -4,8 +4,11 @@
 # $exclude (lower-case operator terms). Output: {dispatched, queued, dropped, lines}.
 
 def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
-# The literal prefix a write pattern owns: "src/*.ts" -> "src", "**/x" -> "".
-def owned: sub("^\\./"; "") | sub("[*?\\[].*$"; "") | rtrimstr("/");
+# The directory a write pattern owns, cut before the first wildcard component:
+# "src/foo*.ts" -> "src", "**/x" -> "" (everything).
+def owned:
+    sub("^\\./"; "") | split("/") | (map(test("[*?\\[]")) | index(true)) as $i
+    | (if $i == null then . else .[:$i] end) | join("/") | rtrimstr("/");
 def overlaps($a; $b):
     ($a | owned) as $x | ($b | owned) as $y
     | $x == "" or $y == "" or $x == $y
