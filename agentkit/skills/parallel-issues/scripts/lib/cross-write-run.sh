@@ -10,6 +10,8 @@ run_collect_cmd() {
     # Match whole arguments: a legacy --snapshot path may contain " --run-id ".
     for arg; do [[ $arg != --run-id ]] || break; done
     [[ ${arg-} == --run-id ]] || { collect_cmd "$@"; return; }
+    # Inherited hook variables would point every git lookup at another checkout.
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
     local run_id='' issue='' repo_root=. root baseline_id reservation worker='' start=''
     local -a rest=()
     while (($#)); do

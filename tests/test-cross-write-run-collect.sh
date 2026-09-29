@@ -9,6 +9,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 
 cross_write="$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh"
 run_state="$root/agentkit/skills/.shared/scripts/run-state.sh"
@@ -53,6 +54,15 @@ collect --run-id "$run_id" --issue 579 --repo-root "$checkout"
 assert_eq 0 "$rc" 'run-scoped Collect succeeds with only run id and issue'
 assert_contains "$out" "cross-write=none root=$checkout run-id=$run_id baseline-id=$baseline_id" \
     'clean evidence is bound to the recorded run and baseline'
+
+decoy="$tmp/decoy"
+git init -q -b main "$decoy"
+out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" "$cross_write" collect \
+    --run-id "$run_id" --issue 579 --repo-root "$checkout" 2>&1)
+rc=$?
+assert_eq 0 "$rc" 'inherited GIT_DIR/GIT_WORK_TREE do not redirect run-scoped Collect'
+assert_contains "$out" "cross-write=none root=$checkout run-id=$run_id" \
+    'the run root stays the intended checkout under hook variables'
 
 printf 'leak\n' >"$checkout/src/leak.txt"
 collect --run-id "$run_id" --issue 579 --repo-root "$worker"
