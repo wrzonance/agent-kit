@@ -9,9 +9,8 @@ root=$(dirname -- "$here")
 # shellcheck source=lib/assert.sh
 source "$here/lib/assert.sh"
 
-# The complete executed guard: matching its halves separately would accept a
-# fence whose only mention of them is a helper path plus a comment.
-FULL_GUARD='[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]'
+# The executed empty-path guard every later helper block starts with.
+FULL_GUARD=': "${agentkit:?'
 
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -31,10 +30,10 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
             "$name helper-owned resolver requires proven untracked status"
         assert_contains "$preflight_help" 'contract-read.sh" --repo-root "$repository_root" --get skills.path' \
             "$name helper-owned warm-up validates the resolved skills path"
-        assert_contains "$preflight_help" '"$cache_reader" --read-session-context' \
-            "$name helper-owned recipe rehydrates through the trusted cache reader"
-        assert_contains "$text" 'THE CACHE REHYDRATION' \
-            "$name later guarded blocks name cache rehydration"
+        assert_not_contains "$preflight_help" 'read-session-context' \
+            "$name helper-owned recipe carries no cache rehydration"
+        assert_not_contains "$text" 'CACHE REHYDRATION' \
+            "$name later blocks carry no cache rehydration"
         continue
     fi
     assert_contains "$text" '! -L $contract' \
@@ -74,8 +73,7 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
             full_checks = (block ~ /! -L \$contract/ && block ~ /-O \$contract/ &&
                 block ~ /git -C "\$contract_root" ls-files --error-unmatch -- "\$contract"/ &&
                 block ~ /\[\[ \$tracked_rc == 1 \]\]/)
-            guard_only = (block ~ /agentkit unresolved: prepend the Step 0 resolver block/ &&
-                index(block, GUARD) > 0)
+            guard_only = (index(block, GUARD) > 0)
             local_redefine = (block ~ /(^|[^[:alnum:]_])contract(_root)?=[^=]/)
             if (has_read && !full_checks && (!guard_only || local_redefine))
                 printf "unguarded contract read in block ending line %d\n", FNR
@@ -113,13 +111,10 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
         END { print n + 0 }
     ' "$skill")
     assert_eq 1 "$command_reads" "$name has one executable contract-read warm-up"
-    assert_contains "$text" '.agent/cache/contract-session.env' \
-        "$name names the durable session context"
-    reader_call=no
-    [[ $text == *'"$shared/lib/contract-cache.sh" --read-session-context'* ||
-       $text == *'"$cache_reader" --read-session-context'* ]] && reader_call=yes
-    assert_eq yes "$reader_call" \
-        "$name invokes the data-only context reader from its validated shared path"
+    # Ledger #29: later blocks set agentkit from the printed path; no cache
+    # rehydration or provenance sentinel to transcribe.
+    assert_not_contains "$text" 'read-session-context' "$name never rehydrates a session cache"
+    assert_not_contains "$text" 'agentkit_provenance' "$name carries no provenance sentinel"
 
     warmup_boundaries=$(awk -v GUARD="$FULL_GUARD" -v NAME="$name" '
         function flush() {
@@ -129,8 +124,6 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
                 if (block !~ /contract-read\.sh/ ||
                     block !~ /--get[[:space:]]+skills\.path/)
                     printf "initial warm-up lacks contract-read at block ending line %d\\n", FNR
-                if (block ~ /THE CACHE REHYDRATION/)
-                    printf "initial warm-up attempts cache rehydration at block ending line %d\\n", FNR
                 reader = index(block, "contract-read.sh")
                 if (NAME == "review-remote-pr")
                     preflight = index(block, "pr-worktree.sh\" --pr")
@@ -138,15 +131,6 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
                     preflight = index(block, "\"$preflight\" --")
                 if (!preflight || !reader || preflight > reader)
                     printf "initial warm-up preflights after contract-read at block ending line %d\\n", FNR
-            }
-            if (index(block, GUARD) > 0) {
-                if (initial && block !~ /agentkit unresolved: prepend the Step 0 resolver block/)
-                    printf "initial guard lacks resolver remediation at block ending line %d\\n", FNR
-                if (!initial &&
-                    block !~ /agentkit unresolved: prepend THE CACHE REHYDRATION block/)
-                    printf "later guard lacks cache remediation at block ending line %d\\n", FNR
-                if (!initial && block ~ /agentkit unresolved: prepend the Step 0 resolver block/)
-                    printf "later guard incorrectly tells callers to rerun Step 0 at block ending line %d\\n", FNR
             }
             block = ""
         }
@@ -159,23 +143,15 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
         }
     ' "$skill")
     assert_eq '' "$warmup_boundaries" \
-        "$name has one cache-creating initial warm-up and rehydrates only later guards"
-    if [[ $text == *'agentkit unresolved: prepend the Step 0 resolver block'* ]]; then
-        assert_contains "$text" 'THE CACHE REHYDRATION' \
-            "$name defines the cache rehydration snippet"
-        assert_contains "$text" '"$cache_reader" --read-session-context' \
-            "$name validates cached session data through the trusted reader"
-    fi
+        "$name has one initial warm-up"
     if [[ $name == onboard-repo ]]; then
         onboarding_boundaries=$(awk '
             function flush() {
                 initial = (block ~ /# >>> prepend THE RESOLVER \(initial warm-up only\) <<</)
-                cache_definition = (block ~ /STEP_0_AGENTKIT/ && block ~ /cache_reader=/ &&
-                    block ~ /--read-session-context/)
-                if (!initial && !cache_definition &&
+                if (!initial &&
                     (block ~ /\$shared\// || block ~ /\$agentkit\/\.shared\/scripts/) &&
-                    block !~ /agentkit unresolved: prepend THE CACHE REHYDRATION block/)
-                    printf "missing onboarding cache rehydration at block ending line %d\\n", FNR
+                    !index(block, ": \"${agentkit:?"))
+                    printf "missing onboarding agentkit guard at block ending line %d\\n", FNR
                 if (block ~ /re-run Step 0/)
                     printf "onboarding block repeats Step 0 at block ending line %d\\n", FNR
                 block = ""
@@ -185,7 +161,7 @@ for skill in "$root"/agentkit/skills/*/SKILL.md; do
             END { if (inblock) flush() }
         ' "$skill")
         assert_eq '' "$onboarding_boundaries" \
-            'onboarding fresh-shell blocks use cache rehydration rather than Step 0'
+            'onboarding fresh-shell blocks guard agentkit rather than repeating Step 0'
         assert_eq '' "$(awk '
             /# >>> prepend THE RESOLVER \(initial warm-up only\) <<</ { active = 1 }
             active { block = block $0 "\\n" }

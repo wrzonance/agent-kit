@@ -28,7 +28,8 @@ declare -A KNOWN_OVERSIZE=(
     # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
     # final-review Minor #2: +4 lines / +67 tokens so a lone --activation-nonce
     # dies (exit 2) naming the missing --activation-session/--workflow flag.
-    [skills/.shared/scripts/agent-preflight.sh]="1411:17295:800"
+    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    [skills/.shared/scripts/agent-preflight.sh]="1406:16999:800"
     # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
     # #874 review repair: stable process identity and canonical fallback boundaries.
@@ -46,7 +47,8 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
-    [skills/.shared/scripts/repo-config.sh]="1165:12203:800"
+    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    [skills/.shared/scripts/repo-config.sh]="1164:12180:800"
     # #911: exact staged-tree ledger grants authorize prepared protected commits.
     # #911 review: classify an unresolved index before protected-tree scope derivation.
     [skills/.shared/scripts/worktree-commit.sh]="891:9400:800"
@@ -60,7 +62,8 @@ declare -A KNOWN_OVERSIZE=(
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
-    [skills/parallel-issues/scripts/move-github-project-item.sh]="1010:11462:800"
+    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    [skills/parallel-issues/scripts/move-github-project-item.sh]="1010:11363:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1087:13310:800"
     # #711/#765/#850/#843: landing replay and compatible receipt lineage.
@@ -267,10 +270,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
 # Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
-# cable-tool #38/#25: evidence records a fixed finding in one call, and
-# run-dir.sh finds a PR's run directory in its owning linked worktree; exact tree.
-# #936 review: refuse a non-file evidence destination; list worktrees without inherited GIT_DIR.
-readonly MAX_TREE_TOKENS=519691
+# Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29), plus
+# one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes); exact tree.
+readonly MAX_TREE_TOKENS=518956
 
 violations=0
 checked=0

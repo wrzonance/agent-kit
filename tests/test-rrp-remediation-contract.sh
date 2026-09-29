@@ -86,7 +86,7 @@ cat >"$recipe_kit/.shared/scripts/agent-run.sh" <<'EOF'
 printf '%s\n' "$*" >>"$AGENTKIT_RECIPE_CALLS"
 EOF
 chmod +x "$recipe_kit/.shared/scripts/agent-run.sh"
-AGENTKIT_RECIPE_CALLS="$recipe_calls" agentkit="$recipe_kit" agentkit_provenance=ok \
+AGENTKIT_RECIPE_CALLS="$recipe_calls" agentkit="$recipe_kit" \
     bash -c "$precommit_fence"
 assert_eq '--cmd lint --if-declared' "$(cat "$recipe_calls")" \
     'executing the precommit fence cannot run the full test on a dirty repair'

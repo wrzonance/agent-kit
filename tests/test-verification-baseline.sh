@@ -258,14 +258,13 @@ printf 'touched content, rewritten by this PR\n' >"$recipe_repo/touched.txt"
 git -C "$recipe_repo" add -A
 git -C "$recipe_repo" commit -qm 'feature: rewrite touched.txt'
 
-# shellcheck disable=SC2034  # agentkit/agentkit_provenance/BASE_BRANCH/check/failing_paths
+# shellcheck disable=SC2034  # agentkit/BASE_BRANCH/check/failing_paths
 # are consumed by the eval'd recipe_block, invisible to shellcheck's static analysis.
 run_recipe() {
     local check_name=$1; shift
     (
         cd -- "$recipe_repo" || exit 1
         agentkit="$root/agentkit/skills"
-        agentkit_provenance=ok
         REPO_ROOT=$recipe_repo
         RUN_DIR=$(mktemp -d "$tmp/recipe-run.XXXXXX") && chmod 700 -- "$RUN_DIR"
         BASE_BRANCH=main

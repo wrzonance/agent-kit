@@ -73,7 +73,7 @@ After setup sets a stable `LEDGER="$REPO_ROOT/.agent/session-ledger.ndjson"`, bi
 ```bash
 review_invocation_flags="auto-review=${auto_review:-false}"
 # This resolver fence applies only inside a delivered workflow run.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set review-remote-pr \
     --scope "$PR" --flags "$review_invocation_flags" --repo "$REPO" --base review-pr-v1) || exit 1
 : "$RUN_ID"
@@ -109,8 +109,6 @@ Read ["$agentkit/review-remote-pr/references/provider-rules.md"](references/prov
 
 ## Resolver (run once per session)
 
-The warm-up writes data-only `.agent/cache/contract-session.env` (never sourced); a changed input makes it stale until refreshed.
-
 ```bash
 # Resolve the skill tree from the environment contract at the repository root;
 # trust it only when untracked, a regular file, and owned by this user -- a
@@ -140,20 +138,9 @@ if [[ -z $agentkit ]]; then
     exit 1
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path: $agentkit" >&2; exit 1; }
-agentkit_provenance=ok; : "$agentkit_provenance"
 ```
 
-Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
-
-#### THE CACHE REHYDRATION (prepend to each later guarded block)
-
-Replace `STEP_0_AGENTKIT` with Step 0's exact absolute `skills=` path; never read it from cache. The trusted reader rehydrates and validates current data.
-
-```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || { printf '%s\n' 'replace STEP_0_AGENTKIT with the Step 0 skills path' >&2; exit 1; }; expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
-[[ -d "$shared" && ! -L "$shared" && -O "$shared" && -f "$cache_reader" && ! -L "$cache_reader" && -O "$cache_reader" && -r "$cache_reader" && -x "$cache_reader" ]] || exit 1
-contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1; IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root") && [[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
-```
+`agentkit` is the `skills= path=` value preflight printed. Shell state does not persist: start any later block that calls a helper with `agentkit=<that path>`; nothing else to re-derive.
 
 ## Implementation-worker gate (MANDATORY for every non-exempt code change)
 
@@ -210,7 +197,7 @@ Never switch branches in a worktree that may belong to another issue/PR.
 # >>> prepend THE RESOLVER (initial warm-up only) <<<
 # At the TOP of the fence, not inside the create branch below: the reuse path
 # skips that branch and still runs "$agentkit/.shared/scripts/agent-preflight.sh".
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 if ! setup_output=$("$agentkit/review-remote-pr/scripts/pr-worktree.sh" --pr "$PR" --repo "$REPO" 2>&1); then
   printf '%s\n' "$setup_output" >&2
   printf '%s\n' 'STOP: PR worktree helper failed; no worktree output will be parsed.' >&2
@@ -225,7 +212,6 @@ shared="$agentkit/.shared/scripts"
 [[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || { printf '%s\n' 'agentkit: contract reader is missing' >&2; exit 1; }
 contract_path=$("$shared/contract-read.sh" --repo-root "$contract_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || { printf '%s\n' 'agentkit: contract skills path mismatch' >&2; exit 1; }
-"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$contract_root" > /dev/null || exit 1
 # The helper excludes .agent/* as local state; never git add -A.
 ```
 
@@ -244,7 +230,7 @@ Read `mergeable=`/`base: ref=...` from one `gh-pr-state.sh` call; merge only whe
 and verify via `$agentkit/.shared/scripts/agent-run.sh`:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 pr_digest=$("$agentkit/review-remote-pr/scripts/gh-pr-state.sh" --pr "$PR" --repo "$REPO") || exit 1
 MERGEABLE=$(sed -n 's/^pr=.*mergeable=\([A-Z]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
 BASE_BRANCH=$(sed -n 's/^base: ref=\([^ ]*\).*/\1/p' <<<"$pr_digest" | head -n 1)
@@ -277,7 +263,7 @@ Run only declared `agent-run.sh --cmd` commands, directly, no approval step: use
 Resolve one private run directory for this PR, carried as `RUN_DIR` in every later block:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 printf 'Review artifacts: %s\n' "$RUN_DIR"
 ```
@@ -292,7 +278,7 @@ Same path every session (`<repo>/.agent/evidence/pr-<N>`, mode `0700`); falls ba
 One helper call replaces the whole fetch-then-summarize cluster:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \
   --pr "$PR" --repo "$REPO" --full --tmpdir "$RUN_DIR/state"
@@ -321,7 +307,7 @@ repair, and do not start a blocking CI-settlement wait before this launch attemp
 the Step 1 PR-conversation artifact:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${PR:?set PR}" "${PR_WORKTREE:?set PR_WORKTREE}" "${REPO:?set REPO}" "${BASE_BRANCH:?set BASE_BRANCH}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
@@ -347,7 +333,7 @@ failure; stop with evidence unavailable. A receipt marker is authoritative from 
 Diagnose the causal failure from the run ID in `gh pr checks`, then run the **Implementation-worker gate** above; the worker verifies before its cycle push:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd lint --if-declared
 ```
@@ -355,7 +341,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 Commit the repair through the worker gate. After the worker-gate commit and before push, run the full test on clean committed HEAD:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 agent_run="$agentkit/.shared/scripts/agent-run.sh"
 "$agent_run" --cmd test
 ```
@@ -363,7 +349,7 @@ agent_run="$agentkit/.shared/scripts/agent-run.sh"
 For red/green iterations use `"$agent_run" --cmd test --only NAME[,NAME...]` through `AGENT_CMD_TEST_FOCUS`. After the final edit, commit, then run the unfocused `"$agent_run" --cmd test` once on clean committed HEAD for the full-suite verdict; push only after `PASS:`. On `FAIL`, having set `check`, `log`, and `failing_paths` from its output:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 tmp=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label baseline --repo-root "$REPO_ROOT") || exit 1
 rc=0
@@ -403,7 +389,7 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
 : "${REPO:?re-set REPO to OWNER/REPO; shell state does not persist}"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
 # After repair, one call records it fixed: RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence
@@ -439,7 +425,7 @@ one blocking helper/harness wait to own the rounds, then escalate to the user. *
 Guards run only in root. Root runs this bounded helper directly; read its log and refresh Step 5 afterward:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${RUN_DIR:?re-set RUN_DIR to the Step 0c output; shell state does not persist}"
 rc=0
 "$agentkit/review-remote-pr/scripts/gh-pr-state.sh" \

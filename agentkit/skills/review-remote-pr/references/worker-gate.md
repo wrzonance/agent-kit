@@ -22,7 +22,7 @@ baseline or discover `cross-write-check.sh`. Initial dispatches, follow-ups, and
 `pr-fix-batch` with accepted findings, worktree, branch, scope, and `test` verification.
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 : "${repair_worktree:?set repair worktree}" "${repair_branch:?set repair branch}"
 : "${repair_scope:?set accepted findings scoped write set}" "${accepted_findings:?set findings ledger}"
 : "${repair_prompt:?set root-owned prompt output path}"

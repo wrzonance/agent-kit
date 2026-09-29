@@ -67,7 +67,6 @@ run_resolver() {
     (
         set -e
         agentkit="$tmp/agentkit"
-        agentkit_provenance=ok
         repository_root="$tmp"
         export STUB_CONFIG_FILE="$config"
         export STUB_HARNESS="$harness"

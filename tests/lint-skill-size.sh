@@ -35,14 +35,12 @@ declare -A KNOWN_OVERSIZE=(
     # #902 review: remote attempted spend and classifier-aware finalization.
     # #912: delegated activation distinguishes an active owning workflow from standalone use.
     # #908: move resumable finalization into pr-stage while retaining delegated activation.
-    # cable-tool #38: evidence records the fixed verdict in one call; exact measurement.
-    [review-remote-pr]="495:8995:450"
+    # Dropped rehydration ceremony (#29) plus one-call evidence (#38); exact measurement.
+    [review-remote-pr]="481:8344:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
-    [pr-to-green]="333:5317:450"
-    # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
-    # #873 review: preflight's flag set includes --activation-origin.
-    [onboard-repo]="328:5259:450"
+    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    [pr-to-green]="320:5044:450"
     # #777: helper-owned recipes shrink the injected body toward the standard budget.
     # #779: retain destination-adjacent plan publication in the extracted body.
     # #783 + #785: atomic summary producers with durable sweep rehydration.
@@ -65,8 +63,8 @@ declare -A KNOWN_OVERSIZE=(
     # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
     # #908 final parent integration: exact combined one-call finalization measurement.
     # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
-    # cable-tool #38: evidence records the fixed verdict in one call; exact measurement.
-    [parallel-issues]="837:18141:500"
+    # Dropped rehydration ceremony (#29) plus one-call evidence (#38); exact measurement.
+    [parallel-issues]="837:18000:500"
 )
 
 readonly MAX_BODY_LINES=500

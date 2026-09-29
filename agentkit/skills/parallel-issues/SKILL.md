@@ -184,7 +184,7 @@ ready transition to the user.
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing. Run `"$agentkit/.shared/scripts/agent-preflight.sh" --help` and follow its resolver, cache-rehydration, and run-once recipe. Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
+Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing. Run `"$agentkit/.shared/scripts/agent-preflight.sh" --help` and follow its resolver and run-once recipe. `agentkit` is the `skills= path=` value preflight printed. Shell state does not persist: start any later block that calls a helper with `agentkit=<that path>`; nothing else to re-derive.
 
 `agent-preflight.sh` reports environment failures as contract data and exits 0; exit 2 is bad arguments. Its bytes also write `<worktree>/.agent/env-contract.txt`; `.agent/*` in the local exclude preserves the `.gitignore` allowlist. Re-running is idempotent.
 
@@ -362,8 +362,8 @@ Resolve `dependency_bootstrap` from the contract's resolved `instructions=` file
 set -euo pipefail
 
 issue_number=123 # Replace with the approved issue number.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-repository_root=$contract_root
+: "${agentkit:?set agentkit to the preflight skills= path}"
+repository_root=$(git rev-parse --show-toplevel) || exit 1
 base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1
 # A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
@@ -493,7 +493,7 @@ Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-wind
 
 Per-issue prompt: **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"; prompt_dir="$worktree/.agent/prompts"; mkdir -p -- "$prompt_dir" || exit 1; prompt_file="$prompt_dir/issue-$issue_number-lead.md"
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
 # write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
@@ -593,8 +593,8 @@ Invoke returned argv once, then push the branch. Only after publication does the
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-agentkit=$1 agentkit_provenance=$2 dispatch_plan=$3 worktree=$4 raw_handback=$5 issue_number=$6 repository_root=$7
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+agentkit=$1 dispatch_plan=$2 worktree=$3 raw_handback=$4 issue_number=$5 repository_root=$6
+: "${agentkit:?set agentkit to the preflight skills= path}"
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label handback --repo-root "$repository_root") || exit 1; trap 'rm -f -- "$validated_argv_file"' EXIT
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
@@ -604,7 +604,7 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 BASH_RECIPE
-)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
+)" _ "${agentkit:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
 Before opening a draft PR, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
@@ -733,7 +733,7 @@ the receipt is a **no-silent-skip** failure. Materiality, consent, and exit code
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
 : "${PR:?set PR}" "${worktree:?set worktree}" "${REPO:?set REPO}" "${base:?set base}"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
@@ -765,7 +765,7 @@ without delaying the earlier immutable review launch; raw untriaged thread count
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 # After the runner returns 0, produce terminal proof before each disposition:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence \
