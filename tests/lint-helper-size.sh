@@ -270,8 +270,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
 # Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
-# Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29); exact tree.
-readonly MAX_TREE_TOKENS=518311
+# Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29), plus
+# one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes); exact tree.
+readonly MAX_TREE_TOKENS=518956
 
 violations=0
 checked=0

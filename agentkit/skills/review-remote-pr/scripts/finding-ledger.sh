@@ -31,10 +31,10 @@ Usage: $PROGNAME add --title TITLE --severity P1|P2 --verdict fixed --sha SHA
        $PROGNAME add --title TITLE --severity P1|P2 --verdict open --rationale NEXT_REPAIR
        $PROGNAME status|validate --file FILE [--repo-root DIR --head SHA]
        $PROGNAME ids --file FILE    (prints ID<TAB>TITLE; review-ledger.sh cover --reason fix:ID names one)
-       $PROGNAME evidence --title T --path P --log LOG --repo-root DIR --repair-sha SHA [--head SHA]
-                 (prints fixed-verdict evidence JSON; LOG must be a green unfocused agent-run.sh --cmd test
-                 log run on DIR's clean committed HEAD; head defaults to that HEAD; SHA is the
-                 commit that changed P)
+       $PROGNAME evidence --title T --path P --log LOG --repo-root DIR --repair-sha SHA [--head SHA] [--severity P1|P2]
+                 (records T fixed with \$RUN_DIR/evidence-ID.json, keeping T's row severity; LOG must be a
+                 green unfocused agent-run.sh --cmd test log run on DIR's clean committed HEAD; head
+                 defaults to that HEAD; SHA is the commit that changed P)
 
 Terminal evidence: --evidence FILE --repo-root DIR --head SHA. Evidence JSON
 binds finding (title) to decision rejected|accepted-risk and rationale, or to
@@ -466,14 +466,16 @@ require_tested_head() {
         die_evidence 'verification log began with staged, unstaged, or untracked changes; clean the checkout, then run agent-run.sh --cmd test'
 }
 
-# Emit fixed-verdict evidence for one finding, refusing anything add would
-# later reject: the log must be the green, unfocused declared test run, and the
+# Record one finding fixed with its evidence, refusing anything add would
+# reject: the log must be the green, unfocused declared test run, and the
 # named repair commit must change the finding's path.
 cmd_evidence() {
     local title='' path='' log='' root='' repair_sha='' head='' actual_head='' declared command digest row
+    local severity=''
     shift
     while (($#)); do
         case $1 in
+            --severity) require_value "$1" "${2-}"; severity=$2; shift 2 ;;
             --title) require_value "$1" "${2-}"; title=$2; shift 2 ;;
             --path) require_value "$1" "${2-}"; path=$2; shift 2 ;;
             --log) require_value "$1" "${2-}"; log=$2; shift 2 ;;
@@ -486,6 +488,9 @@ cmd_evidence() {
     [[ -n $title && -n $path && -n $log && -n $root && -n $repair_sha ]] ||
         die_usage 'evidence requires --title, --path, --log, --repo-root and --repair-sha'
     reject_unsafe_text '--title' "$title"
+    validate_run_dir
+    validate_completed_review
+    validate_existing_ledger
     [[ $path != /* && $path != -* && $path != *'..'* ]] || die_evidence 'repair path must be repository relative'
     [[ -f $log && ! -L $log ]] || die_evidence "verification log is unavailable: $log"
     log=$(cd -- "$(dirname -- "$log")" && pwd -P)/${log##*/}
@@ -511,7 +516,31 @@ cmd_evidence() {
         '{schemaVersion:2, verdict:"fixed", sha:$sha, evidence:{finding:$finding, repairSha:$sha,
           head:$head, path:$path, command:$command, status:"passed", log:$log, logSha256:$digest}}')
     ( validate_repairs <(printf '%s\n' "$row") "$root" "$head" ) || exit 1
-    jq '.evidence' <<<"$row"
+    record_fixed "$title" "$severity" "$row" "$root" "$head"
+}
+
+# Store the evidence as RUN_DIR/evidence-ID.json and add the fixed verdict in
+# the same call, so no finding is left open between two steps.
+record_fixed() {
+    local ledger=$RUN_DIR/findings.ndjson id rc prior=''
+    TITLE=$1 SEVERITY=$2 VERDICT=fixed DETAIL_KIND=sha REPO_ROOT=$4 HEAD=$5
+    SHA=$(jq -r .sha <<<"$3")
+    [[ ! -f $ledger ]] ||
+        prior=$(jq -rs --arg t "$TITLE" '[.[] | select(.title == $t)] | last | .severity // empty' "$ledger")
+    SEVERITY=${prior:-$SEVERITY}
+    [[ -n $SEVERITY ]] || die_usage "--severity is required: no ledger row is titled $TITLE"
+    validate_add_args
+    if ! { [[ -f $ledger ]] && id=$(ledger_id_rows "$ledger" | id_for_title "$TITLE"); }; then
+        id=$(base_finding_id "$TITLE") || die_evidence 'could not derive finding IDs'
+    fi
+    # Stage the evidence; it replaces evidence-ID.json only once the add succeeds.
+    local dest=$RUN_DIR/evidence-$id.json
+    [[ ! -e $dest && ! -L $dest ]] || [[ -f $dest && ! -L $dest ]] ||
+        die_evidence "evidence destination is not a regular file: $dest"
+    EVIDENCE_FILE=$(mktemp "$RUN_DIR/evidence.XXXXXXXX")
+    { jq '.evidence' <<<"$3" >"$EVIDENCE_FILE" && ( append_record >/dev/null ) &&
+        mv -f -- "$EVIDENCE_FILE" "$dest"; } || { rc=$?; rm -f -- "$EVIDENCE_FILE"; exit "$rc"; }
+    printf 'recorded fixed id=%s sha=%s head=%s\n' "$id" "$SHA" "$HEAD"
 }
 
 cmd_status() {

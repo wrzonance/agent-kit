@@ -249,6 +249,25 @@ list_run_roots() {
     ((LISTED_ROOTS)) || exit 11
 }
 
+populated_run_dir() {
+    [[ ! -L ${1%/*/*} ]] && optional_private_root_is_trusted "${1%/*}" &&
+        optional_private_root_is_trusted "$1" && [[ -n $(find "$1" -mindepth 1 -print -quit) ]]
+}
+
+# #25: a PR's run directory lives in the worktree that ran its review. When this
+# checkout holds no populated one, reuse the single populated match among the
+# repository's own worktrees; otherwise resolve as before.
+worktree_target() {
+    local own=$REPO_ROOT/.agent/evidence/$SELECTOR field dir
+    local -a found=()
+    [[ -n $PR ]] && ! populated_run_dir "$own" || return 1
+    while IFS= read -r -d '' field; do
+        dir=${field#worktree }/.agent/evidence/$SELECTOR
+        [[ $field == 'worktree '* && $dir != "$own" ]] && populated_run_dir "$dir" && found+=("$dir")
+    done < <(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$REPO_ROOT" worktree list --porcelain -z 2>/dev/null)
+    ((${#found[@]} == 1)) && TARGET=${found[0]}
+}
+
 parse_args "$@"
 if [[ -n $SCRATCH_LABEL ]]; then
     [[ $SCRATCH_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die_usage 'scratch label must use letters, numbers, ., _, or -'
@@ -268,6 +287,11 @@ fi
 
 if existing_fallback_target; then
     private_dir_ensure "$TARGET" 'run directory'; printf '%s\n' "$TARGET"
+    exit 0
+fi
+
+if worktree_target; then
+    printf '%s\n' "$TARGET"
     exit 0
 fi
 

@@ -251,9 +251,10 @@ assert_contains "$(cat -- "$pr_stage")" \
     'a verified skip without an attempt must supply its explicit receipt fields'
 
 # --- the after-repair comment is a complete command -----------------------------
-after_repair=$(sed -n '/^# After repair/,/declines require/p' "$rrp_skill")
-assert_contains "$after_repair" 'RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title '"'SHORT_TITLE'"' --severity P1 --verdict fixed' \
-    'the fixed-verdict add names RUN_DIR, the same title and a severity'
+after_repair=$(sed -n '/^# After repair/,/declines:/p' "$rrp_skill")
+assert_contains "$after_repair" 'RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence' \
+    'the fixed verdict is one evidence call that names RUN_DIR'
+assert_contains "$after_repair" "--title 'SHORT_TITLE'" 'the record names the same title as the open row'
 assert_contains "$after_repair" '--repair-sha' 'the evidence step names the repair commit'
 assert_not_contains "$after_repair" '--reviewed-head' 'the evidence step needs no reviewed head'
 assert_not_contains "$(cat -- "$adv_ref")" '--reviewed-head' 'the evidence contract needs no reviewed head'
