@@ -93,7 +93,8 @@ declare -A KNOWN_OVERSIZE=(
     # #717: validated attempt provenance in receipts and remote ledger entries.
     # #902: compose final-head CI, acceptance, and all finding evidence before publication.
     # #902 review: reject unavailable classification and complete remote attempts.
-    [skills/review-remote-pr/scripts/post-receipt.sh]="1096:12909:800"
+    # Receipt gap report: finalization checks moved to lib/receipt-finalization.sh; ratcheted down.
+    [skills/review-remote-pr/scripts/post-receipt.sh]="1012:11637:800"
     # #727: independently validated remediation and repair resume.
     # #873: cover states its preconditions and binds fix:<id> via finding-ledger ids.
     # #902 review: distinguish attempted spend from completed coverage and upsert it.
@@ -264,7 +265,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #908 assembly: #902 and #909/#907 combined helper tree; exact measurement.
 # #908: resumable stages plus typed create/finalization identity proofs remove 8-12 root calls; exact tree measurement.
 # Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
-readonly MAX_TREE_TOKENS=518048
+# Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
+# finalization gap with its next command and default the reviewed head; exact tree.
+readonly MAX_TREE_TOKENS=519045
 
 violations=0
 checked=0
