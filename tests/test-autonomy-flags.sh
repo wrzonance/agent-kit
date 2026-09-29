@@ -194,9 +194,9 @@ assert_contains "$review" 'not permission to flip a PR ready' \
 
 # The root review orchestration owns the invocation grant; dispatched loops
 # must not forward it into a child context or invent consent there.
-assert_contains "$parallel" 'ONLY when this invocation carried it' \
+assert_contains "$parallel" 'only when this invocation carried it' \
     'the root uses the flag only when it was actually given'
-assert_contains "$parallel" 'Do not forward the flag or record' \
+assert_contains "$parallel" 'never forward the flag or record to a loop' \
     'the loop does not receive a manufactured consent grant'
 assert_contains "$parallel" 'manufactures child-context consent' \
     'and inventing it is named as the failure it is'

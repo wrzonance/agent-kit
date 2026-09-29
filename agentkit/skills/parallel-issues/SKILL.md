@@ -294,7 +294,7 @@ The composer publishes once; the recipe installs and verifies its hashed `uncove
 
 - **Cross-write check first** → run the Collect check above before trusting the handback.
 - **Completion report (branch + pushed SHA)** → review the pushed diff, then run the draft PR body template's single `$agentkit/parallel-issues/scripts/pr-stage.sh open` call: it composes the four approved sections, creates or recovers the draft, registers `opened_prs`, and moves the issue to `In review`. Print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"` and start Phase 3. Diff size is never a reason to withhold this.
-- **BLOCKED** → set `blocker_file="$worktree/.agent/logs/partial-blockers.list"` and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. On `disposition=partial-pushed pr=open blocker-file=written verification=unbound`, review the diff and use the same one-call open stage with `--blocker-file "$blocker_file"`, then print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`; chained successors dispatch from the pushed SHA on both completion paths. Otherwise redrive once: `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` must hit exit 11 (absent); clear the blocker (`write-set`: widen the fence and recheck every active worker; a sole `needs-paths: <glob>[,<glob>...]` drives that recheck); only after the blocker clears, send one `tools.send`, then `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command. `baseline-red` gets one automatic re-drive; other blockers park with the worktree preserved.
+- **BLOCKED** → set `blocker_file="$worktree/.agent/logs/partial-blockers.list"` and run `"$agentkit/.shared/scripts/validate-handback.sh" --classify-completion --worktree "$worktree" --handback-file "$completion_file" --blocker-file "$blocker_file"`. On `disposition=partial-pushed pr=open blocker-file=written verification=unbound`, review the diff and use the same one-call open stage with `--blocker-file "$blocker_file"`, then print `printf 'next: dispatch draft-phase loop for #%s (Step 3a); auto-review=%s\n' "$pr" "$auto_review_state"`; chained successors dispatch from the pushed SHA on both completion paths. Otherwise a recoverable blocker redrives once: `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path redrive.<N>` must hit exit 11 (absent); clear the blocker (`write-set`: widen the fence and recheck every active worker; a sole `needs-paths: <glob>[,<glob>...]` drives that recheck); only after the blocker clears, send one `tools.send`, then `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path redrive.<N>`. If the same lead is unavailable, give a fresh lead the exact resume command. `baseline-red` gets one automatic re-drive; other blockers park with the worktree preserved.
 - **Queued issue** → spawn it into the freed slot.
 
 **Stall detection:** Before the threshold elapses, do not call `"$agentkit/parallel-issues/scripts/stall-check.sh" --worktree "$worktree" --state "$worktree/.agent/stall-state"`; sample once at last progress + `STALL_THRESHOLD_MINUTES` (default 12), then no sooner than one threshold later. Name any non-zero `last-rc` and its `last-verification` log basename in the next update. Two quiet checks print `verdict=stalled`: interrupt, re-dispatch once with the preserved evidence and remaining step, and if that stalls too, park the workstream and name it in the report. The newest file mtime is the liveness signal; never `pgrep`.
@@ -337,52 +337,20 @@ After a completion, inspect durable state (worktree `git status`/`log`, then `$a
 
 ## Phase 3: Draft-phase loop, then user-gated review follow-up (parallel per-PR)
 
-As the root opens each draft PR from a lead's pushed completion report, it runs `/review-remote-pr`'s
-**draft-first** flow on it in parallel with the other leads. Step 3b workers receive only root-approved fix batches for
-mechanical implementation; they commit and push the assigned branch and stop. The root handles CI state/verification, forge conflicts, adversarial
-review, consent, replies, and publication — and never initiates a provider review: **never post
-`@coderabbitai review` or `full review` on any PR**.
-**As each PR opens, move its issue to `In review`** with the `move-github-project-item.sh --help` recipe (see `github-projects.md`).
-Same evidence rule as the dispatch move: the helper's printed line is the record, so no verification query follows it, and a `no-op:` line still exits 0. When several PRs open close together, batch the moves into one `--issue-numbers` call instead of one call per PR. Leave the `Done` move to merge — the global rule handles it; this skill hands off before merge.
+As each draft PR opens, run `/review-remote-pr`'s **draft-first** flow on it in parallel. Step 3b workers receive only root-approved fix batches; they commit, push the assigned branch, and stop. The root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication. Never post `@coderabbitai review` or `full review` on any PR.
+`pr-stage.sh open` moves each issue to `In review`; batch any extra moves into one `--issue-numbers` call. `Done` happens at merge.
 
 ### Step 3a: Dispatch draft-phase agents immediately
-Do not infer review behavior at PR-open time. Dispatch each PR's loop agent as soon as its PR URL
-lands; after conflicts/base freshness are handled, the ONE adversarial review launches against its
-immutable snapshot without waiting for pending or red CI. CI repair and review collection continue
-independently; neither a mid-review failure nor a repair push cancels or relaunches the review. The
-agent reports "draft phase complete" only after fresh final-head CI is green and all findings are
-fixed/declined with evidence, WITHOUT marking the PR ready.
-For a chain, predecessor fixes never trigger eager descendant merges. At draft finalization, walk
-the chain in dependency order. Call `"$agentkit/parallel-issues/scripts/chain-advance.sh"` with
-`--finalization-status` before merge or full verification; a sealed tuple stops the driver.
-Otherwise use `--finalize-successor` with the terminal receipt, final digest, accepted-finding
-ledger, exact pushed branch, immediate predecessor's `chainFinalizations.<pr>` tuple, and immutable
-review attempt when a review ran. The successor's sole writer performs any merge/conflict repair,
-commits, runs one final integrated verification, pushes, and, for an adversarial receipt, invokes
-`"$agentkit/review-remote-pr/scripts/review-ledger.sh"` with `cover --reason
-merge-down:<exact-predecessor-final-head>` before this boundary may pass. See
-[references/chains.md](references/chains.md#deferred-draft-finalization-after-a-predecessor-advances).
 
-**Materiality runs before review.** The loop adds acceptance artifacts to `materiality_acceptance_args`, then runs
-`"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"`; absent artifacts are omitted.
-— for a chained issue, pass its recorded `chain_base_sha` instead of `origin/$base`, or the
-predecessor's changes contaminate successor's verdict. Pass acceptance.txt; non-pass blocks.
-`verdict=skip-eligible` (test/docs-only and acceptance green) takes the
-documented-skip path: publish the receipt with `--skip-rationale` and the helper's printed
-oracle line, and launch no reviewer. `verdict=material` — any file touching executable
-logic, workflow, authorization, or persistence — proceeds to the full review. Either way the
-decision is recorded; a skip records *why*, never silence.
+Dispatch each PR's loop as soon as its URL lands. Once conflicts and base freshness are handled, the ONE adversarial review launches against its immutable snapshot without waiting for pending or red CI; CI repair and review collection run independently, and a repair push never cancels or relaunches the review. The loop reports "draft phase complete" only when fresh final-head CI is green and every finding is fixed or declined with evidence, WITHOUT marking the PR ready.
 
-The root-owned orchestration uses `--auto-review` ONLY when this invocation carried it; otherwise it
-obtains interactive approval in the consent-holding context. Do not forward the flag or record to a
-loop: a relayed grant manufactures child-context consent. The loop prechecks, hands launch-ready
-state to root, then resumes triage; it never stalls waiting for consent it cannot hold.
+**Materiality runs before review:** run `"$agentkit/parallel-issues/scripts/materiality-check.sh" --worktree "$worktree" --base "origin/$base" "${materiality_acceptance_args[@]}"` with any acceptance artifacts (a chained issue passes its `chain_base_sha` as the base). `verdict=skip-eligible` publishes the receipt with `--skip-rationale` and the printed oracle line and launches no reviewer; `verdict=material` gets the full review.
+
+Chains finalize in dependency order: call `"$agentkit/parallel-issues/scripts/chain-advance.sh"` with `--finalization-status` first (a sealed tuple ends the driver), else `--finalize-successor`; the successor's sole writer merges, verifies once, pushes, and covers an adversarial receipt with `"$agentkit/review-remote-pr/scripts/review-ledger.sh"` `cover --reason merge-down:<exact-predecessor-final-head>`. See [references/chains.md](references/chains.md#deferred-draft-finalization-after-a-predecessor-advances) for the arguments.
+
+Root uses `--auto-review` only when this invocation carried it; otherwise it asks for approval itself. A relayed grant manufactures child-context consent, so never forward the flag or record to a loop.
 
 ### Step 3b: Dispatch concurrent reviews and approved fix batches
-
-The PR-loop concurrency cap is enforced at dispatch before the first loop launch. The runtime
-cap includes the root and active issue leads; reserve those before deriving child capacity. The
-effective cap is the smaller of the number of open PRs and the remaining runtime slots:
 
 ```bash
 open_pr_count=${open_pr_count:?count of open PRs in this draft phase}
@@ -398,48 +366,14 @@ printf 'PR-loop dispatch cap: %s agents (open PRs=%s, runtime budget=%s)\n' \
     "$pr_loop_dispatch_cap" "$open_pr_count" "$runtime_loop_budget"
 ```
 
-Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow PR loops and refill
-after a prior loop reaches its completion marker. A setup loop releases its slot when root accepts
-that terminal result. It never remains active while root launches its reviewer or fix worker.
-Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; setup defaults to
-`origin/${base_branch}`, and chains pass `--materiality-base`.
+Keep `active_pr_loops` at or below `pr_loop_dispatch_cap`; queue overflow and refill when a loop reaches its completion marker. Use `pr-loop-setup`, then `pr-fix-batch` for accepted findings; chains pass `--materiality-base`.
 
-Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ... --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" --reaffirm-if-covered`. Never forward the consent,
-auto-review flag, or launch to a child. After launch-ready setup results arrive, launch all currently eligible reviews without waiting for an earlier review result. A stacked successor is eligible once
-its own pushed snapshot is fixed; its predecessor's review may still be running. Give every PR its
-own `RUN_DIR`; collect review completions independently and preserve every returned attempt/result
-identity when another launch fails or has an unknown outcome. An existing or uncertain attempt is
-never resent. Queue a capacity refusal and refill it only after a confirmed terminal release.
-
-The executable boundary is shared: review attempts and native worker reservations share the same atomic admission lock.
-Both call `concurrency-cap.sh` against root, outstanding version-2 reservations from the bound run,
-other-run reservations with a nonfuture heartbeat inside the standard two-hour freshness window,
-and reserved/running/unreconciled unknown review attempts. This is the existing total cap, never a
-review-only budget. The lock covers admission and its durable state write only; provider execution
-and worker work run without it. Standalone review remains valid when there is no current worker
-reservation; an old run's stale row does not consume capacity even when its worktree remains registered. A
-validated `attempt confirm-stopped` proof releases capacity while preserving unknown spend state.
-
-Once root approves findings, reserve `pr-fix-batch` with `$agentkit/parallel-issues/scripts/named-active-state.sh` before submission,
-record its returned worker ID, and release it only with confirmed terminal evidence. Dispatch
-approved batches for different worktrees immediately, even while other reviews or fixes run.
-A second fix worker, root edit, or merge-down targeting an occupied worktree waits for confirmed
-terminal release; requesting an interrupt is not release evidence. At batch composition, include
-available upstream findings and fix evidence from predecessor work that has already completed.
-Missing future findings never delay dispatch. Reconcile independently completed fixes against the
-integrated tree in dependency order.
-
-Review and fix completion may arrive in any order. Publish one root-owned receipt at a time, and
-serialize every other shared-state or forge publication. Neither a review result nor a fix result
-alone makes a draft ready.
+Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID" $agentkit/review-remote-pr/scripts/adversarial-run.sh ... --comments "$RUN_DIR/state/pr_${PR}_issue_comments.json" --reaffirm-if-covered`, one `RUN_DIR` per PR, launching every eligible review without waiting on earlier results. An existing or uncertain attempt is never resent. Review attempts and worker reservations share the `concurrency-cap.sh` admission lock.
+Reserve each `pr-fix-batch` with `$agentkit/parallel-issues/scripts/named-active-state.sh` before submission, record its worker ID, and include available upstream findings; a worktree's next writer waits for confirmed terminal release. Publish one root-owned receipt at a time.
 
 ### Adversarial-review receipt:
 
-Every dispatched loop must run `$agentkit/review-remote-pr/scripts/post-receipt.sh precheck` before handing off to the consent-holder,
-against `$RUN_DIR/state/pr_${PR}_issue_comments.json`; a stable marker means spent, do not rerun.
-A missing/unreadable artifact is evidence unavailable, not an empty set: a review or skip without
-the receipt is a **no-silent-skip** failure. Materiality, consent, and exit codes follow
-`review-remote-pr`'s [adversarial-review reference](../review-remote-pr/references/adversarial-review.md).
+Each loop runs `$agentkit/review-remote-pr/scripts/post-receipt.sh precheck` before handing the launch to root; materiality, consent, and exit codes follow the [adversarial-review reference](../review-remote-pr/references/adversarial-review.md).
 
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
@@ -456,22 +390,7 @@ case "$precheck_rc" in
     *)  exit 1 ;; # evidence unavailable (missing jq, unreadable/invalid artifact) -- fails closed
 esac
 ```
-After all confirmed findings are fixed or explicitly declined, push and refresh final PR state once.
-Required green CI bound to current HEAD verifies it; declared local acceptance adds mandatory pass
-records. Publish after fixes are pushed and green CI and **before draft-phase-complete handoff**, as exactly one
-durable top-level PR comment — a review or skip without it is never complete. It records provider,
-model, effort, mode (`cross-provider` or `blind fallback` + reason), `P1`/`P2`/total counts, one
-`confirmed finding` line per finding (title, verdict, `fix commit` SHA(s) or `decline rationale`),
-or the `verified-skip rationale` + oracle. The order is executable: the successful
-`$agentkit/review-remote-pr/scripts/adversarial-run.sh` result must precede `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`, and publication consumes only
-that validated ledger. Create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified
-skip. Run `post-receipt.sh publish` in a fresh shell — this publication block is separate from
-the pre-launch gate above, and the precheck must never fall through to a placeholder receipt.
-Root classification writes accepted Code Quality and issue-comment records in the existing pr-fix
-format to `$RUN_DIR/accepted-findings.ndjson`; create it explicitly empty only after accepting none.
-Reuse it for repair and terminal evidence. Missing, open, legacy-terminal, or stale evidence blocks
-publication. An unavailable `finding-classification: cq=... icf=...` digest result blocks publication
-without delaying the earlier immutable review launch; raw untriaged thread counts remain non-gating:
+Publish exactly one receipt comment after fixes are pushed and CI is green on that HEAD, **before draft-phase-complete handoff**. The successful `$agentkit/review-remote-pr/scripts/adversarial-run.sh` result precedes `$agentkit/review-remote-pr/scripts/finding-ledger.sh add`; create an empty `$RUN_DIR/findings.ndjson` for a clean review or verified skip, and write accepted Code Quality and issue-comment records to `$RUN_DIR/accepted-findings.ndjson` (explicitly empty when none). Run the finalizer in a fresh shell:
 
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
@@ -495,14 +414,11 @@ finalize_args=(finalize --run-id "$RUN_ID" --run-repo-root "$repository_root" \
 [[ -z ${MODE_REASON:-} ]] || finalize_args+=(--mode-reason "$MODE_REASON")
 "$agentkit/parallel-issues/scripts/pr-stage.sh" "${finalize_args[@]}" || exit 1
 ```
-The ledger owns titles, dispositions, SHAs, and rationales. The one-call finalizer derives the
-review attempt and counts, takes one fresh `gh-pr-state.sh --full --no-cache` digest, passes it
-unchanged to `post-receipt.sh publish`, classifies the receipt, and records `receipt_prs` or
-`skipped_prs`. For a verified skip, add `--provider`, `--model`, `--effort`, `--mode`,
-`--skip-rationale`, and `--oracle`; there is no review attempt to derive.
+`pr-stage.sh finalize` derives the attempt and counts, publishes through `post-receipt.sh publish`, and records `receipt_prs` or `skipped_prs`. A verified skip adds `--provider`, `--model`, `--effort`, `--mode`, `--skip-rationale`, and `--oracle`.
+
 ### Step 3c: Collect draft-phase results → hand the ready-flip to the user
 
-After all draft-phase agents return, print the table and tell the user the drafts are theirs to flip:
+After all draft-phase agents return, print the table; the drafts are the user's to flip:
 
 ```
 #57 Parser resilience  → ✅ PR #67 draft-ready (repo-verify=green acceptance=<cmd>:<status>)  worker=<model> <effort>
@@ -513,15 +429,12 @@ Mark the ✅ PRs ready when you want to review them — provider review behavior
 I'll pick up CodeRabbit and GitHub Code Quality feedback when it lands.
 ```
 
-The `worker=` column records which model actually ran; on the degraded path every row reads `worker=self (spawn unavailable)` instead, since spawn availability is a runtime property, not a per-issue one.
-
-At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan`; state merge order (base first). After each predecessor merges: merge updated default down and push; then run `$agentkit/parallel-issues/scripts/chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. Humans may merge then delete the branch for auto-retarget. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
+At handoff, use `scripts/write-merge-plan.sh` to upgrade the same owner-only file from schema-1 `--dispatch-plan` to schema-2 `--merge-plan` and state merge order (base first). After each predecessor merges: merge updated default down and push; then run `$agentkit/parallel-issues/scripts/chain-advance.sh --retarget --pr <N> --base <default>`. Exit 1 means no confirmed edit; exit 2 means applied base, then proof failure; verify the successor's baseRefName, ancestry, CI/approval, and closing linkage. See [references/chains.md](references/chains.md#merge-order-and-the-stacked-pr-retarget).
 
 ### Step 3d: After the ready transition, when provider findings land — follow-up (parallel per-PR)
 
-Review timing after a ready transition or push is repo/provider-configured; no review arriving is an observed state, not a trigger. Watch each PR on a long interval under [.shared/wait-discipline.md](../.shared/wait-discipline.md) using `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh plus ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules (real-review-vs-ack, `github-code-quality[bot]`'s comment-only arrival). As findings land, dispatch a follow-up agent per PR (or run it yourself, labelled `worker=self (spawn unavailable)`) following `review-remote-pr`'s Step 5 and that same `provider-rules.md` cycle order: approved human actions first, then body nitpicks and Code Quality findings, then CodeRabbit threads — one push per cycle, no bot commands.
-When human content lands, surface per-item labels, feedback, assessment, proposed action, and an attributed draft reply; wait for per-item approval before acting or posting, and leave the thread unresolved. A PR with a pending human decision reports `awaiting human confirmation` and is not ready to merge.
-Per-PR follow-up exit line:
+Watch each PR on a long interval with `review-remote-pr`'s Step 6 `gh-pr-state.sh --full` refresh and ["$agentkit/review-remote-pr/references/provider-rules.md"](../review-remote-pr/references/provider-rules.md)'s detection rules. As findings land, run `review-remote-pr`'s Step 5 per PR in that file's cycle order: approved human actions, then body nitpicks and Code Quality, then CodeRabbit threads — one push per cycle, no bot commands.
+Human review content: show each item with an attributed draft reply and wait for per-item approval; leave the thread unresolved. Exit line per PR:
 ```
 "PR #NNN: all CI green, X/X automated threads resolved, Y/Y body nitpicks handled.
  Code Quality: [none | auto-cleared | dismissed with reasons].
@@ -530,30 +443,24 @@ Per-PR follow-up exit line:
 ```
 ### Final draft sweep (mandatory before handoff)
 
-With `--auto-review`, immediately before iteration read `opened_prs_json=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs)`; exit `11` means `[]`, while every other error blocks. Require `type == "array"`, positive integer entries, and deduplicate in first-seen order before sweeping. Each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}. Resolve `RUN_DIR`; derive repeated `--acceptance-command` args from its `.agent/acceptance.txt` and append them to a `gh-pr-state.sh --full --no-cache` refresh into `RUN_DIR/state`;
-then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"` on the fresh comment artifact. Record each successful adversarial PR with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"` and each verified skip with the same command using `--path skipped_prs`; the helper is idempotent across resumed sweeps. On `10:receipt=none`, gate on `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` and, when it exits 11 (absent), re-enters the draft loop once per PR, then record a successful redrive (`"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`). `duplicate/invalid` evidence is unrecoverable: release its lifecycle as `handed-back` with blocker evidence; handoff cannot print on a miss.
+With `--auto-review`, read `opened_prs_json=$("$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs)` (exit `11` means `[]`), deduplicated in first-seen order. Each PR needs CI settled, Code Quality dispositioned, and exactly one of {adversarial receipt, verified skip receipt}: refresh `gh-pr-state.sh --full --no-cache` into `RUN_DIR/state` with its `--acceptance-command` args,
+then run `"$agentkit/review-remote-pr/scripts/post-receipt.sh" status --issue-comments "$RUN_DIR/state/pr_${pr}_issue_comments.json"`. Record each with `"$agentkit/.shared/scripts/run-state.sh" record-summary --run-id "$RUN_ID" --repo-root "$repository_root" --path receipt_prs --json "$pr"` (or `--path skipped_prs`). On `10:receipt=none`, if `"$agentkit/.shared/scripts/run-state.sh" get --run-id "$RUN_ID" --path receipt-redrive.<pr>` exits 11 (absent), re-enter the draft loop once, then `"$agentkit/.shared/scripts/run-state.sh" set --run-id "$RUN_ID" --path receipt-redrive.<pr>`. `duplicate/invalid` evidence releases as `handed-back` with blocker evidence.
 
 ### Opt-out
-With `/parallel-issues --no-followup` (or "just open PRs, I'll review later"), skip only Step 3d; still run the mandatory Final draft sweep before handoff. Otherwise Phase 3 runs automatically.
+`--no-followup` (or "just open PRs, I'll review later") skips only Step 3d; still run the mandatory Final draft sweep before handoff.
 
 ## Do NOT Delete Worktrees
-**Never run `git worktree remove` at end of this skill.** Keep worktrees for later human feedback, CI iteration, or user inspection.
+Keep every worktree for later feedback and CI; cleanup happens only after merge and on user request.
 
-**After the Final draft sweep passes**, print each worktree, PR/blocker, `.agent/` evidence, next step, and ONLY-after-merge-AND-user-confirmation cleanup, then paste this output verbatim:
+**After the Final draft sweep passes**, print each worktree, PR/blocker, `.agent/` evidence, and next step, then run:
 ```bash
 # final-handoff summary
 [[ ${dispatch_plan:-} == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || exit 1
 "$agentkit/.shared/scripts/run-state.sh" summary --run-id "$RUN_ID" --repo-root "$repository_root" --reports-dir "$dispatch_plan.verification-reports" || exit 1
 ```
-Cleanup requires user request after merge.
-
-At handoff, print each queued reason and exact resume command, preserving flags; e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`.
-
-A downstream-owned unknown flag is not a queue entry: print a second resume line naming the
-owner once PRs exist, e.g. `resume=/pr-to-green <PRs> --auto-merge`, preserving flags for that
-later phase.
+Print each queued reason with its exact resume command, preserving flags, e.g. `queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222`, and for a downstream-owned flag `resume=/pr-to-green <PRs> --auto-merge`.
 ## Limits
 
-- Maximum 10 concurrent agents of every kind (root counted); fast-mode queues overflow, attended asks. Chains use a 4-link depth window under `--auto-serialize`: depth limits the number of links in flight, not chain membership; deeper tails queue/refill toward the same limit.
-- Invocation opts into issue leads; only root spawns. Requires `gh` with Projects v2 access (`read:project`/`project`, or App `Projects: write`), `jq`, the shipped helpers, and a `main` or `master` branch.
+- Maximum 10 concurrent agents of every kind (root counted); chains keep a 4-link depth window under `--auto-serialize` and deeper tails queue.
+- Only root spawns. Needs `gh` with Projects v2 access, `jq`, the shipped helpers, and a `main` or `master` branch.
 - Cross-cutting rules: [spawn-contract](../.shared/spawn-contract.md), [six-step-loop](../.shared/six-step-loop.md), [wait-discipline](../.shared/wait-discipline.md), [trust-and-fencing](references/trust-and-fencing.md), [chains](references/chains.md), [provider-rules](../review-remote-pr/references/provider-rules.md).
