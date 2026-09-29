@@ -406,10 +406,9 @@ Order is executable: `$agentkit/review-remote-pr/scripts/adversarial-run.sh` mus
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 # Repeat the ledger command once per confirmed outcome, after the runner returned 0:
 RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict open --rationale 'NEXT_REPAIR'
-# After repair: ev="$RUN_DIR/evidence-ID.json"; "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE'
-# --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA >"$ev", then
-# RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add --title 'SHORT_TITLE' --severity P1 --verdict fixed
-# --sha "$(jq -r .repairSha "$ev")" --evidence "$ev" --repo-root "$contract_root" --head CURRENT_SHA; declines require --evidence FILE too.
+# After repair, one call records it fixed: RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence
+# --title 'SHORT_TITLE' --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$contract_root" --repair-sha REPAIR_SHA
+# (declines: add --verdict declined --rationale R --evidence FILE --repo-root "$contract_root" --head CURRENT_SHA).
 # The agent posting this receipt -- your own harness and model, never the reviewer's.
 : "${ROOT_MODEL:?set ROOT_MODEL to your own model id, e.g. gpt-5.6-luna}"
 AGENT_IDENTITY=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$contract_root" --get harness.identity --worker-model "$ROOT_MODEL") || exit 1

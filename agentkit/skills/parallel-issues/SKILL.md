@@ -768,14 +768,9 @@ without delaying the earlier immutable review launch; raw untriaged thread count
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 # After the runner returns 0, produce terminal proof before each disposition:
-fixed_evidence="$RUN_DIR/evidence-fixed.json"
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE' \
-  --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
-  --repair-sha REPAIR_SHA >"$fixed_evidence" || exit 1
-RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
-  --title 'SHORT_TITLE' --severity P1 --verdict fixed \
-  --sha "$(jq -r .repairSha "$fixed_evidence")" --evidence "$fixed_evidence" \
-  --repo-root "$worktree" --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence \
+  --title 'SHORT_TITLE' --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
+  --repair-sha REPAIR_SHA || exit 1
 decline_evidence="$RUN_DIR/evidence-declined.json"
 jq -cn --arg finding 'OTHER_TITLE' --arg rationale 'RATIONALE' \
   '{finding:$finding,decision:"rejected",rationale:$rationale}' >"$decline_evidence" || exit 1

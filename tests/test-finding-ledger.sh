@@ -362,15 +362,46 @@ agent_log "$tmp/ev-red.log" tests/regression.sh "$ev_head" yes 1
 agent_log "$tmp/ev-other-head.log" tests/regression.sh "$ev_repair" yes 0
 agent_log "$tmp/ev-dirty.log" tests/regression.sh "$ev_head" no 0
 printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/ev-unbound.log"
+# evidence records the fixed verdict itself (#38: the root ran evidence but
+# never the follow-up add, leaving both findings open).
+new_run() { mkdir -m 700 "$1"; cp "$run_dir/adversarial.result.json" "$1/adversarial.result.json"; }
+ev_run="$tmp/ev-run"
+new_run "$ev_run"
+run_ledger_at "$ev_run" add --title 'Guard input' --severity P1 --verdict open \
+    --rationale 'repair required' >/dev/null
+ev_file="$ev_run/evidence-guard-input.json"
 evidence() {
-    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" "$@"
+    RUN_DIR="$ev_run" "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" "$@"
 }
+red_rc=0
+evidence --log "$tmp/ev-red.log" --repair-sha "$ev_repair" >/dev/null 2>&1 || red_rc=$?
+assert_eq 1 "$red_rc" 'a red log is refused before anything is recorded'
+assert_eq open "$(jq -r .verdict "$ev_run/findings.ndjson")" 'a refused evidence call leaves the row open'
+assert_eq no "$([[ -e $ev_file ]] && printf yes || printf no)" 'a refused evidence call writes no evidence file'
 
 ev_out=$(evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair")
-assert_eq "$ev_repair" "$(jq -r .repairSha <<<"$ev_out")" 'evidence records the named repair commit'
-assert_eq "$ev_head" "$(jq -r .head <<<"$ev_out")" 'evidence head defaults to the checkout HEAD'
-assert_eq 'tests/regression.sh' "$(jq -r .command <<<"$ev_out")" 'evidence records the logged command'
-assert_eq false "$(jq 'has("reviewedHead")' <<<"$ev_out")" 'evidence carries no reviewedHead'
+assert_eq "recorded fixed id=guard-input sha=$ev_repair head=$ev_head" "$ev_out" \
+    'evidence prints one line naming the id, repair sha, and head'
+assert_eq fixed:P1 "$(jq -r '"\(.verdict):\(.severity)"' "$ev_run/findings.ndjson")" \
+    'evidence flips the open row to fixed and keeps its severity'
+assert_eq complete "$("$script" status --file "$ev_run/findings.ndjson" --repo-root "$ev_repo" \
+    --head "$ev_head" | jq -r .remediation)" \
+    'fresh tested-head evidence validates as complete'
+assert_eq "$ev_repair" "$(jq -r .repairSha "$ev_file")" 'evidence records the named repair commit'
+assert_eq "$ev_head" "$(jq -r .head "$ev_file")" 'evidence head defaults to the checkout HEAD'
+assert_eq 'tests/regression.sh' "$(jq -r .command "$ev_file")" 'evidence records the logged command'
+assert_eq false "$(jq 'has("reviewedHead")' "$ev_file")" 'evidence carries no reviewedHead'
+new_title_err=$(RUN_DIR="$ev_run" "$script" evidence --title 'Unseen finding' --path affected.sh \
+    --repo-root "$ev_repo" --log "$tmp/ev-full.log" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
+assert_contains "$new_title_err" '--severity is required' 'a title with no prior row needs --severity'
+assert_contains "$new_title_err" 'rc=2' 'a missing severity is a usage refusal'
+assert_eq "recorded fixed id=unseen-finding sha=$ev_repair head=$ev_head" \
+    "$(RUN_DIR="$ev_run" "$script" evidence --severity P2 --title 'Unseen finding' --path affected.sh \
+        --repo-root "$ev_repo" --log "$tmp/ev-full.log" --repair-sha "$ev_repair")" \
+    'an explicit --severity records a finding with no prior row'
+assert_rc 2 'evidence requires RUN_DIR' -- \
+    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
+    --log "$tmp/ev-full.log" --repair-sha "$ev_repair"
 printf 'dirty\n' >>"$ev_repo/other.txt"
 dirty_checkout_rc=0
 evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
@@ -398,25 +429,13 @@ exec "$AGENTKIT_REAL_GIT" "$@"
 EOF
 chmod +x "$status_bin/git"
 status_error_rc=0
-PATH="$status_bin:$PATH" AGENTKIT_REAL_GIT=$(command -v git) \
-    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
-    --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
+real_git=$(command -v git)
+PATH="$status_bin:$PATH" AGENTKIT_REAL_GIT=$real_git \
+    evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
     >/dev/null 2>"$tmp/ev-status-error.err" || status_error_rc=$?
 assert_eq 1 "$status_error_rc" 'evidence fails closed when checkout status is unavailable'
 assert_contains "$(cat "$tmp/ev-status-error.err")" 'could not inspect checkout status' \
     'the status error is not mistaken for an empty clean checkout'
-printf '%s\n' "$ev_out" >"$tmp/ev.json"
-ev_run="$tmp/ev-run"
-mkdir -m 700 "$ev_run"
-cp "$run_dir/adversarial.result.json" "$ev_run/adversarial.result.json"
-run_ledger_at "$ev_run" add --title 'Guard input' --severity P2 --verdict open \
-    --rationale 'repair required' >/dev/null
-assert_rc 0 'producer output is accepted by add --verdict fixed unmodified' -- run_ledger_at "$ev_run" add \
-    --title 'Guard input' --severity P2 --verdict fixed --sha "$ev_repair" --evidence "$tmp/ev.json" \
-    --repo-root "$ev_repo" --head "$ev_head"
-assert_eq complete "$("$script" status --file "$ev_run/findings.ndjson" --repo-root "$ev_repo" \
-    --head "$ev_head" | jq -r .remediation)" \
-    'fresh tested-head evidence validates as complete'
 
 assert_rc 2 'evidence requires an explicit --repair-sha' -- evidence --log "$tmp/ev-full.log"
 assert_rc 1 'a focused log is refused as repair evidence' -- \
@@ -452,11 +471,11 @@ assert_contains "$dirty_err" 'staged, unstaged, or untracked changes' \
 unbound_err=$(evidence --log "$tmp/ev-unbound.log" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$unbound_err" 'no tested-head metadata' \
     'the unbound-log refusal asks for a current agent-run log'
-abs_err=$("$script" evidence --title 'Guard input' --path "$ev_repo/affected.sh" --log "$tmp/ev-full.log" \
+abs_err=$(RUN_DIR="$ev_run" "$script" evidence --title 'Guard input' --path "$ev_repo/affected.sh" --log "$tmp/ev-full.log" \
     --repo-root "$ev_repo" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
 assert_contains "$abs_err" 'repair path must be repository relative' 'an absolute --path is refused by name'
 assert_contains "$abs_err" 'rc=1' 'an absolute --path is an evidence refusal, not a git crash'
-bad_root_err=$("$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
+bad_root_err=$(RUN_DIR="$ev_run" "$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
     --repo-root "$tmp/no-such-repo" --repair-sha "$ev_repair" 2>&1 >/dev/null || true)
 assert_contains "$bad_root_err" 'no-such-repo: HEAD' 'an unresolvable head refusal keeps the value asked for'
 
@@ -490,7 +509,8 @@ if git init -q --object-format=sha256 "$sha256_repo" 2>/dev/null; then
     (cd -- "$sha256_repo" && "$agent_run" --cmd test >/dev/null 2>&1)
     sha256_log=$(find "$sha256_repo/.agent/logs" -name '*-test.log' -type f -print -quit)
     sha256_rc=0
-    "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$sha256_repo" \
+    new_run "$tmp/sha256-run"
+    RUN_DIR="$tmp/sha256-run" "$script" evidence --severity P2 --title 'Guard input' --path affected.sh --repo-root "$sha256_repo" \
         --log "$sha256_log" --repair-sha "$sha256_repair" >/dev/null 2>"$tmp/sha256.err" || sha256_rc=$?
     assert_eq 0 "$sha256_rc" \
         "a real SHA-256 repository log certifies the repair ($(cat "$tmp/sha256.err"))"
@@ -507,7 +527,7 @@ assert_eq complete "$("$script" status --file "$tmp/legacy-repair.ndjson" --repo
 
 undeclared_repo="$tmp/ev-undeclared"
 git clone -q "$ev_repo" "$undeclared_repo"
-undeclared_err=$("$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
+undeclared_err=$(RUN_DIR="$ev_run" "$script" evidence --title 'Guard input' --path affected.sh --log "$tmp/ev-full.log" \
     --repo-root "$undeclared_repo" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
 assert_contains "$undeclared_err" 'the repository declares no AGENT_CMD_TEST' \
     'a repository without a declared test command is named as the cause'
