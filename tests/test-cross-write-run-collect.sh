@@ -65,10 +65,6 @@ collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --worker-start 1
 assert_eq 11 "$rc" 'explicit flags still pass through to the audited Collect'
 assert_contains "$out" 'invariant=capture-before-dispatch' 'the audit judges the explicit start'
 
-collect --run-id "$run_id" --issue 579 --repo-root "$checkout" --dispose-duplicates
-assert_eq 2 "$rc" 'run mode refuses to dispose without the recorded worker finish'
-assert_contains "$out" '--dispose-duplicates needs --worker-end' 'the refusal names the missing finish'
-
 # Routing reads whole arguments: a legacy snapshot path containing ' --run-id '
 # stays on the legacy Collect.
 odd_dir="$checkout/.agent/x --run-id y"

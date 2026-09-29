@@ -772,12 +772,10 @@ dispatch_fence_cmd() {
 [[ $# -gt 0 ]] || usage
 command=$1
 shift
+# shellcheck source=lib/cross-write-run.sh
 case $command in
     snapshot) snapshot_cmd "$@";;
-    collect) for arg; do [[ $arg != --run-id ]] || {
-            # shellcheck source=lib/cross-write-run.sh
-            source "${SCRIPT_PATH%/*}/lib/cross-write-run.sh" && run_collect_cmd "$@"; exit; }; done
-        collect_cmd "$@";;
+    collect) source "${SCRIPT_PATH%/*}/lib/cross-write-run.sh" && run_collect_cmd "$@";;
     dispose) dispose_cmd "$@";;
     dispatch-fence) dispatch_fence_cmd "$@";;
     -h|--help) usage 0;;

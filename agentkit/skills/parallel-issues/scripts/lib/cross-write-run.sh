@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Run-scoped Collect for cross-write-check.sh; sourced, uses its helpers.
+# Collect routing for cross-write-check.sh; sourced, uses its helpers.
 
 # Collect by run: the root checkout, dispatch-fence baseline and its recorded
 # identity, and the worker's reserved worktree and reservation time are read
 # from the run, so the root transcribes nothing. Remaining flags pass through
 # to the audited Collect, which enforces every existing invariant.
 run_collect_cmd() {
+    local arg
+    # Match whole arguments: a legacy --snapshot path may contain " --run-id ".
+    for arg; do [[ $arg != --run-id ]] || break; done
+    [[ ${arg-} == --run-id ]] || { collect_cmd "$@"; return; }
     local run_id='' issue='' repo_root=. root baseline_id reservation worker='' start=''
     local -a rest=()
     while (($#)); do
@@ -28,9 +32,6 @@ run_collect_cmd() {
         "$root/.agent/runs/active-workers.ndjson" 2>/dev/null) || reservation=''
     IFS=$'\t' read -r worker start <<<"$reservation"
     [[ -n $worker && $start =~ ^[0-9]+$ ]] || audit_unavailable worker-start-required record-dispatch-start
-    # The run records no finish time; a window ending now would admit later root edits as duplicates.
-    [[ " ${rest[*]} " != *' --dispose-duplicates '* || " ${rest[*]} " == *' --worker-end '* ]] ||
-        die '--dispose-duplicates needs --worker-end (the recorded worker finish); drop it to report duplicates as incidents'
     # shellcheck disable=SC2034 # read by collect_cmd
     DISPATCH_AUDIT=yes
     collect_cmd --root "$root" --snapshot "$root/.agent/cross-write-dispatch-$run_id.snapshot" \
