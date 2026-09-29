@@ -24,6 +24,8 @@ assert_contains "$skill_flat" 'Human grants still fail closed' \
 assert_contains "$skill_flat" 'Malformed, symlinked, foreign-owned, or active-run state still fails closed' \
     'the cold contract preserves unsafe and active-state validation'
 
+# The helper prints the path shell-quoted (%q), so compare quoted bytes.
+expected_assignment=$(printf '  agentkit=%q' "$(cd -P -- "$root/agentkit/skills" && pwd -P)")
 for helper in \
     "$parallel/scripts/select-boundary-mode.sh" \
     "$parallel/scripts/concurrency-cap.sh" \
@@ -37,7 +39,7 @@ for helper in \
         "$label recipe carries no session-cache rehydration"
     # Ledger #29: the recipe starts from the literal installed path, so a
     # fresh shell or a fresh worktree has nothing to recover.
-    assert_contains "$help_text" "  agentkit=$(cd -P -- "$root/agentkit/skills" && pwd -P)" \
+    assert_contains "$help_text" "$expected_assignment" \
         "$label recipe names its own installed skills path"
 done
 
@@ -48,13 +50,16 @@ mkdir -p -- "$repo/.agent"
 git -C "$repo" init -q
 
 # The printed path is the tree the helper ships in, never a cached value.
-foreign_skills="$tmp/foreign-skills"
+# A space in the path proves the assignment stays one shell word.
+foreign_skills="$tmp/foreign skills"
 mkdir -p -- "$foreign_skills/.shared/scripts/lib"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
     "$foreign_skills/.shared/scripts/lib/contract-cache.sh"
-assert_eq "  agentkit=$(cd -P -- "$foreign_skills" && pwd -P)" \
-    "$("$foreign_skills/.shared/scripts/lib/contract-cache.sh" --print-session-recovery)" \
+foreign_assignment=$("$foreign_skills/.shared/scripts/lib/contract-cache.sh" --print-session-recovery)
+assert_eq "$(printf '  agentkit=%q' "$(cd -P -- "$foreign_skills" && pwd -P)")" "$foreign_assignment" \
     'the printed assignment names the tree the helper ships in'
+assert_eq "$(cd -P -- "$foreign_skills" && pwd -P)" "$(bash -c "$foreign_assignment"'; printf %s "$agentkit"')" \
+    'the printed assignment evaluates back to a path containing a space'
 
 # A repository can retain activation state from an older session. The current
 # session fast path may hash its session ID once, but it must not hash any file

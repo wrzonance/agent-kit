@@ -129,7 +129,8 @@ assert_eq '--issue-numbers 777 --status In review --repo owner/repo' "$(<"$move_
     'the copied board recipe forwards the selected issue and In review lifecycle target'
 assert_contains "$boundary_help" 'Recipe: select once before fetching' \
     'boundary-mode help owns its removed selection recipe'
-assert_contains "$boundary_help" "  agentkit=$root/agentkit/skills" \
+installed_assignment=$(printf '  agentkit=%q' "$(cd -P -- "$root/agentkit/skills" && pwd -P)")
+assert_contains "$boundary_help" "$installed_assignment" \
     'boundary selection names its own installed skills path'
 assert_not_contains "$boundary_help" 'read-session-context' \
     'boundary selection carries no cache rehydration'
@@ -653,7 +654,7 @@ assert_contains "$text" 'confirmed terminal release' \
     'same-worktree fix and merge-down work waits for confirmed writer release'
 assert_contains "$text" 'Publish one root-owned receipt at a time' \
     'root publication remains serial across concurrent review and fix completion'
-assert_contains "$concurrency_help" "  agentkit=$root/agentkit/skills" \
+assert_contains "$concurrency_help" "$installed_assignment" \
     'concurrency dispatch names its own installed skills path'
 assert_contains "$text" '### Spawn discipline (applies to every spawn in this skill)' \
     'spawn discipline is cross-cutting instead of dispatch-phase scoped'
