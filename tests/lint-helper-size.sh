@@ -268,8 +268,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
 # Fast-mode dispatch list (field run: 35 calls / 2.6M tokens of --json re-reads before
-# one dispatch): pick-issues decision list + exclusion/protected pass; exact tree.
-readonly MAX_TREE_TOKENS=519566
+# one dispatch): pick-issues decision list + exclusion/protected pass, and fast mode
+# implying Backlog so a thin Ready column still fills the wave (#270); exact tree.
+readonly MAX_TREE_TOKENS=519618
 
 violations=0
 checked=0

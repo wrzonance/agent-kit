@@ -171,8 +171,8 @@ assert_eq '0' "$canonical_mismatches" \
 # #909: record the PR publication target once in the dispatch-plan producer.
 # #910 records complete join predecessors, publication target, and integration identity.
 # Fast-mode dispatch list: the picker owns the fast-mode cap and collision drops.
-assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 39607 ]] && printf yes || printf no)" \
-    'triage-and-selection reference stays at or under 39607 bytes'
+assert_eq yes "$([[ $(wc -c < "$root/agentkit/skills/parallel-issues/references/triage-and-selection.md") -le 39603 ]] && printf yes || printf no)" \
+    'triage-and-selection reference stays at or under 39603 bytes'
 
 # Companion acknowledgement is derived from the active skill's declared map.
 assert_rc 0 'delegated skills preserve the governing active receipt' -- python3 - "$root" "$tmp" <<'PY'

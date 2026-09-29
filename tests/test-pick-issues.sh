@@ -313,6 +313,19 @@ assert_eq '["blockerRead","blockerTotal","blockers","bodyCache","dispatch","elig
 assert_rc 2 '--exclude-text is a fast-mode list filter only' -- \
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$repo" --exclude-text x
 
+# A thin Ready column is an invitation (#270): on the field board the only Ready
+# item was excluded by the operator, so fast mode must fill the wave from Backlog.
+backlog_item() { printf '{"status":"Backlog","content":{"number":%s,"type":"Issue","title":"%s","repository":"example-org/example-repo"}}' "$1" "$2"; }
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+set_board "{\"totalCount\":3,\"items\":[$(fast_item 50 'PowerShell deploy'),$(backlog_item 51 'backlog one'),$(backlog_item 52 'backlog two')]}" \
+  "{\"data\":{\"repository\":{$(fast_dep 50 'Edit `deploy/publish.ps1`.'),$(fast_dep 51 'Edit `src/f.sh`.'),$(fast_dep 52 'Edit `lib/g.sh`.')}}}"
+out=$(run --fast-mode --slot-cap 4 --exclude-text powershell)
+assert_contains "$out" 'dispatch #51  backlog one' 'fast mode fills an excluded thin Ready column from Backlog'
+assert_contains "$out" 'dispatched=2' 'and dispatches every free Backlog issue up to the cap'
+out=$(run --fast-mode --slot-cap 4 --exclude-text powershell --ready-only --include-backlog)
+assert_contains "$out" 'dispatched=0' '--ready-only opts fast mode out of Backlog and wins over --include-backlog'
+assert_not_contains "$out" '#51' 'and no Backlog issue is listed'
+
 # --- a truncated board read refuses to select -------------------------------
 # The regression this issue exists for: a board bigger than --limit must never
 # produce a plausible-looking subset. "candidates=3 of=123" reads as a
@@ -391,9 +404,10 @@ assert_rc 3 'a symlinked repository agent directory is rejected before cache pub
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-# fast-mode dispatch list (+33): --exclude-text and the protected-path pass that
-# replace the root's per-candidate --json re-reads (field run: 35 calls, 2.6M tokens).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 308 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 308 lines'
+# fast-mode dispatch list (+36): --exclude-text, the protected-path pass, and fast
+# mode implying Backlog, replacing the root's per-candidate --json re-reads (field
+# run: 35 calls, 2.6M tokens) and a thin-Ready empty wave (#270).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 311 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 311 lines'
 
 finish

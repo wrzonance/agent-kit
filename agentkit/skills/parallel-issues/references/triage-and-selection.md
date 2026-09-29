@@ -542,7 +542,7 @@ set -euo pipefail
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
 
-# Ready first. Add --include-backlog to groom unblocked Backlog work in as well.
+# Ready first; --include-backlog (implied by --fast-mode) adds free Backlog.
 "$agentkit/.shared/scripts/pick-issues.sh" --include-backlog
 ```
 

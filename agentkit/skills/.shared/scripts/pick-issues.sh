@@ -5,6 +5,7 @@
 # --fast-mode without --json prints the dispatch list: one dispatch/queued/dropped
 # line per candidate with its mechanical reason. --exclude-text drops candidates whose
 # title or predicted write set contains T (case-insensitive literal; list only).
+# --fast-mode implies --include-backlog (Ready still ranks first); --ready-only wins.
 # Exit: 0 success (including empty), 1 a call failed or the board read was truncated
 #       (a partial read refuses to select), 2 bad usage, 3 gh unavailable/unauthenticated.
 set -euo pipefail
@@ -32,6 +33,7 @@ die_usage() {
 repo_root=''
 limit=$DEFAULT_LIMIT
 include_backlog=0
+ready_only=0
 as_json=0
 fast_mode=0
 slot_cap=$FAST_MODE_CAP
@@ -52,9 +54,8 @@ while (($#)); do
             limit=$1
             ;;
         --include-backlog) include_backlog=1 ;;
-        # The default already excludes Backlog. The flag exists so a caller can
-        # say so explicitly and read back what it asked for.
-        --ready-only) include_backlog=0 ;;
+        # Attended runs already exclude Backlog; fast mode needs this to opt out.
+        --ready-only) ready_only=1 ;;
         --fast-mode) fast_mode=1 ;;
         --slot-cap)
             shift
@@ -84,6 +85,8 @@ fi
 ((${#exclude_terms[@]} == 0 || (fast_mode && !as_json))) ||
     die_usage '--exclude-text filters the --fast-mode list and cannot be combined with --json'
 list_mode=$((fast_mode && !as_json))
+# A thin Ready column is an invitation: unattended runs fill the cap from Backlog.
+if ((ready_only)); then include_backlog=0; elif ((fast_mode)); then include_backlog=1; fi
 
 for tool in gh jq; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
