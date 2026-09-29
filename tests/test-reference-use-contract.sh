@@ -14,7 +14,10 @@ skills="$root/agentkit/skills"
 reference_heading='No delivered challenge = no run'
 reference_trigger='If no `agentkit` activation challenge or `agentkit durable activation` context was delivered in this conversation'
 reference_authority='Reference use carries **none** of the workflow'
-reference_exception="unless the user's own message explicitly requests the no-delivery reference use described below"
+reference_stop='Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting'
+# #31: an ad-hoc task that merely consults the skill proceeds; it never ends the turn asking for an invocation.
+reference_task="a task asked without invoking is reference use (below): proceed, never ask to invoke."
+reference_task_section="own message asks, uninvoked, for a task or this procedure"
 reference_forbidden='Regardless of command, do not merge, flip ready, trigger review bots, resolve threads, move board items, run kit helpers that write, touch `.agent/`, or onboard/bootstrap/refresh'
 reference_bookkeeping='Reference use does not create or recover active-run bookkeeping.'
 reference_protections="The workflow's authorization, no-bypass, and human-thread protections still apply during reference use."
@@ -32,8 +35,14 @@ for workflow in review-remote-pr pr-to-green parallel-issues onboard-repo; do
         "$workflow keys reference use to challenge delivery"
     assert_contains "$step_zero_flat" "$reference_authority" \
         "$workflow gives reference use no workflow authority"
-    assert_contains "$step_zero_flat" "$reference_exception" \
-        "$workflow makes its missing-challenge stop defer to explicit reference use"
+    assert_contains "$step_zero_flat" "$reference_stop" \
+        "$workflow stops a challenge-less workflow invocation"
+    assert_contains "$step_zero_flat" "$reference_task" \
+        "$workflow lets an own-words task proceed in reference use"
+    assert_contains "$step_zero_flat" "$reference_task_section" \
+        "$workflow's reference section covers an own-words task"
+    assert_not_contains "$step_zero_flat" 'explicitly requests the no-delivery reference use' \
+        "$workflow no longer stops a task until reference use is requested by name"
     assert_contains "$step_zero_flat" "$reference_forbidden" \
         "$workflow makes protected-action bans command-independent"
     assert_contains "$step_zero_flat" "$reference_bookkeeping" \
