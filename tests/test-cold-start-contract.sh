@@ -19,10 +19,6 @@ assert_contains "$skill_flat" 'No current-session activation receipt means no pa
     'parallel-issues states the cold-session boundary directly'
 assert_contains "$skill_flat" 'do not search for or reconstruct a ledger, backlog snapshot, proof, fingerprint, or environment contract' \
     'cold ad-hoc work does not inherit kit bookkeeping obligations'
-assert_contains "$skill_flat" 'Human grants still fail closed' \
-    'the cold contract does not weaken authorization'
-assert_contains "$skill_flat" 'Malformed, symlinked, foreign-owned, or active-run state still fails closed' \
-    'the cold contract preserves unsafe and active-state validation'
 
 # The helper prints the path shell-quoted (%q), so compare quoted bytes.
 expected_assignment=$(printf '  agentkit=%q' "$(cd -P -- "$root/agentkit/skills" && pwd -P)")

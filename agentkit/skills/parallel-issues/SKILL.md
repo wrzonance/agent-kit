@@ -16,7 +16,7 @@ description: >-
 
 ## Step 0 prerequisite: verified activation
 
-Run UserPromptSubmit's exact `$agentkit/.shared/scripts/agent-preflight.sh` command once; it carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N` and stdout begins `skills=`.
+Run UserPromptSubmit's exact preflight command once; `$agentkit/.shared/scripts/agent-preflight.sh` carries `--activation-session ID --activation-origin R --workflow parallel-issues --activation-nonce N` and stdout begins `skills=`.
 Keep that harness ID as `activation_session`. Before dispatch, run `$agentkit/.shared/scripts/workflow-activation.sh check --require pre-tool-use --repo-root R --session ID --skill parallel-issues`.
 Missing challenge on invocation: report `agentkit: activation-unavailable` and stop without substituting;
 a task asked without invoking is reference use (below): proceed, never ask to invoke. To recover, resubmit `$agentkit:parallel-issues`.
@@ -31,7 +31,7 @@ Regardless of command, do not merge, flip ready, trigger review bots, resolve th
 run kit helpers that write, touch `.agent/`, or onboard/bootstrap/refresh, unless the user asks for that
 specific action in their own words. Reference use does not create or recover active-run bookkeeping. The
 workflow's authorization, no-bypass, and human-thread protections still apply during reference use.
-State from an older run never blocks ad-hoc work.
+No current-session activation receipt means no parallel-issues run exists: for ad-hoc work, do not search for or reconstruct a ledger, backlog snapshot, proof, fingerprint, or environment contract left by an older run.
 
 Read ["$agentkit/.shared/shell-portability.md"](../.shared/shell-portability.md) before recipes; use its `bash -c` boundary and self-contained blocks.
 **Announce at start:** "I'm using the parallel-issues skill to set up parallel workstreams." plus the active flags.
