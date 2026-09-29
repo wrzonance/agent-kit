@@ -380,7 +380,9 @@ assert_contains "$bad_error" 'epoch' \
     'the rejection also names the epoch-integer form'
 
 # Preserve the helper-size ratchet established by the prior cleanup wave.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 777 ]] && printf yes || printf no)" \
-    'cross-write-check.sh stays at or under 777 lines'
+# Cable-tool #44: +6 lines route Collect through lib/cross-write-run.sh and name
+# the run-scoped command when plain Collect is handed a run baseline.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/parallel-issues/scripts/cross-write-check.sh") -le 783 ]] && printf yes || printf no)" \
+    'cross-write-check.sh stays at or under 783 lines'
 
 finish

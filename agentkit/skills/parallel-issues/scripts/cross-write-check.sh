@@ -4,6 +4,7 @@
 set -euo pipefail
 
 PROGRAM=${0##*/}
+SCRIPT_PATH=$(realpath -e -- "${BASH_SOURCE[0]}")
 DISPATCH_AUDIT=no
 
 die() {
@@ -20,6 +21,8 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   cross-write-check.sh snapshot --worktree PATH --output FILE --write-set GLOB [--write-set GLOB ...]
+  cross-write-check.sh collect --run-id ID --issue N [--repo-root DIR] [--dispose-duplicates]
+      Collects a dispatch-fence run from its recorded baseline and worker reservation.
   cross-write-check.sh collect --root PATH --snapshot FILE --worktree PATH --issue N \
       --write-set GLOB [--write-set GLOB ...] \
       [--worker-start EPOCH|ISO8601 --worker-end EPOCH|ISO8601] [--dispose-duplicates]
@@ -515,6 +518,8 @@ collect_cmd() {
             audit_unavailable worker-start-required record-dispatch-start
     else
         [[ -r $snapshot && -f $snapshot && ! -L $snapshot ]] || die "snapshot is unreadable: $snapshot"
+        recorded_run=$(snapshot_value "$snapshot" run-id)
+        [[ -z $recorded_run ]] || die "snapshot is run $recorded_run's dispatch-fence baseline; Collect it with: $PROGRAM collect --run-id $recorded_run --issue $issue --repo-root $(snapshot_value "$snapshot" root)"
     fi
     root=$(require_root "$root")
     if [[ $(snapshot_value "$snapshot" root) != "$root" ]]; then
@@ -767,9 +772,10 @@ dispatch_fence_cmd() {
 [[ $# -gt 0 ]] || usage
 command=$1
 shift
+# shellcheck source=lib/cross-write-run.sh
 case $command in
     snapshot) snapshot_cmd "$@";;
-    collect) collect_cmd "$@";;
+    collect) source "${SCRIPT_PATH%/*}/lib/cross-write-run.sh" && run_collect_cmd "$@";;
     dispose) dispose_cmd "$@";;
     dispatch-fence) dispatch_fence_cmd "$@";;
     -h|--help) usage 0;;

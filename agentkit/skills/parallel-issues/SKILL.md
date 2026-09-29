@@ -457,30 +457,12 @@ cross_baseline_id=${output##*baseline-id=}
 "$state" set --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id --value "$cross_baseline_id" || exit 1
 ```
 
-After completions and at handoff, Collect requires it. Record `worker_started_at` and
-`worker_finished_at` at their actual boundaries with `date -u +%FT%T.%NZ`. Times accept
-epoch or ISO-8601 UTC, but an epoch or second-only ISO value cannot prove the order when
-capture and worker start share that second, so the dispatch audit rejects it as ambiguous:
+After each worker and at handoff, Collect by run: it reads the baseline, the reserved worktree and reservation time (window end: now), and the dispatched write sets. A reservation in the capture's own second is ambiguous; pass `--worker-start "$(date -u +%FT%T.%NZ)"` recorded at spawn instead.
 
 ```bash
-fence="$agentkit/parallel-issues/scripts/cross-write-check.sh" state="$agentkit/.shared/scripts/run-state.sh"
-snapshot="$repository_root/.agent/cross-write-dispatch-$RUN_ID.snapshot"
-cross_baseline_id=$("$state" get --run-id "$RUN_ID" --repo-root "$repository_root" --path cross_write.baseline_id) || exit 1
 collect_rc=0
-collect_args=(--root "$repository_root" --snapshot "$snapshot" \
-    --worker-worktree "$worktree" --issue "$issue_number" \
-    --run-id "$RUN_ID" --baseline-id "$cross_baseline_id" \
-    --worker-start "$worker_started_at" --worker-end "$worker_finished_at" \
-    --dispose-duplicates)
-for write_set in "${worker_write_sets[@]}"; do
-    collect_args+=(--write-set "$write_set")
-done
-"$fence" dispatch-fence "${collect_args[@]}" || collect_rc=$?
-case "$collect_rc" in
-    0) : ;; # clean
-    10) : ;; # handle named incidents
-    *) exit 1 ;;
-esac
+"$agentkit/parallel-issues/scripts/cross-write-check.sh" collect --run-id "$RUN_ID" --issue "$issue_number" || collect_rc=$?
+case "$collect_rc" in 0|10) : ;; *) exit 1 ;; esac # 10: handle named incidents
 ```
 
 Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-window copies. Never fold dirt first observed inside a dispatch window into unrelated changes; divergent or outside-window dirt blocks clean handoff pending disposition.

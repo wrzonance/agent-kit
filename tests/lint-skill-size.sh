@@ -63,8 +63,9 @@ declare -A KNOWN_OVERSIZE=(
     # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
     # #908 final parent integration: exact combined one-call finalization measurement.
     # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
-    # Rehydration ceremony (#29), one-call evidence (#38), fast-mode dispatch list (#28); exact measurement.
-    [parallel-issues]="833:17980:500"
+    # Rehydration ceremony (#29), one-call evidence (#38), fast-mode dispatch list (#28),
+    # run-scoped cross-write collect (#44); exact measurement.
+    [parallel-issues]="815:17803:500"
 )
 
 readonly MAX_BODY_LINES=500

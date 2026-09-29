@@ -272,8 +272,9 @@ readonly MAX_HELPER_TOKENS=10000
 # finalization gap with its next command and default the reviewed head; exact tree.
 # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29), plus
 # one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes), plus the
-# fast-mode dispatch list with complete write sets and a glob-aware protected pass (#28, #935); exact tree.
-readonly MAX_TREE_TOKENS=519640
+# fast-mode dispatch list with complete write sets and a glob-aware protected pass (#28, #935),
+# plus run-scoped cross-write collect ignoring hook-inherited GIT_* (#44, #934); exact tree.
+readonly MAX_TREE_TOKENS=520403
 
 violations=0
 checked=0
