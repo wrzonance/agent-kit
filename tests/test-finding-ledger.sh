@@ -399,6 +399,30 @@ assert_eq "recorded fixed id=unseen-finding sha=$ev_repair head=$ev_head" \
     "$(RUN_DIR="$ev_run" "$script" evidence --severity P2 --title 'Unseen finding' --path affected.sh \
         --repo-root "$ev_repo" --log "$tmp/ev-full.log" --repair-sha "$ev_repair")" \
     'an explicit --severity records a finding with no prior row'
+run_ledger_at "$ev_run" add --title 'Severity kept' --severity P1 --verdict open --rationale 'repair' >/dev/null
+RUN_DIR="$ev_run" "$script" evidence --severity P2 --title 'Severity kept' --path affected.sh \
+    --repo-root "$ev_repo" --log "$tmp/ev-full.log" --repair-sha "$ev_repair" >/dev/null
+assert_eq P1 "$(jq -rs '[.[] | select(.title == "Severity kept")][0].severity' "$ev_run/findings.ndjson")" \
+    'an existing row keeps its severity over --severity'
+# A retry whose ledger add fails never touches the evidence already recorded.
+cp -p "$ev_file" "$tmp/ev-before.json"
+mv_bin="$tmp/failing-mv-bin"
+mkdir "$mv_bin"
+cat >"$mv_bin/mv" <<'EOF'
+#!/bin/sh
+for last do :; done
+case $last in */findings.ndjson) exit 1 ;; esac
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$mv_bin/mv"
+real_mv=$(command -v mv)
+retry_rc=0
+PATH="$mv_bin:$PATH" REAL_MV=$real_mv evidence --log "$tmp/ev-full.log" --repair-sha "$ev_repair" \
+    >/dev/null 2>&1 || retry_rc=$?
+assert_eq 1 "$retry_rc" 'a retry whose ledger add fails is refused'
+assert_eq same "$(cmp -s "$tmp/ev-before.json" "$ev_file" && printf same || printf changed)" \
+    'a failed retry leaves the recorded evidence file byte-identical'
+assert_eq '' "$(find "$ev_run" -name 'evidence.*' -print)" 'a failed retry leaves no staged evidence behind'
 assert_rc 2 'evidence requires RUN_DIR' -- \
     "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
     --log "$tmp/ev-full.log" --repair-sha "$ev_repair"

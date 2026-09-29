@@ -522,24 +522,21 @@ cmd_evidence() {
 # Store the evidence as RUN_DIR/evidence-ID.json and add the fixed verdict in
 # the same call, so no finding is left open between two steps.
 record_fixed() {
-    local ledger=$RUN_DIR/findings.ndjson id rc staged
+    local ledger=$RUN_DIR/findings.ndjson id rc prior=''
     TITLE=$1 SEVERITY=$2 VERDICT=fixed DETAIL_KIND=sha REPO_ROOT=$4 HEAD=$5
     SHA=$(jq -r .sha <<<"$3")
-    if [[ -z $SEVERITY && -f $ledger ]]; then
-        SEVERITY=$(jq -rs --arg t "$TITLE" '[.[] | select(.title == $t)] | last | .severity // empty' "$ledger")
-    fi
+    [[ ! -f $ledger ]] ||
+        prior=$(jq -rs --arg t "$TITLE" '[.[] | select(.title == $t)] | last | .severity // empty' "$ledger")
+    SEVERITY=${prior:-$SEVERITY}
     [[ -n $SEVERITY ]] || die_usage "--severity is required: no ledger row is titled $TITLE"
     validate_add_args
     if ! { [[ -f $ledger ]] && id=$(ledger_id_rows "$ledger" | id_for_title "$TITLE"); }; then
         id=$(base_finding_id "$TITLE") || die_evidence 'could not derive finding IDs'
     fi
-    EVIDENCE_FILE=$RUN_DIR/evidence-$id.json
-    staged=$(mktemp "$RUN_DIR/evidence.XXXXXXXX")
-    if ! { jq '.evidence' <<<"$3" >"$staged" && mv -f -- "$staged" "$EVIDENCE_FILE"; }; then
-        rm -f -- "$staged"
-        die_evidence "could not write evidence: $EVIDENCE_FILE"
-    fi
-    ( append_record >/dev/null ) || { rc=$?; rm -f -- "$EVIDENCE_FILE"; exit "$rc"; }
+    # Stage the evidence; it replaces evidence-ID.json only once the add succeeds.
+    EVIDENCE_FILE=$(mktemp "$RUN_DIR/evidence.XXXXXXXX")
+    { jq '.evidence' <<<"$3" >"$EVIDENCE_FILE" && ( append_record >/dev/null ) &&
+        mv -f -- "$EVIDENCE_FILE" "$RUN_DIR/evidence-$id.json"; } || { rc=$?; rm -f -- "$EVIDENCE_FILE"; exit "$rc"; }
     printf 'recorded fixed id=%s sha=%s head=%s\n' "$id" "$SHA" "$HEAD"
 }
 

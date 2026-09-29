@@ -269,7 +269,7 @@ readonly MAX_HELPER_TOKENS=10000
 # finalization gap with its next command and default the reviewed head; exact tree.
 # cable-tool #38/#25: evidence records a fixed finding in one call, and
 # run-dir.sh finds a PR's run directory in its owning linked worktree; exact tree.
-readonly MAX_TREE_TOKENS=519639
+readonly MAX_TREE_TOKENS=519633
 
 violations=0
 checked=0
