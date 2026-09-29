@@ -24,15 +24,12 @@ Enter the degraded path only when that inspection shows no spawn capability.
 
 ```bash
 worker_resolution=$(bash -c "$(cat <<'BASH_RECIPE'
-agentkit=$1 agentkit_provenance=$2 repository_root=$3 yolo_invocation=$4
+agentkit=$1 repository_root=$2 yolo_invocation=$3
 worker_model_default='gpt-5.6-luna'
 worker_model_fallback_default='gpt-5.6-terra'
 worker_effort_default='high'
 
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-    printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2
-    exit 1
-}
+: "${agentkit:?set agentkit to the preflight skills= path}"
 
 # Roster: one candidate per harness family; declared entries override singular keys.
 roster_entry_for_family() {
@@ -158,7 +155,7 @@ worker_model_fallback=$resolved_value
 fallback_pivot_note=$pivot_note
 printf '%s\n' "$worker_model" "$worker_model_fallback" "$worker_effort" "$model_pivot_note" "$fallback_pivot_note" resolution-end
 BASH_RECIPE
-)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${repository_root:-}" "${yolo_invocation:-false}") || exit $?
+)" _ "${agentkit:-}" "${repository_root:-}" "${yolo_invocation:-false}") || exit $?
 # Read data in the parent; the sentinel preserves trailing empty pivot notes.
 # shellcheck disable=SC2034  # consumed by dispatch and completion reporting
 {

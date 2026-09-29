@@ -20,7 +20,7 @@ in the private `run-dir.sh --run-id "$RUN_ID"` directory, never a bare repositor
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 bulk_dir=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --run-id "$RUN_ID" --repo-root "$repository_root") || exit 1
 ledger="$bulk_dir/apply-ledger.json"
 plan="$bulk_dir/apply-plan.json"
@@ -161,7 +161,7 @@ reads for file hints -- never a second fetch performed for this check alone:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/triage-issues.sh" --classify-shape "$body_file"
 "$agentkit/.shared/scripts/triage-issues.sh" --classify-deps "$body_file"
 ```
@@ -420,7 +420,7 @@ regardless of any entry here.
 Use the body-free `predictedWriteSet` in `pick-issues.sh` output, seeded by:
 
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 printf '%s' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -
 ```
 
@@ -462,8 +462,8 @@ The root-side round trip is data-only and atomic:
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-raw_report=$1 dispatch_plan=$2 issue_number=$3 agentkit=$4 agentkit_provenance=$5
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
+raw_report=$1 dispatch_plan=$2 issue_number=$3 agentkit=$4
+: "${agentkit:?set agentkit to the preflight skills= path}"
 mapfile -t needs_lines < <(grep -E '^needs-paths: [^[:space:]]+(,[^[:space:]]+)*$' "$raw_report")
 (( ${#needs_lines[@]} == 1 )) || exit 1
 IFS=, read -ra needs_paths <<< "${needs_lines[0]#needs-paths: }"
@@ -477,7 +477,7 @@ jq --argjson issue "$issue_number" --argjson paths "$needs_json" \
      reason: "worker requested missing write-set paths (prediction expansion)"}]' \
   "$dispatch_plan" >"$plan_tmp" && mv -f -- "$plan_tmp" "$dispatch_plan"
 BASH_RECIPE
-)" _ "$raw_report" "$dispatch_plan" "$issue_number" "$agentkit" "$agentkit_provenance" || exit $?
+)" _ "$raw_report" "$dispatch_plan" "$issue_number" "$agentkit" || exit $?
 ```
 
 Re-run the chain-base validator on the updated plan, then call `followup_task`
@@ -521,7 +521,7 @@ opt-in per issue rather than automatic:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/triage-issues.sh" --issues 57 --fuzzy 57
 ```
 
@@ -540,9 +540,9 @@ an issue body cannot argue its way into a dispatch.
 set -euo pipefail
 
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 
-# Ready first. Add --include-backlog to groom unblocked Backlog work in as well.
+# Ready first; --include-backlog (implied by --fast-mode) adds free Backlog.
 "$agentkit/.shared/scripts/pick-issues.sh" --include-backlog
 ```
 
@@ -561,8 +561,10 @@ than trusting a subset.
 
 **Only `selectable` lines are eligible.** A `SKIP` line is a decision the script already
 made; do not re-litigate it, and never dispatch one because the blocker "looks stale".
-GitHub issue dependencies live on the issue, not on the board card, so a board read alone
-would have reported `#11` as ready to start.
+
+`--fast-mode` without `--json` prints `dispatch`/`queued`/`dropped` lines instead, each drop with its
+mechanical reason. That list already applies steps 1-3 below in pickup order: dispatch it, refill from `queued`, and report each
+`dropped` line in the funnel as printed.
 
 Then apply, in order:
 
@@ -577,11 +579,9 @@ Then apply, in order:
    files/modules/labels as an already-selected issue), then take top-ranked candidates until the
    cap is filled or Backlog is exhausted.
 2. **Run Step 3's conflict analysis over the eligible set**, and drop the later issue from
-   every colliding pair. This is the part no script can do — it is a judgement about which
-   files each issue will touch.
+   every colliding pair.
 3. **Cap the current wave at the Limits section's slot count.** More eligible issues than slots is
-   the normal case. In `--fast-mode`, dispatch the first candidates by pickup order and queue the
-   remainder for refill as slots free; attended mode reports the overflow and asks before dispatch.
+   the normal case; report the overflow and ask before dispatch.
 4. **Move all chosen issues to `In progress` in one batch** with `move-github-project-item.sh`,
    including the Backlog ones — a promoted issue skips `Ready` because it is being started now,
    and leaving it in Backlog while a worker builds it makes the board lie. The helper accepts

@@ -476,9 +476,62 @@ assert_eq 1 "$unavailable_agent_rc" 'scratch allocation fails when .agent cannot
 assert_contains "$unavailable_agent_err" 'could not create environment state directory' \
     'scratch creation failure names the unavailable .agent parent'
 
+# --- a PR's run directory is found in the repository's linked worktrees ------
+# #25: resuming from the repository root, the root looked under the root's
+# .agent/evidence/pr-N instead of the owning worktree's and read "no attempt".
+wt_repo="$tmp/wt-repo"
+git init -q "$wt_repo"
+git -C "$wt_repo" -c user.name=T -c user.email=t@example.invalid commit -q --allow-empty -m base
+git -C "$wt_repo" worktree add -q -b feat/one "$wt_repo/.worktrees/one" 2>/dev/null
+git -C "$wt_repo" worktree add -q -b feat/two "$wt_repo/.worktrees/two" 2>/dev/null
+wt_one="$wt_repo/.worktrees/one"
+seed_run_dir() {
+    mkdir -p "$1/.agent/evidence/pr-$2/state"
+    chmod 700 "$1/.agent/evidence" "$1/.agent/evidence/pr-$2"
+    printf '{}\n' >"$1/.agent/evidence/pr-$2/state/review-attempt.json"
+}
+seed_run_dir "$wt_one" 643
+run "$wt_repo" 643
+assert_eq 0 "$RUN_RC" "the repository root resolves a worktree-owned run directory ($RUN_ERR)"
+assert_eq "$wt_one/.agent/evidence/pr-643" "$RUN_OUT" 'the owning worktree run directory is reused'
+assert_eq no "$([[ -e $wt_repo/.agent/evidence/pr-643 ]] && printf yes || printf no)" \
+    'no empty run directory is created at the repository root'
+mkdir -p "$wt_repo/.agent/evidence/pr-643"
+chmod 700 "$wt_repo/.agent/evidence" "$wt_repo/.agent/evidence/pr-643"
+run "$wt_repo" 643
+assert_eq "$wt_one/.agent/evidence/pr-643" "$RUN_OUT" 'an empty root run directory holds nothing and defers'
+run "$wt_repo/.worktrees/two" 643
+assert_eq "$wt_one/.agent/evidence/pr-643" "$RUN_OUT" 'a sibling worktree resolves the owning worktree too'
+seed_run_dir "$wt_repo" 700
+run "$wt_one" 700
+assert_eq "$wt_repo/.agent/evidence/pr-700" "$RUN_OUT" 'the main checkout is one of the searched worktrees'
+seed_run_dir "$wt_one" 701
+seed_run_dir "$wt_repo" 701
+run "$wt_one" 701
+assert_eq "$wt_one/.agent/evidence/pr-701" "$RUN_OUT" 'a populated run directory in this checkout wins'
+seed_run_dir "$wt_repo/.worktrees/two" 643
+run "$wt_repo" 643
+assert_eq "0 $wt_repo/.agent/evidence/pr-643" "$RUN_RC $RUN_OUT" \
+    'several worktree matches are no gate: this checkout resolves as before'
+outside="$tmp/outside-repo"
+git init -q "$outside"
+seed_run_dir "$outside" 644
+run "$wt_repo" 644
+assert_eq "$wt_repo/.agent/evidence/pr-644" "$RUN_OUT" 'a run directory outside the repository worktrees is never used'
+
+other_repo="$tmp/other-repo"
+git init -q "$other_repo"
+git -C "$other_repo" -c user.name=T -c user.email=t@example.invalid commit -q --allow-empty -m base
+git -C "$other_repo" worktree add -q -b feat/other "$other_repo/wt" 2>/dev/null
+seed_run_dir "$other_repo/wt" 645
+git_dir_out=$(GIT_DIR="$other_repo/.git" /bin/bash "$script" --pr 645 --repo-root "$wt_repo" 2>/dev/null)
+assert_eq "$wt_repo/.agent/evidence/pr-645" "$git_dir_out" \
+    'an inherited GIT_DIR naming another repository cannot supply the run directory'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #785 adds durable fallback selection and explicit split-backend refusal.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 284 ]] && printf yes || printf no)" \
-    'run-dir.sh stays at or under 284 lines'
+# cable-tool #25 adds the linked-worktree lookup for a PR's populated run directory.
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 308 ]] && printf yes || printf no)" \
+    'run-dir.sh stays at or under 308 lines'
 
 finish

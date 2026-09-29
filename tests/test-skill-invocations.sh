@@ -55,13 +55,11 @@ if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O 
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path" >&2; exit 1; }
-agentkit_provenance=ok
 ```'
 
-# The guard is two conditions, not one: the directory check proves some tree is
-# there, the sentinel proves THIS resolver put it there.
+# The guard fails loudly on an empty $agentkit before any helper path runs.
 GUARDED_FENCE='```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/agent-run.sh" --help
 ```'
 
@@ -109,7 +107,9 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a bare helper invocation fails'
 assert_contains "$LINT_OUT" 'BARE INVOCATION' 'the bare invocation is named'
 
-# --- a helper fence with neither the resolver nor the guard -------------
+# --- no per-block guard is required ------------------------------------
+# cable-tool ledger #29: later blocks set agentkit from the printed path; the
+# lint no longer demands a guard ceremony in every helper fence.
 root=$tmp/guardless
 new_tree "$root"
 make_skill "$root" parallel-issues <<EOF
@@ -129,154 +129,8 @@ $RESOLVER_FENCE
 \`\`\`
 EOF
 run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a helper fence with no guard fails'
-assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unguarded fence is named'
+assert_eq '0' "$LINT_RC" "a resolved helper fence without a guard passes: $LINT_OUT"
 
-# --- a directory-only guard is not a guard ------------------------------
-# `[ -d "${agentkit:-}/.shared/scripts" ]` alone is satisfied by any stale or
-# profile-inherited value that happens to point at a real tree -- precisely the
-# case the sentinel was added to reject. Without this rule the sentinel is
-# decorative: the skills carry it, but nothing keeps them carrying it.
-root=$tmp/sentinel-less
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when the guard omits the provenance sentinel.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-
-## Later step
-
-\`\`\`bash
-[ -d "\${agentkit:-}/.shared/scripts" ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
-"\$agentkit/.shared/scripts/agent-run.sh" --help
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a guard that omits the provenance sentinel fails'
-assert_contains "$LINT_OUT" 'GUARD WITHOUT SENTINEL' 'the sentinel-less guard is named'
-
-# --- a guard must protect EVERY path to the helper, not just one --------
-# Presence is not reachability. review-remote-pr's Step 0a once carried the
-# guard inside the worktree-CREATION branch and then called agent-preflight.sh
-# after the `fi`, so the worktree-REUSE path -- the ordinary resume case --
-# reached the helper with $agentkit never validated. Every presence-based rule
-# above passed that fence, which is why this one measures block depth.
-root=$tmp/guard-one-path
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when the guard sits on only one branch of the fence.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-
-## Later step
-
-\`\`\`bash
-if [ -n "\$EXISTING_WORKTREE" ]; then
-  PR_WORKTREE="\$EXISTING_WORKTREE"
-else
-  [ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
-  git worktree add "\$PR_WORKTREE"
-fi
-"\$agentkit/.shared/scripts/agent-preflight.sh" --repo "\$REPO"
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a guard reachable on only one branch fails'
-assert_contains "$LINT_OUT" 'GUARD NOT ON EVERY PATH' 'the one-path guard is named'
-
-# The same fence passes once the guard is hoisted above the branch -- proving
-# the rule keys on reachability and not on the mere presence of an `if`.
-root=$tmp/guard-hoisted
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when the guard is hoisted above the branch.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-
-## Later step
-
-\`\`\`bash
-[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
-if [ -n "\$EXISTING_WORKTREE" ]; then
-  PR_WORKTREE="\$EXISTING_WORKTREE"
-else
-  git worktree add "\$PR_WORKTREE"
-fi
-"\$agentkit/.shared/scripts/agent-preflight.sh" --repo "\$REPO"
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '0' "$LINT_RC" 'the same fence passes with the guard hoisted above the branch'
-
-# Depth alone is not reachability: a helper on the first statement and the guard
-# on the second are BOTH at depth 0, so a depth-only comparison reads them as
-# equal and passes -- while the helper has already run unguarded. The guard has
-# to precede every invocation it protects, which is what "prepend" means.
-root=$tmp/guard-after-helper
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when the guard trails the helper it must protect.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-
-## Later step
-
-\`\`\`bash
-"\$agentkit/.shared/scripts/agent-run.sh" --cmd test
-[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a guard at the same depth but after the helper fails'
-assert_contains "$LINT_OUT" 'GUARD AFTER HELPER' 'the trailing guard is named'
-
-# --- a guard has to RUN, not merely be mentioned ------------------------
-# Both halves of the guard are matchable as loose substrings: the directory
-# fragment also occurs inside any resolved helper path, and the sentinel can sit
-# in a comment. A fence built from only those two mentions executes no guard at
-# all, so substring matching would bless a bare invocation.
-root=$tmp/guard-text-only
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when the guard exists only as comment text.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-
-## Later step
-
-\`\`\`bash
-# NOTE: relies on \${agentkit_provenance:-} having been set by the Step 0 resolver
-"\${agentkit:-}/.shared/scripts/agent-run.sh" --help
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a guard that exists only as comment text fails'
-assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unexecuted guard is named'
 
 # --- the resolver must be defined exactly once --------------------------
 root=$tmp/duplicate
@@ -339,7 +193,6 @@ if [[ -n \$contract_root && -r \$contract && -f \$contract && ! -L \$contract &&
     agentkit=\$(sed -n "s/^skills= path=//p" "\$contract" 2>/dev/null | head -n 1)
 fi
 [ -d "\$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path" >&2; exit 1; }
-agentkit_provenance=ok
 preflight="\$agentkit/.shared/scripts/agent-preflight.sh"
 environment_contract="\$("\$preflight" --worktree "\$PWD" 2>/dev/null)"
 \`\`\`
@@ -356,37 +209,10 @@ assert_contains "$(cat "$tmp/compliant/parallel-issues/SKILL.md")" 'agentkit: in
 
 # --- .shared/*.md policy files are held to the reference-file bar -------
 # .shared/*.md is pasted into more than one skill's worker prompts and is
-# never an entry point of its own, so a helper fence there must carry the
-# two-line guard (never a bare invocation, never a second full resolver
-# definition) exactly like a references/*.md file split out of a skill body.
+# never an entry point of its own, so it never carries a second full resolver
+# definition, exactly like a references/*.md file split out of a skill body.
 
-# (a) an unguarded helper fence in a .shared file fails the same as one in
-# a references/*.md file would.
-root=$tmp/shared-unguarded
-new_tree "$root"
-make_skill "$root" parallel-issues <<EOF
----
-name: parallel-issues
-description: Use when .shared carries an unguarded helper fence.
----
-
-## The resolver (prepend to EVERY shell call)
-
-$RESOLVER_FENCE
-EOF
-mkdir -p "$root/.shared"
-cat > "$root/.shared/six-step-loop.md" <<EOF
-## Reporting format
-
-\`\`\`bash
-"\$agentkit/.shared/scripts/agent-run.sh" --help
-\`\`\`
-EOF
-run_lint "$root"
-assert_eq '1' "$LINT_RC" 'an unguarded helper fence in .shared fails'
-assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unguarded .shared fence is named'
-
-# (b) a full resolver definition inside a .shared file fails -- the
+# A full resolver definition inside a .shared file fails -- the
 # definition belongs in a skill body only, never in shared policy content.
 root=$tmp/shared-full-resolver
 new_tree "$root"

@@ -570,8 +570,8 @@ assert_contains "$gap_out" '"race in cache refresh"' 'the refusal names the open
 assert_contains "$gap_out" 'lock the refresh' 'the refusal carries the open finding next action'
 assert_contains "$gap_out" '"legacy decline"' 'the refusal names the legacy finding'
 assert_contains "$gap_out" 'finding-ledger.sh" evidence --title' \
-    'the refusal names the evidence step of the finding repair'
-assert_contains "$gap_out" 'add --title' 'the refusal names the add step of the finding repair'
+    'the refusal names the one-call fixed-finding record'
+assert_not_contains "$gap_out" '--verdict fixed' 'the refusal no longer asks for a separate fixed add'
 assert_contains "$gap_out" '--verdict declined --rationale' 'the refusal names the decline form'
 assert_contains "$gap_out" 'code-scanning open=0' \
     'the missing accepted-findings gap cites the digest open counts'

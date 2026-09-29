@@ -43,7 +43,7 @@ concurrency_help=$("$root/agentkit/skills/parallel-issues/scripts/concurrency-ca
 move_help=$("$root/agentkit/skills/parallel-issues/scripts/move-github-project-item.sh" --help)
 boundary_help=$("$root/agentkit/skills/parallel-issues/scripts/select-boundary-mode.sh" --help)
 prepare_help=$("$root/agentkit/skills/parallel-issues/scripts/prepare-issue-artifacts.sh" --help)
-assert_contains "$agent_preflight_help" 'Recipe: resolve, rehydrate, and run once' \
+assert_contains "$agent_preflight_help" 'Recipe: resolve and run once' \
     'agent-preflight help owns the removed Step 0 recipe'
 assert_contains "$agent_preflight_help" 'keyed_contract=' \
     'the moved resolver preserves harness-keyed contract selection'
@@ -81,7 +81,7 @@ printf '%s\n' "$*" >>"$TRIAGE_CALLS"
 EOF
 chmod +x "$triage_agentkit/.shared/scripts/triage-issues.sh"
 triage_calls="$tmp/triage-calls"
-agentkit="$triage_agentkit" agentkit_provenance=ok TRIAGE_CALLS="$triage_calls" \
+agentkit="$triage_agentkit" TRIAGE_CALLS="$triage_calls" \
     bash "$triage_recipe"
 assert_eq 1 "$(wc -l <"$triage_calls")" \
     'the copied triage recipe executes exactly one query'
@@ -100,9 +100,7 @@ assert_contains "$move_help" '--status "$target_status"' \
 move_recipe="$tmp/move-recipe.sh"
 printf '%s\n' "$move_help" | awk '
     /^Recipe: move a selected issue set$/ { inside=1; next }
-    inside && /^  # BEGIN session-context recovery$/ { recovery=1; next }
-    recovery && /^  # END session-context recovery$/ { recovery=0; next }
-    recovery { next }
+    inside && /^  agentkit=/ { next }
     inside { sub(/^  /, ""); print }
 ' >"$move_recipe"
 move_agentkit="$tmp/move-agentkit"
@@ -119,22 +117,23 @@ chmod +x "$move_agentkit/.shared/scripts/contract-read.sh" \
     "$move_agentkit/parallel-issues/scripts/move-github-project-item.sh"
 move_missing_rc=0
 move_missing_err=$(env -u issue_numbers_csv -u target_status agentkit="$move_agentkit" \
-    agentkit_provenance=ok contract_root="$tmp" bash "$move_recipe" 2>&1) || move_missing_rc=$?
+    bash "$move_recipe" 2>&1) || move_missing_rc=$?
 assert_eq 1 "$move_missing_rc" \
     'the copied board recipe refuses an unspecified issue set and lifecycle status'
 assert_contains "$move_missing_err" 'replace with the selected issue numbers' \
     'the board recipe refusal tells the caller which input is missing'
 move_calls="$tmp/move-calls"
-agentkit="$move_agentkit" agentkit_provenance=ok contract_root="$tmp" \
-    issue_numbers_csv=777 target_status='In review' MOVE_CALLS="$move_calls" bash "$move_recipe"
+(cd "$root" && agentkit="$move_agentkit" \
+    issue_numbers_csv=777 target_status='In review' MOVE_CALLS="$move_calls" bash "$move_recipe")
 assert_eq '--issue-numbers 777 --status In review --repo owner/repo' "$(<"$move_calls")" \
     'the copied board recipe forwards the selected issue and In review lifecycle target'
 assert_contains "$boundary_help" 'Recipe: select once before fetching' \
     'boundary-mode help owns its removed selection recipe'
-assert_contains "$boundary_help" '# BEGIN session-context recovery' \
-    'boundary selection carries the canonical session-context loader'
-assert_contains "$boundary_help" 'expected_agentkit' \
-    'boundary selection validates the loaded skills path before use'
+installed_assignment=$(printf '  agentkit=%q' "$(cd -P -- "$root/agentkit/skills" && pwd -P)")
+assert_contains "$boundary_help" "$installed_assignment" \
+    'boundary selection names its own installed skills path'
+assert_not_contains "$boundary_help" 'read-session-context' \
+    'boundary selection carries no cache rehydration'
 assert_contains "$prepare_help" 'Recipe: publish canonical issue artifacts' \
     'artifact helper help owns its removed preparation recipe'
 assert_contains "$prepare_help" '--scratch-label "prior-art-$issue_number-$RUN_ID"' \
@@ -218,7 +217,7 @@ repair_cross_calls="$tmp/repair-cross-calls"
 repair_compose_calls="$tmp/repair-compose-calls"
 repair_run() {
     local run_dir=${repair_run_dir:-"$repair_root/.agent"}
-    agentkit="$repair_agentkit" agentkit_provenance=ok RUN_DIR="$run_dir" REPO_ROOT="$repair_root" \
+    agentkit="$repair_agentkit" RUN_DIR="$run_dir" REPO_ROOT="$repair_root" \
         PR=42 repair_worktree="$repair_root" repair_branch=feat/repair repair_scope='src/**' \
         accepted_findings="$tmp/accepted-findings.ndjson" repair_prompt="$tmp/repair-prompt" \
         worker_model=gpt-5.6-luna worker_effort=high REPAIR_CROSS_CALLS="$repair_cross_calls" \
@@ -270,7 +269,7 @@ assert_eq nonzero "$([[ $compose_failure_rc != 0 ]] && printf nonzero || printf 
 unset_context_cross_calls=$(wc -l <"$repair_cross_calls")
 unset_context_compose_calls=$(wc -l <"$repair_compose_calls")
 unset_context_rc=0
-env -u RUN_DIR agentkit="$repair_agentkit" agentkit_provenance=ok REPO_ROOT="$repair_root" \
+env -u RUN_DIR agentkit="$repair_agentkit" REPO_ROOT="$repair_root" \
     PR=42 repair_worktree="$repair_root" repair_branch=feat/repair repair_scope='src/**' \
     accepted_findings="$tmp/accepted-findings.ndjson" repair_prompt="$tmp/repair-prompt" \
     worker_model=gpt-5.6-luna worker_effort=high REPAIR_CROSS_CALLS="$repair_cross_calls" \
@@ -493,8 +492,8 @@ assert_contains "$triage_and_selection_text" \
     'printf '\''%s'\'' "$cached_issue_body" | "$agentkit/parallel-issues/scripts/issue-paths.sh" --issue "${issue_number:?set the selected issue number}" --repo-root "$repository_root" --body-file -' \
     'conflict analysis seeds paths from the cached issue body without another forge read'
 assert_contains "$triage_and_selection_text" \
-    '[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ]' \
-    'the issue-path recipe fails closed without provenance-bound installed helpers'
+    ': "${agentkit:?set agentkit to the preflight skills= path}"' \
+    'the issue-path recipe fails loudly on an empty agentkit'
 assert_contains "$triage_and_selection_text" 'chain-conversion' \
     'late overlap has an explicit chain-conversion disposition'
 assert_contains "$triage_and_selection_text" 'merge-down' \
@@ -564,8 +563,10 @@ assert_contains "$text" 'Selection funnel:' \
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
 assert_contains "$normalized_text" \
-    'The helper answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
-    'selection keeps judgment and board mutation root-owned'
+    'Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
+    'attended selection keeps judgment and board mutation root-owned'
+assert_contains "$normalized_text" 'and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it' \
+    'fast mode acts on the picker list without re-adjudicating a drop'
 assert_contains "$triage_and_selection_text" \
     'Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none' \
     'selection reconciliation covers a full requested queue'
@@ -655,10 +656,8 @@ assert_contains "$text" 'confirmed terminal release' \
     'same-worktree fix and merge-down work waits for confirmed writer release'
 assert_contains "$text" 'Publish one root-owned receipt at a time' \
     'root publication remains serial across concurrent review and fix completion'
-assert_contains "$concurrency_help" '# BEGIN session-context recovery' \
-    'concurrency dispatch carries the canonical session-context loader'
-assert_contains "$concurrency_help" 'agentkit_provenance' \
-    'concurrency dispatch validates resolver provenance'
+assert_contains "$concurrency_help" "$installed_assignment" \
+    'concurrency dispatch names its own installed skills path'
 assert_contains "$text" '### Spawn discipline (applies to every spawn in this skill)' \
     'spawn discipline is cross-cutting instead of dispatch-phase scoped'
 assert_contains "$normalized_text" \
@@ -1794,7 +1793,7 @@ for _pub_i in "${!pub_lines[@]}"; do
     if ((decisions_guard_idx < 0)) && [[ $_pub_line == *'pr_decisions_file=${pr_decisions_file:?'* ]]; then
         decisions_guard_idx=$_pub_i
     fi
-    if ((resolver_guard_idx < 0)) && [[ $_pub_line == *'agentkit unresolved: prepend the Step 0 resolver block'* ]]; then
+    if ((resolver_guard_idx < 0)) && [[ $_pub_line == *': "${agentkit:?set agentkit to the preflight skills= path}"'* ]]; then
         resolver_guard_idx=$_pub_i
     fi
     if ((dispatch_guard_idx < 0)) && [[ $_pub_line == *'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}'* ]]; then
@@ -2483,7 +2482,6 @@ run_spawn_fence() {
         > "$fixture/.agent/env-contract.txt"
     {
         printf 'agentkit=%q\n' "$root/agentkit/skills"
-        printf 'agentkit_provenance=ok\n'
         printf 'repository_root=%q\n' "$fixture"
         cat "$spawn_fence"
         printf 'printf "%%s %%s %%s\\n" "$worker_model" "$worker_model_fallback" "$model_pivot_note"\n'
@@ -2507,7 +2505,6 @@ run_spawn_fence_selection() {
         > "$fixture/.agent/env-contract.txt"
     {
         printf 'agentkit=%q\n' "$root/agentkit/skills"
-        printf 'agentkit_provenance=ok\n'
         printf 'repository_root=%q\n' "$fixture"
         cat "$spawn_fence"
         printf 'if [[ %q == yes ]]; then\n' "$preferred_advertised"

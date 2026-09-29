@@ -106,8 +106,8 @@ receipt_acceptance_gaps() {
     done < <(grep -E '^repo-verify=' "$PR_STATE_DIGEST" || true)
 }
 
-# Lists each unresolved adversarial finding and the two-step repair that
-# records its terminal evidence.
+# Lists each unresolved adversarial finding and the one call that records its
+# terminal evidence.
 receipt_finding_gaps() {
     [[ $(jq -r '.remediation // ""' <<<"$REMEDIATION") != complete ]] || return 0
     local ledger dir ids line
@@ -120,7 +120,7 @@ receipt_finding_gaps() {
     done < <(jq -r --argjson ids "$ids" '.unresolved[]
         | "unresolved adversarial finding \"\(.title)\" (id \($ids[.title] // "?")); next: \(.nextAction)"' \
         <<<"$REMEDIATION")
-    receipt_gap "record terminal evidence for unresolved adversarial findings: \"$ledger\" evidence --title T --path P --log LOG --repo-root \"$FINAL_REPO_ROOT\" --repair-sha SHA > \"$dir/evidence-ID.json\", then RUN_DIR=\"$dir\" \"$ledger\" add --title T --severity P1|P2 --verdict fixed --sha SHA --evidence \"$dir/evidence-ID.json\" --repo-root \"$FINAL_REPO_ROOT\" --head $FINAL_HEAD_SHA (a decline: --verdict declined --rationale R --evidence FILE)"
+    receipt_gap "record terminal evidence for unresolved adversarial findings: RUN_DIR=\"$dir\" \"$ledger\" evidence --title T --path P --log LOG --repo-root \"$FINAL_REPO_ROOT\" --repair-sha SHA (a decline: RUN_DIR=\"$dir\" \"$ledger\" add --title T --severity P1|P2 --verdict declined --rationale R --evidence FILE --repo-root \"$FINAL_REPO_ROOT\" --head $FINAL_HEAD_SHA)"
 }
 
 receipt_accepted_gaps() {

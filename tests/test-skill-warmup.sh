@@ -28,8 +28,8 @@ for skill in parallel-issues review-remote-pr pr-to-green onboard-repo; do
     recipe="$tmp/$skill.sh"
     if [[ $skill == parallel-issues ]]; then
         "$root/agentkit/skills/.shared/scripts/agent-preflight.sh" --help | awk '
-            /^Recipe: resolve, rehydrate, and run once$/ { inside=1; next }
-            /^Cache rehydration for each later guarded block/ { exit }
+            /^Recipe: resolve and run once$/ { inside=1; next }
+            /^Later blocks: set agentkit=/ { exit }
             inside { sub(/^  /, ""); print }
         ' > "$recipe"
     else

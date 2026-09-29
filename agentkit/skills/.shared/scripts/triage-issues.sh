@@ -43,8 +43,7 @@ Usage: triage-issues.sh [--repo-root DIR] [--limit N | --issues N,N,N] [--fuzzy 
 Recipe: triage once
   set -euo pipefail
   command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is not installed; evidence unavailable' >&2; exit 1; }
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || {
-      printf '%s\n' 'agentkit unresolved: prepend THE CACHE REHYDRATION block' >&2; exit 1; }
+  : "${agentkit:?set agentkit to the preflight skills= path}"
   # Automatic selection: one GraphQL request for the recent open backlog.
   "$agentkit/.shared/scripts/triage-issues.sh" --limit 30
   # Alternative explicit mode (replace with the requested numbers; do not run both):

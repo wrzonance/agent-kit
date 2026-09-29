@@ -184,7 +184,7 @@ ready transition to the user.
 
 ### Step 0: Environment preflight (MANDATORY — run once, before anything else)
 
-Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing. Run `"$agentkit/.shared/scripts/agent-preflight.sh" --help` and follow its resolver, cache-rehydration, and run-once recipe. Shell state is not persistent; later standalone blocks rehydrate the validated data record before their guard, and a missing or stale record fails loudly.
+Run `$agentkit/.shared/scripts/agent-preflight.sh` once before any other command. Its stdout is **the environment contract for the whole run** (skills path, repo/base, config, git/gh/sandbox, CA/cache, runner, reviewer); establish it here, never by worker failure or later re-probing. Run `"$agentkit/.shared/scripts/agent-preflight.sh" --help` and follow its resolver and run-once recipe. `agentkit` is the `skills= path=` value preflight printed. Shell state does not persist: start any later block that calls a helper with `agentkit=<that path>`; nothing else to re-derive.
 
 `agent-preflight.sh` reports environment failures as contract data and exits 0; exit 2 is bad arguments. Its bytes also write `<worktree>/.agent/env-contract.txt`; `.agent/*` in the local exclude preserves the `.gitignore` allowlist. Re-running is idempotent.
 
@@ -253,10 +253,8 @@ here as one-liners; the full rationale, the `--fast-mode` decision rule, and pic
 [references/triage-and-selection.md](references/triage-and-selection.md#board-adjudication):
 
 - Two or more candidates on the **same** Project (v2) board → STOP. Ask explicitly: "These
-  share Project X. Proceed in parallel, or sequence them?" (`--fast-mode`: resolve it via Step 3's
-  conflict analysis instead of asking, and disclose the finding.)
-- A candidate in a column like "Blocked" → flag and ask before including. (`--fast-mode`: drop it
-  with a printed reason instead of asking.)
+  share Project X. Proceed in parallel, or sequence them?" (`--fast-mode`: the picker's list decides; disclose it.)
+- A candidate in a column like "Blocked" → flag and ask before including. (`--fast-mode`: it is never picked.)
 
 An optional, opt-in-per-issue fuzzy prior-art search (for a PR that fixed an issue without ever
 referencing it) is documented in
@@ -267,12 +265,13 @@ referencing it) is documented in
 Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: a body-free record carries status,
-eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and
-`workShape`. `workShape: "no-code"` means HOLD before worktree creation; retain `holdReason`, count
-`no-code-hold`, and use the anchored [work-shape verdict](references/triage-and-selection.md#work-shape-verdict)
-for ambiguity.
-The helper answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
+in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: its body-free `--json` record carries
+eligibility, blockers, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and `workShape`. `workShape: "no-code"`
+means HOLD before worktree creation; retain `holdReason`, count `no-code-hold`, and use the anchored
+[work-shape verdict](references/triage-and-selection.md#work-shape-verdict) for ambiguity. **`--fast-mode`:** run
+`"$agentkit/.shared/scripts/pick-issues.sh" --fast-mode --slot-cap N` once (plus `--exclude-text <term>` per
+operator exclusion): `dispatch` is the wave, `writes=` seeds the plan, `queued` refills, and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it.
+Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
 exactly once after the final conflict and slot-cap decisions and before dispatch. Every set reports
 requested/eligible/dispatched plus one reason per exclusion.
 An empty selection is an answer only with evidence. Report `Selection funnel: degraded=yes; eligible=unknown`
@@ -306,11 +305,8 @@ On `needs-paths: <glob>[,<glob>...]`, record `prediction-expansion`; `followup_t
 
 Combine Step 2 triage and board findings, then get approval before continuing.
 
-**With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
-colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
-the approval gate, not the reasoning that gate was there to check. Two workers editing one file
-in separate worktrees is the failure this step prevents, and it costs more unattended than
-attended, because nobody is watching to stop it.
+**With `--fast-mode`, do not ask:** print the picker's list, which already dropped each colliding later
+issue — fast mode removes the approval gate, not the reasoning.
 
 **With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Only an
 **interface dependency** (one issue consumes code or contracts the other produces, or both mutate the
@@ -362,8 +358,8 @@ Resolve `dependency_bootstrap` from the contract's resolved `instructions=` file
 set -euo pipefail
 
 issue_number=123 # Replace with the approved issue number.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
-repository_root=$contract_root
+: "${agentkit:?set agentkit to the preflight skills= path}"
+repository_root=$(git rev-parse --show-toplevel) || exit 1
 base=$("$agentkit/.shared/scripts/contract-read.sh" --repo-root "$repository_root" --get base.branch) && [[ $base != none ]] || exit 1
 # A chain uses its predecessor's pushed SHA; empty starts from trunk.
 chain_base_sha="${chain_base_sha:-}"
@@ -475,7 +471,7 @@ Preserve incident lines; `cross-write=none` is clean. Dispose only exact in-wind
 
 Per-issue prompt: **Compose once, to a file; the spawn reads that file — never re-compose to re-read.**
 ```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 compose_script="$agentkit/parallel-issues/scripts/compose-worker-prompt.sh"; prompt_dir="$worktree/.agent/prompts"; mkdir -p -- "$prompt_dir" || exit 1; prompt_file="$prompt_dir/issue-$issue_number-lead.md"
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}; [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || { printf '%s\n' 'invalid dispatch_plan' >&2; exit 1; }
 # write_set_globs is REQUIRED for an issue lead: one glob per flag, never CSV.
@@ -575,8 +571,8 @@ Invoke returned argv once, then push the branch. Only after publication does the
 
 ```bash
 bash -c "$(cat <<'BASH_RECIPE'
-agentkit=$1 agentkit_provenance=$2 dispatch_plan=$3 worktree=$4 raw_handback=$5 issue_number=$6 repository_root=$7
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+agentkit=$1 dispatch_plan=$2 worktree=$3 raw_handback=$4 issue_number=$5 repository_root=$6
+: "${agentkit:?set agentkit to the preflight skills= path}"
 dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}
 validated_argv_file=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --scratch-label handback --repo-root "$repository_root") || exit 1; trap 'rm -f -- "$validated_argv_file"' EXIT
 if ! "$agentkit/.shared/scripts/validate-handback.sh" --worktree "$worktree" --handback-file "$raw_handback" --issue "$issue_number" --dispatch-plan "$dispatch_plan" >"$validated_argv_file"; then exit 1; fi
@@ -586,7 +582,7 @@ mapfile -d '' -t validated_argv <"$validated_argv_file"
 validated_argv=("${validated_argv[0]}" --include-staged "${validated_argv[@]:1}")
 (cd -- "$worktree" && "${validated_argv[@]}")
 BASH_RECIPE
-)" _ "${agentkit:-}" "${agentkit_provenance:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
+)" _ "${agentkit:-}" "${dispatch_plan:-}" "${worktree:-}" "${raw_handback:-}" "${issue_number:-}" "${repository_root:-}" || exit $?
 ```
 
 Before opening a draft PR, read the full [publication recipe](references/worker-prompts.md#draft-pr-body-template).
@@ -715,7 +711,7 @@ the receipt is a **no-silent-skip** failure. Materiality, consent, and exit code
 ```bash
 # The loop runs this before handing the launch to root, using the Step 1 artifact.
 : "${PR:?set PR}" "${worktree:?set worktree}" "${REPO:?set REPO}" "${base:?set base}"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 receipt_comments="$RUN_DIR/state/pr_${PR}_issue_comments.json"
 current_diff_payload=$("$agentkit/review-remote-pr/scripts/consent-record.sh" payload --worktree "$worktree" --run-dir "$RUN_DIR" --repo "$REPO" --pr "$PR" --base-ref "$base") || exit 1
@@ -747,17 +743,12 @@ without delaying the earlier immutable review launch; raw untriaged thread count
 ```bash
 # Run only after the finding-fix push; this is the final draft-phase action.
 : "${PR:?re-set PR to the current pull request; shell state does not persist}"
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend THE CACHE REHYDRATION block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 RUN_DIR=$("$agentkit/review-remote-pr/scripts/run-dir.sh" --pr "$PR") || exit 1
 # After the runner returns 0, produce terminal proof before each disposition:
-fixed_evidence="$RUN_DIR/evidence-fixed.json"
-"$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence --title 'SHORT_TITLE' \
-  --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
-  --repair-sha REPAIR_SHA >"$fixed_evidence" || exit 1
-RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" add \
-  --title 'SHORT_TITLE' --severity P1 --verdict fixed \
-  --sha "$(jq -r .repairSha "$fixed_evidence")" --evidence "$fixed_evidence" \
-  --repo-root "$worktree" --head "$(git -C "$worktree" rev-parse HEAD)" || exit 1
+RUN_DIR="$RUN_DIR" "$agentkit/review-remote-pr/scripts/finding-ledger.sh" evidence \
+  --title 'SHORT_TITLE' --path AFFECTED_PATH --log GREEN_UNFOCUSED_LOG --repo-root "$worktree" \
+  --repair-sha REPAIR_SHA || exit 1
 decline_evidence="$RUN_DIR/evidence-declined.json"
 jq -cn --arg finding 'OTHER_TITLE' --arg rationale 'RATIONALE' \
   '{finding:$finding,decision:"rejected",rationale:$rationale}' >"$decline_evidence" || exit 1

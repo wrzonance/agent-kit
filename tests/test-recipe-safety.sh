@@ -338,19 +338,19 @@ for parent_shell in bash zsh; do
 
     printf '%s\n' '{"entries":[{"issue":723,"predictedWriteSet":[]}],"conflictMap":{"revisions":[]}}' > "$fixture_root/plan"
     printf '%s\n' 'needs-paths: src/new.py' > "$fixture_root/report"
-    needs_inputs='raw_report=$1; dispatch_plan=$2; issue_number=$3; agentkit=$4; agentkit_provenance=$5; repository_root=$6'
+    needs_inputs='raw_report=$1; dispatch_plan=$2; issue_number=$3; agentkit=$4; repository_root=$5'
     output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell needs-paths fence accepts ordinary inputs"
     assert_eq src/new.py "$(jq -r '.entries[0].predictedWriteSet[0]' "$fixture_root/plan")" \
         "$parent_shell needs-paths fence updates the plan"
     printf '%s\n' 'needs-paths: ../escape' > "$fixture_root/report"
     output=$("$parent_shell" -f -c "$needs_inputs"$'\n'"$needs_recipe"$'\n'"$completed" \
-        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" ok "$fixture_root/root-repo" 2>&1)
+        _ "$fixture_root/report" "$fixture_root/plan" 723 "$fixture_root/kit" "$fixture_root/root-repo" 2>&1)
     assert_eq 1 "$?" "$parent_shell needs-paths refusal stops the parent"
     assert_not_contains "$output" parent-completed "$parent_shell needs-paths refusal cannot continue"
 
-    handback_inputs='agentkit=$1; agentkit_provenance=ok; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723; repository_root=$5'
+    handback_inputs='agentkit=$1; dispatch_plan=$2; worktree=$3; raw_handback=$4; issue_number=723; repository_root=$5'
     output=$("$parent_shell" -f -c "$handback_inputs"$'\n'"$handback_recipe"$'\n'"$completed" \
         _ "$fixture_root/kit" "$fixture_root/plan" "$fixture_root/worktree" "$fixture_root/report" "$fixture_root/root-repo" 2>&1)
     assert_eq 0 "$?" "$parent_shell handback fence receives ordinary inputs"

@@ -364,7 +364,7 @@ publication_target=$(jq -er --argjson issue "$issue_number" \
 closing_issue_args=()
 [[ $publication_target != "$base" ]] || closing_issue_args+=(--expect-closing-issue "$issue_number")
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 if ! grep -qxF 'Diff-size disclosure:' "$pr_decisions_file"; then
   printf '\n\n%s\n' 'Diff-size disclosure:' >> "$pr_decisions_file"
   "$agentkit/.shared/scripts/diff-facts.sh" --repo-root "$worktree" \
@@ -392,7 +392,7 @@ banner and closing attribution as the PR template:
 
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/gh-body.sh" issue create --body-file "$issue_body_file" \
   --title "$issue_title"
 "$agentkit/.shared/scripts/gh-body.sh" issue edit "$issue_number" --body-file "$issue_body_file"
