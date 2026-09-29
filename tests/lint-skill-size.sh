@@ -41,31 +41,8 @@ declare -A KNOWN_OVERSIZE=(
     # #873 review: preflight's flag set includes --activation-origin.
     # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
     [pr-to-green]="320:5044:450"
-    # #777: helper-owned recipes shrink the injected body toward the standard budget.
-    # #779: retain destination-adjacent plan publication in the extracted body.
-    # #783 + #785: atomic summary producers with durable sweep rehydration.
-    # #784 final parent integration extends the durable dispatch recipe.
-    # #810: require roots to preserve failed verification outcomes during collection.
-    # #845 + #865: state the cold-start/reference-use boundary at workflow activation.
-    # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
-    # #873 review: preflight's flag set includes --activation-origin.
-    # #875 review: preserve summary evidence and persist an invocation-derived review mode.
-    # #875 follow-up: Collect restores that durable review mode in resumed shells.
-    # #875 integration: retain the inline restore across the final predecessor merge.
-    # #903: concurrent admission, cross-run freshness, and stopped proof contract.
-    # #902: separate launch eligibility and require accepted-finding evidence at finalization.
-    # #901: defer successor integration to the topological draft-ready boundary.
-    # #907: one-call startup/resume binding restores distinct run, session, and ledger identities.
-    # #907 review: explicit authorized rebind plus deterministic ambiguity recovery guidance.
-    # #910: automatic complete-join setup and resolution avoid partial-base dispatch/recovery turns.
-    # #914 integration: preserve the #907 rebind and #910 join contracts; exact measurement.
-    # #914: resume source-derived obligations after a steer in the same root turn.
-    # #908 assembly: preserve #902 and #909/#907 workflow prose; exact measurement.
-    # #908 final parent integration: exact combined one-call finalization measurement.
-    # #900 prose trim: deduplicate resident join, protected-path, and steer guidance.
-    # Rehydration ceremony (#29), one-call evidence (#38), fast-mode dispatch list (#28),
-    # run-scoped cross-write collect (#44); exact measurement.
-    [parallel-issues]="815:17803:500"
+    # Halved to the go path: deleted prose restating helpers and references; exact measurement.
+    [parallel-issues]="367:9424:500"
 )
 
 readonly MAX_BODY_LINES=500

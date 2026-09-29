@@ -220,9 +220,9 @@ mkdir -p "$root/parallel-issues"
 } > "$root/parallel-issues/SKILL.md"
 run_lint "$root"
 assert_eq '1' "$LINT_RC" 'the parallel-issues ratchet fixture exceeds its measured ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 815 lines' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 367 lines' \
     'the parallel-issues line ratchet pins the extracted-recipe ceiling'
-assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 17803 tokens' \
+assert_contains "$LINT_OUT" 'past its ratcheted ceiling of 9424 tokens' \
     'the parallel-issues token ratchet pins the extracted-recipe ceiling'
 
 # A bad allowlist field must be named, never evaluated. Under `set -u` these
