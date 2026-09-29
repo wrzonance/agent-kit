@@ -423,6 +423,17 @@ assert_eq 1 "$retry_rc" 'a retry whose ledger add fails is refused'
 assert_eq same "$(cmp -s "$tmp/ev-before.json" "$ev_file" && printf same || printf changed)" \
     'a failed retry leaves the recorded evidence file byte-identical'
 assert_eq '' "$(find "$ev_run" -name 'evidence.*' -print)" 'a failed retry leaves no staged evidence behind'
+dir_run="$tmp/dir-run"
+new_run "$dir_run"
+run_ledger_at "$dir_run" add --title 'Dir dest' --severity P2 --verdict open --rationale 'repair' >/dev/null
+mkdir "$dir_run/evidence-dir-dest.json"
+dir_dest_err=$(RUN_DIR="$dir_run" "$script" evidence --title 'Dir dest' --path affected.sh --repo-root "$ev_repo" \
+    --log "$tmp/ev-full.log" --repair-sha "$ev_repair" 2>&1 >/dev/null; printf 'rc=%s' "$?")
+assert_contains "$dir_dest_err" 'evidence destination is not a regular file' 'a directory evidence destination is refused'
+assert_contains "$dir_dest_err" 'rc=1' 'a directory evidence destination is an evidence refusal'
+assert_eq open "$(jq -rs '[.[] | select(.title == "Dir dest")][0].verdict' "$dir_run/findings.ndjson")" \
+    'a refused directory destination leaves the row open'
+assert_eq '' "$(find "$dir_run" -name 'evidence.*' -print)" 'a refused directory destination leaves no staged evidence'
 assert_rc 2 'evidence requires RUN_DIR' -- \
     "$script" evidence --title 'Guard input' --path affected.sh --repo-root "$ev_repo" \
     --log "$tmp/ev-full.log" --repair-sha "$ev_repair"

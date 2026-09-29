@@ -519,6 +519,15 @@ seed_run_dir "$outside" 644
 run "$wt_repo" 644
 assert_eq "$wt_repo/.agent/evidence/pr-644" "$RUN_OUT" 'a run directory outside the repository worktrees is never used'
 
+other_repo="$tmp/other-repo"
+git init -q "$other_repo"
+git -C "$other_repo" -c user.name=T -c user.email=t@example.invalid commit -q --allow-empty -m base
+git -C "$other_repo" worktree add -q -b feat/other "$other_repo/wt" 2>/dev/null
+seed_run_dir "$other_repo/wt" 645
+git_dir_out=$(GIT_DIR="$other_repo/.git" /bin/bash "$script" --pr 645 --repo-root "$wt_repo" 2>/dev/null)
+assert_eq "$wt_repo/.agent/evidence/pr-645" "$git_dir_out" \
+    'an inherited GIT_DIR naming another repository cannot supply the run directory'
+
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #785 adds durable fallback selection and explicit split-backend refusal.
 # cable-tool #25 adds the linked-worktree lookup for a PR's populated run directory.

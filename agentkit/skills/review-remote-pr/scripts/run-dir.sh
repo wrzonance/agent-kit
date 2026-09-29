@@ -264,7 +264,7 @@ worktree_target() {
     while IFS= read -r -d '' field; do
         dir=${field#worktree }/.agent/evidence/$SELECTOR
         [[ $field == 'worktree '* && $dir != "$own" ]] && populated_run_dir "$dir" && found+=("$dir")
-    done < <(git -C "$REPO_ROOT" worktree list --porcelain -z 2>/dev/null)
+    done < <(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$REPO_ROOT" worktree list --porcelain -z 2>/dev/null)
     ((${#found[@]} == 1)) && TARGET=${found[0]}
 }
 

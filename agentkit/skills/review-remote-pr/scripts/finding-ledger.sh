@@ -534,9 +534,12 @@ record_fixed() {
         id=$(base_finding_id "$TITLE") || die_evidence 'could not derive finding IDs'
     fi
     # Stage the evidence; it replaces evidence-ID.json only once the add succeeds.
+    local dest=$RUN_DIR/evidence-$id.json
+    [[ ! -e $dest && ! -L $dest ]] || [[ -f $dest && ! -L $dest ]] ||
+        die_evidence "evidence destination is not a regular file: $dest"
     EVIDENCE_FILE=$(mktemp "$RUN_DIR/evidence.XXXXXXXX")
     { jq '.evidence' <<<"$3" >"$EVIDENCE_FILE" && ( append_record >/dev/null ) &&
-        mv -f -- "$EVIDENCE_FILE" "$RUN_DIR/evidence-$id.json"; } || { rc=$?; rm -f -- "$EVIDENCE_FILE"; exit "$rc"; }
+        mv -f -- "$EVIDENCE_FILE" "$dest"; } || { rc=$?; rm -f -- "$EVIDENCE_FILE"; exit "$rc"; }
     printf 'recorded fixed id=%s sha=%s head=%s\n' "$id" "$SHA" "$HEAD"
 }
 
