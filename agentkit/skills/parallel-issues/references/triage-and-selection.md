@@ -542,7 +542,7 @@ set -euo pipefail
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 : "${agentkit:?set agentkit to the preflight skills= path}"
 
-# Ready first. Add --include-backlog to groom unblocked Backlog work in as well.
+# Ready first; --include-backlog (implied by --fast-mode) adds free Backlog.
 "$agentkit/.shared/scripts/pick-issues.sh" --include-backlog
 ```
 
@@ -561,8 +561,10 @@ than trusting a subset.
 
 **Only `selectable` lines are eligible.** A `SKIP` line is a decision the script already
 made; do not re-litigate it, and never dispatch one because the blocker "looks stale".
-GitHub issue dependencies live on the issue, not on the board card, so a board read alone
-would have reported `#11` as ready to start.
+
+`--fast-mode` without `--json` prints `dispatch`/`queued`/`dropped` lines instead, each drop with its
+mechanical reason. That list already applies steps 1-3 below in pickup order: dispatch it, refill from `queued`, and report each
+`dropped` line in the funnel as printed.
 
 Then apply, in order:
 
@@ -577,11 +579,9 @@ Then apply, in order:
    files/modules/labels as an already-selected issue), then take top-ranked candidates until the
    cap is filled or Backlog is exhausted.
 2. **Run Step 3's conflict analysis over the eligible set**, and drop the later issue from
-   every colliding pair. This is the part no script can do — it is a judgement about which
-   files each issue will touch.
+   every colliding pair.
 3. **Cap the current wave at the Limits section's slot count.** More eligible issues than slots is
-   the normal case. In `--fast-mode`, dispatch the first candidates by pickup order and queue the
-   remainder for refill as slots free; attended mode reports the overflow and asks before dispatch.
+   the normal case; report the overflow and ask before dispatch.
 4. **Move all chosen issues to `In progress` in one batch** with `move-github-project-item.sh`,
    including the Backlog ones — a promoted issue skips `Ready` because it is being started now,
    and leaving it in Backlog while a worker builds it makes the board lie. The helper accepts

@@ -23,8 +23,10 @@ git -C "$repo" init -q 2> /dev/null
 printf '{"schemaVersion":1,"owner":"example-org","project":{"id":"PVT_x","number":7}}\n' \
     > "$repo/.agent/board.json"
 printf 'AGENT_REPO_SLUG=example-org/example-repo\n' > "$repo/.agent/config.env"
-mkdir -p "$repo/tools"
-printf 'tooling\n' >"$repo/tools/README.md"
+for dir in tools src lib deploy .github/workflows; do
+    mkdir -p "$repo/$dir"
+    printf 'tooling\n' >"$repo/$dir/README.md"
+done
 git -C "$repo" config user.email test@example.invalid
 git -C "$repo" config user.name test
 git -C "$repo" add -- .
@@ -260,24 +262,109 @@ out=$(PATH="$tmp/bin:$PATH" "$shadow/.shared/scripts/pick-issues.sh" --repo-root
 assert_eq '1' "$rc" 'a failed issue-paths helper fails selection'
 assert_contains "$out" 'could not derive paths for issue #16' 'the failed-helper error names the affected issue'
 
-# Fast mode caps the current wave and leaves later pickup-order candidates for
-# refill. The attended path still returns the complete eligible set; only the
-# explicit fast-mode cap creates a queue.
-set_board '{"totalCount":3,"items":[
-  {"status":"Ready","content":{"number":31,"type":"Issue","title":"first",
-   "repository":"example-org/example-repo"}},
-  {"status":"Ready","content":{"number":32,"type":"Issue","title":"second",
-   "repository":"example-org/example-repo"}},
-  {"status":"Ready","content":{"number":33,"type":"Issue","title":"third",
-   "repository":"example-org/example-repo"}}]}' \
-  '{"data":{"repository":{
-    "i31":{"number":31,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
-    "i32":{"number":32,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}},
-    "i33":{"number":33,"state":"OPEN","blockedBy":{"totalCount":0,"nodes":[]}}}}}'
-out=$(run --fast-mode --slot-cap 2)
+# Fast mode prints a decision list the root acts on without re-reading: one
+# terminal dispatch/queued/dropped line per candidate, each drop with its
+# mechanical reason. Field cost it removes (#28): 30 min, 35 calls, 2.6M tokens
+# of --json re-reads and document adjudication before one dispatch.
+fast_item() { printf '{"status":"Ready","content":{"number":%s,"type":"Issue","title":"%s","repository":"example-org/example-repo"}}' "$1" "$2"; }
+fast_dep() { printf '"i%s":{"number":%s,"state":"OPEN","body":"%s","blockedBy":{"totalCount":%s,"nodes":[%s]}}' "$1" "$1" "$2" "${3:-0}" "${4:-}"; }
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+set_board "{\"totalCount\":11,\"items\":[$(fast_item 31 first),$(fast_item 32 'same file as first'),
+  $(fast_item 33 'waits on another issue'),$(fast_item 34 'prose only'),$(fast_item 35 'touch ci'),
+  $(fast_item 36 'PowerShell publish script'),$(fast_item 37 'research only'),$(fast_item 38 second),
+  $(fast_item 39 'third, a deliberately long title that runs well past the sixty character clip'),
+  $(fast_item 40 'unread blockers'),$(fast_item 41 'more prose')]}" \
+  "{\"data\":{\"repository\":{$(fast_dep 31 'Edit `src/a.sh`.'),$(fast_dep 32 'Also edit `src/a.sh`.'),
+    $(fast_dep 33 'Edit `src/z.sh`.' 1 '{"number":99,"state":"OPEN"}'),$(fast_dep 34 'Make the parser faster.'),
+    $(fast_dep 35 'Edit `.github/workflows/ci.yml`.'),$(fast_dep 36 'Edit `deploy/publish.ps1`.'),
+    $(fast_dep 37 'Do not create a branch or pull request. Return analysis only.'),
+    $(fast_dep 38 'Edit `src/b.sh` and `src/c.sh` and `src/d.sh` and `src/e.sh`.'),
+    $(fast_dep 39 'Edit `lib/x.sh`.'),$(fast_dep 40 'Edit `lib/y.sh`.' 25 '{"number":98,"state":"CLOSED"}'),
+    $(fast_dep 41 'Tidy the logging.')}}}"
+out=$(run --fast-mode --slot-cap 2 --exclude-text powershell)
 assert_contains "$out" 'dispatched=2' 'fast mode reports the current wave cap'
 assert_contains "$out" 'queued=1' 'fast mode queues overflow for refill'
-assert_contains "$out" 'QUEUE #33' 'queued issues retain pickup order and identity'
+assert_contains "$out" 'dispatch #31  first  writes=src/a.sh  shape=implementation' \
+    'a dispatch line carries the write set and work shape the dispatch plan needs'
+assert_contains "$out" 'writes=src/b.sh,src/c.sh,src/d.sh,src/e.sh  shape' \
+    'a dispatch line carries the complete write set the dispatch plan needs'
+assert_contains "$out" 'dispatch #38  second' 'the wave takes the next free candidate in pickup order'
+assert_contains "$out" 'queued #39  slot-cap  writes=lib/x.sh' \
+    'overflow queues in pickup order with its complete write set for refill'
+assert_contains "$out" 'dropped #32  write-set collision with #31' 'a colliding later issue is dropped'
+assert_contains "$out" 'dropped #33  blocked-by #99 open' 'an open blocker is named'
+assert_contains "$out" 'dropped #34,#41  needs-adjudication: no file path named in the issue body' \
+    'issues with no predicted write set are dropped, one line per shared reason'
+assert_contains "$out" 'dropped #35  protected paths .github/workflows/' 'a protected write set is dropped'
+assert_contains "$out" 'dropped #36  excluded by operator filter "powershell"' \
+    'the operator exclusion matches title text case-insensitively'
+assert_contains "$out" 'dropped #37  no-code hold: Do not create a branch' 'a no-code hold is dropped'
+assert_contains "$out" 'dropped #40  blocked-by unread: 1 of 25 blockers read' 'a partial blocker read is dropped'
+assert_eq '11' "$(grep -c . <<<"$out")" 'one summary line plus one line per decision and nothing else'
+assert_contains "$(run --fast-mode --slot-cap 10)" 'dispatch #36  PowerShell publish script' \
+    'without an operator filter the same issue is dispatched, and a large cap queues nothing'
+json=$(run --fast-mode --slot-cap 2 --json)
+bytes=${#out}
+if ((bytes <= 1000 && bytes * 3 < ${#json})); then
+    _pass "the fast-mode list stays compact ($bytes bytes vs ${#json} for --json)"
+else
+    _fail 'the fast-mode list stays compact' "list=$bytes json=${#json}"
+fi
+assert_eq '["blockerRead","blockerTotal","blockers","bodyCache","dispatch","eligible","number","predictedWriteSet","queued","repository","requirementsDigest","state","status","title","workShape"]' \
+    "$(jq -c '.[] | select(.number == 31) | keys' <<< "$json")" 'fast-mode --json keeps the record shape'
+assert_rc 2 '--exclude-text is a fast-mode list filter only' -- \
+    env PATH="$tmp/bin:$PATH" "$script" --repo-root "$repo" --exclude-text x
+
+# A thin Ready column is an invitation (#270): on the field board the only Ready
+# item was excluded by the operator, so fast mode must fill the wave from Backlog.
+backlog_item() { printf '{"status":"Backlog","content":{"number":%s,"type":"Issue","title":"%s","repository":"example-org/example-repo"}}' "$1" "$2"; }
+# shellcheck disable=SC2016  # Markdown backticks are literal body bytes.
+set_board "{\"totalCount\":3,\"items\":[$(fast_item 50 'PowerShell deploy'),$(backlog_item 51 'backlog one'),$(backlog_item 52 'backlog two')]}" \
+  "{\"data\":{\"repository\":{$(fast_dep 50 'Edit `deploy/publish.ps1`.'),$(fast_dep 51 'Edit `src/f.sh`.'),$(fast_dep 52 'Edit `lib/g.sh`.')}}}"
+out=$(run --fast-mode --slot-cap 4 --exclude-text powershell)
+assert_contains "$out" 'dispatch #51  backlog one' 'fast mode fills an excluded thin Ready column from Backlog'
+assert_contains "$out" 'dispatched=2' 'and dispatches every free Backlog issue up to the cap'
+out=$(run --fast-mode --slot-cap 4 --exclude-text powershell --ready-only --include-backlog)
+assert_contains "$out" 'dispatched=0' '--ready-only opts fast mode out of Backlog and wins over --include-backlog'
+assert_not_contains "$out" '#51' 'and no Backlog issue is listed'
+
+# A repository's declared protected paths join the defaults; an invalid
+# declaration refuses selection instead of silently falling back to defaults.
+cp "$repo/.agent/config.env" "$tmp/config.env"
+printf 'AGENT_PROTECTED_PATHS=src/\n' >>"$repo/.agent/config.env"
+assert_contains "$(run --fast-mode --slot-cap 4)" 'dropped #51  protected paths src/' \
+    'a declared protected path drops a candidate that writes under it'
+{ cat "$tmp/config.env"; printf 'AGENT_PROTECTED_PATHS=../outside\n'; } >"$repo/.agent/config.env"
+rc=0
+out=$(run --fast-mode --slot-cap 4) || rc=$?
+assert_eq '1' "$rc" 'an invalid protected-path declaration refuses selection'
+assert_contains "$out" 'AGENT_PROTECTED_PATHS is invalid; run repo-config.sh --validate' 'and names the fix'
+cp "$tmp/config.env" "$repo/.agent/config.env"
+
+# A wildcard write set is protected by the directory it owns: src/foo*.ts sits
+# under a protected src/. The real path extractor emits literals only, so a
+# shadow extractor supplies the glob.
+glob_shadow="$tmp/glob-shadow"
+mkdir -p "$glob_shadow/.shared" "$glob_shadow/parallel-issues/scripts"
+cp -R "$root/agentkit/skills/.shared/scripts" "$glob_shadow/.shared/scripts"
+printf '#!/usr/bin/env bash\nprintf "create src/foo*.ts\\n"\n' >"$glob_shadow/parallel-issues/scripts/issue-paths.sh"
+chmod +x "$glob_shadow/parallel-issues/scripts/issue-paths.sh"
+printf 'AGENT_PROTECTED_PATHS=src/\n' >>"$repo/.agent/config.env"
+out=$(PATH="$tmp/bin:$PATH" "$glob_shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --fast-mode --slot-cap 4 2>&1)
+assert_contains "$out" 'dropped #50,#51,#52  protected paths src/' 'a wildcard write set under a protected directory is dropped'
+cp "$tmp/config.env" "$repo/.agent/config.env"
+
+# A glob owns the directory before its first wildcard component, so it collides
+# with a literal file it could match rather than slipping past a prefix compare.
+decide() {
+    jq -c --argjson cap 4 --argjson protected '{}' --argjson exclude '[]' \
+        -f "$root/agentkit/skills/.shared/scripts/lib/pick-dispatch-list.jq" <<<"$1"
+}
+glob_rec() { printf '{"number":%s,"title":"t","workShape":"implementation","blockers":[],"blockerTotal":0,"blockerRead":0,"predictedWriteSet":["%s"]}' "$1" "$2"; }
+assert_contains "$(decide "[$(glob_rec 60 'src/foo*.ts'),$(glob_rec 61 src/foo.ts)]")" 'dropped #61  write-set collision with #60' \
+    'a wildcard file pattern collides with a literal file in its directory'
+assert_contains "$(decide "[$(glob_rec 62 'src/**'),$(glob_rec 63 lib/a.sh)]")" '"dispatched":2' \
+    'disjoint directories still dispatch together'
 
 # --- a truncated board read refuses to select -------------------------------
 # The regression this issue exists for: a board bigger than --limit must never
@@ -357,7 +444,10 @@ assert_rc 3 'a symlinked repository agent directory is rejected before cache pub
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 275 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 275 lines'
+# fast-mode dispatch list (+42, glob-aware protected pass): --exclude-text, the protected-path pass (refusing an
+# invalid declaration), and fast mode implying Backlog, replacing the root's per-candidate --json re-reads (field
+# run: 35 calls, 2.6M tokens) and a thin-Ready empty wave (#270).
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 317 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 317 lines'
 
 finish

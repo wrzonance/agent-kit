@@ -271,8 +271,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
 # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29), plus
-# one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes); exact tree.
-readonly MAX_TREE_TOKENS=518956
+# one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes), plus the
+# fast-mode dispatch list with complete write sets and a glob-aware protected pass (#28, #935); exact tree.
+readonly MAX_TREE_TOKENS=519640
 
 violations=0
 checked=0
