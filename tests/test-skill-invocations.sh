@@ -55,13 +55,11 @@ if [[ -n $contract_root && -r $contract && -f $contract && ! -L $contract && -O 
     agentkit=$(sed -n "s/^skills= path=//p" "$contract" 2>/dev/null | head -n 1)
 fi
 [ -d "$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path" >&2; exit 1; }
-agentkit_provenance=ok
 ```'
 
-# The guard is two conditions, not one: the directory check proves some tree is
-# there, the sentinel proves THIS resolver put it there.
+# The guard fails loudly on an empty $agentkit before any helper path runs.
 GUARDED_FENCE='```bash
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 "$agentkit/.shared/scripts/agent-run.sh" --help
 ```'
 
@@ -132,17 +130,14 @@ run_lint "$root"
 assert_eq '1' "$LINT_RC" 'a helper fence with no guard fails'
 assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the unguarded fence is named'
 
-# --- a directory-only guard is not a guard ------------------------------
-# `[ -d "${agentkit:-}/.shared/scripts" ]` alone is satisfied by any stale or
-# profile-inherited value that happens to point at a real tree -- precisely the
-# case the sentinel was added to reject. Without this rule the sentinel is
-# decorative: the skills carry it, but nothing keeps them carrying it.
+# --- only the empty-path guard counts as a guard ------------------------
+# A hand-rolled directory test is not the convention; the lint names it.
 root=$tmp/sentinel-less
 new_tree "$root"
 make_skill "$root" parallel-issues <<EOF
 ---
 name: parallel-issues
-description: Use when the guard omits the provenance sentinel.
+description: Use when the fence carries a non-standard guard.
 ---
 
 ## The resolver (prepend to EVERY shell call)
@@ -157,8 +152,8 @@ $RESOLVER_FENCE
 \`\`\`
 EOF
 run_lint "$root"
-assert_eq '1' "$LINT_RC" 'a guard that omits the provenance sentinel fails'
-assert_contains "$LINT_OUT" 'GUARD WITHOUT SENTINEL' 'the sentinel-less guard is named'
+assert_eq '1' "$LINT_RC" 'a non-standard directory guard fails'
+assert_contains "$LINT_OUT" 'MISSING RESOLVER' 'the non-standard guard is named'
 
 # --- a guard must protect EVERY path to the helper, not just one --------
 # Presence is not reachability. review-remote-pr's Step 0a once carried the
@@ -184,7 +179,7 @@ $RESOLVER_FENCE
 if [ -n "\$EXISTING_WORKTREE" ]; then
   PR_WORKTREE="\$EXISTING_WORKTREE"
 else
-  [ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+  : "\${agentkit:?set agentkit to the preflight skills= path}"
   git worktree add "\$PR_WORKTREE"
 fi
 "\$agentkit/.shared/scripts/agent-preflight.sh" --repo "\$REPO"
@@ -211,7 +206,7 @@ $RESOLVER_FENCE
 ## Later step
 
 \`\`\`bash
-[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "\${agentkit:?set agentkit to the preflight skills= path}"
 if [ -n "\$EXISTING_WORKTREE" ]; then
   PR_WORKTREE="\$EXISTING_WORKTREE"
 else
@@ -243,7 +238,7 @@ $RESOLVER_FENCE
 
 \`\`\`bash
 "\$agentkit/.shared/scripts/agent-run.sh" --cmd test
-[ -d "\${agentkit:-}/.shared/scripts" ] && [ "\${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "\${agentkit:?set agentkit to the preflight skills= path}"
 \`\`\`
 EOF
 run_lint "$root"
@@ -251,10 +246,8 @@ assert_eq '1' "$LINT_RC" 'a guard at the same depth but after the helper fails'
 assert_contains "$LINT_OUT" 'GUARD AFTER HELPER' 'the trailing guard is named'
 
 # --- a guard has to RUN, not merely be mentioned ------------------------
-# Both halves of the guard are matchable as loose substrings: the directory
-# fragment also occurs inside any resolved helper path, and the sentinel can sit
-# in a comment. A fence built from only those two mentions executes no guard at
-# all, so substring matching would bless a bare invocation.
+# The guard text can sit in a comment. A fence whose only mention is a comment
+# executes no guard at all, so substring matching would bless a bare invocation.
 root=$tmp/guard-text-only
 new_tree "$root"
 make_skill "$root" parallel-issues <<EOF
@@ -270,7 +263,7 @@ $RESOLVER_FENCE
 ## Later step
 
 \`\`\`bash
-# NOTE: relies on \${agentkit_provenance:-} having been set by the Step 0 resolver
+# NOTE: relies on : "\${agentkit:?set agentkit}" having run earlier
 "\${agentkit:-}/.shared/scripts/agent-run.sh" --help
 \`\`\`
 EOF
@@ -339,7 +332,6 @@ if [[ -n \$contract_root && -r \$contract && -f \$contract && ! -L \$contract &&
     agentkit=\$(sed -n "s/^skills= path=//p" "\$contract" 2>/dev/null | head -n 1)
 fi
 [ -d "\$agentkit/.shared/scripts" ] || { printf "%s\n" "agentkit: invalid skills path" >&2; exit 1; }
-agentkit_provenance=ok
 preflight="\$agentkit/.shared/scripts/agent-preflight.sh"
 environment_contract="\$("\$preflight" --worktree "\$PWD" 2>/dev/null)"
 \`\`\`

@@ -13,7 +13,7 @@ List the Backlog column of the board this repo's issues live on:
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 # This resolver fence applies only inside a delivered workflow run.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 if [[ -z ${REPO_ROOT:-} ]]; then
     REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 fi
@@ -79,7 +79,7 @@ matching option:
 ```bash
 # >>> prepend THE RESOLVER (defined once in Step 0) <<<
 # This resolver fence applies only inside a delivered workflow run.
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf '%s\n' 'agentkit unresolved: prepend the Step 0 resolver block' >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 board_helper="$agentkit/parallel-issues/scripts/move-github-project-item.sh"
 
 for issue_number in 62 71; do   # only the numbers the user approved

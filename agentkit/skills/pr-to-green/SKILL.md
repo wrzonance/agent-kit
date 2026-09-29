@@ -50,7 +50,7 @@ Before recipes, read ["$agentkit/.shared/shell-portability.md"](../.shared/shell
 
 ## Environment warm-up
 
-Preflight once before queue discovery; it writes data-only `.agent/cache/contract-session.env`, never sourced.
+Preflight once before queue discovery.
 
 ```bash
 agentkit=''
@@ -75,28 +75,16 @@ if [[ -n $contract_root && ( -e $contract || -L $contract ) ]]; then
 fi
 [[ -n $agentkit ]] || { printf '%s\n' 'agentkit: run onboarding first' >&2; exit 1; }
 [ -d "$agentkit/.shared/scripts" ] || { printf '%s\n' 'agentkit: invalid skills path' >&2; exit 1; }
-agentkit_provenance=ok; : "$agentkit_provenance"
 ```
 
-#### THE CACHE REHYDRATION
-
-Rehydrate standalone commands with the trusted reader; never source the record:
-
-```bash
-agentkit='STEP_0_AGENTKIT'; [[ $agentkit == /* && $agentkit != STEP_0_AGENTKIT ]] || exit 1
-expected_agentkit=$agentkit; shared="$agentkit/.shared/scripts"; cache_reader="$agentkit/.shared/scripts/lib/contract-cache.sh"
-[[ -d $shared && ! -L $shared && -O $shared && -f $cache_reader && ! -L $cache_reader && -O $cache_reader && -x $cache_reader ]] || exit 1
-contract_root=$(git rev-parse --show-toplevel) && contract_root=$(cd -P -- "$contract_root" && pwd -P) || exit 1
-IFS=$'\t' read -r agentkit shared agentkit_provenance loaded_root _ < <("$cache_reader" --read-session-context --repo-root "$contract_root")
-[[ $agentkit == "$expected_agentkit" && $shared == "$expected_agentkit/.shared/scripts" && $agentkit_provenance == ok && $loaded_root == "$contract_root" ]] || exit 1
-```
+`agentkit` is the `skills= path=` value preflight printed. Shell state does not persist: start any later block that calls a helper with `agentkit=<that path>`; nothing else to re-derive.
 
 Perform the sole refresh and contract-read warm-up here:
 
 ```bash
 set -euo pipefail
 # >>> prepend THE RESOLVER (initial warm-up only) <<<
-[ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || { printf "%s\n" "agentkit unresolved: prepend the Step 0 resolver block" >&2; exit 1; }
+: "${agentkit:?set agentkit to the preflight skills= path}"
 repository_root=$(git rev-parse --show-toplevel) || exit 1
 shared="$agentkit/.shared/scripts"
 preflight="$agentkit/.shared/scripts/agent-preflight.sh"
@@ -106,7 +94,6 @@ printf '%s\n' "$environment_contract"
 [[ -x "$agentkit/.shared/scripts/contract-read.sh" ]] || exit 1
 contract_path=$("$shared/contract-read.sh" --repo-root "$repository_root" --get skills.path) || exit 1
 [[ $contract_path == "$agentkit" ]] || exit 1
-"$shared/lib/contract-cache.sh" --read-session-context --repo-root "$repository_root" --get agentkit >/dev/null || exit 1
 ```
 
 ## Hard rules

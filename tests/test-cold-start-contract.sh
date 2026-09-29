@@ -24,7 +24,6 @@ assert_contains "$skill_flat" 'Human grants still fail closed' \
 assert_contains "$skill_flat" 'Malformed, symlinked, foreign-owned, or active-run state still fails closed' \
     'the cold contract preserves unsafe and active-state validation'
 
-recovery_block=''
 for helper in \
     "$parallel/scripts/select-boundary-mode.sh" \
     "$parallel/scripts/concurrency-cap.sh" \
@@ -32,100 +31,30 @@ for helper in \
     "$parallel/scripts/move-github-project-item.sh"; do
     help_text=$("$helper" --help 2>&1)
     label=${helper##*/}
-    assert_not_contains "$help_text" 'prepend THE CACHE REHYDRATION block' \
+    assert_not_contains "$help_text" 'CACHE REHYDRATION' \
         "$label does not send a cold reader hunting for prose"
-    current_recovery=$(sed -n \
-        '/^  # BEGIN session-context recovery$/,/^  # END session-context recovery$/p' \
-        <<<"$help_text")
-    assert_contains "$current_recovery" 'agent-preflight.sh' \
-        "$label carries executable session-context recovery"
-    assert_contains "$current_recovery" '--ensure' \
-        "$label bounds missing or stale recovery to one preflight refresh"
-    if [[ -z $recovery_block ]]; then
-        recovery_block=$current_recovery
-    else
-        assert_eq "$recovery_block" "$current_recovery" \
-            "$label uses the canonical recovery block"
-    fi
+    assert_not_contains "$help_text" 'read-session-context' \
+        "$label recipe carries no session-cache rehydration"
+    # Ledger #29: the recipe starts from the literal installed path, so a
+    # fresh shell or a fresh worktree has nothing to recover.
+    assert_contains "$help_text" "  agentkit=$(cd -P -- "$root/agentkit/skills" && pwd -P)" \
+        "$label recipe names its own installed skills path"
 done
 
-# Absence is a clean result only for kit-owned bookkeeping. A human grant is
-# different: authorize-queue must still refuse when no confirmed queue exists.
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 repo="$tmp/repo"
 mkdir -p -- "$repo/.agent"
 git -C "$repo" init -q
 
-# Exercise the copied recovery block from a truly empty shell and repository.
-# It must create its own contract/cache once, then load and verify the trusted
-# installed skills path in the same shell.
-recovery_script="$tmp/recovery.sh"
-recovery_contents=${recovery_block//$'\n  '/$'\n'}
-printf '%s\n' "${recovery_contents#  }" >"$recovery_script"
-printf '%s\n' 'printf "loaded=%s provenance=%s root=%s\\n" "$agentkit" "$agentkit_provenance" "$contract_root"' \
-    >>"$recovery_script"
-run_copied_recovery() {
-    local target_repo=$1 script=$2
-    (cd -- "$target_repo" && env -u agentkit -u agentkit_provenance -u shared \
-        -u contract_root bash "$script" 2>&1)
-}
-recovery_out=$(run_copied_recovery "$repo" "$recovery_script")
-assert_contains "$recovery_out" "loaded=$root/agentkit/skills provenance=ok root=$repo" \
-    'copied recovery creates and loads session context from unset variables'
-assert_eq yes "$([[ -f $repo/.agent/env-contract.codex.txt || -f $repo/.agent/env-contract.txt ]] && printf yes || printf no)" \
-    'copied recovery creates the missing environment contract'
-
-contract_path="$repo/.agent/env-contract.codex.txt"
-[[ -f $contract_path ]] || contract_path="$repo/.agent/env-contract.txt"
-cache_path="$repo/.agent/cache/contract-session.env"
-
-# An owned malformed bookkeeping file may be repaired by the canonical
-# producer, but it must end as validated current state rather than being
-# interpreted as absence.
-printf '%s\n' malformed >"$cache_path"
-malformed_cache_out=$(run_copied_recovery "$repo" "$recovery_script")
-assert_contains "$malformed_cache_out" "loaded=$root/agentkit/skills provenance=ok root=$repo" \
-    'owned malformed cache is repaired only through canonical producers'
-
-# A recovery block emitted by another skills tree cannot validate this
-# repository's cache as its own provenance.
+# The printed path is the tree the helper ships in, never a cached value.
 foreign_skills="$tmp/foreign-skills"
 mkdir -p -- "$foreign_skills/.shared/scripts/lib"
 cp -- "$root/agentkit/skills/.shared/scripts/lib/contract-cache.sh" \
     "$foreign_skills/.shared/scripts/lib/contract-cache.sh"
-foreign_block=$("$foreign_skills/.shared/scripts/lib/contract-cache.sh" --print-session-recovery)
-foreign_script="$tmp/foreign-recovery.sh"
-foreign_contents=${foreign_block//$'\n  '/$'\n'}
-printf '%s\n' "${foreign_contents#  }" >"$foreign_script"
-foreign_rc=0
-run_copied_recovery "$repo" "$foreign_script" >/dev/null || foreign_rc=$?
-assert_eq 1 "$foreign_rc" \
-    'session recovery rejects a cache bound to a different trusted skills path'
-
-# Symlinked cache evidence is unsafe active state. The bounded refresh must not
-# overwrite it or downgrade it to cold absence.
-mv -- "$cache_path" "$tmp/cache-target"
-ln -s -- "$tmp/cache-target" "$cache_path"
-unsafe_cache_rc=0
-run_copied_recovery "$repo" "$recovery_script" >/dev/null || unsafe_cache_rc=$?
-assert_eq 1 "$unsafe_cache_rc" 'session recovery rejects a symlinked cache artifact'
-rm -- "$cache_path"
-mv -- "$tmp/cache-target" "$cache_path"
-
-# A malformed owned contract may likewise be regenerated by preflight and
-# must resolve back to this exact installed skills tree.
-printf '%s\n' malformed >"$contract_path"
-malformed_contract_out=$(run_copied_recovery "$repo" "$recovery_script")
-assert_contains "$malformed_contract_out" "loaded=$root/agentkit/skills provenance=ok root=$repo" \
-    'owned malformed contract is repaired only through preflight and contract-read'
-
-# A symlinked contract is never repairable cold state.
-mv -- "$contract_path" "$tmp/contract-target"
-ln -s -- "$tmp/contract-target" "$contract_path"
-unsafe_contract_rc=0
-run_copied_recovery "$repo" "$recovery_script" >/dev/null || unsafe_contract_rc=$?
-assert_eq 1 "$unsafe_contract_rc" 'session recovery rejects a symlinked environment contract'
+assert_eq "  agentkit=$(cd -P -- "$foreign_skills" && pwd -P)" \
+    "$("$foreign_skills/.shared/scripts/lib/contract-cache.sh" --print-session-recovery)" \
+    'the printed assignment names the tree the helper ships in'
 
 # A repository can retain activation state from an older session. The current
 # session fast path may hash its session ID once, but it must not hash any file
@@ -154,6 +83,8 @@ assert_eq 1 "$(wc -l <"$hash_log" | tr -d ' ')" \
 assert_eq 0 "$(awk '$1 != 0 { n++ } END { print n + 0 }' "$hash_log")" \
     'the absent-current-session fast path performs zero file hash invocations'
 
+# Absence is a clean result only for kit-owned bookkeeping. A human grant is
+# different: authorize-queue must still refuse when no confirmed queue exists.
 missing_queue="$repo/.agent/pr-to-green-confirmed-queue.json"
 authorize="$root/agentkit/skills/pr-to-green/scripts/authorize-queue.sh"
 authorize_rc=0

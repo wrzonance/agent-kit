@@ -63,7 +63,7 @@ Recipe: establish and reuse one run ID
   issue_scope="${selected_issue_scope:-${requested_issue_scope:-auto}}"
   invocation_flags="yolo=${yolo_invocation:-false},trust-trunk=${trust_trunk:-false},fast-mode=${fast_mode:-false},auto-review=${auto_review:-false},auto-serialize=${auto_serialize:-false}"
   LEDGER="$repository_root/.agent/session-ledger.ndjson"
-  [ -d "${agentkit:-}/.shared/scripts" ] && [ "${agentkit_provenance:-}" = ok ] || exit 1
+  : "${agentkit:?set agentkit to the preflight skills= path}"
   RUN_ID=$("$agentkit/.shared/scripts/session-ledger.sh" run-id --procedure-set parallel-issues --scope "$issue_scope" \
     --flags "$invocation_flags" --repo "$repository" --base "$base") || exit 1
   printf '%s' "$QUOTE" | "$agentkit/.shared/scripts/session-ledger.sh" append --ledger "$LEDGER" --run-id "$RUN_ID" --skills-path "$agentkit" \
