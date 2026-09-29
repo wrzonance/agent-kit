@@ -105,10 +105,6 @@ assert_contains "$parallel_text" 'do not rerun' \
     'parallel-issues marker precheck prevents double spend'
 assert_contains "$post_receipt_text" 'fresh live comments' \
     'parallel-issues requires fresh recovery evidence before retry'
-assert_contains "$parallel_text" 'consent-record.sh" payload' \
-    'parallel-issues derives the current canonical diff payload before precheck'
-assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
-    'parallel-issues passes the current diff payload into precheck'
 assert_contains "$parallel_text" 'without waiting for pending or red CI' \
     'parallel-issues launches snapshot review before CI settlement'
 assert_contains "$parallel_text" 'cancels or relaunches the review' \
@@ -116,15 +112,11 @@ assert_contains "$parallel_text" 'cancels or relaunches the review' \
 assert_contains "$review_text" 'state/launch-attempted' \
     'review-remote-pr records launch identity before any CI-settlement wait'
 
+# parallel-issues delegates the loop's precheck to review-remote-pr's recipe,
+# so only that recipe carries the payload derivation and guards below.
 # Each precheck recipe is a fresh shell boundary. Every value supplied by an
 # earlier setup step must therefore be guarded before it is interpolated into
 # a helper invocation; an empty path or repository must fail closed.
-assert_contains "$parallel_text" '${worktree:?set worktree}' \
-    'parallel-issues guards the worktree before deriving the payload'
-assert_contains "$parallel_text" '${REPO:?set REPO}' \
-    'parallel-issues guards the repository before deriving the payload'
-assert_contains "$parallel_text" '${base:?set base}' \
-    'parallel-issues guards the base before deriving the payload'
 assert_contains "$review_text" '${PR_WORKTREE:?set PR_WORKTREE}' \
     'review-remote-pr guards the worktree before deriving the payload'
 assert_contains "$review_text" '${REPO:?set REPO}' \
