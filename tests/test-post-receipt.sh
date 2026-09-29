@@ -44,6 +44,7 @@ while (($#)); do
         *) shift ;;
     esac
 done
+head=${RECEIPT_ATTEMPT_HEAD:-$head}
 if [[ -z $digest && -n $pr ]]; then
     digest="$RECEIPT_FIXTURE_ROOT/final-pr-state-$pr.digest"
     current_head=$(git rev-parse HEAD)
@@ -543,6 +544,64 @@ acceptance_rc=0
         --p1 0 --p2 0 --agent-identity 'Claude Opus 5' >/dev/null
 ) || acceptance_rc=$?
 assert_eq 0 "$acceptance_rc" 'one passing digest line satisfies the declared acceptance command'
+
+# -- publish: finalization reports every gap at once, each with its next command --
+# Field evidence (cable-tool #647): refusing at the first gap cost five serial
+# publish attempts. Independent gaps now arrive together in one refusal.
+gap_digest="$tmp/gap-pr-state.digest"
+write_green_digest "$gap_digest" 14
+printf '%s\n' 'alerts: code-scanning open=0' 'issue-comment-findings: 0 open' >>"$gap_digest"
+{
+    jq -cn '{schemaVersion:2,title:"race in cache refresh",severity:"P1",verdict:"open",rationale:"lock the refresh"}'
+    jq -cn '{title:"legacy decline",severity:"P2",verdict:"declined",rationale:"by design"}'
+} >"$findings_file"
+rm -f -- "$accepted_findings"
+reset_not_spent
+: >"$tmp/gh.log"
+gap_out=$(RECEIPT_ACCEPTED_FIXTURE=missing GH_COMMENT_GH="$tmp/gh" GH_LOG="$tmp/gh.log" \
+    GH_PAYLOAD="$tmp/payload.json" "$script" publish --findings-file "$findings_file" \
+    --pr-state-digest "$gap_digest" --pr 14 --repo owner/repo \
+    --issue-comments "$not_spent_comments" --provider anthropic --model claude-opus-5 \
+    --effort high --mode cross-provider --p1 1 --p2 1 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'a multi-gap finalization still refuses as evidence unavailable'
+assert_eq 1 "$(grep -c 'evidence unavailable' <<<"$gap_out")" \
+    'every finalization gap arrives in one refusal'
+assert_contains "$gap_out" '"race in cache refresh"' 'the refusal names the open finding'
+assert_contains "$gap_out" 'lock the refresh' 'the refusal carries the open finding next action'
+assert_contains "$gap_out" '"legacy decline"' 'the refusal names the legacy finding'
+assert_contains "$gap_out" 'finding-ledger.sh" evidence --title' \
+    'the refusal names the evidence step of the finding repair'
+assert_contains "$gap_out" 'add --title' 'the refusal names the add step of the finding repair'
+assert_contains "$gap_out" '--verdict declined --rationale' 'the refusal names the decline form'
+assert_contains "$gap_out" 'code-scanning open=0' \
+    'the missing accepted-findings gap cites the digest open counts'
+# Zero open findings never proves none were accepted (accepted-then-fixed still needs evidence).
+assert_contains "$gap_out" 'if you accepted none, next:' 'the empty-ledger command is conditional'
+assert_not_contains "$gap_out" 'so none were accepted' 'the refusal never infers acceptance from open counts'
+assert_contains "$gap_out" ": > \"$accepted_findings\" && chmod 600 \"$accepted_findings\"" \
+    'the missing accepted-findings gap prints the exact create command'
+assert_eq no "$([[ -e $accepted_findings ]] && printf yes || printf no)" \
+    'finalization never creates the accepted-findings evidence itself'
+assert_eq '' "$(cat "$tmp/gh.log")" 'a gap report never reaches receipt transport'
+
+stacked_digest="$tmp/stacked-pr-state.digest"
+write_green_digest "$stacked_digest" 14
+sed -i 's/^ci=.*/ci=13\/17 partial pending=0 failing=0/' "$stacked_digest"
+printf '%s\n' 'verification=partial-ci-on-stacked-base' 'ci: partial-on-stacked-base' \
+    'ready-eligible=no reason=ci-coverage-unverified' >>"$stacked_digest"
+reset_findings
+reset_not_spent
+stacked_out=$("$script" publish --findings-file "$findings_file" --pr-state-digest "$stacked_digest" \
+    --pr 14 --repo owner/repo --issue-comments "$not_spent_comments" \
+    --provider anthropic --model claude-opus-5 --effort high --mode cross-provider \
+    --p1 0 --p2 0 --agent-identity 'Claude Opus 5' 2>&1)
+assert_eq 1 "$?" 'partial CI on a stacked base is never accepted as green'
+assert_contains "$stacked_out" 'stacked on its predecessor' 'the refusal says the PR is stacked'
+assert_contains "$stacked_out" 'Merge order and the stacked-PR retarget' \
+    'the stacked refusal points at the retarget procedure'
+assert_not_contains "$stacked_out" 'not green' 'a stacked PR is not reported as red CI'
+assert_not_contains "$stacked_out" 'ready-eligible=no' \
+    'the stacked coverage reason is not repeated as a second gap'
 
 # -- publish: renders every field, exactly one marker ----------------------
 
@@ -1495,6 +1554,36 @@ no_head_body=$(jq -r '.body' "$head_gh_dir/payload-1.json")
 assert_not_contains "$no_head_body" '- Reviewed head:' \
     'publish body carries no head line when --head-sha is omitted'
 
+# The reviewed head is recorded by the canonical attempt; retyping it by hand
+# was a field refusal (cable-tool #647), so an omitted --head-sha defaults to it.
+: >"$head_gh_dir/count"
+rm -f -- "$head_gh_dir"/payload-*.json
+recorded_comments="$tmp/recorded-head-not-spent.json"
+printf '%s\n' '[]' >"$recorded_comments"
+reset_findings
+recorded_rc=0
+RECEIPT_ATTEMPT_HEAD="$head_sha" GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" \
+    GH_PAYLOAD_DIR="$head_gh_dir" REVIEW_LEDGER_VIEWER=ledger-test-author \
+    "$script" publish --findings-file "$findings_file" \
+    --pr 902 --repo owner/repo --comments "$recorded_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' >/dev/null 2>"$tmp/recorded.err" || recorded_rc=$?
+[[ $recorded_rc == 0 ]] || cat "$tmp/recorded.err" >&2
+assert_eq 0 "$recorded_rc" 'publish defaults the reviewed head from the canonical attempt'
+assert_contains "$(jq -r '.body' "$head_gh_dir/payload-1.json" 2>/dev/null)" \
+    "- Reviewed head: $head_sha" 'the defaulted reviewed head is rendered in the receipt'
+printf '%s\n' '[]' >"$recorded_comments"
+mismatch_out=$(RECEIPT_ATTEMPT_HEAD="$head_sha" GH_COMMENT_GH="$head_gh_dir/gh" GH_LOG="$tmp/gh.log" \
+    GH_PAYLOAD_DIR="$head_gh_dir" "$script" publish --findings-file "$findings_file" \
+    --pr 902 --repo owner/repo --comments "$recorded_comments" \
+    --provider anthropic --model claude-opus-5 --effort high \
+    --mode cross-provider --mode-reason ok --p1 0 --p2 0 \
+    --agent-identity 'Claude Opus 5' --head-sha "$repair_head" 2>&1)
+assert_eq 1 "$?" 'an explicit --head-sha conflicting with the recorded attempt refuses'
+assert_contains "$mismatch_out" "$repair_head" 'the head conflict names the given SHA'
+assert_contains "$mismatch_out" "$head_sha" 'the head conflict names the recorded SHA'
+
 # -- publish: append_ledger_entry derives --repo-root via `git rev-parse
 #    --show-toplevel` (CodeRabbit review of PR #484, issue #477 T1) --------
 # Without --repo-root, resolve_trusted_author inside review-ledger.sh's
@@ -1678,8 +1767,8 @@ assert_contains "$identity_recovery_out" 'fresh live comments contain no receipt
 
 # Issue #902 composes the existing gh-pr-state and finding-ledger evidence at
 # publication so pending/red/stale final heads cannot claim draft completion.
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1096 ]] && printf yes || printf no)" \
-    'post-receipt.sh stays at or under 1096 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/post-receipt.sh") -le 1012 ]] && printf yes || printf no)" \
+    'post-receipt.sh stays at or under 1012 lines'
 
 relative_help=$(cd "$root/agentkit/skills/review-remote-pr/scripts" && bash post-receipt.sh --help)
 assert_contains "$relative_help" 'Usage:' 'receipt library resolves for a basename invocation'

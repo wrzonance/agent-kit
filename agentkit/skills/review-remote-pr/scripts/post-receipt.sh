@@ -13,6 +13,8 @@ STACKED_CI_DIR=${BASH_SOURCE[0]%/*}
 source "$STACKED_CI_DIR/../../.shared/scripts/lib/stacked-ci.sh"
 # shellcheck disable=SC1091
 source "$STACKED_CI_DIR/../../.shared/scripts/lib/review-attempt.sh"
+# shellcheck disable=SC1091
+source "$STACKED_CI_DIR/../../.shared/scripts/lib/receipt-finalization.sh"
 umask 077
 
 readonly PROGNAME=${0##*/}
@@ -38,8 +40,8 @@ Usage: $PROGNAME precheck --issue-comments FILE [--diff-payload ID]
                  --agent-identity S [--require-pushed] \\
                  [--head-sha SHA [--diff-payload ID] [--harness codex|claude]]
 
---head-sha renders "- Reviewed head: SHA" (and, with --diff-payload, "- Diff payload: ID")
-into the receipt and appends a best-effort entry to the PR's review-ledger.sh record; a
+--head-sha (default: .head of RUN_DIR/state/review-attempt.json) renders "- Reviewed head: SHA"
+(and, with --diff-payload, "- Diff payload: ID") into the receipt and appends a best-effort entry to the PR's review-ledger.sh record; a
 failed ledger append only warns, never fails an already-posted, byte-verified receipt.
 
 precheck: is the stable adversarial-review spent marker for --diff-payload already in the
@@ -56,6 +58,7 @@ one-spend receipt, and posts it via gh-comment.sh's byte-verified transport; ref
 final head; every command declared in .agent/acceptance.txt must also have one passing record.
 Finalization also consumes accepted-findings.ndjson beside the findings ledger (or in RUN_DIR):
 an explicit empty ledger proves none were accepted; every accepted finding needs terminal evidence.
+Finalization refuses once (exit 1), listing every gap with its next command.
 
 The findings ledger is \$RUN_DIR/findings.ndjson (RUN_DIR: owned, non-symlink, mode 0700, as
 finding-ledger.sh requires) or --findings-file; one is required. One JSON record per line:
@@ -656,93 +659,6 @@ validate_findings_file() {
     fi
 }
 
-validate_finalization_evidence() {
-    [[ -f $PR_STATE_DIGEST && ! -L $PR_STATE_DIGEST && -O $PR_STATE_DIGEST && -r $PR_STATE_DIGEST ]] ||
-        evidence_unavailable "finalization evidence is not an owned readable regular file: $PR_STATE_DIGEST"
-
-    local root current_head summary_count summary digest_pr digest_sha ci_count ci_line base_count
-    local classification_count classification_line
-    root=$(git rev-parse --show-toplevel 2>/dev/null) ||
-        evidence_unavailable 'finalization evidence cannot be bound outside a git worktree'
-    current_head=$(git -C "$root" rev-parse --verify HEAD 2>/dev/null) ||
-        evidence_unavailable 'finalization evidence cannot resolve the current checkout HEAD'
-
-    summary_count=$(grep -cE '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{40}$' \
-        "$PR_STATE_DIGEST" || true)
-    [[ $summary_count == 1 ]] ||
-        evidence_unavailable 'finalization evidence requires exactly one canonical PR/head summary'
-    summary=$(grep -E '^pr=[0-9]+ draft=(true|false) mergeable=[A-Z_]+ head=\S+ sha=[0-9a-f]{40}$' \
-        "$PR_STATE_DIGEST")
-    digest_pr=$(sed -nE 's/^pr=([0-9]+) .*$/\1/p' <<<"$summary")
-    digest_sha=$(sed -nE 's/^.* sha=([0-9a-f]{40})$/\1/p' <<<"$summary")
-    [[ $digest_pr == "$PR" ]] ||
-        evidence_unavailable "finalization evidence is for PR #$digest_pr, not PR #$PR"
-    [[ $digest_sha == "$current_head" ]] ||
-        evidence_unavailable "finalization evidence head $digest_sha does not match current HEAD $current_head"
-    FINAL_HEAD_SHA=$digest_sha
-    FINAL_REPO_ROOT=$root
-
-    base_count=$(grep -cE '^base: ref=\S+ behind=[0-9]+ stale=no$' "$PR_STATE_DIGEST" || true)
-    [[ $base_count == 1 ]] ||
-        evidence_unavailable 'finalization evidence does not prove a current integrated base'
-
-    ci_count=$(grep -cE '^ci=' "$PR_STATE_DIGEST" || true)
-    [[ $ci_count == 1 ]] ||
-        evidence_unavailable 'finalization evidence requires exactly one CI status line'
-    ci_line=$(grep -E '^ci=' "$PR_STATE_DIGEST")
-    [[ $ci_line =~ ^ci=[0-9]+/[0-9]+\ green\ pending=0\ failing=0$ ]] ||
-        evidence_unavailable "finalization evidence is not green: $ci_line"
-    FINAL_CI_LINE=$ci_line
-    ! grep -qE '^ready-eligible=no( |$)' "$PR_STATE_DIGEST" ||
-        evidence_unavailable 'finalization evidence reports ready-eligible=no'
-
-    classification_count=$(grep -cE '^finding-classification: cq=(known|unavailable) icf=(known|unavailable)$' \
-        "$PR_STATE_DIGEST" || true)
-    [[ $classification_count == 1 ]] ||
-        evidence_unavailable 'finalization evidence requires exactly one canonical finding-classification line'
-    classification_line=$(grep -E '^finding-classification: cq=(known|unavailable) icf=(known|unavailable)$' \
-        "$PR_STATE_DIGEST")
-    [[ $classification_line == 'finding-classification: cq=known icf=known' ]] ||
-        evidence_unavailable "finalization evidence has unavailable required finding classification: $classification_line"
-
-    local acceptance_file=$root/.agent/acceptance.txt command expected matches
-    if [[ -e $acceptance_file || -L $acceptance_file ]]; then
-        [[ -f $acceptance_file && ! -L $acceptance_file && -r $acceptance_file ]] ||
-            evidence_unavailable 'declared acceptance commands are unavailable'
-        while IFS= read -r command || [[ -n $command ]]; do
-            [[ -n $command ]] || continue
-            expected="repo-verify=green acceptance=$command:pass"
-            matches=$(awk -v expected="$expected" '$0 == expected { count++ } END { print count + 0 }' \
-                "$PR_STATE_DIGEST")
-            [[ $matches == 1 ]] ||
-                evidence_unavailable "finalization evidence lacks one passing record for required acceptance command: $command"
-        done <"$acceptance_file"
-    fi
-    while IFS= read -r ci_line; do
-        [[ $ci_line == repo-verify=green\ acceptance=*':pass' ]] ||
-            evidence_unavailable "finalization evidence has an unmet acceptance result: $ci_line"
-    done < <(grep -E '^repo-verify=' "$PR_STATE_DIGEST" || true)
-
-    [[ $(jq -r '.remediation // ""' <<<"$REMEDIATION") == complete ]] ||
-        evidence_unavailable 'finalization evidence has unresolved adversarial findings'
-}
-
-validate_accepted_findings() {
-    local evidence_dir accepted_file accepted_status
-    # FINDINGS_FILE resolves to RUN_DIR/findings.ndjson on the normal path.
-    # Its existing explicit override keeps both ledgers together and preserves
-    # the override's ability to bypass a stale or inaccessible RUN_DIR.
-    evidence_dir=$(dirname -- "$FINDINGS_FILE")
-    accepted_file=$evidence_dir/accepted-findings.ndjson
-    [[ -f $accepted_file && ! -L $accepted_file && -O $accepted_file && -r $accepted_file ]] ||
-        evidence_unavailable "accepted findings evidence is not an owned readable regular file: $accepted_file"
-    accepted_status=$("$STACKED_CI_DIR/finding-ledger.sh" status --file "$accepted_file" \
-        --repo-root "$FINAL_REPO_ROOT" --head "$FINAL_HEAD_SHA") ||
-        evidence_unavailable 'accepted findings evidence is invalid or its terminal proof is stale'
-    [[ $(jq -r '.remediation // ""' <<<"$accepted_status") == complete ]] ||
-        evidence_unavailable 'accepted findings evidence has incomplete or unknown dispositions'
-}
-
 refuse_push() {
     printf '%s: --require-pushed refused: %s\n' "$PROGNAME" "$1" >&2
     exit 12
@@ -993,11 +909,11 @@ cmd_publish() {
     parse_publish_args "$@"
     validate_publish_args
     resolve_findings_file
+    resolve_receipt_head
     validate_findings_file
     validate_runner_provenance
     ((REQUIRE_PUSHED == 0)) || require_pushed_state
     validate_finalization_evidence
-    validate_accepted_findings
     resolve_gh_comment_script
 
     local rc=0
