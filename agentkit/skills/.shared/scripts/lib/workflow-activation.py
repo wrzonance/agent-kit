@@ -165,6 +165,73 @@ def validate_target(origin, target):
         fail("activation-target-mismatch: target belongs to a different repository; create or resume a linked worktree from the activation origin")
 
 
+def git_path(root, *argv):
+    result = subprocess.run(["git", "-C", str(root), *argv], capture_output=True, text=True, check=False)
+    return Path(result.stdout.strip()).resolve() if not result.returncode and result.stdout.strip() else None
+
+
+def activation_origin(root):
+    """Main worktree sharing root's git common dir, or None when root is not a linked worktree."""
+    common = git_path(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common or common == git_path(root, "rev-parse", "--path-format=absolute", "--git-dir"):
+        return None
+    # NUL-delimited so a path containing a newline cannot misparse the main entry.
+    listing = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain", "-z"],
+                             capture_output=True, check=False).stdout
+    main = listing.split(b"\0\0")[0].split(b"\0")
+    if not main[0].startswith(b"worktree ") or b"bare" in main:
+        return None
+    origin = Path(os.fsdecode(main[0].removeprefix(b"worktree "))).resolve()
+    if git_path(origin, "rev-parse", "--path-format=absolute", "--git-common-dir") != common:
+        return None
+    return origin
+
+
+def read_receipt(args):
+    """A receipt at --repo-root wins; a read-only check from a linked worktree reads its origin."""
+    try:
+        evidence = Evidence(args.repo_root, args.session)
+        return evidence, evidence.read()
+    except FileNotFoundError:
+        origin = activation_origin(args.repo_root) if args.action == "check" else None
+        if not origin:
+            raise
+        evidence = Evidence(origin, args.session)
+        return evidence, evidence.read()
+
+
+def bound_session(root, run_id):
+    """Read-only: the activation session a run-state binding names for run_id, or None."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}-[0-9a-f]{32}", run_id):
+        return None
+    origin = activation_origin(root) or git_path(root, "rev-parse", "--show-toplevel")
+    if not origin:
+        return None
+    state = origin / ".agent/evidence" / ("run-" + run_id) / "run-state.json"
+    try:
+        checked(state.parent, directory=True)
+        checked(state)
+        binding = json.loads(state.read_text())["binding"]
+        session = binding["activation_session"]
+        if (binding["run_id"] != run_id or binding["repository_root"] != str(origin)
+                or not isinstance(session, str) or not 0 < len(session) <= 256):
+            return None
+        return session
+    except (Unavailable, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def run_id_refusal(args, session):
+    command = [str(Path(args.skills) / ".shared/scripts/workflow-activation.sh"), "check",
+               "--repo-root", args.repo_root, "--session", session, "--skill", args.skill]
+    for capability in args.require:
+        command += ["--require", capability]
+    if args.target_root:
+        command += ["--target-root", args.target_root]
+    return ("activation-unavailable: --session " + args.session + " is a run id bound to activation session "
+            + session + "; authority stays with that session. Run:\n" + shlex.join(command))
+
+
 def identity(args):
     manifest = Path(args.skills).parent / ".claude-plugin/plugin.json"
     version = json.loads(manifest.read_text())["version"]
@@ -481,9 +548,11 @@ def main():
         if not args.repo_root or not args.session or not args.skill:
             fail("activation-unavailable: --repo-root, --session and --skill are required")
         try:
-            evidence = Evidence(args.repo_root, args.session)
-            record = evidence.read()
+            evidence, record = read_receipt(args)
         except FileNotFoundError:
+            session = bound_session(args.repo_root, args.session) if args.action == "check" else None
+            if session:
+                fail(run_id_refusal(args, session))
             reason = ("activation-unavailable: no receipt at activation origin for session; invoke "
                       + args.skill + " in that checkout and acknowledge the fresh challenge")
             if args.action == "check":

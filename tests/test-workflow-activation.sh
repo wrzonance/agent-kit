@@ -195,4 +195,63 @@ assert_eq 1 "$unrelated_rc" 'parallel-issues does not delegate activation to unr
 assert_contains "$unrelated_out" 'competing-workflow' \
     'unrelated activation retains the competing-workflow refusal'
 
+# Roots and workers run from .worktrees/<branch>; a read-only check there must
+# find the receipt at the activation origin (cable-tool #579 false blocker).
+origin=$(cd -- "$(mktemp -d)" && pwd -P); other=$(cd -- "$(mktemp -d)" && pwd -P)
+trap 'rm -rf "$repo" "$origin" "$other"' EXIT
+for r in "$origin" "$other"; do
+    git -C "$r" init -q
+    git -C "$r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    install -d -m 700 "$r/.agent"
+done
+git -C "$origin" worktree add -q "$origin/.worktrees/feat/x" -b feat/x
+wt=$origin/.worktrees/feat/x
+activate() { # root session workflow
+    jq -nc --arg s "$2" --arg c "$1" --arg p "\$agentkit:$3 1" \
+        '{hook_event_name:"UserPromptSubmit", session_id:$s, cwd:$c, prompt:$p}' | "$wa" hook >/dev/null
+    local file
+    file="$1/.agent/activation/$(printf '%s' "$2" | sha256sum | cut -d' ' -f1).json"
+    "$wa" ack --repo-root "$1" --session "$2" --skill "$3" --nonce "$(jq -r .nonce "$file")" >/dev/null
+}
+session=origin-session-$$
+activate "$origin" "$session" parallel-issues
+from_origin=$("$wa" check --repo-root "$origin" --session "$session" --skill review-remote-pr)
+wt_rc=0; from_wt=$("$wa" check --repo-root "$wt" --session "$session" --skill review-remote-pr 2>&1) || wt_rc=$?
+assert_eq 0 "$wt_rc" 'check from a linked worktree finds the origin receipt'
+assert_eq "$from_origin" "$from_wt" 'check from a linked worktree reports the origin receipt unchanged'
+
+session=worktree-session-$$
+activate "$origin" "$session" parallel-issues
+activate "$wt" "$session" pr-to-green
+own=$("$wa" check --repo-root "$wt" --session "$session" --skill pr-to-green)
+assert_contains "$own" '"workflow": "pr-to-green"' 'a receipt at the worktree itself keeps precedence'
+
+session=other-repo-session-$$
+activate "$other" "$session" parallel-issues
+foreign_rc=0; foreign=$("$wa" check --repo-root "$wt" --session "$session" --skill parallel-issues 2>&1) || foreign_rc=$?
+assert_eq 1 "$foreign_rc" 'another repository receipt is never found'
+assert_contains "$foreign" 'no receipt at activation origin' 'another repository keeps the absent-receipt refusal'
+
+session=origin-session-$$
+for action in ack redeliver; do
+    write_rc=0; write_out=$("$wa" "$action" --repo-root "$wt" --session "$session" --skill parallel-issues --nonce x 2>&1) || write_rc=$?
+    assert_eq 1 "$write_rc" "$action from a worktree does not reach the origin receipt"
+    assert_contains "$write_out" 'no receipt at activation origin' "$action from a worktree keeps its refusal"
+done
+
+# After compaction a root passed its run ID as --session (cable-tool #19).
+run_id=parallel-issues-0123456789abcdef0123456789abcdef
+install -d -m 700 "$origin/.agent/evidence" "$origin/.agent/evidence/run-$run_id"
+jq -nc --arg r "$run_id" --arg s "$session" --arg o "$origin" \
+    '{binding:{run_id:$r, activation_session:$s, repository_root:$o}}' >"$origin/.agent/evidence/run-$run_id/run-state.json"
+chmod 600 "$origin/.agent/evidence/run-$run_id/run-state.json"
+run_rc=0; run_out=$("$wa" check --require pre-tool-use --repo-root "$wt" --session "$run_id" --skill review-remote-pr 2>&1) || run_rc=$?
+assert_eq 1 "$run_rc" 'a run id is refused as a session, never substituted'
+assert_contains "$run_out" "is a run id bound to activation session $session" 'the refusal names the bound session'
+assert_contains "$run_out" "workflow-activation.sh check --repo-root $wt --session $session --skill review-remote-pr --require pre-tool-use" \
+    'the refusal prints the corrected check command'
+unbound_rc=0; unbound=$("$wa" check --repo-root "$wt" --session parallel-issues-ffffffffffffffffffffffffffffffff --skill review-remote-pr 2>&1) || unbound_rc=$?
+assert_eq 1 "$unbound_rc" 'an unbound run id is refused'
+assert_contains "$unbound" 'no receipt at activation origin' 'an unbound run id keeps the absent-receipt refusal'
+
 finish
