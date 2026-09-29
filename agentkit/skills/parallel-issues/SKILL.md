@@ -253,10 +253,8 @@ here as one-liners; the full rationale, the `--fast-mode` decision rule, and pic
 [references/triage-and-selection.md](references/triage-and-selection.md#board-adjudication):
 
 - Two or more candidates on the **same** Project (v2) board → STOP. Ask explicitly: "These
-  share Project X. Proceed in parallel, or sequence them?" (`--fast-mode`: resolve it via Step 3's
-  conflict analysis instead of asking, and disclose the finding.)
-- A candidate in a column like "Blocked" → flag and ask before including. (`--fast-mode`: drop it
-  with a printed reason instead of asking.)
+  share Project X. Proceed in parallel, or sequence them?" (`--fast-mode`: the picker's list decides; disclose it.)
+- A candidate in a column like "Blocked" → flag and ask before including. (`--fast-mode`: it is never picked.)
 
 An optional, opt-in-per-issue fuzzy prior-art search (for a PR that fixed an issue without ever
 referencing it) is documented in
@@ -267,12 +265,13 @@ referencing it) is documented in
 Use this for automatic or numbered thematic-Backlog selection; otherwise explicit numbers win.
 **A thin Ready column is an invitation, not a blocker.** Read
 [references/triage-and-selection.md](references/triage-and-selection.md#step-2b-choose-the-set-yourself)
-in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: a body-free record carries status,
-eligibility, blockers, dispatch/queue state, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and
-`workShape`. `workShape: "no-code"` means HOLD before worktree creation; retain `holdReason`, count
-`no-code-hold`, and use the anchored [work-shape verdict](references/triage-and-selection.md#work-shape-verdict)
-for ambiguity.
-The helper answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
+in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: its body-free `--json` record carries
+eligibility, blockers, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and `workShape`. `workShape: "no-code"`
+means HOLD before worktree creation; retain `holdReason`, count `no-code-hold`, and use the anchored
+[work-shape verdict](references/triage-and-selection.md#work-shape-verdict) for ambiguity. **`--fast-mode`** runs it once
+as `--fast-mode --slot-cap N` (plus `--include-backlog`; `--exclude-text <term>` per operator exclusion): `dispatch` lines
+are the wave, `writes=` seeds the plan, `queued` is refill order, and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it.
+Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
 exactly once after the final conflict and slot-cap decisions and before dispatch. Every set reports
 requested/eligible/dispatched plus one reason per exclusion.
 An empty selection is an answer only with evidence. Report `Selection funnel: degraded=yes; eligible=unknown`
@@ -306,11 +305,8 @@ On `needs-paths: <glob>[,<glob>...]`, record `prediction-expansion`; `followup_t
 
 Combine Step 2 triage and board findings, then get approval before continuing.
 
-**With `--fast-mode`, do not ask.** Print the same analysis, drop the later issue from every
-colliding pair yourself, and continue. The analysis is still mandatory — `--fast-mode` removes
-the approval gate, not the reasoning that gate was there to check. Two workers editing one file
-in separate worktrees is the failure this step prevents, and it costs more unattended than
-attended, because nobody is watching to stop it.
+**With `--fast-mode`, do not ask:** print the picker's list, which already dropped each colliding later
+issue — fast mode removes the approval gate, not the reasoning.
 
 **With `--auto-serialize`,** ordered pairs become chain edges instead of drops. Read `references/chains.md` in full only when the selected set contains a chain; the flag alone is insufficient. Only an
 **interface dependency** (one issue consumes code or contracts the other produces, or both mutate the

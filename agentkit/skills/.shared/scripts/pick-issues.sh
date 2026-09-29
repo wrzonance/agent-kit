@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Usage:
 #   pick-issues.sh [--repo-root DIR] [--limit N] [--include-backlog]
-#                  [--ready-only] [--fast-mode --slot-cap N] [--json]
+#                  [--ready-only] [--fast-mode --slot-cap N [--exclude-text T]...] [--json]
+# --fast-mode without --json prints the dispatch list: one dispatch/queued/dropped
+# line per candidate with its mechanical reason. --exclude-text drops candidates whose
+# title or predicted write set contains T (case-insensitive literal; list only).
 # Exit: 0 success (including empty), 1 a call failed or the board read was truncated
 #       (a partial read refuses to select), 2 bad usage, 3 gh unavailable/unauthenticated.
 set -euo pipefail
@@ -21,7 +24,7 @@ die_blocked() {
 }
 die_usage() {
     printf '%s: %s\n' "$PROGRAM" "$*" >&2
-    printf 'usage: %s [--repo-root DIR] [--limit N] [--include-backlog] [--ready-only] [--fast-mode --slot-cap N] [--json]\n' \
+    printf 'usage: %s [--repo-root DIR] [--limit N] [--include-backlog] [--ready-only] [--fast-mode --slot-cap N [--exclude-text T]...] [--json]\n' \
         "$PROGRAM" >&2
     exit 2
 }
@@ -33,6 +36,7 @@ as_json=0
 fast_mode=0
 slot_cap=$FAST_MODE_CAP
 slot_cap_supplied=0
+exclude_terms=()
 
 while (($#)); do
     case $1 in
@@ -58,6 +62,11 @@ while (($#)); do
             slot_cap=$1
             slot_cap_supplied=1
             ;;
+        --exclude-text)
+            shift
+            [[ ${1:-} =~ [^[:space:]] ]] || die_usage '--exclude-text requires non-blank text'
+            exclude_terms+=("${1,,}")
+            ;;
         --json) as_json=1 ;;
         -h | --help) die_usage 'help requested' ;;
         *) die_usage "unknown argument: $1" ;;
@@ -72,6 +81,9 @@ if ((fast_mode)); then
 elif ((slot_cap_supplied)); then
     die_usage '--slot-cap requires --fast-mode'
 fi
+((${#exclude_terms[@]} == 0 || (fast_mode && !as_json))) ||
+    die_usage '--exclude-text filters the --fast-mode list and cannot be combined with --json'
+list_mode=$((fast_mode && !as_json))
 
 for tool in gh jq; do
     command -v "$tool" > /dev/null 2>&1 || die_blocked "$tool is not installed"
@@ -252,6 +264,27 @@ fi
 
 if ((as_json)); then
     printf '%s\n' "$selection"
+    exit 0
+fi
+
+if ((list_mode)); then
+    # shellcheck source=lib/protected-paths.sh
+    source "$script_dir/lib/protected-paths.sh"
+    declared=$("$script_dir/repo-config.sh" --repo-root "$repo_root" --get AGENT_PROTECTED_PATHS 2>/dev/null || true)
+    IFS=, read -r -a protected_patterns <<<"$declared"
+    protected_patterns+=("${SHARED_PROTECTED_DEFAULTS[@]}")
+    protected_hits='{}'
+    while IFS=$'\t' read -r issue path; do
+        hit=$(shared_write_set_collision "$path" "${protected_patterns[@]}") || continue
+        protected_hits=$(jq -c --arg n "$issue" --arg p "$hit" '.[$n] //= $p' <<<"$protected_hits")
+    done < <(jq -r '.[] | .number as $n | .predictedWriteSet[] | [$n, .] | @tsv' <<<"$selection")
+    decisions=$(jq -c --argjson cap "$slot_cap" --argjson protected "$protected_hits" \
+        --argjson exclude "$(jq -cn '$ARGS.positional' --args "${exclude_terms[@]}")" \
+        -f "$script_dir/lib/pick-dispatch-list.jq" <<<"$selection") || die 'could not build the dispatch list'
+    jq -r --arg head "pick= project=$project_number owner=$board_owner scanned=$fetched of=${declared_total:-$fetched} candidates=$count" \
+        --arg eligible "$(jq -r '[.[] | select(.eligible)] | length' <<<"$selection")" \
+        '"\($head) selectable=\($eligible) dispatched=\(.dispatched) queued=\(.queued) dropped=\(.dropped) calls=2", .lines[]' \
+        <<<"$decisions"
     exit 0
 fi
 

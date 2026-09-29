@@ -564,8 +564,10 @@ assert_contains "$text" 'Selection funnel:' \
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
 assert_contains "$normalized_text" \
-    'The helper answers only the mechanical half; the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
-    'selection keeps judgment and board mutation root-owned'
+    'Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
+    'attended selection keeps judgment and board mutation root-owned'
+assert_contains "$normalized_text" 'and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it' \
+    'fast mode acts on the picker list without re-adjudicating a drop'
 assert_contains "$triage_and_selection_text" \
     'Selection funnel: requested=3 eligible=3 dispatched=3 exclusions=none' \
     'selection reconciliation covers a full requested queue'
