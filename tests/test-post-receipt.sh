@@ -574,7 +574,10 @@ assert_contains "$gap_out" 'finding-ledger.sh" evidence --title' \
 assert_contains "$gap_out" 'add --title' 'the refusal names the add step of the finding repair'
 assert_contains "$gap_out" '--verdict declined --rationale' 'the refusal names the decline form'
 assert_contains "$gap_out" 'code-scanning open=0' \
-    'the missing accepted-findings gap cites the digest proof of zero accepted inputs'
+    'the missing accepted-findings gap cites the digest open counts'
+# Zero open findings never proves none were accepted (accepted-then-fixed still needs evidence).
+assert_contains "$gap_out" 'if you accepted none, next:' 'the empty-ledger command is conditional'
+assert_not_contains "$gap_out" 'so none were accepted' 'the refusal never infers acceptance from open counts'
 assert_contains "$gap_out" ": > \"$accepted_findings\" && chmod 600 \"$accepted_findings\"" \
     'the missing accepted-findings gap prints the exact create command'
 assert_eq no "$([[ -e $accepted_findings ]] && printf yes || printf no)" \

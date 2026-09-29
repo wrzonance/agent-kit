@@ -129,7 +129,7 @@ receipt_accepted_gaps() {
     if [[ ! -e $file && ! -L $file ]]; then
         if grep -qx 'alerts: code-scanning open=0' "$PR_STATE_DIGEST" &&
             grep -qx 'issue-comment-findings: 0 open' "$PR_STATE_DIGEST"; then
-            receipt_gap "accepted findings evidence is missing: $file; the digest shows code-scanning open=0 and 0 open issue-comment findings, so none were accepted; next: : > \"$file\" && chmod 600 \"$file\""
+            receipt_gap "accepted findings evidence is missing: $file; the digest shows code-scanning open=0 and 0 open issue-comment findings; if you accepted none, next: : > \"$file\" && chmod 600 \"$file\""
         else
             receipt_gap "accepted findings evidence is missing: $file; next: write accepted Code Quality and issue-comment records there, or create it empty only after accepting none"
         fi
