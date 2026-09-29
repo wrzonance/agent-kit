@@ -270,8 +270,9 @@ readonly MAX_HELPER_TOKENS=10000
 # Fast-mode dispatch list (field run: 35 calls / 2.6M tokens of --json re-reads before
 # one dispatch): pick-issues decision list + exclusion/protected pass, and fast mode
 # implying Backlog so a thin Ready column still fills the wave (#270); review: glob
-# collisions cut at the wildcard component, invalid protected paths refuse; exact tree.
-readonly MAX_TREE_TOKENS=519650
+# collisions cut at the wildcard component, invalid protected paths refuse; CodeRabbit:
+# complete write sets on dispatch/queued lines, glob-aware protected pass; exact tree.
+readonly MAX_TREE_TOKENS=519729
 
 violations=0
 checked=0

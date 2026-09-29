@@ -13,9 +13,7 @@ def overlaps($a; $b):
     ($a | owned) as $x | ($b | owned) as $y
     | $x == "" or $y == "" or $x == $y
       or ($y | startswith($x + "/")) or ($x | startswith($y + "/"));
-def writes:
-    .predictedWriteSet as $w
-    | ($w[:3] | join(",")) + (if ($w | length) > 3 then ",+\(($w | length) - 3)" else "" end);
+def writes: .predictedWriteSet | join(",");
 def excluded_by:
     ([.title] + .predictedWriteSet | map(ascii_downcase)) as $hay
     | first($exclude[] | select(. as $t | $hay | any(contains($t)))) // null;
@@ -37,8 +35,8 @@ def drop_reason($taken):
       elif $hit != null then "write-set collision with #\($hit)"
       else null end;
 
-# Queued and dropped candidates share a line per reason so a large board stays
-# a few lines long: "queued #39,#41  slot-cap", "dropped #34,#51  <reason>".
+# Dropped candidates share a line per reason so a large board stays a few lines
+# long: "dropped #34,#51  <reason>". Picked issues carry their complete write set.
 def grouped($verb):
     reduce .[] as $d ([]; (map(.why == $d.why) | index(true)) as $i
         | if $i == null then . + [{why: $d.why, ns: [$d.n]}] else .[$i].ns += [$d.n] end)
@@ -51,7 +49,7 @@ reduce .[] as $c ({taken: [], lines: [], queue: [], drops: []};
       elif (.lines | length) < $cap then
         .taken += [$c]
         | .lines += ["dispatch #\($c.number)  \($c.title | clip(60))  writes=\($c | writes)  shape=\($c.workShape)"]
-      else .taken += [$c] | .queue += [{n: $c.number, why: "slot-cap"}]
+      else .taken += [$c] | .queue += ["queued #\($c.number)  slot-cap  writes=\($c | writes)"]
       end)
 | {dispatched: (.lines | length), queued: (.queue | length), dropped: (.drops | length),
-   lines: (.lines + (.queue | grouped("queued")) + (.drops | grouped("dropped")))}
+   lines: (.lines + .queue + (.drops | grouped("dropped")))}

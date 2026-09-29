@@ -286,9 +286,11 @@ assert_contains "$out" 'dispatched=2' 'fast mode reports the current wave cap'
 assert_contains "$out" 'queued=1' 'fast mode queues overflow for refill'
 assert_contains "$out" 'dispatch #31  first  writes=src/a.sh  shape=implementation' \
     'a dispatch line carries the write set and work shape the dispatch plan needs'
-assert_contains "$out" 'writes=src/b.sh,src/c.sh,src/d.sh,+1' 'a long write set is capped with a count'
+assert_contains "$out" 'writes=src/b.sh,src/c.sh,src/d.sh,src/e.sh  shape' \
+    'a dispatch line carries the complete write set the dispatch plan needs'
 assert_contains "$out" 'dispatch #38  second' 'the wave takes the next free candidate in pickup order'
-assert_contains "$out" 'queued #39  slot-cap' 'overflow queues in pickup order'
+assert_contains "$out" 'queued #39  slot-cap  writes=lib/x.sh' \
+    'overflow queues in pickup order with its complete write set for refill'
 assert_contains "$out" 'dropped #32  write-set collision with #31' 'a colliding later issue is dropped'
 assert_contains "$out" 'dropped #33  blocked-by #99 open' 'an open blocker is named'
 assert_contains "$out" 'dropped #34,#41  needs-adjudication: no file path named in the issue body' \
@@ -337,6 +339,19 @@ rc=0
 out=$(run --fast-mode --slot-cap 4) || rc=$?
 assert_eq '1' "$rc" 'an invalid protected-path declaration refuses selection'
 assert_contains "$out" 'AGENT_PROTECTED_PATHS is invalid; run repo-config.sh --validate' 'and names the fix'
+cp "$tmp/config.env" "$repo/.agent/config.env"
+
+# A wildcard write set is protected by the directory it owns: src/foo*.ts sits
+# under a protected src/. The real path extractor emits literals only, so a
+# shadow extractor supplies the glob.
+glob_shadow="$tmp/glob-shadow"
+mkdir -p "$glob_shadow/.shared" "$glob_shadow/parallel-issues/scripts"
+cp -R "$root/agentkit/skills/.shared/scripts" "$glob_shadow/.shared/scripts"
+printf '#!/usr/bin/env bash\nprintf "create src/foo*.ts\\n"\n' >"$glob_shadow/parallel-issues/scripts/issue-paths.sh"
+chmod +x "$glob_shadow/parallel-issues/scripts/issue-paths.sh"
+printf 'AGENT_PROTECTED_PATHS=src/\n' >>"$repo/.agent/config.env"
+out=$(PATH="$tmp/bin:$PATH" "$glob_shadow/.shared/scripts/pick-issues.sh" --repo-root "$repo" --fast-mode --slot-cap 4 2>&1)
+assert_contains "$out" 'dropped #50,#51,#52  protected paths src/' 'a wildcard write set under a protected directory is dropped'
 cp "$tmp/config.env" "$repo/.agent/config.env"
 
 # A glob owns the directory before its first wildcard component, so it collides
@@ -429,10 +444,10 @@ assert_rc 3 'a symlinked repository agent directory is rejected before cache pub
     env PATH="$tmp/bin:$PATH" "$script" --repo-root "$symlink_repo"
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
-# fast-mode dispatch list (+38): --exclude-text, the protected-path pass (refusing an
+# fast-mode dispatch list (+42, glob-aware protected pass): --exclude-text, the protected-path pass (refusing an
 # invalid declaration), and fast mode implying Backlog, replacing the root's per-candidate --json re-reads (field
 # run: 35 calls, 2.6M tokens) and a thin-Ready empty wave (#270).
-assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 313 ]] && printf yes || printf no)" \
-    'pick-issues.sh stays at or under 313 lines'
+assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/.shared/scripts/pick-issues.sh") -le 317 ]] && printf yes || printf no)" \
+    'pick-issues.sh stays at or under 317 lines'
 
 finish

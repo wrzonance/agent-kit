@@ -279,10 +279,14 @@ if ((list_mode)); then
     IFS=, read -r -a protected_patterns <<<"$declared"
     protected_patterns+=("${SHARED_PROTECTED_DEFAULTS[@]}")
     protected_hits='{}'
+    # A glob owns the directory before its first wildcard component; "" owns everything.
     while IFS=$'\t' read -r issue path; do
-        hit=$(shared_write_set_collision "$path" "${protected_patterns[@]}") || continue
+        if [[ -z $path ]]; then hit=${protected_patterns[0]}
+        else hit=$(shared_write_set_collision "$path" "${protected_patterns[@]}") || continue; fi
         protected_hits=$(jq -c --arg n "$issue" --arg p "$hit" '.[$n] //= $p' <<<"$protected_hits")
-    done < <(jq -r '.[] | .number as $n | .predictedWriteSet[] | [$n, .] | @tsv' <<<"$selection")
+    done < <(jq -r '.[] | .number as $n | .predictedWriteSet[] | sub("^\\./"; "") | split("/")
+        | (map(test("[*?\\[]")) | index(true)) as $i | (if $i == null then . else .[:$i] end)
+        | [$n, (join("/") | rtrimstr("/"))] | @tsv' <<<"$selection")
     decisions=$(jq -c --argjson cap "$slot_cap" --argjson protected "$protected_hits" \
         --argjson exclude "$(jq -cn '$ARGS.positional' --args "${exclude_terms[@]}")" \
         -f "$script_dir/lib/pick-dispatch-list.jq" <<<"$selection") || die 'could not build the dispatch list'
