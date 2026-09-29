@@ -243,16 +243,17 @@ assert_contains "$spawn_contract_text" 'completed state and the exact remaining 
 # AGENT_WORKER_MODELS/_FALLBACK roster degrades on its own message instead of
 # reading as silently unset (+618 bytes). Measured.
 # #726: exact size including the durable sole-writer lifecycle; no spare allowance.
+# Ledger #29: the provenance guard became a one-line empty-path check.
 spawn_contract_bytes=$(wc -c < "$spawn_contract")
-assert_eq yes "$([[ $spawn_contract_bytes -le 22092 ]] && printf yes || printf no)" \
-    "spawn contract stays at or under 22092 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
-resolver_guard_line=$(grep -m1 -n '^\[ -d "${agentkit:-}/.shared/scripts"' "$spawn_contract" | cut -d: -f1)
+assert_eq yes "$([[ $spawn_contract_bytes -le 21925 ]] && printf yes || printf no)" \
+    "spawn contract stays at or under 21925 bytes including ownership lifecycle (measured $spawn_contract_bytes)"
+resolver_guard_line=$(grep -m1 -nF ': "${agentkit:?' "$spawn_contract" | cut -d: -f1)
 worker_config_function_line=$(grep -m1 -n '^worker_config_value() {' "$spawn_contract" | cut -d: -f1)
 if [[ -n $resolver_guard_line && -n $worker_config_function_line &&
     $resolver_guard_line -lt $worker_config_function_line ]]; then
-    printf '%s\n' 'ok - spawn contract validates the resolver before command substitution'
+    printf '%s\n' 'ok - spawn contract checks agentkit before command substitution'
 else
-    printf '%s\n' 'not ok - spawn contract validates the resolver before command substitution' >&2
+    printf '%s\n' 'not ok - spawn contract checks agentkit before command substitution' >&2
     exit 1
 fi
 assert_contains "$spawn_contract_text" 'explicit user authorization' \
@@ -371,7 +372,7 @@ assert_line_order() {
 
 step_two_line=$(grep -m1 -n '^## Step 2 ' "$onboard" | cut -d: -f1)
 review_line=$(grep -m1 -in 'review existing instructions' "$onboard" | cut -d: -f1)
-write_line=$(grep -m1 -n '^"\$shared/bootstrap-repo\.sh"$' "$onboard" | cut -d: -f1)
+write_line=$(grep -m1 -n '^"\$agentkit/\.shared/scripts/bootstrap-repo\.sh"$' "$onboard" | cut -d: -f1)
 audit_approval_line=$(grep -m1 -n 'explicitly approved onboarding pass' "$onboard" | cut -d: -f1)
 write_approval_line=$(grep -m1 -n 'approved the proposed onboarding additions' "$onboard" | cut -d: -f1)
 conflicting_line=$(grep -m1 -n '^- \*\*Conflicting\*\*' "$onboard" | cut -d: -f1)
