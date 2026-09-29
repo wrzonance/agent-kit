@@ -268,9 +268,9 @@ Use this for automatic or numbered thematic-Backlog selection; otherwise explici
 in full. Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only: its body-free `--json` record carries
 eligibility, blockers, `predictedWriteSet`, `requirementsDigest`, `bodyCache`, and `workShape`. `workShape: "no-code"`
 means HOLD before worktree creation; retain `holdReason`, count `no-code-hold`, and use the anchored
-[work-shape verdict](references/triage-and-selection.md#work-shape-verdict) for ambiguity. **`--fast-mode`** runs it once
-as `--fast-mode --slot-cap N` (plus `--include-backlog`; `--exclude-text <term>` per operator exclusion): `dispatch` lines
-are the wave, `writes=` seeds the plan, `queued` is refill order, and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it.
+[work-shape verdict](references/triage-and-selection.md#work-shape-verdict) for ambiguity. **`--fast-mode`:** run
+`"$agentkit/.shared/scripts/pick-issues.sh" --fast-mode --slot-cap N` once (plus `--exclude-text <term>` per
+operator exclusion): `dispatch` is the wave, `writes=` seeds the plan, `queued` refills, and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it.
 Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order. Emit `Selection funnel:`
 exactly once after the final conflict and slot-cap decisions and before dispatch. Every set reports
 requested/eligible/dispatched plus one reason per exclusion.
