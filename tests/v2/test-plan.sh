@@ -21,13 +21,13 @@ standard_board
 out=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'plan exits 0'
 wt="$repo/.worktrees/feat/issue-671"
-expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model= effort=medium
+expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model=gpt-5.6-luna effort=medium
 drop issue=69 reason=label:tier:human-only
 drop issue=680 reason=collides-with-#671
 drop issue=690 reason=blocked-by:#1
 drop issue=691 reason=protected:.github/workflows/ci.yml
 drop issue=692 reason=open-pr
-spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model= effort=medium"
+spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model=gpt-5.6-luna effort=medium"
 run=$(sed -n 1p <<<"$out")
 assert_contains "$run" 'run=' 'the first line names the run'
 assert_eq "$expected" "$(sed 1d <<<"$out")" 'spawn and drop lines follow board order'
@@ -43,6 +43,8 @@ prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'Issue 671: Title 671' 'the prompt substitutes number and title'
 assert_contains "$prompt" "branch=feat/issue-671 worktree=$wt base=main slug=acme/widget ak=$WORK/v2/bin/ak" 'the prompt substitutes the run facts'
 assert_contains "$prompt" 'untrusted' 'the issue block is labelled untrusted'
+assert_eq 'title: Title 671' "$(head -n 1 "$wt/.ak/issue.md")" '.ak/issue.md starts with the title line ship reads'
+assert_eq main "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 assert_contains "$prompt" 'please hurry' 'comments are included'
 assert_contains "$prompt" 'AGENTS.md {{BRANCH}}' 'issue text is not itself substituted'
 assert_eq "$(cat "$wt/.ak/issue.md")" "$(sed -n '3,$p' "$wt/.ak/prompt.md")" 'the prompt block is .ak/issue.md'
@@ -78,6 +80,8 @@ assert_contains "$out" 'model=gpt-5.6-terra effort=high' 'the roster entry for t
 assert_eq 2 "$(wc -l <<<"$out")" 'only the explicit issue is planned'
 out=$(CODEX_HOME=/x "$AK" plan --issue 693 2>&1)
 assert_contains "$out" 'model=gpt-5.6-luna' 'codex defaults to gpt-5.6-luna'
+out=$(CLAUDECODE=1 AGENT_WORKER_MODELS='gpt-5.6-terra,claude-sonnet-5' "$AK" plan --issue 671 2>&1)
+assert_contains "$out" 'model=claude-sonnet-5' 'claude skips the codex roster entry'
 
 fresh
 route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 700 Backlog),$(board_item 671 Ready)]}"
