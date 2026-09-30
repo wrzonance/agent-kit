@@ -137,3 +137,19 @@ work_base() {
         base_branch
     fi
 }
+
+# The worker model: the first roster entry of the running harness's family, else its default.
+worker_model() {
+    local roster entry family
+    family=$(harness)
+    IFS=', ' read -ra roster <<<"$(cfg AGENT_WORKER_MODELS)"
+    for entry in "${roster[@]}"; do
+        [[ -n $entry ]] || continue
+        case $family in
+            codex) [[ ! $entry =~ ^(gpt-|o[0-9]) ]] || { printf '%s\n' "$entry"; return 0; } ;;
+            claude) [[ $entry =~ ^(gpt-|o[0-9]) ]] || { printf '%s\n' "$entry"; return 0; } ;;
+            *) printf '%s\n' "$entry"; return 0 ;;
+        esac
+    done
+    if [[ $family == claude ]]; then printf 'sonnet\n'; else printf 'gpt-5.6-luna\n'; fi
+}

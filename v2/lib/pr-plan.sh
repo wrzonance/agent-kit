@@ -1,22 +1,6 @@
 # shellcheck shell=bash
 # ak pr-plan --pr N [--pr N]...: a worktree and worker prompt per open PR, a run file, and spawn lines.
 
-# The worker model: the first roster entry of the running harness's family, else its default.
-pr_plan_model() {
-    local roster entry family
-    family=$(harness)
-    IFS=', ' read -ra roster <<<"$(cfg AGENT_WORKER_MODELS)"
-    for entry in "${roster[@]}"; do
-        [[ -n $entry ]] || continue
-        case $family in
-            codex) [[ ! $entry =~ ^(gpt-|o[0-9]) ]] || { printf '%s\n' "$entry"; return 0; } ;;
-            claude) [[ $entry =~ ^(gpt-|o[0-9]) ]] || { printf '%s\n' "$entry"; return 0; } ;;
-            *) printf '%s\n' "$entry"; return 0 ;;
-        esac
-    done
-    if [[ $family == claude ]]; then printf 'sonnet\n'; else printf 'gpt-5.6-luna\n'; fi
-}
-
 # The directory worktrees live under, absolute, kept out of the main checkout's git status.
 pr_plan_worktree_dir() {
     local root=$1 dir exclude
@@ -113,7 +97,7 @@ cmd_main() {
     dir=$(pr_plan_worktree_dir "$root")
     runs="$root/.ak/runs"
     mkdir -p -- "$runs"
-    model=$(pr_plan_model)
+    model=$(worker_model)
     effort=$(cfg AGENT_WORKER_EFFORT medium)
     for n in "${prs[@]}"; do
         json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"

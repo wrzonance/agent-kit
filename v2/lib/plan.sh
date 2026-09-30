@@ -145,21 +145,6 @@ collisions() {
     printf '%s\n' "${hits[*]}"
 }
 
-worker_model() {
-    local h entry entries=()
-    h=$(harness)
-    mapfile -t entries < <(split_list "$(cfg AGENT_WORKER_MODELS)")
-    # One roster entry per harness family: gpt-*/o<digit>* is Codex, anything else is Claude.
-    for entry in "${entries[@]}"; do
-        case $h:$entry in
-            unknown:* | codex:gpt* | codex:o[0-9]*) printf '%s\n' "$entry"; return 0 ;;
-            claude:gpt* | claude:o[0-9]*) ;;
-            claude:*) printf '%s\n' "$entry"; return 0 ;;
-        esac
-    done
-    if [[ $h == claude ]]; then printf 'sonnet\n'; else printf 'gpt-5.6-luna\n'; fi
-}
-
 # issue_title N: the title sits outside the fence, so it is flattened to one short line of printable text.
 issue_title() {
     jq -r '.title | gsub("[[:cntrl:]]+"; " ") | .[:120]' <<<"${ISSUE_JSON[$1]}"
