@@ -16,7 +16,8 @@ You are the root. Workers do the review, fixes and CI; you spawn, wait, collect 
    drop pr=13 reason=closed
    ```
 
-2. For each `spawn` line, spawn one worker with exactly that cwd, model and effort. Its task is the content of
+2. For each `spawn` line, spawn one worker with exactly that model and effort (and that cwd, if
+   your spawn tool takes one). Its task is the content of
    the prompt file. Spawn them all before waiting.
 3. Wait with the harness's native wait, using the longest window it allows. Do not poll or check state between
    waits.

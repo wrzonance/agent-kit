@@ -10,8 +10,9 @@ Work only in `{{WORKTREE}}` and run every command below from there.
 3. Write the PR's why and what to `.ak/why.md` (two short sections, `## Why` and `## What`), then run
    `{{AK}} ship --message "<type>(<scope>): <summary>" --body-file .ak/why.md`.
 4. Run `{{AK}} review`. Judge each finding on its merits: fix the ones that are real, decline the rest with a
-   one-line reason. After fixes, run `{{AK}} verify` and `{{AK}} ship --message "fix: <what the review caught>"`.
-5. Run `{{AK}} ci`. On red, read the printed error lines (full logs are in `.ak/ci/`), fix, verify, ship, and run
+   one-line reason. `review=unavailable` means there is nothing to decide; `findings=unparsed` means read
+   `.ak/review.md` and treat each defect it names as a finding. After fixes, run `{{AK}} verify` and `{{AK}} ship --message "fix: <what the review caught>"`.
+5. Run `{{AK}} ci` (exit 0 green or no CI, 1 red, 3 still pending: run it again). On red, read the printed error lines (full logs are in `.ak/ci/`), fix, verify, ship, and run
    `{{AK}} ci` again, at most 3 times. A check that fails for reasons outside your diff is noted, not chased.
 6. Write `.ak/findings`, one line per review finding: `P1|title|fixed <sha>` or `P2|title|declined: reason`
    (just `none` when there were none). Run `{{AK}} receipt --findings .ak/findings`.

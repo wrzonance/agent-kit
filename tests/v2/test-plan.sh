@@ -116,4 +116,9 @@ out=$("$AK" plan 2>&1); rc=$?
 assert_eq 1 "$rc" 'a missing template refuses'
 assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 
+# The shipped templates use only the placeholders their composers substitute, and the issue block stands alone.
+real="$REPO/v2/templates/issue-worker.md"
+assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
+assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
+
 finish

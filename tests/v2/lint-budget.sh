@@ -11,7 +11,7 @@ rc=0
 while IFS= read -r skill; do
     n=$(wc -l <"$skill")
     ((n <= MAX_SKILL_LINES)) || { printf 'FAIL %s: %d lines > %d\n' "${skill#"$root"/}" "$n" "$MAX_SKILL_LINES"; rc=1; }
-done < <(find "$root/skills" -name SKILL.md)
+done < <(find "$root" -path "$root/skills/*" -name SKILL.md)
 
 md=0
 while IFS= read -r f; do md=$((md + $(wc -c <"$f"))); done < <(find "$root" -name '*.md')

@@ -34,11 +34,13 @@ ci_summary() {
 
 # ci_wait SHA TIMEOUT ONCE: prints the final RUNS array after polling.
 ci_wait() {
-    local sha=$1 deadline=$((SECONDS + $2)) once=$3 runs
+    local sha=$1 deadline=$((SECONDS + $2)) once=$3 grace=$((SECONDS + ${AK_CI_GRACE:-180})) runs
     while :; do
         runs=$(ci_runs "$sha") || exit 1
         [[ $(ci_summary "$runs") == ci=pending* && $once == 0 ]] || break
         ((SECONDS < deadline)) || break
+        # A repo with no CI never registers a run; stop waiting after the grace period.
+        [[ $runs != '[]' ]] || ((SECONDS < grace)) || break
         sleep "${AK_CI_INTERVAL:-30}"
     done
     printf '%s\n' "$runs"
@@ -89,6 +91,10 @@ cmd_main() {
     sha=$(ci_head)
     runs=$(ci_wait "$sha" "$timeout" "$once")
     line=$(ci_summary "$runs")
+    if [[ $runs == '[]' && $once == 0 ]]; then
+        printf 'ci=none checks=0 note=no check runs registered; local verify is the oracle\n'
+        return 0
+    fi
     printf '%s\n' "$line"
     case $line in
         ci=green*) return 0 ;;

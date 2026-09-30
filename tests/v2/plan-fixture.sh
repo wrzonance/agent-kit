@@ -3,11 +3,11 @@
 # shellcheck disable=SC2153
 # Shared by the plan and collect suites: an ak copy with a worker template, a board, and issues.
 
-# ak_with_template: copy v2 to $WORK/v2 so a template exists even before the real one lands.
+# ak_with_template: copy v2 to $WORK/v2 with the fixture template, so these suites pin plan's substitution, not the playbook's wording.
 ak_with_template() {
     cp -R "$REPO/v2" "$WORK/v2"
     mkdir -p "$WORK/v2/templates"
-    [[ -f $WORK/v2/templates/issue-worker.md ]] || cp "$V2_TESTS/fixtures/issue-worker.md" "$WORK/v2/templates/"
+    cp "$V2_TESTS/fixtures/issue-worker.md" "$WORK/v2/templates/issue-worker.md"
     export AK="$WORK/v2/bin/ak"
 }
 

@@ -36,13 +36,6 @@ review_effort() {
     if [[ $1 == codex ]]; then cfg AGENT_ADVERSARIAL_REVIEW_EFFORT xhigh; else cfg AGENT_ADVERSARIAL_REVIEW_EFFORT high; fi
 }
 
-# The base the diff is taken against: the PR's own base in a pr-plan worktree, else the repo base.
-review_base() {
-    local file
-    file="$(worktree_root)/.ak/base"
-    if [[ -s $file ]]; then cat -- "$file"; else base_branch; fi
-}
-
 # review_diff BASE: the pushed head's diff against origin/BASE; refuses an unpushed or empty head.
 review_diff() {
     local base=$1 head upstream diff
@@ -114,7 +107,7 @@ cmd_main() {
     local dir base diff provider model effort scratch reason head
     cd -- "$(worktree_root)" || die "cannot enter the worktree" "cd into the worktree"
     dir=$(ak_dir)
-    base=$(review_base)
+    base=$(work_base)
     diff=$(review_diff "$base")
     head=$(git rev-parse HEAD)
     rm -f -- "$dir/review.md" "$dir/review.unavailable"

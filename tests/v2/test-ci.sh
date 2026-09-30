@@ -30,6 +30,9 @@ assert_eq 3 "$rc" 'a timeout with a running check exits 3'
 set_checks '{"check_runs":[]}'
 out=$("$AK" ci --once 2>&1); rc=$?
 assert_eq 3 "$rc" 'no check runs yet is pending'
+out=$(AK_CI_GRACE=0 "$AK" ci 2>&1); rc=$?
+assert_eq 0 "$rc" 'a repo with no CI stops waiting after the grace period'
+assert_contains "$out" 'ci=none checks=0' 'no CI is reported as none, not pending'
 
 set_checks '{"check_runs":[{"name":"test","status":"in_progress","conclusion":"success"}]}'
 out=$("$AK" ci --once 2>&1); rc=$?
