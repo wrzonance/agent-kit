@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# ak plan: board pick, drops, write sets, collisions, worktrees, prompts, and the run file.
+TEST_NAME=v2-plan
+# shellcheck source=lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=plan-fixture.sh
+source "$V2_TESTS/plan-fixture.sh"
+ak_with_template
+
+# fresh: a new fixture repository and route table for one case.
+fresh() {
+    rm -rf -- "$WORK/repo" "$WORK/origin.git"
+    : >"$FAKE_GH_ROUTES"
+    : >"$FAKE_GH_LOG"
+    repo=$(board_repo)
+    cd "$repo" || exit 1
+}
+
+fresh
+standard_board
+out=$("$AK" plan 2>&1); rc=$?
+assert_eq 0 "$rc" 'plan exits 0'
+wt="$repo/.worktrees/feat/issue-671"
+expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model= effort=medium
+drop issue=69 reason=label:tier:human-only
+drop issue=680 reason=collides-with-#671
+drop issue=690 reason=blocked-by:#1
+drop issue=691 reason=protected:.github/workflows/ci.yml
+drop issue=692 reason=open-pr
+spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model= effort=medium"
+run=$(sed -n 1p <<<"$out")
+assert_contains "$run" 'run=' 'the first line names the run'
+assert_eq "$expected" "$(sed 1d <<<"$out")" 'spawn and drop lines follow board order'
+assert_not_contains "$out" 'issue=700' 'Backlog is not picked without --yolo'
+assert_not_contains "$out" 'issue=694' 'Done items are not candidates'
+assert_eq yes "$( (( $(wc -l <<<"$out") <= 20 )) && echo yes || echo no)" 'output is at most 20 lines'
+assert_eq 'feat/issue-671' "$(git -C "$wt" branch --show-current)" 'the worktree is on feat/issue-671'
+assert_eq "$(git rev-parse origin/main)" "$(git -C "$wt" rev-parse HEAD)" 'the worktree starts at origin/main'
+git ls-remote --exit-code --heads origin feat/issue-671 >/dev/null
+assert_eq 0 "$?" 'the branch is pushed'
+assert_eq 671 "$(cat "$wt/.ak/issue")" '.ak/issue holds the number'
+prompt=$(cat "$wt/.ak/prompt.md")
+assert_contains "$prompt" 'Issue 671: Title 671' 'the prompt substitutes number and title'
+assert_contains "$prompt" "branch=feat/issue-671 worktree=$wt base=main slug=acme/widget ak=$WORK/v2/bin/ak" 'the prompt substitutes the run facts'
+assert_contains "$prompt" 'untrusted' 'the issue block is labelled untrusted'
+assert_contains "$prompt" 'please hurry' 'comments are included'
+assert_contains "$prompt" 'AGENTS.md {{BRANCH}}' 'issue text is not itself substituted'
+assert_eq "$(cat "$wt/.ak/issue.md")" "$(sed -n '3,$p' "$wt/.ak/prompt.md")" 'the prompt block is .ak/issue.md'
+assert_eq '' "$(git -C "$wt" status --porcelain)" 'the worktree stays clean'
+assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
+runfile="$repo/.ak/runs/${run#run=}.json"
+assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
+assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","state":"spawned","needs":[]}' \
+    "$(jq -c '.items[0]' "$runfile")" 'the run file records the spawned item'
+assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
+assert_eq 1 "$(grep -c 'issues/693/dependencies' "$FAKE_GH_LOG")" 'one deps read per candidate'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/69/' 'a label drop costs no REST call'
+
+fresh
+standard_board
+out=$("$AK" plan --limit 1 2>&1)
+assert_eq 1 "$(grep -c '^spawn' <<<"$out")" '--limit 1 spawns one issue'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/680' '--limit stops checking once the limit is filled'
+
+fresh
+standard_board
+out=$("$AK" plan --serialize 2>&1)
+assert_contains "$out" 'after issue=680 needs=671' '--serialize chains the colliding issue'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)" 'a queued issue gets no worktree'
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+assert_eq 'queued [671]' "$(jq -r '.items[] | select(.n == 680) | "\(.state) \(.needs | tojson)"' "$runfile")" 'the queued item records its needs'
+
+fresh
+standard_board
+out=$(CODEX_HOME=/x AGENT_WORKER_MODELS='claude-sonnet-5, gpt-5.6-terra' AGENT_WORKER_EFFORT=high "$AK" plan --yolo --issue 700 2>&1)
+assert_contains "$out" 'spawn issue=700 ' 'an explicit --issue is planned'
+assert_contains "$out" 'model=gpt-5.6-terra effort=high' 'the roster entry for the running harness wins'
+assert_eq 2 "$(wc -l <<<"$out")" 'only the explicit issue is planned'
+out=$(CODEX_HOME=/x "$AK" plan --issue 693 2>&1)
+assert_contains "$out" 'model=gpt-5.6-luna' 'codex defaults to gpt-5.6-luna'
+
+fresh
+route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 700 Backlog),$(board_item 671 Ready)]}"
+issue_route 671 'x'
+issue_route 700 'y'
+default_routes
+out=$("$AK" plan --yolo 2>&1)
+assert_eq 'spawn issue=671 spawn issue=700' "$(grep -o 'spawn issue=[0-9]*' <<<"$out" | paste -sd' ')" '--yolo adds Backlog after Ready'
+
+fresh
+items=$(for n in $(seq 100 130); do printf '%s\n' "$(board_item "$n" Ready '["blocked"]')"; done | paste -sd, -)
+route 'project item-list 5 --owner acme*' "{\"items\":[$items,$(board_item 671 Ready)]}"
+issue_route 671 'x'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_eq 20 "$(wc -l <<<"$out")" 'many drops still print 20 lines'
+assert_contains "$out" 'spawn issue=671' 'the spawn line survives the cap'
+assert_contains "$out" 'drop more=14 log=' 'hidden drops point at the log'
+
+fresh
+printf 'AGENT_PROJECT_OWNER=\nAGENT_PROJECT_NUMBER=\n' >>.agent/config.env
+out=$("$AK" plan 2>&1); rc=$?
+assert_eq 1 "$rc" 'no board and no ready label refuses'
+assert_contains "$out" 'fix: ' 'the refusal names the fix'
+route 'api repos/acme/widget/issues?state=open&labels=agent:ready*' '[{"number":5,"title":"T","state":"open","body":"b","labels":[{"name":"agent:ready"}]},{"number":6,"pull_request":{},"labels":[]}]'
+issue_route 5 'b'
+default_routes
+out=$(AGENT_READY_LABEL=agent:ready "$AK" plan 2>&1)
+assert_contains "$out" 'spawn issue=5 ' 'the ready label is the fallback source'
+assert_not_contains "$out" 'issue=6' 'pull requests are not issues'
+
+fresh
+standard_board
+rm -f -- "$WORK/v2/templates/issue-worker.md"
+out=$("$AK" plan 2>&1); rc=$?
+assert_eq 1 "$rc" 'a missing template refuses'
+assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
+
+finish
