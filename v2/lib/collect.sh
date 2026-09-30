@@ -1,0 +1,81 @@
+# shellcheck shell=bash disable=SC2016
+# ak collect (--issue N | --pr N): one worker's result, any root cross-write, and newly unblocked spawns.
+# shellcheck source=plan.sh
+source "$AK_HOME/lib/plan.sh"
+
+# run_update FILTER [JQ ARGS...]: rewrite the run file through jq.
+run_update() {
+    local filter=$1
+    shift
+    jq "$@" "$filter" "$RUNFILE" >"$RUNFILE.tmp" && mv -- "$RUNFILE.tmp" "$RUNFILE"
+}
+
+# result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result.
+result_line() {
+    local kind=$1 n=$2 file="$3/.ak/result" key value
+    local -A r=()
+    if [[ ! -f $file ]]; then
+        emit "$kind=$n state=no-result note=worker ended without .ak/result"
+        return 1
+    fi
+    while IFS='=' read -r key value; do
+        [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
+    done <"$file"
+    if [[ $kind == issue ]]; then
+        emit "issue=$n pr=${r[pr]:-} ci=${r[ci]:-} review=${r[review]:-} note=${r[note]:-}"
+    else
+        emit "pr=$n ci=${r[ci]:-} review=${r[review]:-} note=${r[note]:-}"
+    fi
+}
+
+# cross_write: root paths whose status changed since plan time.
+cross_write() {
+    local paths
+    paths=$(LC_ALL=C comm -13 <(jq -r .porcelain "$RUNFILE" | LC_ALL=C sort) \
+        <(git -C "$MAIN" status --porcelain | LC_ALL=C sort) | cut -c4- | paste -sd, -)
+    [[ -z $paths ]] || emit "cross-write=$paths"
+}
+
+# spawn_successors: queued issues whose needs are all collected, each from its last predecessor's branch.
+spawn_successors() {
+    local n pred from ready
+    ready=$(jq -r '[.items[] | select(.state == "collected") | .n] as $done |
+        .items[] | select(.kind == "issue" and .state == "queued" and ((.needs - $done) | length) == 0) |
+        "\(.n)\t\(.needs[-1])"' "$RUNFILE")
+    [[ -n $ready ]] || return 0
+    TEMPLATE="$AK_HOME/templates/issue-worker.md"
+    [[ -f $TEMPLATE ]] || die "worker template missing: $TEMPLATE" 'reinstall the ak plugin'
+    MODEL=$(worker_model)
+    EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
+    while IFS=$'\t' read -r -u 3 n pred; do
+        from="feat/issue-$pred"
+        git -C "$MAIN" fetch -q origin "$from" >>"$AK_LOG" 2>&1 && from="origin/$from"
+        if ! ISSUE_JSON[$n]=$(api "repos/$SLUG/issues/$n"); then
+            emit "drop issue=$n reason=unreadable"
+            run_update '(.items[] | select(.kind == "issue" and .n == $n)).state = "dropped"' --argjson n "$n"
+        elif spawn_issue "$n" "$from" "feat/issue-$pred"; then
+            run_update '(.items[] | select(.kind == "issue" and .n == $n)) |= (.state = "spawned" | .worktree = $wt)' \
+                --argjson n "$n" --arg wt "${WORKTREE[$n]}"
+        fi
+    done 3<<<"$ready"
+}
+
+cmd_main() {
+    local kind='' n='' item worktree state=collected
+    case ${1:-} in
+        --issue | --pr) kind=${1#--}; n=${2:-} ;;
+    esac
+    [[ -n $kind && $n =~ ^[0-9]+$ && $# -eq 2 ]] || usage_die 'usage: ak collect (--issue N | --pr N)'
+    plan_context collect
+    [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
+    RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
+    [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
+    item=$(jq -c --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$RUNFILE")
+    [[ -n $item ]] || die "$kind $n is not in run $(jq -r .run "$RUNFILE")" "ak plan --issue $n"
+    worktree=$(jq -r '.worktree // ""' <<<"$item")
+    result_line "$kind" "$n" "$worktree" || state=no-result
+    cross_write
+    run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
+    [[ $kind != issue ]] || spawn_successors
+    printf '%s\n' "${LINES[@]}"
+}
