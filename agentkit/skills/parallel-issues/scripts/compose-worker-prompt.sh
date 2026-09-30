@@ -5,7 +5,8 @@ umask 077
 
 program=${0##*/}
 usage() {
-    printf 'usage: %s --template issue-lead|join-resolution|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE]\n' "$program" >&2
+    printf 'usage: %s --template issue-lead|join-resolution|pr-loop-setup|pr-fix-batch|fix-batch --worktree PATH --issue N --branch B --worker-model ID --worker-effort E --write-set GLOB[,GLOB...] --boundary public-fenced|private-trusted|yolo-trusted [--findings-file PATH] [--dispatch-plan PATH] [--output PATH] [--ledger PATH --run-id ID --ledger-scope SCOPE] [--publish]\n' "$program" >&2
+    printf '  --publish (issue-lead, --output FILE, --dispatch-plan) installs the staged plan update, saves the verification report, and prints one published= line\n' >&2
     printf '  --write-set is required for issue-lead, join-resolution, and pr-fix-batch\n' >&2
     printf '  --boundary is required for the issue-lead template: the dispatcher-selected issue-body trust mode\n' >&2
     printf '  --findings-file is required and non-empty for the pr-fix-batch template\n' >&2
@@ -34,6 +35,7 @@ materiality_base_supplied=0
 ledger_path=
 ledger_run_id=
 ledger_scope=
+publish=0
 while (($#)); do
     case $1 in
         --) shift; (( $# == 0 )) || { printf "%s: unexpected argument after --: %s\n" "${0##*/}" "$1" >&2; exit 2; }; break ;;
@@ -58,6 +60,7 @@ while (($#)); do
             esac
             shift 2
             ;;
+        --publish) publish=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage; die "unknown argument: $1" ;;
     esac
@@ -65,6 +68,18 @@ done
 
 ((dispatch_plan_supplied == 0)) || [[ -n $dispatch_plan ]] ||
     die '--dispatch-plan requires a non-empty value'
+if ((publish)); then
+    [[ $template_kind == issue-lead && -n $output && $output != - ]] || die '--publish needs --template issue-lead and --output FILE'
+    [[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]] || die '--publish needs an absolute, regular, non-symlink --dispatch-plan'
+    # shellcheck source=lib/dispatch-publish.sh
+    source "$script_dir/lib/dispatch-publish.sh" || die 'could not load lib/dispatch-publish.sh'
+fi
+# The prompt write would replace the root-owned plan if both flags named one file.
+if [[ -n $dispatch_plan && -n $output && $output != - ]]; then
+    output_real="$(cd -P -- "$(dirname -- "$output")" 2>/dev/null && pwd -P)/$(basename -- "$output")"
+    [[ $output_real != "$(cd -P -- "$(dirname -- "$dispatch_plan")" 2>/dev/null && pwd -P)/$(basename -- "$dispatch_plan")" ]] ||
+        die '--output must not be the --dispatch-plan file'
+fi
 
 [[ $template_kind == issue-lead || $template_kind == join-resolution || $template_kind == pr-loop-setup ||
     $template_kind == pr-fix-batch || $template_kind == fix-batch ]] ||
@@ -757,13 +772,16 @@ else
         if ((${#spec_uncovered_steps[@]})); then
             uncovered_steps=$(IFS=,; printf '%s' "${spec_uncovered_steps[*]}")
         fi
-        ((spec_step_count == 0)) || printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s\n' \
+        spec_verification_line=
+        ((spec_step_count == 0)) || spec_verification_line=$(printf 'spec-verification= issue=%s steps=%d covered=%d uncovered=%d uncovered-steps=%s coverage=%d/%d classification=%s' \
             "$issue" "$spec_step_count" "$spec_covered_count" "$spec_uncovered_count" \
-            "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification"
+            "$uncovered_steps" "$spec_covered_count" "$spec_step_count" "$spec_coverage_classification")
+        [[ -z $spec_verification_line ]] || printf '%s\n' "$spec_verification_line"
         ((dispatch_plan_supplied == 0)) || printf 'spec-verification-plan= issue=%s status=%s expected-uncovered=%s update=%s plan-sha=%s\n' \
             "$issue" "$spec_plan_record_status" "$spec_expected_uncovered" "$spec_plan_update_status" "$spec_plan_sha"
         ((spec_step_render_truncated == 0)) || printf 'spec-verification-bounded= issue=%s limit=%d\n' "$issue" "$SPEC_STEP_RENDER_LIMIT"
     fi
     printf 'wait-bound= issue=%s seconds=%s class=worker\n' "$issue" "$worker_wait_bound_seconds"
     printf '%s\n' "$yield_cap_line"
+    ((publish == 0)) || dispatch_publish "${spec_verification_line:-}"
 fi

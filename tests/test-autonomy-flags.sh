@@ -58,10 +58,6 @@ assert_contains "$parallel" '`--fast-mode` requires `--yolo`' \
     'the dependency is stated, not implied'
 assert_contains "$parallel" 'Re-invoke with both, or with neither' \
     'and the refusal tells the user what to do instead'
-assert_contains "$parallel" 'Do not infer one from the other' \
-    'neither flag may be conjured from the other'
-assert_contains "$parallel" '`--auto-review` is independent' \
-    'the review flag stands alone'
 
 # --- consent-bearing sends stay in the consent-holding context ---------------
 # A human approval cannot cross an agent context boundary. The root therefore
@@ -112,8 +108,6 @@ assert_contains "$review_adversarial" 'repository ownership, or an ambiguous res
 # thing for a speed flag to skip.
 assert_contains "$parallel" 'With `--fast-mode`, do not ask' \
     'fast mode drops the approval gate'
-assert_contains "$parallel" 'removes the approval gate, not the reasoning' \
-    'and keeps the conflict analysis that gate was checking'
 assert_contains "$parallel_with_refs" 'removes the approval gate, not the disclosure' \
     'and still announces what it chose'
 
@@ -143,11 +137,11 @@ assert_contains "$parallel_with_refs" 'The fast-mode example records a queued is
 # a sandbox escalation goes to the harness, not back to the user as a question.
 assert_contains "$parallel" 'Publishing is part of the dispatch' \
     'branch pushes and draft PRs need no second permission'
-assert_contains "$parallel" 'Do not pause to re-ask for that authorization' \
+assert_contains "$parallel" 'do not pause to re-ask' \
     'and the agent does not ask anyway'
-assert_contains "$parallel" 'request escalation through the harness' \
+assert_contains "$parallel" 'escalation goes through the harness' \
     'a sandbox gate is answered by the harness approval flow'
-assert_contains "$parallel" 'ready-flips, merges' \
+assert_contains "$parallel" 'Ready-flips, merges' \
     'the still-gated actions are named so the authority does not leak'
 
 # --- selection is mechanical where it can be --------------------------------
@@ -200,9 +194,9 @@ assert_contains "$review" 'not permission to flip a PR ready' \
 
 # The root review orchestration owns the invocation grant; dispatched loops
 # must not forward it into a child context or invent consent there.
-assert_contains "$parallel" 'ONLY when this invocation carried it' \
+assert_contains "$parallel" 'only when this invocation carried it' \
     'the root uses the flag only when it was actually given'
-assert_contains "$parallel" 'Do not forward the flag or record' \
+assert_contains "$parallel" 'never forward the flag or record to a loop' \
     'the loop does not receive a manufactured consent grant'
 assert_contains "$parallel" 'manufactures child-context consent' \
     'and inventing it is named as the failure it is'

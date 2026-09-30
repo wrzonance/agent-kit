@@ -25,7 +25,7 @@ pr_stage_text=$(<"$pr_stage")
 post_receipt_text=$(<"$post_receipt")
 
 assert_receipt_contract() {
-    local text=$1 label=$2 section normalized
+    local text=$1 label=$2 scope=${3:-full} section normalized
     section=$(awk '
         /^### Adversarial-review receipt:/{capture=1; next}
         capture && /^```/{fenced=!fenced; print; next}
@@ -36,16 +36,21 @@ assert_receipt_contract() {
 
     assert_contains "$section" 'pr-stage.sh' "$label delegates the final publication stage"
     assert_contains "$section" 'post-receipt.sh' "$label delegates rendering/posting to post-receipt.sh"
-    assert_contains "$section" 'provider' "$label records the reviewer provider"
-    assert_contains "$section" 'model' "$label records the reviewer model"
-    assert_contains "$section" 'effort' "$label records the reviewer effort"
-    assert_contains "$section" 'cross-provider' "$label records cross-provider mode"
-    assert_contains "$section" 'blind fallback' "$label records blind fallback mode"
-    assert_contains "$section" 'confirmed finding' "$label records confirmed findings"
-    assert_contains "$section" 'P1' "$label records severity counts"
-    assert_contains "$section" 'fix commit' "$label records fix commit SHAs"
-    assert_contains "$section" 'decline rationale' "$label records decline rationale"
-    assert_contains "$section" 'verified-skip rationale' "$label records verified skip rationale"
+    # The receipt's field list is review-remote-pr's contract; parallel-issues
+    # delegates rendering to pr-stage.sh finalize -> post-receipt.sh publish,
+    # which the pr_stage_text/post-receipt suites pin, so it is not restated.
+    if [[ $scope == full ]]; then
+        assert_contains "$section" 'provider' "$label records the reviewer provider"
+        assert_contains "$section" 'model' "$label records the reviewer model"
+        assert_contains "$section" 'effort' "$label records the reviewer effort"
+        assert_contains "$section" 'cross-provider' "$label records cross-provider mode"
+        assert_contains "$section" 'blind fallback' "$label records blind fallback mode"
+        assert_contains "$section" 'confirmed finding' "$label records confirmed findings"
+        assert_contains "$section" 'P1' "$label records severity counts"
+        assert_contains "$section" 'fix commit' "$label records fix commit SHAs"
+        assert_contains "$section" 'decline rationale' "$label records decline rationale"
+        assert_contains "$section" 'verified-skip rationale' "$label records verified skip rationale"
+    fi
     assert_contains "$section" 'finding-ledger.sh add' "$label records ledger-first disposition capture"
     assert_contains "$pr_stage_text" 'findings=$run_dir/findings.ndjson' \
         "$label finalizer consumes the run findings ledger"
@@ -73,7 +78,7 @@ assert_receipt_contract() {
 }
 
 assert_receipt_contract "$review_text" 'review-remote-pr receipt'
-assert_receipt_contract "$parallel_text" 'parallel-issues receipt'
+assert_receipt_contract "$parallel_text" 'parallel-issues receipt' delegated
 
 # -- the precheck gate: still mandated, still delegates to the script --------
 
@@ -98,14 +103,8 @@ assert_contains "$parallel_text" 'pr_${PR}_issue_comments.json' \
     'parallel-issues checks fetched PR comments before launch'
 assert_contains "$parallel_text" 'do not rerun' \
     'parallel-issues marker precheck prevents double spend'
-assert_contains "$parallel_text" 'no-silent-skip' \
-    'parallel-issues receipt contract rejects silent skips'
 assert_contains "$post_receipt_text" 'fresh live comments' \
     'parallel-issues requires fresh recovery evidence before retry'
-assert_contains "$parallel_text" 'consent-record.sh" payload' \
-    'parallel-issues derives the current canonical diff payload before precheck'
-assert_contains "$parallel_text" '--diff-payload "$current_diff_payload"' \
-    'parallel-issues passes the current diff payload into precheck'
 assert_contains "$parallel_text" 'without waiting for pending or red CI' \
     'parallel-issues launches snapshot review before CI settlement'
 assert_contains "$parallel_text" 'cancels or relaunches the review' \
@@ -113,15 +112,11 @@ assert_contains "$parallel_text" 'cancels or relaunches the review' \
 assert_contains "$review_text" 'state/launch-attempted' \
     'review-remote-pr records launch identity before any CI-settlement wait'
 
+# parallel-issues delegates the loop's precheck to review-remote-pr's recipe,
+# so only that recipe carries the payload derivation and guards below.
 # Each precheck recipe is a fresh shell boundary. Every value supplied by an
 # earlier setup step must therefore be guarded before it is interpolated into
 # a helper invocation; an empty path or repository must fail closed.
-assert_contains "$parallel_text" '${worktree:?set worktree}' \
-    'parallel-issues guards the worktree before deriving the payload'
-assert_contains "$parallel_text" '${REPO:?set REPO}' \
-    'parallel-issues guards the repository before deriving the payload'
-assert_contains "$parallel_text" '${base:?set base}' \
-    'parallel-issues guards the base before deriving the payload'
 assert_contains "$review_text" '${PR_WORKTREE:?set PR_WORKTREE}' \
     'review-remote-pr guards the worktree before deriving the payload'
 assert_contains "$review_text" '${REPO:?set REPO}' \

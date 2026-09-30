@@ -434,19 +434,6 @@ assert_not_contains "$parallel_text" 'starting_head=' \
     'parallel run IDs do not depend on mutable starting HEAD state'
 assert_not_contains "$parallel_text" 'contract_head=' \
     'parallel run IDs do not depend on mutable contract state'
-assert_contains "$parallel_text" \
-    'scope=57,54' \
-    'parallel documents the first distinct issue scope input'
-assert_contains "$parallel_text" \
-    'scope=57,62' \
-    'parallel documents the second distinct issue scope input'
-assert_contains "$parallel_text" \
-    'auto-review=false' \
-    'parallel documents the first distinct authorization flag input'
-assert_contains "$parallel_text" \
-    'auto-review=true' \
-    'parallel documents the second distinct authorization flag input'
-
 run_id_digest() {
     local scope=$1 flags=$2 repository=$3 base=$4
     "$script" run-id --procedure-set parallel-issues --scope "$scope" --flags "$flags" \

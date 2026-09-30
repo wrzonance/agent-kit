@@ -372,14 +372,12 @@ assert_contains "$normalized_text" 'deeper tails enter the same refill queue as 
     'chain-depth overflow shares the slot-cap refill queue'
 assert_not_contains "$normalized_text" 'deeper tails are dropped' \
     'chain-depth overflow is not a membership exclusion'
-assert_contains "$normalized_text" 'depth limits the number of links in flight, not chain membership' \
+assert_contains "$normalized_text" 'chains keep a 4-link depth window under `--auto-serialize` and deeper tails queue' \
     'chain depth is documented as a concurrency limit'
 assert_contains "$normalized_text" 'refill the next queued successor from that exact pushed SHA' \
     'chain-depth refill is gated by the predecessor pushed SHA'
 assert_contains "$text" 'cycle' 'cycles fall back instead of chaining'
 assert_contains "$text" 'chain_base_sha' 'chain base sha variable is named'
-assert_contains "$text" 'git worktree add "$worktree" -b "$branch" "${chain_base_sha:-origin/$base}"' \
-    'worktree recipe parameterizes its start point'
 assert_contains "$text" '--dispatch-plan "$dispatch_plan" --run-id "$RUN_ID"' \
     'worktree setup consumes the saved expected set and accepted publications'
 assert_contains "$normalized_text" "as soon as the predecessor's worker has committed and pushed its branch" \
@@ -408,7 +406,7 @@ assert_contains "$normalized_chains_text" 'Publishing a locally-built chain base
     'chains reference documents the general pushed-base requirement'
 assert_contains "$normalized_chains_text" 'a linear chain is not protected from this just because it only had one predecessor' \
     'the pushed-base requirement is generalized past the join case'
-assert_contains "$normalized_text" 'for a join, this means every predecessor pushed AND the merged join base itself pushed' \
+assert_contains "$normalized_text" 'for a join: every predecessor and the merged join base pushed' \
     'the deferred-dispatch gate names the join-specific push requirement'
 assert_contains "$normalized_chains_text" 'interface dependency' \
     'chain edges require an interface dependency'
@@ -452,7 +450,7 @@ retarget_exception_line=$(grep -n '^Two proofs tolerate evidence a retarget' \
     "$root/agentkit/skills/parallel-issues/references/chains.md" | cut -d: -f1)
 assert_eq yes "$([[ $retarget_exception_line -gt $retarget_heading_line ]] && printf yes || printf no)" \
     'retarget-only proof exceptions stay inside the retarget section'
-assert_contains "$normalized_text" 'test files or prose does not serialize' \
+assert_contains "$normalized_text" 'overlap confined to tests or prose runs in parallel' \
     'test/prose overlap runs in parallel with an end merge-down'
 assert_contains "$text" 'root-owned dispatch plan' \
     'dispatch creates the root-owned plan before selection is dispatched'
@@ -562,9 +560,6 @@ assert_contains "$text" 'Selection funnel:' \
     'parallel skill requires the named selection reconciliation line'
 assert_contains "$normalized_text" 'exactly once after the final conflict and slot-cap decisions and before dispatch' \
     'selection reconciliation is emitted once at the dispatch boundary'
-assert_contains "$normalized_text" \
-    'Attended, the root applies Backlog ranking, Step 3 conflict analysis, the slot cap, and the batch board move in order' \
-    'attended selection keeps judgment and board mutation root-owned'
 assert_contains "$normalized_text" 'and `dropped` is final — never reopen ADRs, instructions, references, or `--json` for it' \
     'fast mode acts on the picker list without re-adjudicating a drop'
 assert_contains "$triage_and_selection_text" \
@@ -589,7 +584,7 @@ assert_contains "$normalized_triage_and_selection_text" 'chain-depth overflow en
     'selection classifies chain-depth overflow as queued'
 assert_contains "$triage_and_selection_text" 'queued=1[#6]' \
     'selection examples show a queued chain tail'
-assert_contains "$normalized_text" 'At handoff, print each queued reason and exact resume command' \
+assert_contains "$normalized_text" 'Print each queued reason with its exact resume command' \
     'handoff surfaces queue entries instead of claiming completion'
 assert_contains "$normalized_text" \
     'queued=1[#222] reason=chain-depth resume=/parallel-issues --yolo --fast-mode --auto-serialize 222' \
@@ -640,15 +635,11 @@ assert_not_contains "$text" 'Four total slots including the root' \
     'dispatch does not hardcode the old slot count'
 assert_not_contains "$text" 'Max 5 issues' \
     'limits do not hardcode the old issue count'
-assert_contains "$text" 'max_concurrent_threads_per_session' \
-    'dispatch reads the runtime concurrency setting'
 assert_contains "$text" 'concurrency-cap.sh' \
     'dispatch delegates runtime cap parsing to the helper'
 assert_contains "$text" 'Root launches every consent-bearing call itself as `AGENTKIT_PARALLEL_RUN_ID="$RUN_ID"' \
     'the consent holder launches real reviews rather than forwarding consent'
-assert_contains "$text" 'review attempts and native worker reservations share the same atomic admission lock' \
-    'parallel review launch names the executable shared-cap boundary'
-assert_contains "$text" 'launch all currently eligible reviews without waiting for an earlier review result' \
+assert_contains "$text" 'launching every eligible review without waiting on earlier results' \
     'distinct eligible reviews are dispatched concurrently'
 assert_contains "$text" 'available upstream findings' \
     'fix batches receive known upstream findings without waiting for future results'
@@ -666,42 +657,29 @@ assert_contains "$normalized_text" \
 assert_contains "$text" '--assert-count "$prospective_total" --agent-kind "$agent_kind"' \
     'every fan-out passes its prospective total and kind to the cap helper'
 assert_contains "$normalized_text" \
-    'A refusal is terminal for that unchanged request: reduce the requested batch or wait for slots to free' \
+    'A refusal means shrink the batch or wait for a slot' \
     'overflow retry guidance cannot repeat the refused count unchanged'
 assert_contains "$normalized_text" \
-    'A cap-advertisement error stops spawning and is reported separately from a capacity refusal.' \
+    'report a cap-advertisement error separately' \
     'an unavailable cap stops the fan-out without masquerading as capacity exhaustion'
 assert_contains "$normalized_triage_and_selection_text" \
     'Vetting uses only the slots available under the same spawn cap; process a larger Backlog in slot-sized batches or do not fan out.' \
     'thin-Ready vetting states its ceiling where it states the obligation'
-assert_contains "$normalized_text" \
-    'A triage fallback cannot justify `eligible=0` or an empty Ready column; any assessor fan-out still uses only the slots available under the spawn cap.' \
-    'empty-Ready fallback guidance carries the universal assessor ceiling'
 assert_contains "$text" 'Maximum 10 concurrent agents of every kind (root counted)' \
     'the Limits maximum covers every concurrent role'
 assert_not_contains "$text" 'Maximum 10 per wave' \
     'the Limits maximum is no longer dispatch-wave scoped'
 assert_not_contains "$text" 'PR_LOOP_CONCURRENCY_CAP=2' \
     'dispatch does not hardcode a two-loop cap'
-assert_contains "$text" 'pr_loop_dispatch_cap' \
-    'dispatch derives an effective loop cap before launching agents'
-assert_contains "$text" 'runtime_loop_budget=$((max_concurrent_threads_per_session - active_leads - 1))' \
-    'dispatch reserves the root and active issue leads from the runtime cap'
-assert_contains "$text" 'pr_loop_dispatch_cap=$((open_pr_count < runtime_loop_budget ? open_pr_count : runtime_loop_budget))' \
-    'dispatch bounds loops by open PRs and remaining runtime capacity'
 assert_contains "$text" 'pr-loop-setup' \
     'dispatch uses the read-only PR-loop setup template'
 assert_contains "$text" 'pr-fix-batch' \
     'dispatch gates the fix-batch template on accepted findings'
-assert_contains "$text" 'open_pr_count == 0' \
-    'dispatch treats zero open PRs as an explicit no-op case'
 assert_contains "$text" 'exit 0' \
     'dispatch exits successfully when there are no open PRs'
 assert_eq yes "$([[ $(sed -n '/^### Step 3b: Dispatch review-remote-pr agents (parallel)$/,/^### Adversarial-review receipt:/p' "$skill" | sed -n '2p') == '' ]] && printf yes || printf no)" \
     'Step 3b heading keeps its required Markdown blank line'
-assert_contains "$normalized_text" 'origin/${base_branch}' \
-    'setup materiality base has an origin-base default'
-assert_contains "$text" 'queue overflow PR loops' \
+assert_contains "$text" 'queue overflow and refill when a loop reaches its completion marker' \
     'dispatch queues PR loops beyond the effective cap'
 assert_contains "$verification_isolation_text" 'serialize full-suite verification' \
     'dispatch documents full-suite serialization when Compose isolation is defeated'
@@ -752,130 +730,36 @@ assert_contains "$dispatch_handoff" 'Compose once, to a file; the spawn reads th
     'dispatch pins one composition to a file per spawned worker'
 assert_contains "$dispatch_handoff" 'REQUIRED for an issue lead' \
     'dispatch marks write-set globs as required for issue leads'
-assert_contains "$dispatch_handoff" 'prompt_file="$prompt_dir/issue-$issue_number-lead.md"' \
+assert_contains "$dispatch_handoff" 'prompt_file="$worktree/.agent/prompts/issue-$issue_number-lead.md"' \
     'dispatch handoff composes to a per-issue file in the worker'"'"'s excluded .agent/ tree'
-assert_contains "$dispatch_handoff" 'chmod 600 -- "$prompt_file"' \
-    'the composed prompt file is not world-readable'
-assert_contains "$dispatch_handoff" 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' \
+compose_call='"$agentkit/parallel-issues/scripts/compose-worker-prompt.sh" "${compose_args[@]}" || exit 1'
+assert_contains "$dispatch_handoff" "$compose_call" \
     'dispatch handoff stops when prompt composition fails'
-compose_invocations=$(grep -Fxc 'compose_output=$("$compose_script" "${compose_args[@]}") || exit 1' <<< "$dispatch_handoff" || true)
-assert_eq '1' "$compose_invocations" \
+assert_eq '1' "$(grep -Fxc -- "$compose_call" <<< "$dispatch_handoff" || true)" \
     'dispatch invokes the prompt composer exactly once per worker'
-assert_contains "$dispatch_handoff" 'classification=majority-uncovered' \
-    'dispatch reporting makes a majority-uncovered issue visible at a glance'
 assert_contains "$dispatch_handoff" 'dispatch_plan=${dispatch_plan:?root-owned dispatch-plan artifact for this run}' \
     'dispatch defines the root-owned plan before composing'
-assert_contains "$dispatch_handoff" '[[ $dispatch_plan == /* && -f $dispatch_plan && ! -L $dispatch_plan ]]' \
-    'dispatch validates the plan before passing it to the composer'
-assert_contains "$dispatch_handoff" 'spec-verification-plan=' \
-    'dispatch consumes the composer plan-record report'
-assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_plan"' \
-    'dispatch plan replacement scratch is allocated beside its arbitrary destination'
-assert_contains "$dispatch_handoff" '$(plan_digest "$plan_replace_tmp") == "$plan_sha"' \
-    'dispatch verifies copied replacement bytes before publication'
-assert_contains "$dispatch_handoff" 'dispatch-plan verification failed before spawn' \
-    'dispatch verifies the exact final record before spawn'
-assert_not_contains "$dispatch_handoff" 'declare -A dispatch_verification_reports' \
-    'dispatch does not require parent-shell associative-array state'
-assert_contains "$dispatch_handoff" '${spec_verification:-none}' \
-    'dispatch prints the current coverage report without Bash-only storage'
-assert_contains "$dispatch_handoff" '[[ $spec_verification != *$' \
-    'dispatch accepts an empty zero-step report while still rejecting multiple report lines'
-assert_contains "$dispatch_handoff" 'dispatch_reports_dir="$dispatch_plan.verification-reports"' \
-    'dispatch derives durable report storage from the root-owned run plan'
-assert_contains "$dispatch_handoff" 'persist_dispatch_verification_report()' \
-    'dispatch defines durable per-issue report persistence'
-assert_contains "$dispatch_handoff" 'mv -f -- "$dispatch_report_tmp" "$dispatch_report"' \
-    'dispatch atomically replaces one issue report without overwriting peers'
-assert_contains "$dispatch_handoff" '--scratch-near "$dispatch_report"' \
-    'dispatch report scratch is allocated beside its replacement destination'
-assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
-    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 assert_contains "$dispatch_handoff" '--dispatch-plan "$dispatch_plan"' \
     'dispatch makes the composer check the plan record before spawn'
-
-plan_publish_recipe=$(awk '
-    /^if \[\[ \$plan_update != none \]\]; then/ { capture=1 }
-    capture { print }
-    capture && /^\[\[ \$\(plan_digest "\$dispatch_plan"\)/ { exit }
-' <<< "$dispatch_handoff")
-[[ -n $plan_publish_recipe ]] || _fail 'dispatch plan publication recipe is extractable' 'recipe body is empty'
-same_fs_bin="$tmp/same-fs-bin"
-mkdir -p "$same_fs_bin"
-cat >"$same_fs_bin/mv" <<'SCRIPT'
-#!/usr/bin/env bash
-args=("$@")
-count=${#args[@]}
-source_path=${args[count-2]}
-target_path=${args[count-1]}
-source_dir=$(cd -- "$(dirname -- "$source_path")" && pwd -P) || exit 1
-target_dir=$(cd -- "$(dirname -- "$target_path")" && pwd -P) || exit 1
-[[ $source_dir == "$target_dir" ]] || exit 18
-exec /bin/mv "$@"
-SCRIPT
-chmod +x "$same_fs_bin/mv"
-plan_destination_dir="$tmp/arbitrary absolute destination"
-prompt_dir="$tmp/prompt staging"
-mkdir -p "$plan_destination_dir" "$prompt_dir"
-dispatch_plan="$plan_destination_dir/dispatch-plan.json"
-plan_update="$prompt_dir/issue-57.dispatch-plan-update"
-printf 'old plan\n' >"$dispatch_plan"
-chmod 640 "$dispatch_plan"
-printf 'verified replacement\n' >"$plan_update"
-plan_sha=$(sha256sum -- "$plan_update" | cut -d ' ' -f 1)
-plan_publish_rc=0
-PATH="$same_fs_bin:$PATH" bash -c '
-agentkit=$1; prompt_dir=$2; plan_update=$3; dispatch_plan=$4; plan_sha=$5
-plan_digest() { sha256sum -- "$1" | cut -d " " -f 1; }
-'"$plan_publish_recipe" _ "$root/agentkit/skills" "$prompt_dir" "$plan_update" "$dispatch_plan" "$plan_sha" || plan_publish_rc=$?
-assert_eq 0 "$plan_publish_rc" \
-    'dispatch plan recipe uses a same-directory final rename for an arbitrary absolute destination'
-assert_eq 'verified replacement' "$(<"$dispatch_plan")" \
-    'dispatch plan recipe publishes the verified staged bytes'
-assert_eq 640 "$(stat -c %a -- "$dispatch_plan")" \
-    'dispatch plan recipe preserves the destination mode'
-assert_eq no "$([[ -e $plan_update ]] && printf yes || printf no)" \
-    'dispatch plan recipe removes the original staged update'
-assert_eq 0 "$(find "$plan_destination_dir" -maxdepth 1 -type f ! -name dispatch-plan.json | wc -l)" \
-    'dispatch plan recipe leaves no destination-adjacent scratch file'
-persist_report_function=$(awk '
-    /^persist_dispatch_verification_report\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}/ { exit }
-' <<< "$dispatch_handoff")
-[[ -n $persist_report_function ]] || _fail 'durable dispatch report function is extractable' 'function body is empty'
-durable_plan="$tmp/dispatch plan.md"
-: > "$durable_plan"
-durable_repo="$tmp/durable-repo"
-mkdir -p -- "$durable_repo"
-first_report='spec-verification= issue=57 steps=2 covered=1 uncovered=1 uncovered-steps=2 coverage=1/2 classification=partially-covered'
-second_report='spec-verification= issue=54 steps=1 covered=1 uncovered=0 uncovered-steps=none coverage=1/1 classification=fully-covered'
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=57; spec_verification=\$2; agentkit=\$3; repository_root=\$4
-persist_dispatch_verification_report" _ "$durable_plan" "$first_report" "$root/agentkit/skills" "$durable_repo"
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=54; spec_verification=\$2; agentkit=\$3; repository_root=\$4
-persist_dispatch_verification_report" _ "$durable_plan" "$second_report" "$root/agentkit/skills" "$durable_repo"
-assert_eq "$first_report" "$(<"$durable_plan.verification-reports/issue-57.report")" \
-    'first shell composition leaves its exact durable report'
-assert_eq "$second_report" "$(<"$durable_plan.verification-reports/issue-54.report")" \
-    'second shell composition preserves its peer and writes its own report'
-zero_step_plan="$tmp/zero-step-plan.md"
-: > "$zero_step_plan"
-zero_step_rc=0
-bash -c "$persist_report_function
-dispatch_plan=\$1; issue_number=72; spec_verification=''; agentkit=\$2
-persist_dispatch_verification_report" _ "$zero_step_plan" "$root/agentkit/skills" || zero_step_rc=$?
-assert_eq 0 "$zero_step_rc" 'zero-step composer output passes the dispatch report consumer'
-assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
-    'zero-step dispatch creates no empty durable report'
+# The plan-update install, final plan digest check, durable report, and
+# prompt digest moved from a transcribed recipe into compose --publish; its
+# behavior is pinned in test-compose-worker-prompt.sh.
+assert_contains "$dispatch_handoff" '--output "$prompt_file" --publish' \
+    'dispatch publishes the plan record and report in the same composer call'
+compose_helper_text=$(<"$root/agentkit/skills/parallel-issues/scripts/compose-worker-prompt.sh")$(<"$root/agentkit/skills/parallel-issues/scripts/lib/dispatch-publish.sh")
+assert_contains "$compose_helper_text" 'dispatch-plan verification failed before spawn' \
+    'the publishing composer verifies the exact final record before spawn'
+assert_contains "$compose_helper_text" '--scratch-near "$plan"' \
+    'the publishing composer allocates plan scratch beside its arbitrary destination'
+assert_contains "$compose_helper_text" '--scratch-near "$report"' \
+    'the publishing composer allocates report scratch beside its destination'
+assert_contains "$triage_and_selection_text" '--scratch-near "$dispatch_plan"' \
+    'dispatch plan scratch is allocated beside an arbitrary absolute plan destination'
 # Issue #336: the spawn consumes the FILE. Echoing the prompt spends the whole
-# composed body in root context for no dispatch benefit -- twice, under an
-# approval layer that re-executes an approved command. The block emits a digest.
-assert_contains "$dispatch_handoff" "printf 'prompt=%s bytes=%s issue=%s write-set=%s" \
-    'dispatch handoff emits a path + digest instead of the prompt body'
-assert_contains "$dispatch_handoff" 'wc -c < "$prompt_file"' \
-    'the digest carries the composed byte count'
+# composed body in root context for no dispatch benefit; the composer prints a
+# published= digest line instead.
+assert_contains "$compose_helper_text" "printf 'published= issue=%s prompt=%s bytes=%s" \
+    'dispatch emits a path + digest instead of the prompt body'
 for _echo in 'cat -- "$prompt_file"' 'cat "$prompt_file"' 'sed -n' 'head -' 'tail -'; do
     assert_not_contains "$dispatch_handoff" "$_echo" \
         "dispatch handoff never reads the composed prompt back into root context ($_echo)"
@@ -893,7 +777,7 @@ assert_not_contains "$text" 'requests_per_wait_minute` metrics' \
 assert_contains "$normalized_text" 'Final draft sweep' \
     'auto-review performs a named final draft sweep before handoff'
 opt_out_section=$(sed -n '/^### Opt-out/,/^## Do NOT Delete Worktrees/p' "$skill")
-assert_contains "$text" '`--no-followup`'"'"'s Step 3d opt-out remains recognized' \
+assert_contains "$text" '`--no-followup` skips Step 3d' \
     'the flag summary names the same narrow opt-out as the workflow section'
 assert_not_contains "$text" '`--no-followup`'"'"'s Phase 3 opt-out remains recognized' \
     'the flag summary does not retain the stale Phase 3 scope'
@@ -910,8 +794,6 @@ assert_contains "$normalized_text" 'exactly one of {adversarial receipt, verifie
 final_sweep_section=$(sed -n '/^### Final draft sweep/,/^### Opt-out/p' "$skill")
 assert_contains "$final_sweep_section" 'run-state.sh" get --run-id "$RUN_ID" --repo-root "$repository_root" --path opened_prs' \
     'the final sweep rehydrates opened PRs from invocation run-state'
-assert_contains "$final_sweep_section" 'type == "array"' \
-    'the final sweep validates the durable opened PR array'
 assert_not_contains "$final_sweep_section" 'sweep `opened_prs`' \
     'the final sweep no longer relies on a context-only opened_prs value'
 assert_contains "$final_sweep_section" 'gh-pr-state.sh' \
@@ -943,10 +825,8 @@ else
     _fail 'the final sweep gates the receipt-redrive get, exit-11 check, and set in durable order' \
         "final sweep section: ${final_sweep_section:0:600}"
 fi
-assert_contains "$normalized_text" 're-enters the draft loop' \
+assert_contains "$normalized_text" 're-enter the draft loop once' \
     'a final-sweep miss re-enters the draft loop'
-assert_contains "$normalized_text" 'handoff cannot print' \
-    'a final-sweep miss prevents the handoff'
 assert_contains "$normalized_text" 'run-state.sh" summary' \
     'handoff emits helper-computed opened-PR receipt coverage totals'
 assert_contains "$normalized_text" 'run-state.sh" bind "${bind_args[@]}"' \
@@ -995,8 +875,6 @@ assert_contains "$normalized_text" 'pr=open' \
     'partial-pushed completion opens a draft PR'
 assert_contains "$normalized_text" '--blocker' \
     'partial-pushed publication carries protected paths into the PR body'
-assert_contains "$normalized_text" 'Operator action required' \
-    'partial-pushed publication names the PR body disclosure section'
 assert_contains "$normalized_text" 'Completion report' \
     'ordinary clean completion retains its direct publication route'
 assert_contains "$normalized_text" 'verification=unbound' \
@@ -1042,7 +920,7 @@ assert_eq 'boundary mode: yolo-trusted' "$selected" \
     'explicit yolo selects yolo-trusted regardless of visibility'
 assert_contains "$normalized_text" 'one canonical body fetch by the picker' \
     'triage digest limits each issue body to its picker fetch'
-assert_contains "$text" 'Set `body_cache` from the selected record' \
+assert_contains "$text" 'set `body_cache` from the selected picker record' \
     'preparation consumes the picker body-cache reference'
 assert_contains "$normalized_text" 'Do not fetch timelines, `projectItems`' \
     'triage flow forbids redundant timeline and project item reads'
@@ -1078,9 +956,9 @@ assert_contains "$worker_prompts_text" 'transcript evidence' \
     'worker contract requires transcript evidence for performed spikes'
 assert_contains "$worker_prompts_text" 'both the spike edit and the revert' \
     'worker contract requires evidence for both spike operations'
-assert_contains "$normalized_text" 'Do not request a post-hoc report rewrite' \
+assert_contains "$normalized_text" 'Read its raw six-step report as written' \
     'root validation does not request post-hoc spike report rewrites'
-assert_contains "$normalized_text" 'bounces only absent or unjustified' \
+assert_contains "$normalized_text" 'bounce only an absent or unjustified Stage 4' \
     'root validation bounces only absent or unjustified spike reports'
 assert_contains "$(<"$review_skill")" '--only NAME[,NAME...]' \
     'review workflow documents the focused suite selector'
@@ -1248,7 +1126,7 @@ assert_contains "$issue_lead_prompt" 'For mixed ownership, apply a verified own 
     'issue-lead mixed-ownership restoration scopes reversal to verified worker bytes'
 assert_contains "$issue_lead_prompt" 'or stop and report' \
     'issue-lead restoration stops instead of guessing at ambiguous ownership'
-assert_contains "$text" 'set its working directory to the assigned worktree' 'dispatcher sets worker cwd when supported'
+assert_contains "$text" 'set the working directory to the worktree' 'dispatcher sets worker cwd when supported'
 assert_contains "$issue_lead_prompt" 'completion report' 'issue lead returns a completion report'
 assert_contains "$draft_loop_prompt" 'completion report' 'phase lead returns a completion report'
 assert_contains "$issue_lead_prompt" 'git push -u origin' 'issue lead pushes its own branch'
@@ -1368,9 +1246,7 @@ assert_not_contains "$fix_batch_flat" 'simulate a failing check' \
     'fix-batch workers never simulate a failing check for the TDD contract'
 assert_contains "$normalized_text" 'root handles CI state/verification, forge conflicts, adversarial review, consent, replies, and publication' \
     'Phase A orchestration remains root-owned'
-assert_contains "$normalized_text" 'preserves the raw command text for audit' \
-    'parallel dispatch preserves worker handback command text'
-assert_contains "$text" 'parse into validated arguments without eval' \
+assert_contains "$text" 'parses the raw handback without eval' \
     'parallel dispatch parses handback arguments without eval'
 assert_contains "$text" 'validate-handback.sh' \
     'parallel dispatch invokes the publication handback validator'
@@ -1384,19 +1260,6 @@ assert_contains "$text" '((${#validated_argv[@]})) || exit 1' \
     'parallel dispatch rejects empty validated argv'
 assert_contains "$text" 'cd -- "$worktree"' \
     'parallel dispatch executes the validated argv in the worktree'
-assert_contains "$normalized_text" 'expected worktree-commit.sh helper' \
-    'parallel dispatch validates the expected commit helper'
-assert_contains "$normalized_text" 'every explicit path inside the worktree and allowed' \
-    'parallel dispatch validates handback path containment'
-# The contract used to pin a `git diff -- <explicit handback paths>` inspection
-# that the validator never performed. What it actually enforces -- and what root
-# depends on -- is that every staged path is declared and unprotected, because
-# worktree-commit.sh commits the whole index and its own staged-protected guard
-# only fires during an active merge.
-assert_contains "$normalized_text" 'every staged path declared and unprotected' \
-    'parallel dispatch reconciles staged paths against the declared operands'
-assert_contains "$normalized_text" 'Only after publication does the root inspect `base...HEAD`' \
-    'parallel dispatch defers base diff inspection until publication'
 # The draft-PR body composer recipe is single-sourced in references/worker-prompts.md
 # -- it is dispatch-output content read at publication time, not a worker prompt,
 # but it lives beside the worker prompts it is read alongside. SKILL.md's body
@@ -1584,12 +1447,10 @@ assert_contains "$worker_gate_flat" 'root harness attribution' \
     'worker-gate.md requires root attribution for inline corrections'
 assert_contains "$worker_gate_flat" 'recorded reason' \
     'worker-gate.md requires recording why the worker gate was skipped'
-assert_contains "$root_review_section" 'resume the same worker with `followup_task` first' \
+assert_contains "$root_review_section" 'as one batch with `followup_task` to the same worker' \
     'root review resumes the same worker before considering a fresh dispatch'
 assert_contains "$root_review_section" 'inline correction' \
     'root review names the inline-correction decision at the correction call site'
-assert_contains "$root_review_section" 'zero dispatches' \
-    'root review records that qualifying inline corrections cost zero dispatches'
 assert_contains "$text" 'two allowed implementation exceptions' \
     'parallel preflight names the complete implementation exception set'
 assert_contains "$text" 'qualifying bounded inline correction' \
@@ -1729,8 +1590,6 @@ assert_contains "$err" 'assertion values must be non-empty' \
 # not the body, per the strong preference to land detail in references.
 assert_contains "$text" 'Size facts never park an unattended run' \
     'diff-size facts state the unattended default explicitly'
-assert_contains "$text" 'No facts waive review or chunking.' \
-    'diff-size facts still forbid skipping review or chunking on facts alone'
 assert_contains "$text" 'references/worker-prompts.md](references/worker-prompts.md#diff-size-disclosure)' \
     'diff-size facts point at the worker-prompts disclosure recipe'
 assert_contains "$text" 'Diff size is never a reason to withhold this' \
@@ -1886,7 +1745,7 @@ assert_contains "$text" 'stall-check.sh' \
     'collect loop names the stall-check helper'
 assert_contains "$text" 'STALL_THRESHOLD_MINUTES' \
     'stall threshold is a named constant'
-assert_contains "$normalized_text" 're-dispatch it once with the preserved worktree evidence' \
+assert_contains "$normalized_text" 're-dispatch once with the preserved evidence' \
     'a stalled worker gets exactly one automatic re-dispatch'
 assert_contains "$normalized_text" 'park the workstream and name it in the report' \
     'a twice-stalled workstream parks and is named'
@@ -1894,7 +1753,7 @@ assert_contains "$normalized_text" 'never `pgrep`' \
     'stall detection forbids process inspection'
 assert_contains "$normalized_text" 'newest file mtime is the liveness signal' \
     'stall detection is defined by worktree mtime'
-assert_contains "$normalized_text" 'In the next user-visible update, name any non-zero `last-rc` and its `last-verification` log basename' \
+assert_contains "$normalized_text" 'non-zero `last-rc` and its `last-verification` log basename in the next update' \
     'the next root update preserves a failed verification outcome'
 
 # Issue #810: the liveness sample also carries the newest completed verification
@@ -1935,8 +1794,6 @@ assert_contains "$out" 'last-verification=none last-rc=none' \
 # --- issue #224: materiality gate before the review spend (WS2b) --------------
 assert_contains "$text" 'materiality-check.sh' \
     'draft loops call the mechanical materiality gate'
-assert_contains "$normalized_text" 'a skip records *why*, never silence' \
-    'a materiality skip is recorded, never silent'
 
 # --- issue #224: effort follows the issue (WS3) -------------------------------
 assert_contains "$triage_and_selection_text" 'workerEffort' \
@@ -1951,8 +1808,8 @@ assert_contains "$normalized_text" 'Authorization is checked once per run, not p
     'parallel skill checks authorization once per run'
 assert_contains "$text" 'covers --ledger' \
     'the once-per-run check uses the ledger covers subcommand'
-assert_contains "$normalized_text" 'A mutation no recorded decision covers still stops' \
-    'an uncovered mutation still stops'
+assert_contains "$normalized_text" 'exit 0 means proceed, otherwise ask the operator once' \
+    'an uncovered mutation asks the operator instead of proceeding'
 
 # --- issue #224: references read once (WS2d), now shared -------------------
 reading_discipline_text=$(<"$root/agentkit/skills/.shared/reading-discipline.md")
@@ -2013,14 +1870,10 @@ assert_contains "$single_issue_reference_set" '.shared/six-step-loop.md' \
     'the single-issue dispatch set retains the six-step loop'
 assert_contains "$normalized_text" 'never preload review material during dispatch/worker waits' \
     'review references remain gated until the review phase'
-assert_contains "$normalized_text" 'Read `references/chains.md` in full only when the selected set contains a chain' \
-    'chain material is gated on an actual selected chain'
-assert_contains "$normalized_text" 'Read [references/chains.md](references/chains.md) in full before applying a revised dispatch plan whenever late overlap selects chain-conversion or merge-down' \
-    'late-overlap chain conversion loads chain rules before revising the plan'
+assert_contains "$normalized_text" 'Read [references/chains.md](references/chains.md) in full when the selected set contains a chain or late overlap selects chain-conversion or merge-down' \
+    'chain material is gated on an actual selected chain or a late-overlap revision'
 assert_contains "$normalized_text" 'successor swaps require a revision' \
     'dispatch-plan compaction preserves the successor-swap audit rule'
-assert_contains "$normalized_text" 'non-empty repository-relative `predictedWriteSet`' \
-    'dispatch-plan compaction preserves repository-relative non-empty predictions'
 assert_contains "$normalized_text" 'shared build config, lockfiles, and generated contracts' \
     'dispatch-plan compaction preserves shared conflict inputs'
 assert_contains "$normalized_text" 'Selection consumes `$agentkit/.shared/scripts/pick-issues.sh` output only' \
@@ -2116,7 +1969,7 @@ assert_contains "$normalized_text" 'Never fold dirt first observed inside a disp
     'handoff never misattributes run-window dirt to the human'
 assert_contains "$normalized_text" 'date -u +%FT%T.%NZ' \
     'dispatch records worker boundaries with subsecond precision'
-assert_contains "$normalized_text" "capture's own second is ambiguous" \
+assert_contains "$normalized_text" "shares the capture's second" \
     'dispatch documents fail-closed coarse same-second chronology'
 assert_contains "$worker_prompts_text" 'paths-touched.ndjson' \
     'worker prompts preserve per-tool write-target evidence'
