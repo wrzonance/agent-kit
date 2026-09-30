@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fake reviewer CLI for the v2 suites (installed as both claude and codex). It records argv, cwd and
+# stdin under $FAKE_REVIEW_LOG, sleeps $FAKE_REVIEW_SLEEP, prints $FAKE_REVIEW_OUT (to the codex -o file
+# when given, else stdout) and exits $FAKE_REVIEW_RC.
+set -uo pipefail
+log=${FAKE_REVIEW_LOG:-/dev/null}
+out=''
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    [[ ${args[i]} != -o ]] || out=${args[i + 1]}
+done
+{
+    printf 'bin=%s\n' "$(basename -- "$0")"
+    printf 'cwd=%s\n' "$PWD"
+    printf 'args=%s\n' "$*"
+    printf 'stdin:\n'
+    cat
+} >>"$log"
+sleep "${FAKE_REVIEW_SLEEP:-0}"
+if [[ -n $out ]]; then
+    printf '%s\n' "${FAKE_REVIEW_OUT:-NO FINDINGS}" >"$out"
+else
+    printf '%s\n' "${FAKE_REVIEW_OUT:-NO FINDINGS}"
+fi
+exit "${FAKE_REVIEW_RC:-0}"
