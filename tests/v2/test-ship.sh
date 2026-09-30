@@ -56,4 +56,16 @@ out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'
 assert_contains "$out" 'base branch' 'the base-branch refusal names the cause'
 
+git -C "$repo" push -q origin HEAD:refs/heads/feat/other 2>/dev/null
+git -C "$repo" fetch -q origin
+git -C "$repo" worktree add -q -b fix-thing "$WORK/prwt" origin/feat/other
+cd "$WORK/prwt" || exit 1
+mkdir -p .ak && printf '12\n' >.ak/pr && printf 'feat/other\n' >.ak/base
+: >"$FAKE_GH_ROUTES"
+route 'api repos/acme/widget/pulls?head=acme:fix-thing&state=open' '[{"number":12,"html_url":"https://github.com/acme/widget/pull/12"}]'
+printf 'pr\n' >src/pr.txt
+out=$("$AK" ship --message 'fix: pr fix' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a PR worktree without an issue number ships'
+assert_contains "$out" 'pr=https://github.com/acme/widget/pull/12' 'a PR worktree reuses its PR'
+
 finish

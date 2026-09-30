@@ -83,7 +83,7 @@ cmd_main() {
     [[ -z $body_file ]] || body_file="$(cd -- "$(dirname -- "$body_file")" && pwd)/$(basename -- "$body_file")"
     cd -- "$(worktree_root)" || exit 1
     branch=$(git branch --show-current)
-    base=$(base_branch)
+    base=$(work_base)
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
     ship_commit "$message"

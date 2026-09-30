@@ -53,4 +53,9 @@ assert_contains "$out" 'PASS web' 'an env override of a config command runs'
 assert_contains "$out" 'skipped=e2e' 'SKIP lines from extra suites are collected'
 assert_contains "$out" 'oracle=ci' 'extra-suite skips make CI the oracle'
 
+git push -q origin HEAD:refs/heads/feat/other 2>/dev/null && git fetch -q origin
+printf 'feat/other\n' >.ak/base
+out=$("$AK" verify 2>&1)
+assert_not_contains "$out" 'PASS src' '.ak/base narrows the diff to the PR base'
+
 finish

@@ -4,7 +4,7 @@
 # Paths changed against origin/<base>, committed or not.
 verify_changed_paths() {
     local base
-    base=$(base_branch)
+    base=$(work_base)
     {
         git diff --name-only "origin/$base...HEAD" 2>/dev/null || true
         git diff --name-only HEAD

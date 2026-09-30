@@ -126,3 +126,14 @@ issue_number() {
     [[ $branch =~ issue-([0-9]+) ]] || die "cannot tell the issue from branch $branch" "echo N > .ak/issue"
     printf '%s\n' "${BASH_REMATCH[1]}"
 }
+
+# The branch this worktree's work is diffed against: .ak/base (a PR worktree's own base, maybe another PR's branch), else base_branch.
+work_base() {
+    local file
+    file="$(worktree_root)/.ak/base"
+    if [[ -s $file ]]; then
+        head -n 1 -- "$file"
+    else
+        base_branch
+    fi
+}
