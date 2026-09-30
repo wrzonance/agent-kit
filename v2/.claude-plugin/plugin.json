@@ -1,0 +1,9 @@
+{
+  "name": "ak",
+  "version": "0.1.0",
+  "description": "agentkit v2: parallel issues and PRs to green with a thin root and workers that own their PR.",
+  "author": { "name": "wrzonance", "url": "https://github.com/wrzonance" },
+  "license": "MIT",
+  "keywords": ["skills", "github-projects", "code-review"],
+  "skills": "./skills/"
+}

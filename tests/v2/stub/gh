@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake gh for the v2 suites. Every call is appended to $FAKE_GH_LOG. Responses come from
+# $FAKE_GH_ROUTES: lines of `PATTERN<TAB>RESPONSE_FILE[<TAB>EXIT]`, where PATTERN is a bash glob
+# matched against the space-joined arguments. The first match wins; no match exits 1.
+set -uo pipefail
+args="$*"
+printf '%s\n' "$args" >>"${FAKE_GH_LOG:-/dev/null}"
+[[ -f ${FAKE_GH_ROUTES:-} ]] || { printf 'fake gh: no routes for: %s\n' "$args" >&2; exit 1; }
+while IFS=$'\t' read -r pattern response rc; do
+    [[ -n $pattern && $pattern != \#* ]] || continue
+    # shellcheck disable=SC2053
+    if [[ $args == $pattern ]]; then
+        [[ -z $response || $response == - ]] || cat -- "$response"
+        exit "${rc:-0}"
+    fi
+done <"$FAKE_GH_ROUTES"
+printf 'fake gh: no route for: %s\n' "$args" >&2
+exit 1
