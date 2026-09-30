@@ -558,6 +558,24 @@ zero_step_output=$(publish_compose publish-zero $'## Verification\nNo executable
 assert_contains "$zero_step_output" 'plan=unchanged report=none' '--publish writes no report for zero steps'
 assert_eq no "$([[ -e $zero_step_plan.verification-reports ]] && printf yes || printf no)" \
     'a zero-step publish creates no empty report directory'
+# PR #938 review: a later zero-step publish drops this issue's earlier report, never a peer's.
+restep_output=$(publish_compose publish-restep $'## Verification\nNo executable verification steps are declared.\n' "$publish_plan")
+assert_contains "$restep_output" 'report=none' 'a zero-step republish reports no report'
+assert_eq no "$([[ -e $publish_report ]] && printf yes || printf no)" \
+    'a zero-step republish removes the issue report from the earlier composition'
+assert_eq 'peer report' "$(<"$publish_plan.verification-reports/issue-54.report")" \
+    'a zero-step republish keeps peer reports'
+# PR #938 review: --output naming the dispatch plan would overwrite the plan with the prompt.
+alias_plan="$tmp/alias-plan.json"
+printf '%s\n' '{"schemaVersion":1,"entries":[{"issue":136,"predictedWriteSet":["src/**"]}]}' > "$alias_plan"
+alias_before=$(sha256sum -- "$alias_plan")
+alias_rc=0
+alias_err=$(bash "$compose" --template issue-lead --boundary public-fenced --write-set 'src/**' \
+    --worktree "$repo" --issue 136 --branch feat/issue-136 --worker-model gpt-5.6-luna --worker-effort high \
+    --dispatch-plan "$alias_plan" --output "$tmp/./alias-plan.json" 2>&1 >/dev/null) || alias_rc=$?
+assert_eq 1 "$alias_rc" '--output aliasing --dispatch-plan refuses'
+assert_contains "$alias_err" '--output must not be the --dispatch-plan file' 'the alias refusal names the conflict'
+assert_eq "$alias_before" "$(sha256sum -- "$alias_plan")" 'the aliased dispatch plan is left untouched'
 ln -s "$publish_plan" "$tmp/linked-plan.json"
 for bad_publish in stdout symlink; do
     bad_rc=0

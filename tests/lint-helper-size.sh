@@ -58,8 +58,9 @@ declare -A KNOWN_OVERSIZE=(
     # #901 review: distinguish proved tip movement from unavailable push evidence.
     [skills/parallel-issues/scripts/chain-advance.sh]="1438:18461:800"
     # Combined #904/#910: protected worker handoff and join-base composition.
-    # Halve parallel-issues SKILL.md: --publish takes over the transcribed dispatch-plan install/report recipe.
-    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="781:10255:800"
+    # Halve parallel-issues SKILL.md: --publish takes over the transcribed dispatch-plan install/report recipe;
+    # #938 CodeRabbit: refuse an --output that aliases --dispatch-plan.
+    [skills/parallel-issues/scripts/compose-worker-prompt.sh]="787:10366:800"
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
@@ -275,8 +276,9 @@ readonly MAX_HELPER_TOKENS=10000
 # one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes), plus the
 # fast-mode dispatch list with complete write sets and a glob-aware protected pass (#28, #935),
 # plus run-scoped cross-write collect ignoring hook-inherited GIT_* (#44, #934), plus compose
-# --publish absorbing the dispatch-plan install/report recipe cut from SKILL.md; exact tree.
-readonly MAX_TREE_TOKENS=521498
+# --publish absorbing the dispatch-plan install/report recipe cut from SKILL.md, plus #938
+# CodeRabbit fixes (plan alias refusal, stale report removal); exact tree.
+readonly MAX_TREE_TOKENS=521692
 
 violations=0
 checked=0

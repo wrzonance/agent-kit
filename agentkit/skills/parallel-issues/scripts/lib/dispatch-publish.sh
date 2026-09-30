@@ -25,8 +25,15 @@ dispatch_publish_install_plan() {
 # replacing only that issue's file. A zero-step composition writes nothing.
 dispatch_publish_report() {
     local report_line=$1 plan=$2 run_dir=$3 reports_dir report tmp
-    [[ -n $report_line ]] || { printf 'none'; return 0; }
     reports_dir="$plan.verification-reports"
+    if [[ -z $report_line ]]; then
+        # Zero steps now: drop this issue's report from an earlier composition, never a peer's.
+        report="$reports_dir/issue-$issue.report"
+        [[ ! -d $reports_dir || -L $reports_dir || ! -O $reports_dir ]] ||
+            rm -f -- "$report" || die "could not remove stale verification report $report"
+        printf 'none'
+        return 0
+    fi
     mkdir -m 700 -- "$reports_dir" 2>/dev/null ||
         [[ -d $reports_dir && ! -L $reports_dir && -O $reports_dir ]] ||
         die "unsafe verification-reports directory: $reports_dir"

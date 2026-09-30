@@ -74,6 +74,12 @@ if ((publish)); then
     # shellcheck source=lib/dispatch-publish.sh
     source "$script_dir/lib/dispatch-publish.sh" || die 'could not load lib/dispatch-publish.sh'
 fi
+# The prompt write would replace the root-owned plan if both flags named one file.
+if [[ -n $dispatch_plan && -n $output && $output != - ]]; then
+    output_real="$(cd -P -- "$(dirname -- "$output")" 2>/dev/null && pwd -P)/$(basename -- "$output")"
+    [[ $output_real != "$(cd -P -- "$(dirname -- "$dispatch_plan")" 2>/dev/null && pwd -P)/$(basename -- "$dispatch_plan")" ]] ||
+        die '--output must not be the --dispatch-plan file'
+fi
 
 [[ $template_kind == issue-lead || $template_kind == join-resolution || $template_kind == pr-loop-setup ||
     $template_kind == pr-fix-batch || $template_kind == fix-batch ]] ||
