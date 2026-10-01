@@ -32,14 +32,16 @@ verify_suite_names() {
 
 # verify_covers DIR COMMAND PATH: does this suite own PATH?
 verify_covers() {
-    local dir=${1%/} command=$2 path=$3 top
+    local dir=$1 command=$2 path=$3 top
+    while [[ $dir == ./* ]]; do dir=${dir#./}; done
+    dir=${dir%/}
     if [[ -n $dir && $dir != . ]]; then
         [[ $path == "$dir"/* ]]
         return
     fi
     [[ $path == */* ]] || return 1
     top=${path%%/*}
-    [[ " $command " =~ [[:space:]/=\"\']${top}(/|[[:space:]]) ]]
+    [[ " $command " =~ [[:space:]/=\"\']"$top"(/|[[:space:]]|\"|\') ]]
 }
 
 verify_skips() {

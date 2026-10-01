@@ -97,6 +97,8 @@ out=$("$AK" plan --new --issue 680 2>&1)
 assert_contains "$out" 'skip issue=680 reason=queued-after-#671' 'an issue queued in a live run is not planned again'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is still out is not planned again'
+jq '.items += [{kind: "issue", n: 700, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
 mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
 printf 'pr=elsewhere\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
 printf 'pr=x\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
@@ -104,7 +106,8 @@ out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'skip issue=680 reason=shipped:elsewhere' 'collect does not re-spawn a successor that shipped'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
 assert_eq 'pr=elsewhere' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
-assert_eq skipped "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the run records the skip'
+assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a shipped successor counts as done'
+assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=shipped:x' 'a shipped issue is not planned again'
 

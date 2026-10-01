@@ -67,6 +67,15 @@ out=$("$AK" verify 2>&1)
 assert_contains "$out" 'uncovered=top-level.txt' 'paths no suite owns are named'
 rm top-level.txt
 
+# A ./-prefixed rundir and a quoted directory argument still own their paths beside another matched suite.
+printf 'AGENT_CMD_DOCS="echo docs ran"\nAGENT_RUNDIR_DOCS=./docs\nAGENT_CMD_PKG='"'"'true --prefix "pkg"'"'"'\n' \
+    >>"$repo/.agent/config.env"
+mkdir -p docs pkg && printf 'x\n' >docs/x.txt && printf 'x\n' >pkg/x.txt
+out=$("$AK" verify 2>&1)
+assert_contains "$out" 'PASS docs' 'a ./-prefixed rundir owns its paths'
+assert_contains "$out" 'PASS pkg' 'a quoted directory argument owns its paths'
+rm -rf docs pkg
+
 out=$("$AK" verify --full 2>&1)
 assert_contains "$out" 'PASS verify' '--full runs the whole-repo check'
 assert_contains "$out" 'PASS src' '--full still runs the matched suites'

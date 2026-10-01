@@ -23,6 +23,13 @@ assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)
 printf 'x\n' >"$wt/src/a.txt"
 git -C "$wt" commit -qam work && git -C "$wt" push -q
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
+# A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
+routes=$(cat "$FAKE_GH_ROUTES")
+printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'after issue=680 note=open-PR lookup failed; collect again' 'a failed PR lookup is reported'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a failed PR lookup leaves the successor queued'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collect exits 0'
 wt2="$repo/.worktrees/feat/issue-680"
