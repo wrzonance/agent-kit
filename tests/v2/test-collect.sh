@@ -52,7 +52,7 @@ out=$("$AK" collect 2>&1); rc=$?
 assert_eq 2 "$rc" 'collect needs --issue or --pr'
 
 # A later plan makes another run current; collecting an item from the earlier run still finds it (field run
-# 2026-10-01: #685 was planned while #684 was still out).
+# 2026-10-01: a second issue was planned while the first was still out).
 "$AK" plan --issue 700 >/dev/null 2>&1
 assert_not_contains "$(jq -r '.items[].n' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" '693' 'the newer run is current'
 printf 'pr=https://github.com/acme/widget/pull/11\nci=green\nreview=done\nhead=def\nnote=findings=0 fixed=0 declined=0\n' \
