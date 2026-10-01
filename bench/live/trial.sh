@@ -60,7 +60,12 @@ while ((gql_left < ${AK_BENCH_MIN_GRAPHQL:-1500})); do
 done
 
 log "reset sandbox, open issues: $issues"
-"$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
+# A reset that fails is almost always GitHub throttling; wait it out once rather than burning the trial.
+"$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log" || {
+    log 'reset failed; waiting 15 minutes for GitHub throttling to clear'
+    sleep 900
+    "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
+}
 
 log "install $plugin@$sha into a private CODEX_HOME"
 git -C "$kit_repo" worktree add -q --detach "$dir/kit" "$sha"

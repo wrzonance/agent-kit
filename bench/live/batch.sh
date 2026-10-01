@@ -6,6 +6,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 v1=$1 v2=$2 issues=${3:-01 03 04} timeout_s=${4:-10800}
 for kit in v1 v2 v2 v1 v1 v2; do
     case $kit in v1) ref=$v1 ;; v2) ref=$v2 ;; esac
-    "$here/trial.sh" --kit "$kit" --ref "$ref" --issues "$issues" --timeout "$timeout_s" || true
+    # A trial that dies before its run (throttling, install) must not cascade into the next one.
+    "$here/trial.sh" --kit "$kit" --ref "$ref" --issues "$issues" --timeout "$timeout_s" || sleep 600
 done
 python3 "$here/compare.py" --fixture "ak-bench:"
