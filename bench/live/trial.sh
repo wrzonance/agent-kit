@@ -50,6 +50,15 @@ case $kit in
         prompt='$ak:issues --yolo --serialize' ;;
 esac
 
+# GitHub's hourly GraphQL pool is shared by every tool on the account; a trial that starts dry fails in seconds.
+budget() { gh api rate_limit --jq '"\(.resources.graphql.remaining) \(.resources.graphql.reset) \(.resources.core.remaining)"'; }
+read -r gql_left gql_reset _ < <(budget)
+while ((gql_left < ${AK_BENCH_MIN_GRAPHQL:-1500})); do
+    log "GraphQL pool at $gql_left; waiting for reset at $(date -u -d "@$gql_reset" +%H:%M:%SZ)"
+    sleep $((gql_reset - $(date +%s) + 30))
+    read -r gql_left gql_reset _ < <(budget)
+done
+
 log "reset sandbox, open issues: $issues"
 "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
 
@@ -90,6 +99,7 @@ AGENT_LABEL_AREAS=render,store
 AGENT_LABEL_PRIORITIES=p1,p2
 ENV
 
+read -r gql_start _ rest_start < <(budget)
 log "run: codex exec $prompt (model=$model effort=$effort timeout=${timeout_s}s)"
 started=$(date -u +%s)
 rc=0
@@ -99,13 +109,16 @@ env "${scrub[@]}" timeout --kill-after=30 "$timeout_s" codex exec --json --dange
     --dangerously-bypass-hook-trust --skip-git-repo-check -C "$dir/repo" -m "$model" \
     -c "model_reasoning_effort=\"$effort\"" "$prompt" >"$dir/exec.jsonl" 2>"$dir/exec.err" || rc=$?
 ended=$(date -u +%s)
+read -r gql_end _ rest_end < <(budget)
 thread=$(jq -r 'select(.type=="thread.started") | .thread_id' "$dir/exec.jsonl" | head -n 1)
 root=$(grep -rl --include='rollout-*.jsonl' "\"id\":\"$thread\"" "$CODEX_HOME/sessions" 2>/dev/null | head -n 1 || true)
 log "exec rc=$rc thread=${thread:-none} elapsed=$((ended - started))s"
 
 log 'score PR heads with the hidden acceptance suites'
 outcome="$dir/outcome.json"
-"$here/outcome.sh" "$repo" "$dir/repo" "$issues" "$rc" "$((ended - started))" >"$outcome" 2>>"$dir/trial.log"
+"$here/outcome.sh" "$repo" "$dir/repo" "$issues" "$rc" "$((ended - started))" 2>>"$dir/trial.log" |
+    jq --argjson g $((gql_start - gql_end)) --argjson r $((rest_start - rest_end)) \
+        '. + {github_graphql_used: $g, github_rest_used: $r, github_note: "account-wide pools; other tools add noise, a reset mid-run makes it negative"}' >"$outcome"
 
 row="$dir/row.json"
 if [[ -n $root ]]; then

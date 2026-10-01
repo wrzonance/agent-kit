@@ -95,6 +95,15 @@ create_board() {
     jq -n --argjson n "$number" --arg p "$project_id" --arg f "$field_id" '{number:$n, project_id:$p, status_field:$f}'
 }
 
+# add_items: every sandbox issue on the board, once, at creation.
+add_items() {
+    local number
+    for number in $(jq -r '.issues[]' "$state"); do
+        gh project item-add "$(jq -r .board.number "$state")" --owner "$OWNER" \
+            --url "https://github.com/$REPO/issues/$number" >/dev/null
+    done
+}
+
 cmd_create() {
     command -v gh >/dev/null || die 'gh is required'
     create_repo
@@ -103,24 +112,46 @@ cmd_create() {
     board=$(create_board)
     jq -n --arg repo "$REPO" --arg tag "$TAG" --argjson issues "$issues" --argjson board "$board" \
         '{repo:$repo, tag:$tag, issues:$issues, board:$board}' >"$state"
+    add_items
     log "wrote $state"
 }
 
-# set_status NUMBER STATUS: add the issue to the board if needed and set its Status.
-set_status() {
-    local number=$1 status=$2 board project field option item
-    board=$(jq -r '.board.number' "$state")
+# board_ids: item ids per issue and option ids per Status, cached in sandbox.json after one GraphQL read.
+board_ids() {
+    jq -e '.board.items and .board.options' "$state" >/dev/null 2>&1 && return 0
+    local project
+    project=$(jq -r '.board.project_id' "$state")
+    # shellcheck disable=SC2016 # GraphQL variables, not shell
+    gh api graphql -f query='query($p:ID!){node(id:$p){... on ProjectV2{
+        items(first:100){nodes{id content{... on Issue{number}}}}
+        field(name:"Status"){... on ProjectV2SingleSelectField{options{id name}}}}}}' -f p="$project" |
+        jq '{items: ([.data.node.items.nodes[] | select(.content.number) | {key: (.content.number | tostring), value: .id}] | from_entries),
+             options: ([.data.node.field.options[] | {key: .name, value: .id}] | from_entries)}' >"$state.ids"
+    jq --slurpfile ids "$state.ids" '.board += $ids[0]' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
+    rm -f -- "$state.ids"
+}
+
+# set_statuses "N:Status N:Status ...": every Status change in one GraphQL mutation.
+set_statuses() {
+    local pair number status item option body='' i=0 project field
     project=$(jq -r '.board.project_id' "$state")
     field=$(jq -r '.board.status_field' "$state")
-    option=$(gh project field-list "$board" --owner "$OWNER" --format json |
-        jq -r --arg s "$status" '.fields[] | select(.name=="Status") | .options[] | select(.name==$s) | .id')
-    item=$(gh project item-add "$board" --owner "$OWNER" --url "https://github.com/$REPO/issues/$number" --format json --jq .id)
-    gh project item-edit --id "$item" --project-id "$project" --field-id "$field" --single-select-option-id "$option" >/dev/null
+    for pair in $1; do
+        number=${pair%%:*} status=${pair#*:}
+        status=${status//_/ }
+        item=$(jq -r --arg n "$number" '.board.items[$n]' "$state")
+        option=$(jq -r --arg s "$status" '.board.options[$s]' "$state")
+        body+="m$i: updateProjectV2ItemFieldValue(input:{projectId:\"$project\",itemId:\"$item\",fieldId:\"$field\",value:{singleSelectOptionId:\"$option\"}}){clientMutationId} "
+        i=$((i + 1))
+    done
+    [[ -n $body ]] || return 0
+    gh api graphql -f query="mutation{ $body}" >/dev/null
 }
 
 cmd_reset() {
     [[ -f $state ]] || die "no $state; run: bench/live/sandbox.sh create"
-    local wanted=" ${1:-} " work pr ref comment id number
+    local wanted=" ${1:-} " work pr ref comment id number statuses=''
+
     work=$(mktemp -d)
     git clone -q "https://github.com/$REPO.git" "$work"
     git -C "$work" push -q --force origin "$TAG^{commit}:refs/heads/main"
@@ -138,12 +169,14 @@ cmd_reset() {
         done
         if [[ $wanted == *" ${id#tally-} "* || $wanted == *" $id "* ]]; then
             gh api -X PATCH "repos/$REPO/issues/$number" -f state=open >/dev/null
-            set_status "$number" Ready
+            statuses+=" $number:Ready"
         else
             gh api -X PATCH "repos/$REPO/issues/$number" -f state=closed -f state_reason=not_planned >/dev/null
-            set_status "$number" Backlog
+            statuses+=" $number:Backlog"
         fi
     done
+    board_ids
+    set_statuses "$statuses"
     log "reset $REPO to $TAG; open: ${1:-none}"
 }
 
