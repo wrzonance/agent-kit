@@ -1,0 +1,90 @@
+diff --git a/src/store.js b/src/store.js
+index a393dbd..82d9554 100644
+--- a/src/store.js
++++ b/src/store.js
+@@ -13,11 +13,26 @@ export function addItem(state, name) {
+   const trimmed = (name ?? '').trim();
+   if (!trimmed) return state;
+   const item = { id: state.nextId, name: trimmed, count: 0 };
+-  return { items: [...state.items, item], nextId: state.nextId + 1 };
++  return { ...state, items: [...state.items, item], nextId: state.nextId + 1 };
+ }
+ 
+ export function removeItem(state, id) {
+-  return { items: state.items.filter((it) => it.id !== id), nextId: state.nextId };
++  const removed = state.items.find((it) => it.id === id);
++  return {
++    ...state,
++    items: state.items.filter((it) => it.id !== id),
++    nextId: state.nextId,
++    lastRemoved: removed ?? state.lastRemoved,
++  };
++}
++
++export function undoRemove(state) {
++  if (state.lastRemoved === undefined) return state;
++  return {
++    ...state,
++    items: [...state.items, { ...state.lastRemoved, count: 0 }],
++    lastRemoved: undefined,
++  };
+ }
+ 
+ export function increment(state, id) {
+@@ -39,12 +54,15 @@ export function total(state) {
+ }
+ 
+ export function toJSON(state) {
+-  return JSON.stringify({ items: state.items, nextId: state.nextId });
++  const persisted = { items: state.items, nextId: state.nextId };
++  if (state.lastRemoved !== undefined) persisted.lastRemoved = state.lastRemoved;
++  return JSON.stringify(persisted);
+ }
+ 
+ export function fromJSON(json) {
+   const parsed = JSON.parse(json);
+   const items = Array.isArray(parsed.items) ? parsed.items : [];
+   const nextId = Number.isInteger(parsed.nextId) ? parsed.nextId : 1;
+-  return { items, nextId };
++  if (parsed.lastRemoved === undefined) return { items, nextId };
++  return { items, nextId, lastRemoved: parsed.lastRemoved };
+ }
+diff --git a/test/smoke.mjs b/test/smoke.mjs
+index 4c3ea3a..9b6e5db 100755
+--- a/test/smoke.mjs
++++ b/test/smoke.mjs
+@@ -7,6 +7,7 @@ import {
+   createState,
+   addItem,
+   removeItem,
++  undoRemove,
+   increment,
+   decrement,
+   total,
+@@ -41,8 +42,20 @@ assert.equal(state.items[0].count, 0, 'decrement floors at 0, never negative');
+ const roundTripped = fromJSON(toJSON(state));
+ assert.deepEqual(roundTripped, state, 'toJSON/fromJSON round-trips exactly');
+ 
++state = increment(state, id);
+ state = removeItem(state, id);
+ assert.equal(state.items.length, 0, 'removeItem removes by id');
++assert.deepEqual(state.lastRemoved, { id, name: 'Coffee', count: 1 }, 'removeItem records the removed item');
++assert.deepEqual(fromJSON(toJSON(state)), state, 'toJSON/fromJSON preserves removal history');
++
++const undone = undoRemove(state);
++assert.deepEqual(undone.items, [{ id, name: 'Coffee', count: 1 }], 'undoRemove restores the last removed item and count');
++assert.equal(undone.lastRemoved, undefined, 'undoRemove clears the removal history');
++assert.equal(undoRemove(undone), undone, 'undoRemove without history preserves the same state reference');
++
++const noMatch = removeItem(undone, 999);
++assert.equal(noMatch.lastRemoved, undefined, 'removing an unknown id leaves history absent');
++assert.equal(removeItem(state, 999).lastRemoved, state.lastRemoved, 'removing an unknown id preserves prior history');
+ 
+ assert.equal(escapeHtml('<script>'), '&lt;script&gt;', 'escapeHtml escapes markup');
+ const row = renderItemRow({ id: 7, name: '<b>x</b>', count: 3 });
+@@ -50,4 +63,4 @@ assert.ok(row.includes('data-id="7"'), 'renderItemRow carries the item id');
+ assert.ok(row.includes('&lt;b&gt;x&lt;/b&gt;'), 'renderItemRow escapes the item name');
+ assert.ok(renderApp(createState()).includes('<ul class="tally-list"></ul>'), 'renderApp renders an empty list');
+ 
+-console.log('PASS bench/fixtures/tally smoke: 12 assertions');
++console.log('PASS bench/fixtures/tally smoke: 18 assertions');

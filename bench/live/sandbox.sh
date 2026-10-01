@@ -190,8 +190,36 @@ cmd_reset() {
     log "reset $REPO to $TAG; fresh issues: $(jq -c . <<<"$map")"
 }
 
+# cmd_seed_prs "01 03 04": one draft PR per issue from bench/fixtures/pr-v1, stacked per its manifest, against
+# the fresh issues the last reset created. Prints "issue-id pr-number" lines and saves them outside the repo.
+cmd_seed_prs() {
+    local work="${AK_BENCH_WORK:-$HOME/.cache/ak-bench}" seed="$bench/fixtures/pr-v1" clone id base_id base number title pr map='{}'
+    local issues="$work/current-issues.json"
+    [[ -f $issues ]] || die "no $issues; run: sandbox.sh reset \"${1:-}\" first"
+    clone=$(mktemp -d)
+    git clone -q "https://github.com/$REPO.git" "$clone"
+    for id in ${1:-}; do
+        base_id=$(awk -v id="$id" '$1 == id {print $2}' "$seed/manifest")
+        [[ -n $base_id && -f $seed/$id.patch ]] || die "no seed PR for $id in $seed"
+        number=$(jq -r --arg id "tally-$id" '.[$id]' "$issues")
+        if [[ $base_id == main ]]; then base=main; else base="feat/issue-$(jq -r --arg id "tally-$base_id" '.[$id]' "$issues")"; fi
+        git -C "$clone" checkout -q -B "feat/issue-$number" "origin/$base" 2>/dev/null || git -C "$clone" checkout -q -B "feat/issue-$number" "$base"
+        git -C "$clone" apply --index "$seed/$id.patch"
+        git -C "$clone" -c user.name=ak-bench -c user.email=ak-bench@users.noreply.github.com commit -q -m "feat: tally-$id"
+        git -C "$clone" push -q -u origin "feat/issue-$number"
+        title=$(gh api "repos/$REPO/issues/$number" --jq .title)
+        pr=$(gh api "repos/$REPO/pulls" -f title="$title" -f head="feat/issue-$number" -f base="$base" \
+            -f body="Closes #$number" -F draft=true --jq .number)
+        map=$(jq --arg id "$id" --argjson pr "$pr" '. + {($id): $pr}' <<<"$map")
+        printf '%s %s\n' "$id" "$pr"
+    done
+    rm -rf -- "$clone"
+    printf '%s\n' "$map" >"$work/current-prs.json"
+}
+
 case ${1:-} in
     create) cmd_create ;;
+    seed-prs) shift; cmd_seed_prs "${1:-}" ;;
     reset) shift; cmd_reset "${1:-}" ;;
-    *) printf 'usage: sandbox.sh create | reset "01 03 04"\n' >&2; exit 2 ;;
+    *) printf 'usage: sandbox.sh create | reset "01 03 04" | seed-prs "01 03 04"\n' >&2; exit 2 ;;
 esac

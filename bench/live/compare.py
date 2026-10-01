@@ -19,6 +19,7 @@ DEFAULT = Path(__file__).resolve().parents[1] / "results" / "live.jsonl"
 METRICS = [
     ("passed", lambda r: r.get("outcome", {}).get("passed")),
     ("prs green", lambda r: r.get("outcome", {}).get("prs_green")),
+    ("merged", lambda r: r.get("outcome", {}).get("merged")),
     ("root calls", lambda r: r.get("root", {}).get("calls")),
     ("root Mtok", lambda r: mtok(r.get("root", {}).get("tokens", {}).get("total_tokens"))),
     ("system Mtok", lambda r: mtok(r.get("system_tokens"))),

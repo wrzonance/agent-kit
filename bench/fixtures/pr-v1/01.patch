@@ -1,0 +1,51 @@
+diff --git a/src/render.js b/src/render.js
+index c7d1dce..6b43f8c 100644
+--- a/src/render.js
++++ b/src/render.js
+@@ -24,7 +24,12 @@ export function renderItemRow(item) {
+   );
+ }
+ 
++export function renderEmptyState() {
++  return '<p class="tally-empty">No tallies yet -- add one above.</p>';
++}
++
+ export function renderApp(state) {
+   const rows = state.items.map(renderItemRow).join('');
+-  return `<header class="tally-header"><h1>Tally</h1></header><ul class="tally-list">${rows}</ul>`;
++  const emptyState = state.items.length === 0 ? renderEmptyState() : '';
++  return `<header class="tally-header"><h1>Tally</h1></header>${emptyState}<ul class="tally-list">${rows}</ul>`;
+ }
+diff --git a/test/smoke.mjs b/test/smoke.mjs
+index 4c3ea3a..d6d5856 100755
+--- a/test/smoke.mjs
++++ b/test/smoke.mjs
+@@ -13,7 +13,7 @@ import {
+   toJSON,
+   fromJSON,
+ } from '../src/store.js';
+-import { renderApp, renderItemRow, escapeHtml } from '../src/render.js';
++import { renderApp, renderEmptyState, renderItemRow, escapeHtml } from '../src/render.js';
+ 
+ let state = createState();
+ assert.deepEqual(state, { items: [], nextId: 1 }, 'createState starts empty');
+@@ -48,6 +48,18 @@ assert.equal(escapeHtml('<script>'), '&lt;script&gt;', 'escapeHtml escapes marku
+ const row = renderItemRow({ id: 7, name: '<b>x</b>', count: 3 });
+ assert.ok(row.includes('data-id="7"'), 'renderItemRow carries the item id');
+ assert.ok(row.includes('&lt;b&gt;x&lt;/b&gt;'), 'renderItemRow escapes the item name');
+-assert.ok(renderApp(createState()).includes('<ul class="tally-list"></ul>'), 'renderApp renders an empty list');
++assert.equal(
++  renderEmptyState(),
++  '<p class="tally-empty">No tallies yet -- add one above.</p>',
++  'renderEmptyState renders the empty-state message',
++);
++assert.ok(
++  renderApp(createState()).includes('<p class="tally-empty">No tallies yet -- add one above.</p>'),
++  'renderApp renders the empty state when there are no items',
++);
++assert.ok(
++  !renderApp({ items: [{ id: 1, name: 'Coffee', count: 0 }] }).includes('tally-empty'),
++  'renderApp omits the empty state when there are items',
++);
+ 
+ console.log('PASS bench/fixtures/tally smoke: 12 assertions');
