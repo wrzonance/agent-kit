@@ -60,6 +60,11 @@ spawn_successors() {
     done 3<<<"$ready"
 }
 
+# collect_item KIND N FILE: the run item for KIND N in FILE, or nothing.
+collect_item() {
+    jq -c --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$3"
+}
+
 cmd_main() {
     local kind='' n='' item worktree state=collected
     case ${1:-} in
@@ -70,8 +75,17 @@ cmd_main() {
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
-    item=$(jq -c --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$RUNFILE")
-    [[ -n $item ]] || die "$kind $n is not in run $(jq -r .run "$RUNFILE")" "ak plan --issue $n"
+    item=$(collect_item "$kind" "$n" "$RUNFILE")
+    if [[ -z $item ]]; then
+        # A later plan may have made another run current; the item's own run still owns it.
+        local other runs=()
+        mapfile -t runs < <(ls -t -- "$MAIN"/.ak/runs/*.json 2>/dev/null)
+        for other in "${runs[@]}"; do
+            item=$(collect_item "$kind" "$n" "$other")
+            [[ -z $item ]] || { RUNFILE=$other; break; }
+        done
+    fi
+    [[ -n $item ]] || die "$kind $n is not in any run" "ak plan --issue $n"
     worktree=$(jq -r '.worktree // ""' <<<"$item")
     result_line "$kind" "$n" "$worktree" || state=no-result
     cross_write

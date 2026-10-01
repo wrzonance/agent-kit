@@ -66,8 +66,12 @@ assert_eq 0 "$rc" 'a re-run plan exits 0'
 assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
 assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
 assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
+named=$("$AK" plan --issue 700 2>&1)
+assert_not_contains "$named" 'resumed' 'naming an issue the current run never planned is new work, not a resume'
+assert_contains "$named" 'spawn issue=700' 'the named issue spawns while the earlier workers keep running'
 printf 'pr=x\n' >"$wt/.ak/result"
 printf 'pr=y\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
+printf 'pr=z\n' >"$repo/.worktrees/feat/issue-700/.ak/result"
 fresh_plan=$("$AK" plan 2>&1)
 assert_not_contains "$fresh_plan" 'resumed' 'a run whose workers all reported is not resumed'
 forced=$("$AK" plan --new 2>&1)
@@ -155,6 +159,22 @@ fresh
 route 'project item-list 5 --owner acme*' 'error: your token has not been granted the required scopes' 1
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'fix: operator: gh auth refresh -h github.com -s project' 'a missing scope is an operator step'
+# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (cable-tool #684/#685,
+# 2026-10-01: both named `scripts/verify.py --fast` and the split issues collided).
+fresh
+# shellcheck disable=SC2016
+issue_route 811 $'Change `src/a.txt`.\n\n- `lib/core.sh --fast`'
+# shellcheck disable=SC2016
+issue_route 812 $'Change `src/b.txt`.\n\n- Run lib/core.sh and report anything unavailable.'
+default_routes
+out=$("$AK" plan --issue 811 --issue 812 2>&1)
+assert_contains "$out" 'spawn issue=811' 'a path run with flags is not a write'
+assert_contains "$out" 'spawn issue=812' 'a Run instruction line is not a write'
+ws=$(cd "$repo" && bash -c '
+    source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    FILES=$(mktemp); git ls-files >"$FILES"
+    write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
+assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
 
 fresh
 standard_board

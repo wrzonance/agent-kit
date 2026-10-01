@@ -52,14 +52,21 @@ receipt_body() {
         printf -- '- Findings:\n'
         printf '  - %s\n' "${5//$'\n'/$'\n'  - }"
     fi
+    [[ -z ${6:-} ]] || printf -- '- Remaining: %s\n' "$6"
     printf '\n'
     attribution
 }
 
 cmd_main() {
-    local file="" dir head pr runs ci summary review findings note body url fixed declined count
-    [[ ${1:-} == --findings && -n ${2:-} && $# == 2 ]] || usage_die "usage: ak receipt --findings F"
-    file=$2
+    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count
+    while (($#)); do
+        case $1 in
+            --findings) file=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
+            --remaining) remaining=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
+            *) usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
+        esac
+    done
+    [[ -n $file ]] || usage_die "usage: ak receipt --findings F [--remaining TEXT]"
     [[ -f $file ]] || die "findings file not found: $file" "printf 'none\\n' >$file"
     file="$(cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file")"
     cd -- "$(worktree_root)" || exit 1
@@ -73,7 +80,7 @@ cmd_main() {
     ci=${summary%% *}
     ci=${ci#ci=}
     review=$(receipt_review "$dir")
-    receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" >"$dir/receipt.md"
+    receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
         die "could not post the receipt comment" "gh auth status"
     url=$(jq -r '.html_url' <<<"$body")
@@ -81,6 +88,7 @@ cmd_main() {
     fixed=$(grep -c ' | fixed ' <<<"$findings" || true)
     declined=$(grep -c ' | declined: ' <<<"$findings" || true)
     note="findings=$count fixed=$fixed declined=$declined"
+    [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
     printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     printf 'receipt=%s\n' "$url"
     paste -sd' ' "$dir/result"

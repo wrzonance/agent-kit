@@ -81,11 +81,15 @@ excluded_label() {
 
 # write_set BODY: repository paths the body names; new files count when their directory exists.
 write_set() {
-    # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines and
-    # backticked commands (`node test/smoke.mjs`), keep backticked paths (`src/store.js`).
+    # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines, "Run/Verify/
+    # Execute ..." instruction lines, and any backticked span with a space in it, which is a command
+    # (`node test/smoke.mjs`, `scripts/verify.py --fast`); keep backticked paths (`src/store.js`).
     # shellcheck disable=SC2016 # literal backticks in a sed expression
-    sed -E -e '/[Ss]till (exits?|pass(es)?|succeeds?|runs?)/d' -e 's/`[A-Za-z][A-Za-z0-9_-]* [^`]*`//g' \
-        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$1" | grep -oE '[A-Za-z0-9_./@+-]+' |
+    sed -E -e '/[Ss]till (exits?|pass(es)?|succeeds?|runs?)/d' \
+        -e '/^[[:space:]]*([-*+][[:space:]]+)?([Rr]un|[Vv]erify|[Ee]xecute)[[:space:]]/d' \
+        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$1" |
+        awk -F'`' '{ out = $1; for (i = 2; i <= NF; i++) out = out " " ((i % 2 == 0 && $i ~ / /) ? "" : $i); print out }' |
+        grep -oE '[A-Za-z0-9_./@+-]+' |
         awk '
         FNR == NR {
             f[$0] = 1; n = split($0, p, "/"); d = p[1]
@@ -259,6 +263,10 @@ resume_run() {
     current=$(<"$MAIN/.ak/runs/current")
     file="$MAIN/.ak/runs/$current.json"
     [[ -f $file ]] || return 1
+    # Issues named on this call that the current run never planned are new work, not a resume.
+    for n in "$@"; do
+        jq -e --argjson n "$n" 'any(.items[]; .kind == "issue" and .n == $n)' "$file" >/dev/null || return 1
+    done
     age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
     ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
     local lines=()
@@ -310,7 +318,7 @@ cmd_main() {
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
-    ((new)) || ! resume_run || return 0
+    ((new)) || ! resume_run "${issues[@]}" || return 0
     run=$(date +%Y%m%d-%H%M%S)
     local i=2 stamp=$run
     while [[ -e $MAIN/.ak/runs/$run.json ]]; do run="$stamp-$i" i=$((i + 1)); done

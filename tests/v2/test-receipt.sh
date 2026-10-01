@@ -57,4 +57,14 @@ rm .ak/review.unavailable
 out=$("$AK" receipt --findings "$WORK/none" 2>&1)
 assert_contains "$out" 'review=skipped' 'no review artifacts means skipped'
 
+# A worker that ships part of an issue names the rest (2026-10-01 field run: #683 asked for two PRs).
+printf 'none\n' >"$WORK/none2"
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt --findings "$WORK/none2" --remaining 'Packet B (add-in dialogs) needs its own PR' 2>&1); rc=$?
+assert_eq 0 "$rc" 'receipt accepts --remaining'
+assert_contains "$(cat .ak/result)" 'remaining: Packet B (add-in dialogs) needs its own PR' 'the result note carries what is left'
+assert_contains "$(cat .ak/receipt.md)" 'Remaining: Packet B (add-in dialogs) needs its own PR' 'the receipt comment names what is left'
+out=$("$AK" receipt --remaining x 2>&1); rc=$?
+assert_eq 2 "$rc" '--remaining without --findings is a usage error'
+
 finish
