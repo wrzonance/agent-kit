@@ -19,6 +19,7 @@ assert_contains "$out" 'fix: ' 'the refusal names a fix'
 
 lookup='api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open'
 route "$lookup" '[]'
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=closed*' '[]'
 route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}'
 printf 'two\n' >src/b.txt
 printf '## Why\nBecause.\n' >"$WORK/body.md"
@@ -67,5 +68,17 @@ printf 'pr\n' >src/pr.txt
 out=$("$AK" ship --message 'fix: pr fix' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a PR worktree without an issue number ships'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/12' 'a PR worktree reuses its PR'
+
+# A branch whose PR already merged never gets a second PR (bench 2026-10-01: a merge-down respawn opened #138).
+: >"$FAKE_GH_ROUTES"
+route 'api repos/acme/widget/pulls?head=acme:*&state=open' '[]'
+route 'api repos/acme/widget/pulls?head=acme:*&state=closed*' '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9","merged_at":"2026-10-01T00:00:00Z"}]'
+route 'api -X POST repos/acme/widget/pulls *' '{"number":10,"html_url":"https://github.com/acme/widget/pull/10"}'
+printf 'more\n' >>src/b.txt
+: >"$FAKE_GH_LOG"
+out=$("$AK" ship --message 'fix: after merge' 2>&1); rc=$?
+assert_eq 0 "$rc" 'shipping after the PR merged is not an error'
+assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9 merged already' 'ship names the merged PR'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/pulls ' 'no duplicate PR is opened'
 
 finish

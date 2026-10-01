@@ -30,6 +30,15 @@ merge_parent() {
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
         die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=closed&head=$owner:$base'"
     [[ -n $parent ]] || return 0
+    # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
+    # parent's first commit, and resolving it against the squash on main kept the parent's old bug
+    # (PR bench 2026-10-01: #174 reintroduced the undo bug #173 had fixed).
+    local head out
+    head=$(gh api "repos/$slug/pulls/$n" | jq -r .head.ref) || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
+    if ! out=$(gh api "repos/$slug/merges" -f "base=$head" -f "head=$base" \
+        -f "commit_message=merge: $base into $head" 2>&1); then
+        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f base=$head -f head=$base"
+    fi
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
         die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
 }
@@ -91,9 +100,26 @@ merge_branch() {
     fi
 }
 
+# merge_lock N: one ak merge per PR at a time; a second caller waits, then sees the first one's result
+# (bench 2026-10-01: two parallel merges of #136 respawned a worker for a PR that had just merged).
+merge_lock() {
+    local dir waited=0
+    dir="$(main_root)/.ak/locks/merge-$1"
+    mkdir -p -- "$(dirname -- "$dir")"
+    until mkdir -- "$dir" 2>/dev/null; do
+        ((waited < ${AK_MERGE_LOCK_WAIT:-900})) ||
+            die "another ak merge is working on PR #$1" "rmdir $dir   # only if no ak merge is running"
+        sleep 2
+        waited=$((waited + 2))
+    done
+    # shellcheck disable=SC2064 # expand now: the lock path is fixed for this process
+    trap "rmdir -- '$dir' 2>/dev/null" EXIT
+}
+
 cmd_main() {
     [[ $# -eq 2 && $1 == --pr && $2 =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N"
     local n=$2 slug json sha merged
+    merge_lock "$n"
     slug=$(slug)
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
     if [[ $(jq -r .merged <<<"$json") == true ]]; then
@@ -101,6 +127,8 @@ cmd_main() {
         return 0
     fi
     [[ $(jq -r .state <<<"$json") == open ]] || die "PR #$n is closed" "gh pr reopen $n --repo $slug"
+    # Checks still running on a green-collected PR are waited for, not refused (PR bench 2026-10-01: #150).
+    ci_wait "$(jq -r .head.sha <<<"$json")" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
     merge_checks "$slug" "$(jq -r .head.sha <<<"$json")"
     merge_parent "$slug" "$n" "$(jq -r .base.ref <<<"$json")"
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"

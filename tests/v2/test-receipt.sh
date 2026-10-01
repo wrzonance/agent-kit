@@ -54,8 +54,10 @@ assert_contains "$out" 'review=unavailable' 'an unavailable reviewer is reported
 assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'no findings is stated'
 
 rm .ak/review.unavailable
-out=$("$AK" receipt --findings "$WORK/none" 2>&1)
-assert_contains "$out" 'review=skipped' 'no review artifacts means skipped'
+out=$("$AK" receipt --findings "$WORK/none" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt before any review attempt is refused'
+assert_contains "$out" 'fix: ak review' 'the refusal names the review command'
+touch .ak/review.unavailable
 
 # A worker that ships part of an issue names the rest (2026-10-01 field run: #683 asked for two PRs).
 printf 'none\n' >"$WORK/none2"
@@ -66,5 +68,16 @@ assert_contains "$(cat .ak/result)" 'remaining: Packet B (add-in dialogs) needs 
 assert_contains "$(cat .ak/receipt.md)" 'Remaining: Packet B (add-in dialogs) needs its own PR' 'the receipt comment names what is left'
 out=$("$AK" receipt --remaining x 2>&1); rc=$?
 assert_eq 2 "$rc" '--remaining without --findings is a usage error'
+
+# Every finding the review printed needs a disposition (PR bench 2026-10-01: a P1 was answered with "none").
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+printf 'none\n' >"$WORK/undecided"
+out=$("$AK" receipt --findings "$WORK/undecided" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt that leaves review findings undecided is refused'
+assert_contains "$out" 'the review has 2 findings but the findings file decides 0' 'the refusal counts the gap'
+assert_contains "$out" 'P1: undo drops the count' 'the refusal names the undecided finding'
+printf 'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope\n' >"$WORK/decided"
+out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
+assert_eq 0 "$rc" 'a receipt that decides every finding is accepted'
 
 finish

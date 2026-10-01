@@ -5,6 +5,7 @@ TEST_NAME=v2-merge
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 
 repo=$(fixture_repo)
+export AK_CI_GRACE=0 AK_CI_INTERVAL=0 AK_MERGE_CI_TIMEOUT=0
 cd "$repo" || exit 1
 api=repos/acme/widget
 
@@ -20,6 +21,7 @@ runs() { # STATUS:CONCLUSION...
     printf '{"total_count":%d,"check_runs":[%s]}' "$#" "${items%,}"
 }
 green=$(runs 'completed:"success"' 'completed:"skipped"' 'completed:"neutral"')
+route "api $api/commits/*/check-runs?per_page=100" '{"check_runs":[]}'
 
 route "api $api/pulls/21" "$(pr_json 21 feat/x main true)"
 route "api --paginate $api/commits/sha21/check-runs*" "$green"
@@ -46,6 +48,7 @@ route "api $api/pulls?state=open&base=feat/a*" '[{"number":25}]'
 route "api $api/pulls?state=open&base=*" '[]'
 route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
+route "api $api/merges -f base=feat/c -f head=feat/gone*" '{"sha":"mergedparent"}'
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
 route "api -X PUT $api/pulls/3[0-9]/update-branch*" 'gh: Merge conflict between base and head (HTTP 422)' 1
 route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
@@ -89,6 +92,9 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'the stacked PR is not merg
 out=$("$AK" merge --pr 26 2>&1); rc=$?
 assert_eq 0 "$rc" 'a PR whose parent already merged is retargeted and merged'
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PATCH $api/pulls/26 -f base=main" 'retargeted to the repo base'
+first=$(grep -n "merges -f base=feat/c -f head=feat/gone" "$FAKE_GH_LOG" | head -1 | cut -d: -f1)
+patch=$(grep -n "PATCH $api/pulls/26" "$FAKE_GH_LOG" | head -1 | cut -d: -f1)
+assert_eq yes "$( [[ -n $first && -n $patch && $first -lt $patch ]] && echo yes || echo no)" "the parent's final branch is merged in before the retarget"
 assert_contains "$out" 'merged pr=26' 'then merged'
 
 out=$("$AK" merge --pr 27 2>&1)
@@ -113,5 +119,14 @@ assert_contains "$out" "spawn pr=30 cwd=$WORK/wtq prompt=$WORK/wtq/.ak/prompt.md
 assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records what to merge in'
 assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'a conflicting PR is not merged'
+
+# Two merges of one PR never run at once: the second waits for the first (bench 2026-10-01: #136 twice).
+mkdir -p "$repo/.ak/locks/merge-24"
+out=$(AK_MERGE_LOCK_WAIT=0 "$AK" merge --pr 24 2>&1); rc=$?
+assert_eq 1 "$rc" 'a held merge lock refuses after the wait'
+assert_contains "$out" 'another ak merge is working on PR #24' 'the refusal names the PR'
+rmdir "$repo/.ak/locks/merge-24"
+"$AK" merge --pr 24 >/dev/null 2>&1
+assert_eq no "$([[ -d $repo/.ak/locks/merge-24 ]] && echo yes || echo no)" 'a finished merge releases its lock'
 
 finish

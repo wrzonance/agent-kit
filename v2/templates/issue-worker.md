@@ -7,9 +7,9 @@ When the issue asks for more than one PR, or part of it needs something this wor
 issue keeps separate, a live app session, an operator step), do the part that fits as this PR and name the rest
 with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason "<why>"` and end with its line.
 
-1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git merge $(cat .ak/resolve)`,
+1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git fetch origin && git merge $(cat .ak/resolve)`,
    resolve each conflict keeping the intent of both sides, delete `.ak/resolve`, then go to step 2 and on to
-   `{{AK}} receipt --findings .ak/findings` with the findings file `none` (skip step 4's review).
+   `{{AK}} receipt --findings .ak/findings`, keeping the findings file from the earlier run (skip step 4's review).
    Otherwise read the code the issue touches. Size the method to the change:
    - New behavior or a real unknown: name the data shapes, write the function signatures, list every file and
      call site you will change; if a design question is still open, spike it, note what it taught you, and
@@ -31,7 +31,7 @@ with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason 
 6. Write `.ak/findings`, one line per review finding: `P1|title|fixed <sha>` or `P2|title|declined: reason`
    (just `none` when there were none). Run `{{AK}} receipt --findings .ak/findings`, adding
    `--remaining "<what is left and why>"` when this PR covers only part of the issue.
-7. End with one line: the result line `receipt` printed (`pr=… ci=… review=… head=… note=…`).
+7. End with the one result line the receipt command printed (`pr=… ci=… review=… head=… note=…`).
 
 Never merge, mark the PR ready, force-push, or touch another worktree.
 

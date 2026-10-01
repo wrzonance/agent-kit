@@ -11,10 +11,10 @@ Rules:
 
 ## Steps
 
-1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git merge $(cat .ak/resolve)`,
+1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git fetch origin && git merge $(cat .ak/resolve)`,
    resolve each conflict keeping the intent of both sides, delete `.ak/resolve`, run `{{AK}} verify`, then
-   `{{AK}} ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `{{AK}} ci`, and go to step 6 with the
-   findings file `none`.
+   `{{AK}} ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `{{AK}} ci`, and go to step 6 keeping the
+   findings file from the earlier run.
 2. Run `{{AK}} review` once. It prints `review=done findings=N` with one `P1:`/`P2:` title per finding; the full
    findings are in `.ak/review.md`. When it prints `review=unavailable`, there is nothing to decide: go to step 5.
    When it prints `findings=unparsed`, read `.ak/review.md` and treat each defect it names as a finding.
@@ -35,4 +35,4 @@ Rules:
    ```
 
    When there were no findings, or the review was unavailable, the file is the single line `none`.
-7. End with the single result line `{{AK}} receipt` printed, and nothing else.
+7. End with the one result line the receipt command printed, and nothing else.

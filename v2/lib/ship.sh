@@ -20,6 +20,14 @@ ship_pr_find() {
     jq -r 'if length > 0 then "\(.[0].number) \(.[0].html_url)" else empty end' <<<"$json"
 }
 
+# ship_merged_pr BRANCH: the URL of an already merged PR from BRANCH, or nothing.
+ship_merged_pr() {
+    local repo
+    repo=$(slug)
+    gh api "repos/$repo/pulls?head=${repo%%/*}:$1&state=closed&per_page=10" |
+        jq -r '[.[] | select(.merged_at != null)][0].html_url // empty'
+}
+
 ship_title() {
     local file line
     file="$(ak_dir)/issue.md"
@@ -91,6 +99,11 @@ cmd_main() {
         die "nothing to ship: HEAD has no commits ahead of origin/$base" "commit your change, then ak ship --message '$message'"
     ship_push "$branch"
     pr=$(ship_pr_find)
+    if [[ -z $pr ]] && merged=$(ship_merged_pr "$branch") && [[ -n $merged ]]; then
+        # This branch's PR already landed; a new PR for it would duplicate the merged work (bench 2026-10-01: #138).
+        printf 'pr=%s merged already; nothing new to ship\n' "$merged"
+        return 0
+    fi
     if [[ -z $pr ]]; then
         body=$(ship_body "$message" "$body_file") || exit 1
         pr=$(ship_create_pr "$branch" "$base" "$body")
