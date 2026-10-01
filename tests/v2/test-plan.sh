@@ -128,6 +128,20 @@ out=$(AGENT_READY_LABEL=agent:ready "$AK" plan 2>&1)
 assert_contains "$out" 'spawn issue=5 ' 'the ready label is the fallback source'
 assert_not_contains "$out" 'issue=6' 'pull requests are not issues'
 
+# A path that only appears in a verification command or a "still passes" line is not a write (ak-bench batch,
+# 2026-10-01: every tally issue says `node test/smoke.mjs` still exits 0, so all three issues serialized).
+fresh
+# shellcheck disable=SC2016 # literal backticks in issue bodies
+issue_route 801 $'Change `src/a.txt`.\n\n- [ ] `node lib/core.sh` still exits 0.'
+issue_route 802 $'Change `src/b.txt`.\n\n- [ ] lib/core.sh still passes'
+# shellcheck disable=SC2016
+issue_route 803 'Fix `src/a.txt` too.'
+default_routes
+out=$("$AK" plan --issue 801 --issue 802 --issue 803 2>&1)
+assert_contains "$out" 'spawn issue=801' 'an issue whose only shared path is a test command spawns'
+assert_contains "$out" 'spawn issue=802' 'a "still passes" path is not a write either'
+assert_contains "$out" 'drop issue=803 reason=collides-with-#801' 'a real shared write still collides'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"
