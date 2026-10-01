@@ -26,7 +26,7 @@ receipt_all_decided() {
     want=$(grep -cE '^P[12]:' "$review" || true)
     got=$(grep -c . <<<"$2" || true)
     ((got >= want)) && return 0
-    titles=$(grep -E '^P[12]:' "$review" | cut -d'—' -f1 | cut -c1-80 | head -n 3 | paste -sd';' -)
+    titles=$(grep -E '^P[12]:' "$review" | sed 's/ — .*//' | cut -c1-80 | head -n 3 | paste -sd';' -)
     die "the review has $want findings but the findings file decides $got: $titles" \
         "write one line per finding: P1|title|fixed <sha> or P2|title|declined: reason"
 }
