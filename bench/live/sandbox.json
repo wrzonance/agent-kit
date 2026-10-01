@@ -1,0 +1,26 @@
+{
+  "repo": "wrzonance/ak-bench",
+  "tag": "fixture-v1",
+  "issues": {
+    "tally-01": 1,
+    "tally-02": 2,
+    "tally-03": 3,
+    "tally-04": 4,
+    "tally-05": 5,
+    "tally-06": 6,
+    "tally-07": 7,
+    "tally-08": 8,
+    "tally-09": 9,
+    "tally-10": 10
+  },
+  "board": {
+    "number": 12,
+    "project_id": "PVT_kwDOEMq2wc4BlRh5",
+    "status_field": "PVTSSF_lADOEMq2wc4BlRh5zhj_B8c"
+  },
+  "current": {
+    "tally-01": 21,
+    "tally-03": 22,
+    "tally-04": 23
+  }
+}
