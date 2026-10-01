@@ -24,8 +24,9 @@ You are the root. Workers do the review, fixes and CI; you spawn, wait, collect 
 4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.
 5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says `ci=green`.
    A PR based on another PR's branch merges after that PR: when `ak merge` refuses with
-   `fix: ak merge --pr M`, merge M first (if its collect said `ci=green`), then retry. Any other refusal: report
-   its two lines and move on.
+   `fix: ak merge --pr M`, merge M first (if its collect said `ci=green`), then retry. When `ak merge` exits 3 it
+   prints a `spawn` line: the PR conflicts with its base, so spawn that worker, wait, `ak collect --pr N`, and run
+   `ak merge --pr N` again. Any other refusal: report its two lines and move on.
 6. When no workers remain, report the `drop`, collect and merge lines, and end the turn.
 
 Never mark a PR ready or merge it any other way than `ak merge`, and only under `--merge`.
