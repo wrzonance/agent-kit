@@ -13,9 +13,9 @@ board_gh() {
         return 0
     fi
     if [[ $out == *scope* ]]; then
-        printf 'no project scope; gh auth refresh -s project\n'
+        printf 'no project scope\n'
     else
-        printf 'gh project %s failed\n' "$1"
+        printf 'gh project %s failed: %s\n' "$1" "$(head -n 1 <<<"$out" | cut -c1-160)"
     fi
     return 1
 }
@@ -26,6 +26,16 @@ board_items() {
     owner=$(cfg AGENT_PROJECT_OWNER)
     number=$(cfg AGENT_PROJECT_NUMBER)
     board_gh item-list "$number" --owner "$owner" --format json --limit 500
+}
+
+# board_fix ERROR: the one command that fixes a failed board read. A missing scope needs the operator's browser,
+# so it is named as an operator step the root must not run; throttling only needs time.
+board_fix() {
+    case $1 in
+        'no project scope'*) printf 'operator: gh auth refresh -h github.com -s project (interactive; do not run it from an agent)\n' ;;
+        *[Rr]ate\ limit* | *secondary* | *abuse*) printf 'wait for the GitHub rate limit, then rerun ak plan: gh api rate_limit --jq .resources.graphql\n' ;;
+        *) printf 'gh project item-list %s --owner %s --format json\n' "$(cfg AGENT_PROJECT_NUMBER)" "$(cfg AGENT_PROJECT_OWNER)" ;;
+    esac
 }
 
 # board_item_id N ITEMS_JSON: the item id of this repository's issue N.
