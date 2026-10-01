@@ -39,7 +39,12 @@ assert_eq "$WORK/wt/.ak" "$dir" 'ak_dir is inside the worktree'
 assert_eq '' "$(git status --porcelain)" '.ak/ is excluded from git'
 
 out=$(run_logged ok 'echo fine'); rc=$?
-assert_eq 'PASS ok' "$out" 'run_logged prints one PASS line'
+assert_eq 'PASS ok' "$(tail -n 1 <<<"$out")" 'run_logged ends with one PASS line'
+assert_eq 'run ok: echo fine' "$(head -n 1 <<<"$out")" 'run_logged says what it started before anything else'
+# A worker whose command yields with no output goes looking for it (field run 2026-10-01: 12M tokens of ps polling).
+out=$(AK_HEARTBEAT=1 run_logged slow 'sleep 3')
+assert_contains "$out" 'slow still running' 'a long command prints a heartbeat while it runs'
+assert_eq 'PASS slow' "$(tail -n 1 <<<"$out")" 'the heartbeat ends with the result'
 out=$(run_logged bad 'echo boom; exit 3'); rc=$?
 assert_eq 3 "$rc" 'run_logged returns the command status'
 assert_contains "$out" 'FAIL bad rc=3' 'run_logged names the failure'
