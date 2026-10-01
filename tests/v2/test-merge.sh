@@ -47,6 +47,8 @@ route "api $api/pulls?state=open&base=*" '[]'
 route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X PUT $api/pulls/3[0-9]/update-branch*" 'gh: Merge conflict between base and head (HTTP 422)' 1
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
 route "api -X DELETE $api/git/refs/heads/*" ''
 
 out=$("$AK" merge 2>&1); rc=$?
@@ -97,5 +99,19 @@ out=$("$AK" merge --pr 28 2>&1); rc=$?
 assert_eq 0 "$rc" 'an already merged PR is not an error'
 assert_eq 'merged pr=28 sha=m28 already' "$out" 'an already merged PR reports its sha'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'no second merge'
+
+# A PR that conflicts with its base after an earlier merge goes back to its worker (bench 2026-10-01: #112).
+route "api $api/pulls/30" "$(pr_json 30 feat/q main)"
+route "api --paginate $api/commits/sha30/check-runs*" "$green"
+git worktree add -q -b feat/q "$WORK/wtq" origin/main
+mkdir -p "$WORK/wtq/.ak" && printf 'prompt\n' >"$WORK/wtq/.ak/prompt.md" && printf 'pr=x\n' >"$WORK/wtq/.ak/result"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 30 2>&1); rc=$?
+assert_eq 3 "$rc" 'a conflicting PR exits 3'
+assert_contains "$out" 'resolve pr=30 conflicts-with=main' 'the conflict is named'
+assert_contains "$out" "spawn pr=30 cwd=$WORK/wtq prompt=$WORK/wtq/.ak/prompt.md" 'the PR worker is respawned in its worktree'
+assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records what to merge in'
+assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'a conflicting PR is not merged'
 
 finish
