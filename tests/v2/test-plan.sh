@@ -66,8 +66,12 @@ assert_eq 0 "$rc" 'a re-run plan exits 0'
 assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
 assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
 assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
+named=$("$AK" plan --issue 700 2>&1)
+assert_not_contains "$named" 'resumed' 'naming an issue the current run never planned is new work, not a resume'
+assert_contains "$named" 'spawn issue=700' 'the named issue spawns while the earlier workers keep running'
 printf 'pr=x\n' >"$wt/.ak/result"
 printf 'pr=y\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
+printf 'pr=z\n' >"$repo/.worktrees/feat/issue-700/.ak/result"
 fresh_plan=$("$AK" plan 2>&1)
 assert_not_contains "$fresh_plan" 'resumed' 'a run whose workers all reported is not resumed'
 forced=$("$AK" plan --new 2>&1)
