@@ -146,6 +146,19 @@ assert_contains "$out" 'spawn issue=801' 'an issue whose only shared path is a t
 assert_contains "$out" 'spawn issue=802' 'a "still passes" path is not a write either'
 assert_contains "$out" 'drop issue=803 reason=collides-with-#801' 'a real shared write still collides'
 
+# A failed board read names its real cause; throttling never sends the root into an interactive login
+# (bench 2026-10-01: a throttled read was reported as a missing scope and the root started a device login).
+fresh
+route 'project item-list 5 --owner acme*' 'GraphQL: API rate limit already exceeded for user ID 1.' 1
+out=$("$AK" plan 2>&1); rc=$?
+assert_eq 1 "$rc" 'a throttled board read refuses'
+assert_contains "$out" 'API rate limit already exceeded' 'the refusal quotes the real error'
+assert_contains "$out" 'fix: wait for the GitHub rate limit' 'throttling says wait'
+assert_not_contains "$out" 'gh auth refresh' 'throttling never suggests a login'
+fresh
+route 'project item-list 5 --owner acme*' 'error: your token has not been granted the required scopes' 1
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'fix: operator: gh auth refresh -h github.com -s project' 'a missing scope is an operator step'
 # A script path run with flags, or a "Run ..." instruction line, is a command, not a write (cable-tool #684/#685,
 # 2026-10-01: both named `scripts/verify.py --fast` and the split issues collided).
 fresh

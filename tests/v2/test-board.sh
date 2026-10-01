@@ -35,7 +35,7 @@ assert_eq 'board #5: no-op (no Status option "Shipped")' "$out" 'an unknown opti
 route 'project field-list*' 'error: your authentication token is missing required scopes [read:project]' 1
 out=$("$AK" board --issue 5 --status Done 2>&1); rc=$?
 assert_eq 0 "$rc" 'a scope error never fails the caller'
-assert_eq 'board #5: no-op (no project scope; gh auth refresh -s project)' "$out" 'a scope error names the fix'
+assert_eq 'board #5: no-op (no project scope)' "$out" 'a scope error is a no-op with its reason'
 
 : >"$FAKE_GH_ROUTES"
 route 'project field-list*' '{"fields":[{"id":"F_T","name":"Title"}]}'

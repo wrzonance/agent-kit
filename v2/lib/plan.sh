@@ -323,7 +323,7 @@ cmd_main() {
     local i=2 stamp=$run
     while [[ -e $MAIN/.ak/runs/$run.json ]]; do run="$stamp-$i" i=$((i + 1)); done
     if ((${#issues[@]} == 0)) && [[ -n $(cfg AGENT_PROJECT_OWNER) && -n $(cfg AGENT_PROJECT_NUMBER) ]]; then
-        BOARD_ITEMS=$(board_items) || die "cannot read the project board: $BOARD_ITEMS" 'gh auth refresh -s project'
+        BOARD_ITEMS=$(board_items) || die "cannot read the project board: $BOARD_ITEMS" "$(board_fix "$BOARD_ITEMS")"
     fi
     list=$(candidates "$yolo" "${issues[@]}")
     pick "$limit" "$serialize" 3<<<"$list"
