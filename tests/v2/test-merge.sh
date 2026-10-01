@@ -5,6 +5,7 @@ TEST_NAME=v2-merge
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 
 repo=$(fixture_repo)
+export AK_CI_GRACE=0 AK_CI_INTERVAL=0 AK_MERGE_CI_TIMEOUT=0
 cd "$repo" || exit 1
 api=repos/acme/widget
 
@@ -20,6 +21,7 @@ runs() { # STATUS:CONCLUSION...
     printf '{"total_count":%d,"check_runs":[%s]}' "$#" "${items%,}"
 }
 green=$(runs 'completed:"success"' 'completed:"skipped"' 'completed:"neutral"')
+route "api $api/commits/*/check-runs?per_page=100" '{"check_runs":[]}'
 
 route "api $api/pulls/21" "$(pr_json 21 feat/x main true)"
 route "api --paginate $api/commits/sha21/check-runs*" "$green"

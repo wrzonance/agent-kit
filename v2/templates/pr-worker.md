@@ -11,7 +11,7 @@ Rules:
 
 ## Steps
 
-1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git merge $(cat .ak/resolve)`,
+1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git fetch origin && git merge $(cat .ak/resolve)`,
    resolve each conflict keeping the intent of both sides, delete `.ak/resolve`, run `{{AK}} verify`, then
    `{{AK}} ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `{{AK}} ci`, and go to step 6 with the
    findings file `none`.

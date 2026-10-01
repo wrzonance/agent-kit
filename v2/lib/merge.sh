@@ -118,6 +118,8 @@ cmd_main() {
         return 0
     fi
     [[ $(jq -r .state <<<"$json") == open ]] || die "PR #$n is closed" "gh pr reopen $n --repo $slug"
+    # Checks still running on a green-collected PR are waited for, not refused (PR bench 2026-10-01: #150).
+    ci_wait "$(jq -r .head.sha <<<"$json")" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
     merge_checks "$slug" "$(jq -r .head.sha <<<"$json")"
     merge_parent "$slug" "$n" "$(jq -r .base.ref <<<"$json")"
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"

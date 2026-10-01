@@ -54,8 +54,10 @@ assert_contains "$out" 'review=unavailable' 'an unavailable reviewer is reported
 assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'no findings is stated'
 
 rm .ak/review.unavailable
-out=$("$AK" receipt --findings "$WORK/none" 2>&1)
-assert_contains "$out" 'review=skipped' 'no review artifacts means skipped'
+out=$("$AK" receipt --findings "$WORK/none" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt before any review attempt is refused'
+assert_contains "$out" 'fix: ak review' 'the refusal names the review command'
+touch .ak/review.unavailable
 
 # A worker that ships part of an issue names the rest (2026-10-01 field run: #683 asked for two PRs).
 printf 'none\n' >"$WORK/none2"

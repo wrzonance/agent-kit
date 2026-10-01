@@ -80,6 +80,9 @@ cmd_main() {
     ci=${summary%% *}
     ci=${ci#ci=}
     review=$(receipt_review "$dir")
+    # A receipt before the review hides the review's findings (PR bench 2026-10-01: a worker posted its receipt,
+    # then ran ak review and found the bug too late).
+    [[ $review != skipped ]] || die "no review of this branch yet" "ak review"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
         die "could not post the receipt comment" "gh auth status"
