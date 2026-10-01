@@ -104,7 +104,13 @@ AGENT_LABEL_AREAS=render,store
 AGENT_LABEL_PRIORITIES=p1,p2
 ENV
 
-read -r gql_start _ rest_start < <(budget)
+# Every gh call during the run goes through a counting shim, so API use is exact, not a shared-pool delta.
+mkdir -p "$dir/bin"
+ln -sf "$here/gh-shim" "$dir/bin/gh"
+AK_BENCH_REAL_GH=$(command -v gh)
+export AK_BENCH_REAL_GH AK_BENCH_GH_LOG="$dir/gh-calls.log"
+: >"$AK_BENCH_GH_LOG"
+export PATH="$dir/bin:$PATH"
 log "run: codex exec $prompt (model=$model effort=$effort timeout=${timeout_s}s)"
 started=$(date -u +%s)
 rc=0
@@ -114,7 +120,7 @@ env "${scrub[@]}" timeout --kill-after=30 "$timeout_s" codex exec --json --dange
     --dangerously-bypass-hook-trust --skip-git-repo-check -C "$dir/repo" -m "$model" \
     -c "model_reasoning_effort=\"$effort\"" "$prompt" >"$dir/exec.jsonl" 2>"$dir/exec.err" || rc=$?
 ended=$(date -u +%s)
-read -r gql_end _ rest_end < <(budget)
+export PATH=${PATH#"$dir/bin:"}
 thread=$(jq -r 'select(.type=="thread.started") | .thread_id' "$dir/exec.jsonl" | head -n 1)
 root=$(grep -rl --include='rollout-*.jsonl' "\"id\":\"$thread\"" "$CODEX_HOME/sessions" 2>/dev/null | head -n 1 || true)
 log "exec rc=$rc thread=${thread:-none} elapsed=$((ended - started))s"
@@ -122,8 +128,7 @@ log "exec rc=$rc thread=${thread:-none} elapsed=$((ended - started))s"
 log 'score PR heads with the hidden acceptance suites'
 outcome="$dir/outcome.json"
 "$here/outcome.sh" "$repo" "$dir/repo" "$issues" "$rc" "$((ended - started))" 2>>"$dir/trial.log" |
-    jq --argjson g $((gql_start - gql_end)) --argjson r $((rest_start - rest_end)) \
-        '. + {github_graphql_used: $g, github_rest_used: $r, github_note: "account-wide pools; other tools add noise, a reset mid-run makes it negative"}' >"$outcome"
+    jq --argjson calls "$("$here/gh-calls.py" "$AK_BENCH_GH_LOG")" '. + {github: $calls}' >"$outcome"
 
 row="$dir/row.json"
 if [[ -n $root ]]; then

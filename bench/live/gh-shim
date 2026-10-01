@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Counts every gh call a trial makes (root, workers, kit helpers), then runs the real gh.
+# AK_BENCH_GH_LOG gets one line per call: epoch, then the arguments.
+printf '%s\t%s\n' "$(date +%s)" "$*" >>"${AK_BENCH_GH_LOG:-/dev/null}"
+exec "${AK_BENCH_REAL_GH:?}" "$@"
