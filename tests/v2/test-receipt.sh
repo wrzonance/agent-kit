@@ -59,7 +59,7 @@ assert_eq 1 "$rc" 'a receipt before any review attempt is refused'
 assert_contains "$out" 'fix: ak review' 'the refusal names the review command'
 touch .ak/review.unavailable
 
-# A worker that ships part of an issue names the rest (2026-10-01 field run: #683 asked for two PRs).
+# A worker that ships part of an issue names the rest (2026-10-01 field run: an issue asked for two PRs).
 printf 'none\n' >"$WORK/none2"
 : >"$FAKE_GH_LOG"
 out=$("$AK" receipt --findings "$WORK/none2" --remaining 'Packet B (add-in dialogs) needs its own PR' 2>&1); rc=$?

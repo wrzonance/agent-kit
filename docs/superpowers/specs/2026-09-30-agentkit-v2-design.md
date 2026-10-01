@@ -4,7 +4,7 @@ Status: draft for operator approval, 2026-09-30.
 
 ## Why
 
-One cable-tool run on 0.9.18 (2026-09-30, one issue, one draft PR):
+One field run on 0.9.18 (2026-09-30, one issue, one draft PR):
 
 | Measure | Value |
 |---|---|
@@ -35,7 +35,7 @@ v2 is a new tree with new, smaller tests. v1 is deleted in one PR once v2 wins a
 
 ## Budgets (the acceptance test)
 
-A cable-tool `--yolo` run on v2 must meet all of these, measured from the rollout the same way the 2026-09-30 run
+A field `--yolo` run on v2 must meet all of these, measured from the rollout the same way the 2026-09-30 run
 was measured:
 
 | Budget | v2 target | 2026-09-30 |
@@ -135,7 +135,7 @@ Everything else in v1's gate set is deleted and not replaced.
    without v1's hooks.
 2. Tests: `tests/v2/test-*.sh` with a fake `gh` on `PATH`. The v1 gates for harness, environment and org neutrality
    also run over `v2/`.
-3. Field run: cable-tool, `$ak:issues --yolo`, measured against the budget table.
+3. Field run on the field repository, `$ak:issues --yolo`, measured against the budget table.
 4. If it wins: one PR deletes `agentkit/`, the v1 tests and the v1 plugin; `ak` becomes `agentkit` 1.0.
 5. If it loses: the ledger from that run decides what changes. Nothing is ported back into v1.
 

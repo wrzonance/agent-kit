@@ -28,7 +28,7 @@ declare -A KNOWN_OVERSIZE=(
     # activation-gate option B task 2: --activation-nonce flag + ack-before-check.
     # final-review Minor #2: +4 lines / +67 tokens so a lone --activation-nonce
     # dies (exit 2) naming the missing --activation-session/--workflow flag.
-    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    # Dropped per-block rehydration and provenance ceremony (field ledger #29).
     [skills/.shared/scripts/agent-preflight.sh]="1406:16999:800"
     # #731/#732/#776/#809/#874/PR #877: yielded-run status and lease lifecycle.
     # #873: bind repair evidence to the clean committed head tested before push.
@@ -47,7 +47,7 @@ declare -A KNOWN_OVERSIZE=(
     [skills/.shared/scripts/bootstrap-repo.sh]="818:10363:800"
     # #777: repository-facts recipe moved from injected prose into --help.
     # #876 review repair: reject normalized aliases of built-in provider logins.
-    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    # Dropped per-block rehydration and provenance ceremony (field ledger #29).
     [skills/.shared/scripts/repo-config.sh]="1164:12180:800"
     # #911: exact staged-tree ledger grants authorize prepared protected commits.
     # #911 review: classify an unresolved index before protected-tree scope derivation.
@@ -64,7 +64,7 @@ declare -A KNOWN_OVERSIZE=(
     # #777: guarded batch-move recipe moved from injected prose into --help.
     # #781 merge-down with #777: measured combined helper.
     # #845: keep the helper-owned recovery path readable.
-    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    # Dropped per-block rehydration and provenance ceremony (field ledger #29).
     [skills/parallel-issues/scripts/move-github-project-item.sh]="1010:11363:800"
     # #782: literal-create classification and validation summary.
     [skills/parallel-issues/scripts/write-merge-plan.sh]="1087:13310:800"
@@ -270,9 +270,9 @@ readonly MAX_HELPER_TOKENS=10000
 # #908 assembly: #902 and #909/#907 combined helper tree; exact measurement.
 # #908: resumable stages plus typed create/finalization identity proofs remove 8-12 root calls; exact tree measurement.
 # Integration of all finalized #901-#914 heads, including #908 staging: exact tree.
-# Receipt gap report (cable-tool #647: 5 serial publish refusals): collect every
+# Receipt gap report (a field run: 5 serial publish refusals): collect every
 # finalization gap with its next command and default the reviewed head; exact tree.
-# Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29), plus
+# Dropped per-block rehydration and provenance ceremony (field ledger #29), plus
 # one-call evidence and worktree RUN_DIR lookup (#38/#25, #936 review fixes), plus the
 # fast-mode dispatch list with complete write sets and a glob-aware protected pass (#28, #935),
 # plus run-scoped cross-write collect ignoring hook-inherited GIT_* (#44, #934), plus compose

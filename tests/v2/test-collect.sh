@@ -16,12 +16,20 @@ runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
 
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'a missing result is not a failure'
-assert_eq 'issue=671 state=no-result note=worker ended without .ak/result' "$out" 'a missing result is one line'
+assert_eq 'issue=671 state=pending note=no .ak/result yet; collect again once the worker reports' "$out" 'a missing result is pending, not ended'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'a pending collect leaves the run state alone'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)" 'no successor spawns without a result'
 
 printf 'x\n' >"$wt/src/a.txt"
 git -C "$wt" commit -qam work && git -C "$wt" push -q
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
+# A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
+routes=$(cat "$FAKE_GH_ROUTES")
+printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'after issue=680 note=open-PR lookup failed; collect again' 'a failed PR lookup is reported'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a failed PR lookup leaves the successor queued'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collect exits 0'
 wt2="$repo/.worktrees/feat/issue-680"
@@ -52,7 +60,7 @@ out=$("$AK" collect 2>&1); rc=$?
 assert_eq 2 "$rc" 'collect needs --issue or --pr'
 
 # A later plan makes another run current; collecting an item from the earlier run still finds it (field run
-# 2026-10-01: #685 was planned while #684 was still out).
+# 2026-10-01: a second issue was planned while the first was still out).
 "$AK" plan --issue 700 >/dev/null 2>&1
 assert_not_contains "$(jq -r '.items[].n' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" '693' 'the newer run is current'
 printf 'pr=https://github.com/acme/widget/pull/11\nci=green\nreview=done\nhead=def\nnote=findings=0 fixed=0 declined=0\n' \

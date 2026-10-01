@@ -1580,7 +1580,7 @@ assert_contains "$err" 'assertion values must be non-empty' \
     'empty assertion values explain the value requirement'
 
 # --- issue #273: size facts never park an unattended run --------------------
-# The 2026-08-18 cable-tool incident: a worker finished (implemented,
+# The 2026-08-18 field incident: a worker finished (implemented,
 # committed, pushed, tests green) and the root dead-ended one step short of
 # the draft PR, inventing a "fastlane" size gate the kit never declared. The
 # fix states the unattended default at both places the incident touched: the

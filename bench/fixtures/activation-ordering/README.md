@@ -42,7 +42,7 @@ context reach the model before its first tool call?
   --repo <clone> --plugin-dir <worktree>/plugin/agentkit` against the
   rebuilt plugin tree (`tests/build-plugin.sh`, 0.9.14). Denied-call count:
   `grep -c 'pending session acknowledgement' transcript.jsonl` = **0**
-  (down from 2 on the pre-change 2026-09-23 cable-tool run). The receipt's
+  (down from 2 on the pre-change 2026-09-23 field run). The receipt's
   `skillsRoot` points at the built worktree tree, confirming the branch's
   hooks were the ones exercised.
 - **codex** (codex-cli 0.155.1): probe attempted once by writing a

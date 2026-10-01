@@ -91,6 +91,31 @@ assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)
 runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
 assert_eq 'queued [671]' "$(jq -r '.items[] | select(.n == 680) | "\(.state) \(.needs | tojson)"' "$runfile")" 'the queued item records its needs'
 
+# Field run 2026-10-01: a second plan spawned an issue another run still had queued, and a collect re-spawned an
+# issue that had already shipped elsewhere, deleting its result.
+out=$("$AK" plan --new --issue 680 2>&1)
+assert_contains "$out" 'skip issue=680 reason=queued-after-#671' 'an issue queued in a live run is not planned again'
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is still out is not planned again'
+jq '.items += [{kind: "issue", n: 700, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
+mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
+printf 'pr=elsewhere\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
+printf 'pr=x\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'skip issue=680 reason=shipped:elsewhere' 'collect does not re-spawn a successor that shipped'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
+assert_eq 'pr=elsewhere' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
+assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a shipped successor counts as done'
+assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=shipped:x' 'a shipped issue is not planned again'
+
+fresh
+standard_board
+out=$(AGENT_PLAN_LIMIT=1 "$AK" plan --issue 671 --issue 693 2>&1)
+assert_eq 2 "$(grep -c '^spawn' <<<"$out")" 'every named issue is planned past the default limit'
+
 fresh
 standard_board
 out=$(CODEX_HOME=/x AGENT_WORKER_MODELS='claude-sonnet-5, gpt-5.6-terra' AGENT_WORKER_EFFORT=high "$AK" plan --yolo --issue 700 2>&1)
@@ -159,7 +184,7 @@ fresh
 route 'project item-list 5 --owner acme*' 'error: your token has not been granted the required scopes' 1
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'fix: operator: gh auth refresh -h github.com -s project' 'a missing scope is an operator step'
-# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (cable-tool #684/#685,
+# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (a field run,
 # 2026-10-01: both named `scripts/verify.py --fast` and the split issues collided).
 fresh
 # shellcheck disable=SC2016

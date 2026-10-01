@@ -99,7 +99,7 @@ trap 'git -C "$kit_repo" worktree remove --force "$dir/kit" 2>/dev/null || true'
 export CODEX_HOME="$dir/codex-home"
 mkdir -p "$CODEX_HOME"
 cp -- "${AK_BENCH_CODEX_AUTH:-$HOME/.codex/auth.json}" "$CODEX_HOME/auth.json"
-# Mirrors the field machine's config (jacobs, 2026-09-30) so a trial runs the setup cable-tool runs.
+# Mirrors the field machine's config (2026-09-30) so a trial runs the setup the field repository runs.
 cat >"$CODEX_HOME/config.toml" <<TOML
 model = "$model"
 model_reasoning_effort = "$effort"

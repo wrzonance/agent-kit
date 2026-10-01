@@ -22,7 +22,7 @@
 # is defined exactly once, in each skill's earliest setup step, boxed under
 # "### The resolver (prepend to EVERY shell call)" / "#### The resolver
 # (prepend to EVERY shell call)". Later blocks set agentkit to the printed
-# skills path; no per-block guard is required (cable-tool ledger #29).
+# skills path; no per-block guard is required (field ledger #29).
 # onboard-repo keeps its own bootstrap resolver (with the `find` fallback)
 # as the sole contract-absent case and is not held to the single-definition
 # rule below -- it never had a second copy to begin with.

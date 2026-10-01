@@ -39,7 +39,7 @@ declare -A KNOWN_OVERSIZE=(
     [review-remote-pr]="481:8344:450"
     # #873: Step 0 names each helper's flags separately, with a canonical preflight path.
     # #873 review: preflight's flag set includes --activation-origin.
-    # Dropped per-block rehydration and provenance ceremony (cable-tool ledger #29).
+    # Dropped per-block rehydration and provenance ceremony (field ledger #29).
     [pr-to-green]="320:5044:450"
     # Halved to the go path: deleted restated prose; compose --publish owns the dispatch recipe; exact measurement.
     [parallel-issues]="337:8660:500"
