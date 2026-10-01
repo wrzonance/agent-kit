@@ -70,6 +70,17 @@ log "reset sandbox, open issues: $issues"
     "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
 }
 
+# GitHub's project listing lags fresh items; a run that starts before they show sees a different board.
+expect=$(wc -w <<<"$issues")
+for _ in $(seq 1 30); do
+    seen=$(gh project item-list "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --format json --limit 100 |
+        jq --argjson want "$(jq -c '[.[]]' "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json")" \
+            '[.items[] | select(.status == "Ready" and (.content.number as $n | $want | index($n)))] | length')
+    ((seen >= expect)) && break
+    sleep 10
+done
+((seen >= expect)) || { log "board never showed all $expect trial issues as Ready (saw $seen)"; exit 1; }
+
 if [[ $scenario == prs ]]; then
     log "seed draft PRs for: $issues"
     pr_list=$("$here/sandbox.sh" seed-prs "$issues" 2>>"$dir/trial.log" | awk '{print $2}' | tr '\n' ' ')
