@@ -16,25 +16,11 @@
   "board": {
     "number": 12,
     "project_id": "PVT_kwDOEMq2wc4BlRh5",
-    "status_field": "PVTSSF_lADOEMq2wc4BlRh5zhj_B8c",
-    "items": {
-      "1": "PVTI_lADOEMq2wc4BlRh5zg9zHx4",
-      "2": "PVTI_lADOEMq2wc4BlRh5zg9zH0o",
-      "3": "PVTI_lADOEMq2wc4BlRh5zg9zH2A",
-      "4": "PVTI_lADOEMq2wc4BlRh5zg9zH4M",
-      "5": "PVTI_lADOEMq2wc4BlRh5zg9zH6U",
-      "6": "PVTI_lADOEMq2wc4BlRh5zg9zH9s",
-      "7": "PVTI_lADOEMq2wc4BlRh5zg9zIBI",
-      "8": "PVTI_lADOEMq2wc4BlRh5zg9zID8",
-      "9": "PVTI_lADOEMq2wc4BlRh5zg9zIGY",
-      "10": "PVTI_lADOEMq2wc4BlRh5zg9zIJM"
-    },
-    "options": {
-      "Backlog": "e942359a",
-      "Ready": "fe509e73",
-      "In progress": "aa06bbf2",
-      "In review": "64064e6c",
-      "Done": "9cc9a656"
-    }
+    "status_field": "PVTSSF_lADOEMq2wc4BlRh5zhj_B8c"
+  },
+  "current": {
+    "tally-01": 12,
+    "tally-03": 13,
+    "tally-04": 14
   }
 }

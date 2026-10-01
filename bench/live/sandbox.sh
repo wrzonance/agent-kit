@@ -116,42 +116,44 @@ cmd_create() {
     log "wrote $state"
 }
 
-# board_ids: item ids per issue and option ids per Status, cached in sandbox.json after one GraphQL read.
-board_ids() {
-    jq -e '.board.items and .board.options' "$state" >/dev/null 2>&1 && return 0
-    local project
-    project=$(jq -r '.board.project_id' "$state")
-    # shellcheck disable=SC2016 # GraphQL variables, not shell
-    gh api graphql -f query='query($p:ID!){node(id:$p){... on ProjectV2{
-        items(first:100){nodes{id content{... on Issue{number}}}}
-        field(name:"Status"){... on ProjectV2SingleSelectField{options{id name}}}}}}' -f p="$project" |
-        jq '{items: ([.data.node.items.nodes[] | select(.content.number) | {key: (.content.number | tostring), value: .id}] | from_entries),
-             options: ([.data.node.field.options[] | {key: .name, value: .id}] | from_entries)}' >"$state.ids"
-    jq --slurpfile ids "$state.ids" '.board += $ids[0]' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
-    rm -f -- "$state.ids"
-}
+# gql QUERY: one GraphQL call; the query embeds its own literals.
+gql() { gh api graphql -f query="$1"; }
 
-# set_statuses "N:Status N:Status ...": every Status change in one GraphQL mutation.
-set_statuses() {
-    local pair number status item option body='' i=0 project field
+# archive_board_items: archive every item on the board, so a trial sees only its own issues.
+archive_board_items() {
+    local project ids body='' i=0 id
     project=$(jq -r '.board.project_id' "$state")
-    field=$(jq -r '.board.status_field' "$state")
-    for pair in $1; do
-        number=${pair%%:*} status=${pair#*:}
-        status=${status//_/ }
-        item=$(jq -r --arg n "$number" '.board.items[$n]' "$state")
-        option=$(jq -r --arg s "$status" '.board.options[$s]' "$state")
-        body+="m$i: updateProjectV2ItemFieldValue(input:{projectId:\"$project\",itemId:\"$item\",fieldId:\"$field\",value:{singleSelectOptionId:\"$option\"}}){clientMutationId} "
+    ids=$(gql "query{node(id:\"$project\"){... on ProjectV2{items(first:100){nodes{id}}}}}" | jq -r '.data.node.items.nodes[].id')
+    for id in $ids; do
+        body+="a$i: archiveProjectV2Item(input:{projectId:\"$project\",itemId:\"$id\"}){clientMutationId} "
         i=$((i + 1))
     done
-    [[ -n $body ]] || return 0
-    gh api graphql -f query="mutation{ $body}" >/dev/null
+    [[ -z $body ]] || gql "mutation{ $body}" >/dev/null
+}
+
+# board_ready NODE_ID...: add each issue to the board and set it Ready, in two GraphQL calls.
+board_ready() {
+    local project field ready body='' i=0 node items
+    project=$(jq -r '.board.project_id' "$state")
+    field=$(jq -r '.board.status_field' "$state")
+    ready=$(gql "query{node(id:\"$field\"){... on ProjectV2SingleSelectField{options{id name}}}}" |
+        jq -r '.data.node.options[] | select(.name == "Ready") | .id')
+    for node in "$@"; do
+        body+="i$i: addProjectV2ItemById(input:{projectId:\"$project\",contentId:\"$node\"}){item{id}} "
+        i=$((i + 1))
+    done
+    items=$(gql "mutation{ $body}" | jq -r '.data[].item.id')
+    body='' i=0
+    for node in $items; do
+        body+="s$i: updateProjectV2ItemFieldValue(input:{projectId:\"$project\",itemId:\"$node\",fieldId:\"$field\",value:{singleSelectOptionId:\"$ready\"}}){clientMutationId} "
+        i=$((i + 1))
+    done
+    gql "mutation{ $body}" >/dev/null
 }
 
 cmd_reset() {
     [[ -f $state ]] || die "no $state; run: bench/live/sandbox.sh create"
-    local wanted=" ${1:-} " work pr ref comment id number statuses=''
-
+    local work pr ref number id file json nodes=() map='{}' blocker
     work=$(mktemp -d)
     git clone -q "https://github.com/$REPO.git" "$work"
     git -C "$work" push -q --force origin "$TAG^{commit}:refs/heads/main"
@@ -162,22 +164,28 @@ cmd_reset() {
     for ref in $(gh api "repos/$REPO/git/matching-refs/heads/" --jq '.[].ref' | grep -v '^refs/heads/main$' || true); do
         gh api -X DELETE "repos/$REPO/git/$ref" >/dev/null
     done
-    for id in $(jq -r '.issues | keys[]' "$state"); do
-        number=$(jq -r --arg id "$id" '.issues[$id]' "$state")
-        for comment in $(gh api "repos/$REPO/issues/$number/comments?per_page=100" --jq '.[].id'); do
-            gh api -X DELETE "repos/$REPO/issues/comments/$comment" >/dev/null
-        done
-        if [[ $wanted == *" ${id#tally-} "* || $wanted == *" $id "* ]]; then
-            gh api -X PATCH "repos/$REPO/issues/$number" -f state=open >/dev/null
-            statuses+=" $number:Ready"
-        else
-            gh api -X PATCH "repos/$REPO/issues/$number" -f state=closed -f state_reason=not_planned >/dev/null
-            statuses+=" $number:Backlog"
-        fi
+    # Every trial gets fresh issues: an issue a prior trial touched carries closed PRs and comments that
+    # one kit reads as prior art and the other ignores, so reusing issues makes trials incomparable.
+    for number in $(gh api "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.pull_request | not) | .number'); do
+        gh api -X PATCH "repos/$REPO/issues/$number" -f state=closed -f state_reason=not_planned >/dev/null
     done
-    board_ids
-    set_statuses "$statuses"
-    log "reset $REPO to $TAG; open: ${1:-none}"
+    archive_board_items
+    for id in ${1:-}; do
+        file=$(ls "$bench"/issues/"$id"-*.md)
+        json=$(gh api "repos/$REPO/issues" -f title="$(issue_title "$file")" -f body="$(issue_body "$file")")
+        map=$(jq --arg id "tally-$id" --argjson n "$(jq .number <<<"$json")" '. + {($id): $n}' <<<"$map")
+        nodes+=("$(jq -r .node_id <<<"$json")")
+    done
+    for id in ${1:-}; do
+        file=$(ls "$bench"/issues/"$id"-*.md)
+        blocker=$(issue_field "$file" blocked_by)
+        [[ -n $blocker && $(jq -r --arg b "$blocker" '.[$b] // empty' <<<"$map") ]] || continue
+        gh api "repos/$REPO/issues/$(jq -r --arg id "tally-$id" '.[$id]' <<<"$map")/dependencies/blocked_by" \
+            -F issue_id="$(gh api "repos/$REPO/issues/$(jq -r --arg b "$blocker" '.[$b]' <<<"$map")" --jq .id)" >/dev/null
+    done
+    ((${#nodes[@]} == 0)) || board_ready "${nodes[@]}"
+    jq --argjson m "$map" '.current = $m' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
+    log "reset $REPO to $TAG; fresh issues: $(jq -c . <<<"$map")"
 }
 
 case ${1:-} in
