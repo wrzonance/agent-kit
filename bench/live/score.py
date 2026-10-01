@@ -22,7 +22,7 @@ KIT_PATH = re.compile(r"plugins/cache/agent-kit/|/agentkit/(skills|hooks)/|/v2/(
 READ_CMD = re.compile(r"^\s*(cat|sed|rg|nl|head|tail|less|awk|grep)\b")
 SPAWN_TOOLS = {"spawn_agent"}
 # Harness-injected user-role messages (instructions, skill bodies, context) are not operator prompts.
-INJECTED = re.compile(r"^\s*(#\s*AGENTS\.md|<skill>|<environment_context>|<user_instructions>|<turn_aborted>|<subagent|<permissions)")
+INJECTED = re.compile(r"^\s*(#\s*AGENTS\.md|<skill>|<environment_context>|<user_instructions>|<recommended_plugins>|<turn_aborted>|<subagent|<permissions)")
 WAIT_TOOLS = {"wait_agent", "wait"}
 
 
