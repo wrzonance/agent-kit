@@ -4,6 +4,7 @@
 #   bench/live/trial.sh --kit v1|v2 --ref GITREF [--issues "01 03 04"] [--model M] [--effort E]
 #                       [--worker-model M] [--worker-effort E] [--timeout SECONDS] [--trial ID]
 #
+# Run it from a worktree, not the operator's checkout: the ledger row it appends is a tracked result to commit.
 # Steps: reset the sandbox; install the kit at GITREF into a private CODEX_HOME (so the arm's plugin bytes
 # are pinned); clone the sandbox; run the kit's one invocation headless with `codex exec`; score the root
 # and child rollouts; run the hidden acceptance suites against every PR head; append one ledger row.

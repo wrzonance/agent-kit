@@ -184,7 +184,9 @@ cmd_reset() {
             -F issue_id="$(gh api "repos/$REPO/issues/$(jq -r --arg b "$blocker" '.[$b]' <<<"$map")" --jq .id)" >/dev/null
     done
     ((${#nodes[@]} == 0)) || board_ready "${nodes[@]}"
-    jq --argjson m "$map" '.current = $m' "$state" >"$state.tmp" && mv "$state.tmp" "$state"
+    # Per-trial state lives outside the repository, so a trial never dirties a tracked file.
+    mkdir -p "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}"
+    printf '%s\n' "$map" >"${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json"
     log "reset $REPO to $TAG; fresh issues: $(jq -c . <<<"$map")"
 }
 
