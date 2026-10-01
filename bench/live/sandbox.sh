@@ -190,10 +190,10 @@ cmd_reset() {
     log "reset $REPO to $TAG; fresh issues: $(jq -c . <<<"$map")"
 }
 
-# cmd_seed_prs "01 03 04": one draft PR per issue from bench/fixtures/pr-v1, stacked per its manifest, against
+# cmd_seed_prs "01 03 04": one draft PR per issue from bench/fixtures/pr-v2, stacked per its manifest, against
 # the fresh issues the last reset created. Prints "issue-id pr-number" lines and saves them outside the repo.
 cmd_seed_prs() {
-    local work="${AK_BENCH_WORK:-$HOME/.cache/ak-bench}" seed="$bench/fixtures/pr-v1" clone id base_id base number title pr map='{}'
+    local work="${AK_BENCH_WORK:-$HOME/.cache/ak-bench}" seed="$bench/fixtures/pr-v2" clone id base_id base number title pr map='{}'
     local issues="$work/current-issues.json"
     [[ -f $issues ]] || die "no $issues; run: sandbox.sh reset \"${1:-}\" first"
     clone=$(mktemp -d)

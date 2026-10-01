@@ -178,7 +178,7 @@ outcome_sh="$here/outcome.sh"
 
 row="$dir/row.json"
 fixture_label="ak-bench:$(jq -r .tag "$state"):$issues"
-[[ $scenario == issues ]] || fixture_label="ak-bench-prs:$(jq -r .tag "$state"):pr-v1:$issues"
+[[ $scenario == issues ]] || fixture_label="ak-bench-prs:$(jq -r .tag "$state"):pr-v2:$issues"
 if [[ -n $root ]]; then
     "$here/score.py" "$root" --sessions "$CODEX_HOME/sessions" --outcome "$outcome" \
         --label kit="$kit" --label ref="$sha" --label fixture="$fixture_label" \
