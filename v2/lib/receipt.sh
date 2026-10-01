@@ -18,6 +18,19 @@ receipt_findings() {
     done <"$1"
 }
 
+# receipt_all_decided DIR FINDINGS: every finding the review printed has a disposition (PR bench 2026-10-01: a
+# worker ran ak review, got a P1, and posted a receipt saying "none" four seconds later).
+receipt_all_decided() {
+    local review=$1/review.md want got titles
+    [[ -f $review ]] || return 0
+    want=$(grep -cE '^P[12]:' "$review" || true)
+    got=$(grep -c . <<<"$2" || true)
+    ((got >= want)) && return 0
+    titles=$(grep -E '^P[12]:' "$review" | cut -d'—' -f1 | cut -c1-80 | head -n 3 | paste -sd';' -)
+    die "the review has $want findings but the findings file decides $got: $titles" \
+        "write one line per finding: P1|title|fixed <sha> or P2|title|declined: reason"
+}
+
 receipt_review() {
     local dir=$1
     if [[ -f $dir/review.md ]]; then
@@ -83,6 +96,7 @@ cmd_main() {
     # A receipt before the review hides the review's findings (PR bench 2026-10-01: a worker posted its receipt,
     # then ran ak review and found the bug too late).
     [[ $review != skipped ]] || die "no review of this branch yet" "ak review"
+    receipt_all_decided "$dir" "$findings"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
         die "could not post the receipt comment" "gh auth status"
