@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bench/live/batch.sh V1_REF V2_REF [ISSUES] [TIMEOUT]: an ABBA-ordered batch of live trials, one at a time.
+# The sandbox is shared, so trials never overlap. Each row lands in bench/results/live.jsonl as it finishes.
+set -euo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+v1=$1 v2=$2 issues=${3:-01 03 04} timeout_s=${4:-10800}
+for kit in v1 v2 v2 v1 v1 v2; do
+    case $kit in v1) ref=$v1 ;; v2) ref=$v2 ;; esac
+    "$here/trial.sh" --kit "$kit" --ref "$ref" --issues "$issues" --timeout "$timeout_s" || true
+done
+python3 "$here/compare.py" --fixture "ak-bench:"
