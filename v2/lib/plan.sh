@@ -263,6 +263,10 @@ resume_run() {
     current=$(<"$MAIN/.ak/runs/current")
     file="$MAIN/.ak/runs/$current.json"
     [[ -f $file ]] || return 1
+    # Issues named on this call that the current run never planned are new work, not a resume.
+    for n in "$@"; do
+        jq -e --argjson n "$n" 'any(.items[]; .kind == "issue" and .n == $n)' "$file" >/dev/null || return 1
+    done
     age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
     ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
     local lines=()
@@ -314,7 +318,7 @@ cmd_main() {
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
-    ((new)) || ! resume_run || return 0
+    ((new)) || ! resume_run "${issues[@]}" || return 0
     run=$(date +%Y%m%d-%H%M%S)
     local i=2 stamp=$run
     while [[ -e $MAIN/.ak/runs/$run.json ]]; do run="$stamp-$i" i=$((i + 1)); done
