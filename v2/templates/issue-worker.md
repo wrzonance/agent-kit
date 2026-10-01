@@ -3,6 +3,9 @@
 Repo `{{SLUG}}`, base `{{BASE}}`, branch `{{BRANCH}}`, worktree `{{WORKTREE}}`.
 You own this issue end to end: implement it, ship a draft PR, review it, get CI green, post the receipt.
 Work only in `{{WORKTREE}}` and run every command below from there.
+When the issue asks for more than one PR, or part of it needs something this worktree can't do (an area the
+issue keeps separate, a live app session, an operator step), do the part that fits as this PR and name the rest
+with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason "<why>"` and end with its line.
 
 1. Run `{{AK}} setup`. Implement the issue with TDD: a failing test first, then the code that passes it.
 2. Run `{{AK}} verify`. Fix until it prints `verify=pass`. When it prints `oracle=ci`, some suite did not run
@@ -15,7 +18,8 @@ Work only in `{{WORKTREE}}` and run every command below from there.
 5. Run `{{AK}} ci` (exit 0 green or no CI, 1 red, 3 still pending: run it again). On red, read the printed error lines (full logs are in `.ak/ci/`), fix, verify, ship, and run
    `{{AK}} ci` again, at most 3 times. A check that fails for reasons outside your diff is noted, not chased.
 6. Write `.ak/findings`, one line per review finding: `P1|title|fixed <sha>` or `P2|title|declined: reason`
-   (just `none` when there were none). Run `{{AK}} receipt --findings .ak/findings`.
+   (just `none` when there were none). Run `{{AK}} receipt --findings .ak/findings`, adding
+   `--remaining "<what is left and why>"` when this PR covers only part of the issue.
 7. End with one line: the result line `receipt` printed (`pr=… ci=… review=… head=… note=…`).
 
 Never merge, mark the PR ready, force-push, or touch another worktree.
