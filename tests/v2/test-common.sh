@@ -50,6 +50,8 @@ assert_eq 'Codex <noreply@openai.com>' "$(trailer)" 'codex trailer'
 unset CODEX_HOME
 export CLAUDECODE=1
 assert_eq 'claude' "$(harness)" 'claude harness'
-unset CLAUDECODE
+export CODEX_THREAD_ID=t1
+assert_eq 'codex' "$(harness)" 'a Codex shell launched from a Claude session is codex'
+unset CLAUDECODE CODEX_THREAD_ID
 
 finish

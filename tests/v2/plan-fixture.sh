@@ -52,7 +52,7 @@ default_routes() {
 
 # standard_board: the board most cases use.
 standard_board() {
-    route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 671 Ready),$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 680 Ready),$(board_item 690 Ready),$(board_item 691 Ready),$(board_item 692 Ready),$(board_item 693 Ready),$(board_item 694 Done)]}"
+    route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 671 Ready),$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 680 Ready),$(board_item 690 Ready),$(board_item 691 Ready),$(board_item 692 Ready),$(board_item 693 Ready),$(board_item 694 Done),$(board_item 695 Ready)]}"
     # shellcheck disable=SC2016
     issue_route 671 'Fix `src/a.txt` and see https://example.com/x/y.md and AGENTS.md {{BRANCH}}'
     issue_route 680 'Also touches src/a.txt.'
@@ -61,6 +61,7 @@ standard_board() {
     issue_route 692 'Anything'
     issue_route 693 'Add lib/new.sh next to core.sh'
     issue_route 700 'Backlog work in src/b.txt'
+    route 'api repos/acme/widget/issues/695' '{"number":695,"title":"Title 695","state":"closed","body":"","labels":[]}'
     route 'api repos/acme/widget/issues/690/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
     route 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-692*' '[{"number":9}]'
     default_routes

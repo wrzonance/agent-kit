@@ -215,6 +215,8 @@ pick() {
     while ((spawned < limit)) && IFS=$'\t' read -r -u 3 n labels; do
         [[ $n =~ ^[0-9]+$ ]] || continue
         check_issue "$n" "$labels"
+        # A closed issue on the board is finished work, not a decision anyone needs to read.
+        [[ $REASON != closed ]] || continue
         [[ -z $REASON ]] || { emit "drop issue=$n reason=$REASON"; continue; }
         hits=$(collisions "$WS")
         if [[ -n $hits && $serialize == 0 ]]; then
@@ -245,6 +247,27 @@ write_run() {
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
+# resume_run: when the current run still has spawned workers without a result, print its lines again and
+# succeed, so a root that missed plan's output (or re-ran it) gets the same spawns instead of an empty plan.
+resume_run() {
+    local current file age n wt
+    [[ -f $MAIN/.ak/runs/current ]] || return 1
+    current=$(<"$MAIN/.ak/runs/current")
+    file="$MAIN/.ak/runs/$current.json"
+    [[ -f $file ]] || return 1
+    age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
+    ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
+    local lines=()
+    while IFS=$'\t' read -r n wt; do
+        [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || continue
+        lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT")
+    done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned") | [.n, .worktree] | @tsv' "$file")
+    ((${#lines[@]})) || return 1
+    printf 'run=%s resumed\n' "$current"
+    printf '%s\n' "${lines[@]}"
+    jq -r '.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(","))"' "$file"
+}
+
 # print_lines: at most 20 lines; drops beyond that stay in the log.
 print_lines() {
     local line keep drops=0 hidden=0
@@ -261,13 +284,14 @@ print_lines() {
 }
 
 cmd_main() {
-    local limit='' yolo=false serialize=0 issues=() run list
+    local limit='' yolo=false serialize=0 new=0 issues=() run list
     while (($#)); do
         case $1 in
             --limit) limit=${2:-}; shift 2 || usage_die 'ak plan: --limit needs a number' ;;
             --issue) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die 'ak plan: --issue needs a number'; issues+=("$2"); shift 2 ;;
             --yolo) yolo=true; shift ;;
             --serialize) serialize=1; shift ;;
+            --new) new=1; shift ;;
             *) usage_die "ak plan: unknown argument: $1" ;;
         esac
     done
@@ -282,6 +306,7 @@ cmd_main() {
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
+    ((new)) || ! resume_run || return 0
     run=$(date +%Y%m%d-%H%M%S)
     local i=2 stamp=$run
     while [[ -e $MAIN/.ak/runs/$run.json ]]; do run="$stamp-$i" i=$((i + 1)); done

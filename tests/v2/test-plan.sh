@@ -33,6 +33,7 @@ assert_contains "$run" 'run=' 'the first line names the run'
 assert_eq "$expected" "$(sed 1d <<<"$out")" 'spawn and drop lines follow board order'
 assert_not_contains "$out" 'issue=700' 'Backlog is not picked without --yolo'
 assert_not_contains "$out" 'issue=694' 'Done items are not candidates'
+assert_not_contains "$out" 'issue=695' 'a closed issue still on the board prints no drop line'
 assert_eq yes "$( (( $(wc -l <<<"$out") <= 20 )) && echo yes || echo no)" 'output is at most 20 lines'
 assert_eq 'feat/issue-671' "$(git -C "$wt" branch --show-current)" 'the worktree is on feat/issue-671'
 assert_eq "$(git rev-parse origin/main)" "$(git -C "$wt" rev-parse HEAD)" 'the worktree starts at origin/main'
@@ -57,6 +58,20 @@ assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671
 assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
 assert_eq 1 "$(grep -c 'issues/693/dependencies' "$FAKE_GH_LOG")" 'one deps read per candidate'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/69/' 'a label drop costs no REST call'
+
+# A second plan while workers are still out resumes the run instead of planning nothing (the 2026-09-30 smoke run).
+: >"$FAKE_GH_LOG"
+again=$("$AK" plan 2>&1); rc=$?
+assert_eq 0 "$rc" 'a re-run plan exits 0'
+assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
+assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
+assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
+printf 'pr=x\n' >"$wt/.ak/result"
+printf 'pr=y\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
+fresh_plan=$("$AK" plan 2>&1)
+assert_not_contains "$fresh_plan" 'resumed' 'a run whose workers all reported is not resumed'
+forced=$("$AK" plan --new 2>&1)
+assert_not_contains "$forced" 'resumed' '--new always plans fresh'
 
 fresh
 standard_board

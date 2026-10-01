@@ -69,10 +69,14 @@ base_branch() {
     printf '%s\n' "${value:-main}"
 }
 
+# The innermost harness wins: a Codex shell sets CODEX_THREAD_ID, and may inherit CLAUDE* from a Claude session
+# that launched it; the reverse inheritance is rare. Weaker hints only break the tie when neither marker is set.
 harness() {
-    if [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then
+    if [[ -n ${CODEX_THREAD_ID:-} ]]; then
+        printf 'codex\n'
+    elif [[ -n ${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-} ]]; then
         printf 'claude\n'
-    elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-}${CODEX_THREAD_ID:-} ]]; then
+    elif [[ -n ${CODEX_HOME:-}${CODEX_SANDBOX_NETWORK_DISABLED:-}${CODEX_PERMISSION_PROFILE:-} ]]; then
         printf 'codex\n'
     else
         printf 'unknown\n'
