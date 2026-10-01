@@ -30,6 +30,15 @@ merge_parent() {
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
         die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=closed&head=$owner:$base'"
     [[ -n $parent ]] || return 0
+    # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
+    # parent's first commit, and resolving it against the squash on main kept the parent's old bug
+    # (PR bench 2026-10-01: #174 reintroduced the undo bug #173 had fixed).
+    local head out
+    head=$(gh api "repos/$slug/pulls/$n" | jq -r .head.ref) || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
+    if ! out=$(gh api "repos/$slug/merges" -f "base=$head" -f "head=$base" \
+        -f "commit_message=merge: $base into $head" 2>&1); then
+        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f base=$head -f head=$base"
+    fi
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
         die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
 }

@@ -48,6 +48,7 @@ route "api $api/pulls?state=open&base=feat/a*" '[{"number":25}]'
 route "api $api/pulls?state=open&base=*" '[]'
 route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
+route "api $api/merges -f base=feat/c -f head=feat/gone*" '{"sha":"mergedparent"}'
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
 route "api -X PUT $api/pulls/3[0-9]/update-branch*" 'gh: Merge conflict between base and head (HTTP 422)' 1
 route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
@@ -91,6 +92,9 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'the stacked PR is not merg
 out=$("$AK" merge --pr 26 2>&1); rc=$?
 assert_eq 0 "$rc" 'a PR whose parent already merged is retargeted and merged'
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PATCH $api/pulls/26 -f base=main" 'retargeted to the repo base'
+first=$(grep -n "merges -f base=feat/c -f head=feat/gone" "$FAKE_GH_LOG" | head -1 | cut -d: -f1)
+patch=$(grep -n "PATCH $api/pulls/26" "$FAKE_GH_LOG" | head -1 | cut -d: -f1)
+assert_eq yes "$( [[ -n $first && -n $patch && $first -lt $patch ]] && echo yes || echo no)" "the parent's final branch is merged in before the retarget"
 assert_contains "$out" 'merged pr=26' 'then merged'
 
 out=$("$AK" merge --pr 27 2>&1)
