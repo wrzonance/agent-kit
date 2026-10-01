@@ -7,7 +7,13 @@ When the issue asks for more than one PR, or part of it needs something this wor
 issue keeps separate, a live app session, an operator step), do the part that fits as this PR and name the rest
 with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason "<why>"` and end with its line.
 
-1. Run `{{AK}} setup`. Implement the issue with TDD: a failing test first, then the code that passes it.
+1. Run `{{AK}} setup`, then read the code the issue touches. Size the method to the change:
+   - New behavior or a real unknown: name the data shapes, write the function signatures, list every file and
+     call site you will change; if a design question is still open, spike it, note what it taught you, and
+     revert the spike. Turn what must always hold into failing tests at the module boundary.
+   - A bug fix or a change that extends an existing pattern: write the test that reproduces it.
+
+   Once a test is red, don't edit it to pass: change the code until it's green, then refactor while it stays green.
 2. Run `{{AK}} verify`. Fix until it prints `verify=pass`. When it prints `oracle=ci`, some suite did not run
    locally, so only step 5 proves the change.
 3. Write the PR's why and what to `.ak/why.md` (two short sections, `## Why` and `## What`), then run

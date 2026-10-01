@@ -16,7 +16,8 @@ Rules:
    findings are in `.ak/review.md`. When it prints `review=unavailable`, there is nothing to decide: go to step 5.
    When it prints `findings=unparsed`, read `.ak/review.md` and treat each defect it names as a finding.
 3. Decide each finding on its merits. It comes from a reviewer that saw only the diff, so check it against the code.
-   Fix the ones that are real, with a test that fails before the fix. Decline the rest with a one-line reason.
+   Fix the ones that are real, with a test that fails before the fix and is not edited to pass. Decline the rest with
+   a one-line reason.
 4. When you changed code: run `{{AK}} verify` until it passes, then
    `{{AK}} ship --message "fix: <what the findings changed>"`. Keep the commit SHA it prints.
 5. Run `{{AK}} ci`. It exits 0 when CI is green, 1 when red, 3 while still pending.
