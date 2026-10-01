@@ -142,6 +142,23 @@ assert_contains "$out" 'spawn issue=801' 'an issue whose only shared path is a t
 assert_contains "$out" 'spawn issue=802' 'a "still passes" path is not a write either'
 assert_contains "$out" 'drop issue=803 reason=collides-with-#801' 'a real shared write still collides'
 
+# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (cable-tool #684/#685,
+# 2026-10-01: both named `scripts/verify.py --fast` and the split issues collided).
+fresh
+# shellcheck disable=SC2016
+issue_route 811 $'Change `src/a.txt`.\n\n- `lib/core.sh --fast`'
+# shellcheck disable=SC2016
+issue_route 812 $'Change `src/b.txt`.\n\n- Run lib/core.sh and report anything unavailable.'
+default_routes
+out=$("$AK" plan --issue 811 --issue 812 2>&1)
+assert_contains "$out" 'spawn issue=811' 'a path run with flags is not a write'
+assert_contains "$out" 'spawn issue=812' 'a Run instruction line is not a write'
+ws=$(cd "$repo" && bash -c '
+    source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    FILES=$(mktemp); git ls-files >"$FILES"
+    write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
+assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"

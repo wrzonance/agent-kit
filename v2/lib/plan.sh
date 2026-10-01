@@ -81,11 +81,15 @@ excluded_label() {
 
 # write_set BODY: repository paths the body names; new files count when their directory exists.
 write_set() {
-    # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines and
-    # backticked commands (`node test/smoke.mjs`), keep backticked paths (`src/store.js`).
+    # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines, "Run/Verify/
+    # Execute ..." instruction lines, and any backticked span with a space in it, which is a command
+    # (`node test/smoke.mjs`, `scripts/verify.py --fast`); keep backticked paths (`src/store.js`).
     # shellcheck disable=SC2016 # literal backticks in a sed expression
-    sed -E -e '/[Ss]till (exits?|pass(es)?|succeeds?|runs?)/d' -e 's/`[A-Za-z][A-Za-z0-9_-]* [^`]*`//g' \
-        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$1" | grep -oE '[A-Za-z0-9_./@+-]+' |
+    sed -E -e '/[Ss]till (exits?|pass(es)?|succeeds?|runs?)/d' \
+        -e '/^[[:space:]]*([-*+][[:space:]]+)?([Rr]un|[Vv]erify|[Ee]xecute)[[:space:]]/d' \
+        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$1" |
+        awk -F'`' '{ out = $1; for (i = 2; i <= NF; i++) out = out " " ((i % 2 == 0 && $i ~ / /) ? "" : $i); print out }' |
+        grep -oE '[A-Za-z0-9_./@+-]+' |
         awk '
         FNR == NR {
             f[$0] = 1; n = split($0, p, "/"); d = p[1]
