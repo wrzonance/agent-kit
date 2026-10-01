@@ -308,6 +308,9 @@ step 'versioned plugin paths'
 "$here/lint-versioned-plugin-paths.sh" --selftest || rc=1
 "$here/lint-versioned-plugin-paths.sh" "$plugin" || rc=1
 
+step 'v2 (ak)'
+"$here/v2/run.sh" || rc=1
+
 step 'no vendored system skills'
 # .system/ is Codex's OWN bundled skill set (imagegen, skill-creator,
 # plugin-creator, review-agent, skill-installer, openai-docs), each under its own

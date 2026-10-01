@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# ak: the single agentkit v2 entry point. `ak <command> [args]`.
+set -euo pipefail
+AK_HOME=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+export AK_HOME
+# shellcheck source=../lib/common.sh
+source "$AK_HOME/lib/common.sh"
+
+usage() {
+    cat <<'USAGE'
+usage: ak <command> [args]
+  root:   plan [--limit N] [--yolo] [--serialize] [--new] collect (--issue N | --pr N)
+          pr-plan --pr N [--pr N]...                merge --pr N
+  worker: setup   verify   ship --message M [--body-file F]   review
+          ci [--timeout S] [--once]   receipt --findings F
+USAGE
+}
+
+cmd=${1:-}
+[[ -n $cmd && $cmd != -h && $cmd != --help ]] || { usage; exit 0; }
+shift
+[[ $cmd =~ ^[a-z][a-z-]*$ && -f $AK_HOME/lib/$cmd.sh ]] || { usage >&2; usage_die "unknown command: $cmd"; }
+# shellcheck source=/dev/null
+source "$AK_HOME/lib/$cmd.sh"
+cmd_main "$@"

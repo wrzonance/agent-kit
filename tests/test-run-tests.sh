@@ -37,6 +37,8 @@ make_fixture() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-helper-refs.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-reference-manifest.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/lint-versioned-plugin-paths.sh"
+    mkdir -p "$dir/tests/v2"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/tests/v2/run.sh"
     cat >"$dir/tests/build-plugin.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -59,7 +61,7 @@ EOF
         "$dir/tests/lint-helper-size.sh" \
         "$dir/tests/lint-collation.sh" \
         "$dir/tests/lint-helper-refs.sh" "$dir/tests/lint-reference-manifest.sh" \
-        "$dir/tests/lint-versioned-plugin-paths.sh" "$dir/tests/build-plugin.sh" \
+        "$dir/tests/lint-versioned-plugin-paths.sh" "$dir/tests/build-plugin.sh" "$dir/tests/v2/run.sh" \
         "$dir/tests/check-release-version.sh" \
         "$dir/tests/stub/gh"
     for suite in alpha beta; do

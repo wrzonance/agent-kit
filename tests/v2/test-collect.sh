@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# ak collect: result lines, missing results, cross-writes, and chain successors.
+TEST_NAME=v2-collect
+# shellcheck source=lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=plan-fixture.sh
+source "$V2_TESTS/plan-fixture.sh"
+ak_with_template
+
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+
+out=$("$AK" collect --issue 671 2>&1); rc=$?
+assert_eq 0 "$rc" 'a missing result is not a failure'
+assert_eq 'issue=671 state=no-result note=worker ended without .ak/result' "$out" 'a missing result is one line'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)" 'no successor spawns without a result'
+
+printf 'x\n' >"$wt/src/a.txt"
+git -C "$wt" commit -qam work && git -C "$wt" push -q
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1); rc=$?
+assert_eq 0 "$rc" 'collect exits 0'
+wt2="$repo/.worktrees/feat/issue-680"
+assert_eq "issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=findings=2 fixed=2 declined=0
+spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" "$out" 'collect prints the result and the unblocked successor'
+assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$wt2" rev-parse HEAD)" 'the successor starts from the predecessor branch'
+assert_contains "$(cat "$wt2/.ak/prompt.md")" 'base=feat/issue-671' 'the successor targets the predecessor branch'
+assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
+assert_eq 'collected spawned' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run file records both states'
+assert_eq "$wt2" "$(jq -r '.items[] | select(.n == 680) | .worktree' "$runfile")" 'the run file records the successor worktree'
+
+printf 'stray\n' >stray.txt
+out=$("$AK" collect --issue 693 2>&1)
+assert_contains "$out" 'cross-write=stray.txt' 'a new root change is reported'
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'spawn' 'a successor spawns once'
+
+jq --arg wt "$wt" '.items += [{kind: "pr", n: 9, worktree: $wt, branch: "feat/issue-671", state: "spawned", needs: []}]' \
+    "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+rm -f stray.txt
+out=$("$AK" collect --pr 9 2>&1)
+assert_eq 'pr=9 ci=green review=done note=findings=2 fixed=2 declined=0' "$out" 'collect --pr prints the pr line'
+
+out=$("$AK" collect --issue 12345 2>&1); rc=$?
+assert_eq 1 "$rc" 'an issue outside the run refuses'
+assert_contains "$out" 'fix: ' 'the refusal names the fix'
+out=$("$AK" collect 2>&1); rc=$?
+assert_eq 2 "$rc" 'collect needs --issue or --pr'
+
+finish
