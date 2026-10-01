@@ -218,10 +218,43 @@ spawn_issue() {
 }
 
 # pick LIMIT SERIALIZE: walk candidates on fd 3, choosing up to LIMIT spawns.
+# issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. A field run planned an issue another run still
+# had queued, and a later collect re-spawned an issue that had already shipped. Only a run with a worker still out
+# (spawned, no result) and touched within a day counts, so an abandoned run never blocks new work.
+issue_active() {
+    local n=$1 skip=${2:-} file item state wt needs
+    while IFS= read -r file; do
+        [[ $file != "$skip" ]] || continue
+        run_live "$file" || continue
+        item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
+            [.state, .worktree // "", (.needs | map("#" + tostring) | join(","))] | join("|")' "$file")
+        IFS='|' read -r state wt needs <<<"$item"
+        case $state in
+            queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
+            spawned) [[ -f $wt/.ak/result ]] || { printf 'running\n'; return 0; } ;;
+        esac
+    done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
+    wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
+    [[ $wt == /* ]] || wt="$MAIN/$wt"
+    [[ ! -f $wt/.ak/result ]] || printf 'shipped:%s\n' "$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)"
+    return 0
+}
+
+# run_live FILE: does the run still have a worker out (spawned, no .ak/result)?
+run_live() {
+    local wt
+    while IFS= read -r wt; do
+        [[ -z $wt || -f $wt/.ak/result ]] || return 0
+    done < <(jq -r '.items[] | select(.state == "spawned") | .worktree // ""' "$1")
+    return 1
+}
+
 pick() {
-    local limit=$1 serialize=$2 spawned=0 n labels hits
+    local limit=$1 serialize=$2 spawned=0 n labels hits active
     while ((spawned < limit)) && IFS=$'\t' read -r -u 3 n labels; do
         [[ $n =~ ^[0-9]+$ ]] || continue
+        active=$(issue_active "$n")
+        [[ -z $active ]] || { emit "skip issue=$n reason=$active"; continue; }
         check_issue "$n" "$labels"
         # A closed issue on the board is finished work, not a decision anyone needs to read.
         [[ $REASON != closed ]] || continue
@@ -307,6 +340,8 @@ cmd_main() {
             *) usage_die "ak plan: unknown argument: $1" ;;
         esac
     done
+    # Named issues are the operator's whole request: plan all of them unless --limit says otherwise.
+    ((${#issues[@]} == 0)) || limit=${limit:-${#issues[@]}}
     limit=${limit:-$(cfg AGENT_PLAN_LIMIT 3)}
     [[ $limit =~ ^[1-9][0-9]*$ ]] || usage_die "ak plan: --limit must be a positive number, got: $limit"
     TEMPLATE="$AK_HOME/templates/issue-worker.md"

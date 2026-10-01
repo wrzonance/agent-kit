@@ -16,7 +16,8 @@ runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
 
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'a missing result is not a failure'
-assert_eq 'issue=671 state=no-result note=worker ended without .ak/result' "$out" 'a missing result is one line'
+assert_eq 'issue=671 state=pending note=no .ak/result yet; collect again once the worker reports' "$out" 'a missing result is pending, not ended'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'a pending collect leaves the run state alone'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)" 'no successor spawns without a result'
 
 printf 'x\n' >"$wt/src/a.txt"

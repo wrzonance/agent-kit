@@ -15,7 +15,8 @@ result_line() {
     local kind=$1 n=$2 file="$3/.ak/result" key value
     local -A r=()
     if [[ ! -f $file ]]; then
-        emit "$kind=$n state=no-result note=worker ended without .ak/result"
+        # No result is not "ended": a field root collected 10 s after the spawn and read this as a dead worker.
+        emit "$kind=$n state=pending note=no .ak/result yet; collect again once the worker reports"
         return 1
     fi
     while IFS='=' read -r key value; do
@@ -38,7 +39,7 @@ cross_write() {
 
 # spawn_successors: queued issues whose needs are all collected, each from its last predecessor's branch.
 spawn_successors() {
-    local n pred from ready
+    local n pred from ready active
     ready=$(jq -r '[.items[] | select(.state == "collected") | .n] as $done |
         .items[] | select(.kind == "issue" and .state == "queued" and ((.needs - $done) | length) == 0) |
         "\(.n)\t\(.needs[-1])"' "$RUNFILE")
@@ -48,6 +49,15 @@ spawn_successors() {
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
     while IFS=$'\t' read -r -u 3 n pred; do
+        active=$(issue_active "$n" "$RUNFILE")
+        if [[ -z $active ]] && [[ $(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq 'length') != 0 ]]; then
+            active=open-pr
+        fi
+        if [[ -n $active ]]; then
+            emit "skip issue=$n reason=$active"
+            run_update '(.items[] | select(.kind == "issue" and .n == $n)).state = "skipped"' --argjson n "$n"
+            continue
+        fi
         from="feat/issue-$pred"
         git -C "$MAIN" fetch -q origin "$from" >>"$AK_LOG" 2>&1 && from="origin/$from"
         if ! ISSUE_JSON[$n]=$(api "repos/$SLUG/issues/$n"); then
@@ -87,7 +97,11 @@ cmd_main() {
     fi
     [[ -n $item ]] || die "$kind $n is not in any run" "ak plan --issue $n"
     worktree=$(jq -r '.worktree // ""' <<<"$item")
-    result_line "$kind" "$n" "$worktree" || state=no-result
+    if ! result_line "$kind" "$n" "$worktree"; then
+        cross_write
+        printf '%s\n' "${LINES[@]}"
+        return 0
+    fi
     cross_write
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
     [[ $kind != issue ]] || spawn_successors
