@@ -103,15 +103,15 @@ ak_dir() {
     printf '%s\n' "$dir"
 }
 
-# run_logged NAME COMMAND: run COMMAND through bash in the worktree, log it, print one PASS line or FAIL + tail.
-# A command that runs for minutes shows a heartbeat (AK_HEARTBEAT seconds, default 60), so an agent whose shell
-# yields mid-run sees it is alive instead of inspecting processes.
+# run_logged NAME COMMAND [DIR]: run COMMAND in DIR (relative to the worktree), log it, print PASS or FAIL + tail.
+# A command that runs for minutes shows a heartbeat (AK_HEARTBEAT seconds, default 20: below the ~30 s at which
+# an agent's shell yields), so the agent sees it is alive instead of inspecting processes.
 run_logged() {
-    local name=$1 command=$2 log rc=0 pid waited=0 beat=${AK_HEARTBEAT:-60}
+    local name=$1 command=$2 dir=${3:-.} log rc=0 pid waited=0 beat=${AK_HEARTBEAT:-20}
     log="$(ak_dir)/logs/$name.log"
     mkdir -p -- "$(dirname -- "$log")"
-    printf 'run %s: %s\n' "$name" "${command:0:100}"
-    (cd -- "$(worktree_root)" && bash -c "$command") >"$log" 2>&1 &
+    printf 'run %s: %s%s\n' "$name" "${command:0:100}" "$([[ $dir == . ]] || printf ' (in %s)' "$dir")"
+    (cd -- "$(worktree_root)/$dir" && bash -c "$command") >"$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1
