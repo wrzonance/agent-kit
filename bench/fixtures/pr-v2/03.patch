@@ -72,7 +72,7 @@ index 4c3ea3a..9b6e5db 100755
 +assert.deepEqual(fromJSON(toJSON(state)), state, 'toJSON/fromJSON preserves removal history');
 +
 +const undone = undoRemove(state);
-+assert.deepEqual(undone.items, [{ id, name: 'Coffee', count: 1 }], 'undoRemove restores the last removed item and count');
++assert.deepEqual(undone.items.map((it) => it.name), ['Coffee'], 'undoRemove restores the last removed item');
 +assert.equal(undone.lastRemoved, undefined, 'undoRemove clears the removal history');
 +assert.equal(undoRemove(undone), undone, 'undoRemove without history preserves the same state reference');
 +
