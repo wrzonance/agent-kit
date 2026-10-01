@@ -17,7 +17,7 @@ kit_repo=$(dirname -- "$bench")
 state="$here/sandbox.json"
 
 kit='' ref='' issues='01 03 04' model=gpt-6-luna effort=high worker_model=gpt-5.6-luna worker_effort=medium
-timeout_s=5400 trial=''
+timeout_s=5400 trial='' scenario=issues
 while (($#)); do
     case $1 in
         --kit) kit=$2; shift 2 ;;
@@ -29,11 +29,13 @@ while (($#)); do
         --worker-effort) worker_effort=$2; shift 2 ;;
         --timeout) timeout_s=$2; shift 2 ;;
         --trial) trial=$2; shift 2 ;;
+        --scenario) scenario=$2; shift 2 ;;
         *) printf 'trial: unknown argument %s\n' "$1" >&2; exit 2 ;;
     esac
 done
 [[ $kit == v1 || $kit == v2 ]] || { printf 'trial: --kit v1|v2 is required\n' >&2; exit 2; }
 [[ -n $ref ]] || { printf 'trial: --ref is required\n' >&2; exit 2; }
+[[ $scenario == issues || $scenario == prs ]] || { printf 'trial: --scenario issues|prs\n' >&2; exit 2; }
 [[ -f $state ]] || { printf 'trial: no %s; run bench/live/sandbox.sh create\n' "$state" >&2; exit 2; }
 
 sha=$(git -C "$kit_repo" rev-parse --verify "$ref^{commit}")
@@ -67,6 +69,29 @@ log "reset sandbox, open issues: $issues"
     sleep 900
     "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
 }
+
+# GitHub's project listing lags fresh items; a run that starts before they show sees a different board.
+expect=$(wc -w <<<"$issues")
+for _ in $(seq 1 30); do
+    seen=$(gh project item-list "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --format json --limit 100 |
+        jq --argjson want "$(jq -c '[.[]]' "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json")" \
+            '[.items[] | select(.status == "Ready" and (.content.number as $n | $want | index($n)))] | length')
+    ((seen >= expect)) && break
+    sleep 10
+done
+((seen >= expect)) || { log "board never showed all $expect trial issues as Ready (saw $seen)"; exit 1; }
+
+if [[ $scenario == prs ]]; then
+    log "seed draft PRs for: $issues"
+    pr_list=$("$here/sandbox.sh" seed-prs "$issues" 2>>"$dir/trial.log" | awk '{print $2}' | tr '\n' ' ')
+    pr_list=${pr_list% }
+    [[ -n $pr_list ]] || { log 'seeding PRs failed'; exit 1; }
+    case $kit in
+        v1) prompt="\$agentkit:pr-to-green --yolo --fast-mode --auto-review --auto-merge $pr_list" ;;
+        v2) prompt="\$ak:pr --merge $pr_list" ;;
+    esac
+    log "seeded PRs: $pr_list"
+fi
 
 log "install $plugin@$sha into a private CODEX_HOME"
 git -C "$kit_repo" worktree add -q --detach "$dir/kit" "$sha"
@@ -146,13 +171,17 @@ log "exec rc=$rc thread=${thread:-none} elapsed=$((ended - started))s"
 
 log 'score PR heads with the hidden acceptance suites'
 outcome="$dir/outcome.json"
-"$here/outcome.sh" "$repo" "$dir/repo" "$issues" "$rc" "$((ended - started))" 2>>"$dir/trial.log" |
+outcome_sh="$here/outcome.sh"
+[[ $scenario == issues ]] || outcome_sh="$here/outcome-prs.sh"
+"$outcome_sh" "$repo" "$dir/repo" "$issues" "$rc" "$((ended - started))" 2>>"$dir/trial.log" |
     jq --argjson calls "$("$here/gh-calls.py" "$AK_BENCH_GH_LOG")" '. + {github: $calls}' >"$outcome"
 
 row="$dir/row.json"
+fixture_label="ak-bench:$(jq -r .tag "$state"):$issues"
+[[ $scenario == issues ]] || fixture_label="ak-bench-prs:$(jq -r .tag "$state"):pr-v1:$issues"
 if [[ -n $root ]]; then
     "$here/score.py" "$root" --sessions "$CODEX_HOME/sessions" --outcome "$outcome" \
-        --label kit="$kit" --label ref="$sha" --label fixture="ak-bench:$(jq -r .tag "$state"):$issues" \
+        --label kit="$kit" --label ref="$sha" --label fixture="$fixture_label" \
         --label trial="$trial" --label model="$model" --label effort="$effort" \
         --label worker_model="$worker_model" --label worker_effort="$worker_effort" >"$row"
 else

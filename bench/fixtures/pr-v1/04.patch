@@ -1,0 +1,59 @@
+diff --git a/src/store.js b/src/store.js
+index 82d9554..ad1965b 100644
+--- a/src/store.js
++++ b/src/store.js
+@@ -49,6 +49,14 @@ export function decrement(state, id) {
+   };
+ }
+ 
++export function resetAll(state) {
++  if (state.items.length === 0) return state;
++  return {
++    ...state,
++    items: state.items.map((it) => ({ ...it, count: 0 })),
++  };
++}
++
+ export function total(state) {
+   return state.items.reduce((sum, it) => sum + it.count, 0);
+ }
+diff --git a/test/smoke.mjs b/test/smoke.mjs
+index 9b6e5db..aa54cb2 100755
+--- a/test/smoke.mjs
++++ b/test/smoke.mjs
+@@ -10,6 +10,7 @@ import {
+   undoRemove,
+   increment,
+   decrement,
++  resetAll,
+   total,
+   toJSON,
+   fromJSON,
+@@ -35,6 +36,27 @@ state = decrement(state, id);
+ assert.equal(state.items[0].count, 1, 'increment/decrement compose');
+ assert.equal(total(state), 1, 'total sums every item count');
+ 
++const resetInput = {
++  items: [
++    { id: 4, name: 'Tea', count: 2 },
++    { id: 9, name: 'Cake', count: 5 },
++  ],
++  nextId: 10,
++};
++const resetState = resetAll(resetInput);
++assert.deepEqual(resetState, {
++  items: [
++    { id: 4, name: 'Tea', count: 0 },
++    { id: 9, name: 'Cake', count: 0 },
++  ],
++  nextId: 10,
++}, 'resetAll clears every count while preserving item identity fields and nextId');
++assert.notEqual(resetState, resetInput, 'resetAll returns a new state when items exist');
++assert.equal(resetInput.items[0].count, 2, 'resetAll does not mutate the original state');
++
++const emptyState = { items: [], nextId: 42 };
++assert.equal(resetAll(emptyState), emptyState, 'resetAll preserves the same reference when items are empty');
++
+ state = decrement(state, id);
+ state = decrement(state, id);
+ assert.equal(state.items[0].count, 0, 'decrement floors at 0, never negative');
