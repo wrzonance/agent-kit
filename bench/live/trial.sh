@@ -73,14 +73,25 @@ trap 'git -C "$kit_repo" worktree remove --force "$dir/kit" 2>/dev/null || true'
 export CODEX_HOME="$dir/codex-home"
 mkdir -p "$CODEX_HOME"
 cp -- "${AK_BENCH_CODEX_AUTH:-$HOME/.codex/auth.json}" "$CODEX_HOME/auth.json"
+# Mirrors the field machine's config (jacobs, 2026-09-30) so a trial runs the setup cable-tool runs.
 cat >"$CODEX_HOME/config.toml" <<TOML
 model = "$model"
 model_reasoning_effort = "$effort"
+service_tier = "default"
+approvals_reviewer = "auto_review"
+default_permissions = ":danger-full-access"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
+[agents]
+max_concurrent_threads_per_session = 20
+default_subagent_model = "$worker_model"
+default_subagent_reasoning_effort = "$worker_effort"
+
 [features]
-multi_agent = true
+hooks = true
+js_repl = false
+multi_agent = false
 TOML
 codex plugin marketplace add "$dir/kit" >>"$dir/trial.log" 2>&1
 codex plugin add "$plugin@agent-kit" >>"$dir/trial.log" 2>&1
