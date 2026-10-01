@@ -159,7 +159,7 @@ fresh
 route 'project item-list 5 --owner acme*' 'error: your token has not been granted the required scopes' 1
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'fix: operator: gh auth refresh -h github.com -s project' 'a missing scope is an operator step'
-# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (cable-tool #684/#685,
+# A script path run with flags, or a "Run ..." instruction line, is a command, not a write (a field run/#685,
 # 2026-10-01: both named `scripts/verify.py --fast` and the split issues collided).
 fresh
 # shellcheck disable=SC2016

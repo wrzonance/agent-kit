@@ -108,7 +108,7 @@ assert_eq '1' "$LINT_RC" 'a bare helper invocation fails'
 assert_contains "$LINT_OUT" 'BARE INVOCATION' 'the bare invocation is named'
 
 # --- no per-block guard is required ------------------------------------
-# cable-tool ledger #29: later blocks set agentkit from the printed path; the
+# field ledger #29: later blocks set agentkit from the printed path; the
 # lint no longer demands a guard ceremony in every helper fence.
 root=$tmp/guardless
 new_tree "$root"

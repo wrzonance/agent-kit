@@ -546,7 +546,7 @@ acceptance_rc=0
 assert_eq 0 "$acceptance_rc" 'one passing digest line satisfies the declared acceptance command'
 
 # -- publish: finalization reports every gap at once, each with its next command --
-# Field evidence (cable-tool #647): refusing at the first gap cost five serial
+# Field evidence (a field run): refusing at the first gap cost five serial
 # publish attempts. Independent gaps now arrive together in one refusal.
 gap_digest="$tmp/gap-pr-state.digest"
 write_green_digest "$gap_digest" 14
@@ -1555,7 +1555,7 @@ assert_not_contains "$no_head_body" '- Reviewed head:' \
     'publish body carries no head line when --head-sha is omitted'
 
 # The reviewed head is recorded by the canonical attempt; retyping it by hand
-# was a field refusal (cable-tool #647), so an omitted --head-sha defaults to it.
+# was a field refusal (a field run), so an omitted --head-sha defaults to it.
 : >"$head_gh_dir/count"
 rm -f -- "$head_gh_dir"/payload-*.json
 recorded_comments="$tmp/recorded-head-not-spent.json"

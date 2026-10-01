@@ -196,7 +196,7 @@ assert_contains "$unrelated_out" 'competing-workflow' \
     'unrelated activation retains the competing-workflow refusal'
 
 # Roots and workers run from .worktrees/<branch>; a read-only check there must
-# find the receipt at the activation origin (cable-tool #579 false blocker).
+# find the receipt at the activation origin (a field run false blocker).
 origin=$(cd -- "$(mktemp -d)" && pwd -P); other=$(cd -- "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$repo" "$origin" "$other"' EXIT
 for r in "$origin" "$other"; do
@@ -239,7 +239,7 @@ for action in ack redeliver; do
     assert_contains "$write_out" 'no receipt at activation origin' "$action from a worktree keeps its refusal"
 done
 
-# After compaction a root passed its run ID as --session (cable-tool #19).
+# After compaction a root passed its run ID as --session (a field run).
 run_id=parallel-issues-0123456789abcdef0123456789abcdef
 install -d -m 700 "$origin/.agent/evidence" "$origin/.agent/evidence/run-$run_id"
 jq -nc --arg r "$run_id" --arg s "$session" --arg o "$origin" \

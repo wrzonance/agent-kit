@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Suite: `collect --run-id ID --issue N` derives every Collect input from the
 # run, so the root never transcribes a snapshot path, baseline, worktree,
-# window, or write set (cable-tool ledger #44: ~9 calls, then a skipped fence).
+# window, or write set (field ledger #44: ~9 calls, then a skipped fence).
 set -uo pipefail
 
 TEST_NAME='cross-write-run-collect'

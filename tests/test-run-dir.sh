@@ -530,7 +530,7 @@ assert_eq "$wt_repo/.agent/evidence/pr-645" "$git_dir_out" \
 
 # 2026-09-08 size wave two: hold the helper at its measured line count.
 # Issue #785 adds durable fallback selection and explicit split-backend refusal.
-# cable-tool #25 adds the linked-worktree lookup for a PR's populated run directory.
+# a field run adds the linked-worktree lookup for a PR's populated run directory.
 assert_eq yes "$([[ $(wc -l < "$root/agentkit/skills/review-remote-pr/scripts/run-dir.sh") -le 308 ]] && printf yes || printf no)" \
     'run-dir.sh stays at or under 308 lines'
 
