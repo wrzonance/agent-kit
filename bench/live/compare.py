@@ -74,6 +74,8 @@ def main(argv):
         if not line.strip():
             continue
         row = json.loads(line)
+        if row.get("void"):
+            continue
         if not str(row.get("fixture", "")).startswith(args.fixture):
             continue
         key = (row.get("fixture", "?"), row.get("kit", "?"), str(row.get("ref", "?"))[:7],
