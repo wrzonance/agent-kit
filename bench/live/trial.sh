@@ -88,6 +88,13 @@ codex plugin add "$plugin@agent-kit" >>"$dir/trial.log" 2>&1
 log "clone $repo"
 git clone -q "https://github.com/$repo.git" "$dir/repo"
 mkdir -p "$dir/repo/.agent"
+# A real v1 repository is onboarded once: bootstrap-repo.sh writes .agent/board.json (and a config.env that
+# the shared bench config below replaces, so both kits read identical settings). Setup is not measured.
+if [[ $kit == v1 ]]; then
+    "$dir/kit/agentkit/skills/.shared/scripts/bootstrap-repo.sh" --repo-root "$dir/repo" \
+        --project "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --force >>"$dir/trial.log" 2>&1 ||
+        { log 'v1 onboarding (bootstrap-repo.sh) failed; see trial.log'; exit 1; }
+fi
 cat >"$dir/repo/.agent/config.env" <<ENV
 AGENT_REPO_SLUG=$repo
 AGENT_BASE_BRANCH=main
