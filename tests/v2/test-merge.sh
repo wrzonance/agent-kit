@@ -114,4 +114,13 @@ assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records w
 assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'a conflicting PR is not merged'
 
+# Two merges of one PR never run at once: the second waits for the first (bench 2026-10-01: #136 twice).
+mkdir -p "$repo/.ak/locks/merge-24"
+out=$(AK_MERGE_LOCK_WAIT=0 "$AK" merge --pr 24 2>&1); rc=$?
+assert_eq 1 "$rc" 'a held merge lock refuses after the wait'
+assert_contains "$out" 'another ak merge is working on PR #24' 'the refusal names the PR'
+rmdir "$repo/.ak/locks/merge-24"
+"$AK" merge --pr 24 >/dev/null 2>&1
+assert_eq no "$([[ -d $repo/.ak/locks/merge-24 ]] && echo yes || echo no)" 'a finished merge releases its lock'
+
 finish
