@@ -56,6 +56,22 @@ assert_eq 1 "$(($(wc -l <<<"$out") <= 20))" 'red output is at most 20 lines'
 assert_rc 0 'the full log is saved' -- test -f .ak/ci/77.log
 assert_not_contains "$(cat .ak/ci/77.log)" $'\033' 'the saved log is stripped'
 
+# On a stacked branch, a failure the base branch's own head also has is named as inherited (field run: a worker grepped
+# its tree for a failure that came from the PR below it).
+git push -q origin origin/main:refs/heads/feat/parent 2>/dev/null
+parent=$(git rev-parse origin/main)
+own='{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"failure"}]}'
+set_checks "$own"
+out=$("$AK" ci --once 2>&1)
+assert_not_contains "$out" 'inherited=' 'a branch on the default base reports nothing inherited'
+printf 'feat/parent\n' >.ak/base
+route "api repos/acme/widget/commits/$parent/check-runs?per_page=100" \
+    '{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"success"}]}'
+out=$("$AK" ci --once 2>&1); rc=$?
+assert_eq 1 "$rc" 'an inherited failure is still red'
+assert_contains "$out" 'inherited=installer from=feat/parent' 'a failure the base branch shares is named as inherited'
+rm -f .ak/base
+
 printf 'three\n' >src/c.txt
 git add src && git commit -q -m 'add c'
 out=$("$AK" ci --once 2>&1); rc=$?

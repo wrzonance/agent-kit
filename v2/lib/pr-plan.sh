@@ -69,6 +69,13 @@ pr_plan_skip() {
         else empty end' <<<"$json"
 }
 
+# pr_plan_done WORKTREE SHA: did a worker already take this exact head to green with a review? Re-reviewing seven such
+# PRs in a field run cost 19.6M tokens, and its fixes turned four green PRs red.
+pr_plan_done() {
+    local file=$1/.ak/result
+    [[ -f $file ]] && grep -qx "head=$2" "$file" && grep -qx 'ci=green' "$file" && grep -qx 'review=done' "$file"
+}
+
 # A fresh run id; a second plan in the same second gets a suffix.
 pr_plan_run_id() {
     local runs=$1 id n=2
@@ -107,6 +114,12 @@ cmd_main() {
             continue
         fi
         wt=$(pr_plan_worktree "$root" "$dir" "$(jq -r .head.ref <<<"$json")")
+        if pr_plan_done "$wt" "$(jq -r .head.sha <<<"$json")"; then
+            items=$(jq -c --argjson n "$n" --arg wt "$wt" --arg br "$(jq -r .head.ref <<<"$json")" \
+                '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "collected", needs: []}]' <<<"$items")
+            spawns+="skip pr=$n reason=green-and-reviewed-at-head"$'\n'
+            continue
+        fi
         pr_plan_prompt "$json" "$wt" "$slug"
         items=$(jq -c --argjson n "$n" --arg wt "$wt" --arg br "$(jq -r .head.ref <<<"$json")" \
             '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "spawned", needs: []}]' <<<"$items")

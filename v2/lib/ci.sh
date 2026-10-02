@@ -67,6 +67,21 @@ ci_job_errors() {
     grep -E '[Ee]rror|ERROR|FAIL|Exception' -- "$log" | cut -c1-200 | head -n "$((budget - 1 < 8 ? budget - 1 : 8))" || true
 }
 
+# ci_inherited RUNS: on a stacked branch, the failing checks that also fail on the base branch's own head. A field
+# worker spent its turns grepping its tree for a failure that came from the PR below it.
+ci_inherited() {
+    local base sha names
+    base=$(work_base)
+    [[ $base != "$(base_branch)" ]] || return 0
+    sha=$(git ls-remote origin "refs/heads/$base" 2>/dev/null | cut -f1)
+    [[ -n $sha ]] || return 0
+    names=$(LC_ALL=C comm -12 <(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" | LC_ALL=C sort -u) \
+        <(ci_runs "$sha" 2>/dev/null | jq -r '.[] | select(.done and .bad) | .name' | LC_ALL=C sort -u) | paste -sd, -)
+    [[ -z $names ]] ||
+        printf 'inherited=%s from=%s note=the base branch fails these too; it gets fixed there, then update this branch\n' \
+            "$names" "$base"
+}
+
 ci_print_failures() {
     local runs=$1 name url used=1 out
     while IFS=$'\t' read -r name url; do
@@ -98,7 +113,7 @@ cmd_main() {
     printf '%s\n' "$line"
     case $line in
         ci=green*) return 0 ;;
-        ci=red*) ci_print_failures "$runs"; return 1 ;;
+        ci=red*) ci_inherited "$runs"; ci_print_failures "$runs"; return 1 ;;
         *) return 3 ;;
     esac
 }

@@ -81,4 +81,23 @@ assert_eq 0 "$rc" 'shipping after the PR merged is not an error'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9 merged already' 'ship names the merged PR'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/pulls ' 'no duplicate PR is opened'
 
+# A merge-down must merge the base, not copy its changes (field run: a resolver's hand-made commit left the branch
+# without its base, so the next update conflicted again and a second resolver was spawned).
+git -C "$repo" checkout -q -b feat/moved origin/main
+printf 'moved\n' >"$repo/src/moved.txt"
+git -C "$repo" add src && git -C "$repo" commit -q -m moved && git -C "$repo" push -q origin feat/moved 2>/dev/null
+git -C "$repo" checkout -q main
+git fetch -q origin
+printf 'origin/feat/moved\n' >.ak/resolve
+printf 'copied\n' >src/moved.txt
+out=$("$AK" ship --message 'merge: feat/moved into feat/issue-7' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a resolve that did not merge its base is refused'
+assert_contains "$out" 'fix: git merge origin/feat/moved' 'the refusal names the merge to run'
+git checkout -q HEAD~1 -- src/moved.txt 2>/dev/null || git rm -q src/moved.txt
+git commit -q -m 'drop the copy'
+git merge -q --no-edit origin/feat/moved
+out=$("$AK" ship --message 'merge: feat/moved into feat/issue-7' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a real merge of the base ships'
+assert_eq no "$([[ -e .ak/resolve ]] && echo yes || echo no)" 'ship clears the resolve marker once the base is merged'
+
 finish
