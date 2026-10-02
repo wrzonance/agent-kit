@@ -182,11 +182,13 @@ fixture_label="ak-bench:$(jq -r .tag "$state"):$issues"
 if [[ -n $root ]]; then
     "$here/score.py" "$root" --sessions "$CODEX_HOME/sessions" --outcome "$outcome" \
         --label kit="$kit" --label ref="$sha" --label fixture="$fixture_label" \
+        --label plugin_sha="$sha" --label fixture_version="$fixture_label" \
         --label trial="$trial" --label model="$model" --label effort="$effort" \
         --label worker_model="$worker_model" --label worker_effort="$worker_effort" >"$row"
 else
-    jq -n --arg kit "$kit" --arg ref "$sha" --arg trial "$trial" --slurpfile o "$outcome" \
-        '{kit:$kit, ref:$ref, trial:$trial, error:"no root rollout", outcome:$o[0]}' >"$row"
+    jq -n --arg kit "$kit" --arg ref "$sha" --arg fixture "$fixture_label" --arg trial "$trial" --slurpfile o "$outcome" \
+        '{kit:$kit, ref:$ref, fixture:$fixture, plugin_sha:$ref, fixture_version:$fixture, trial:$trial,
+          error:"no root rollout", outcome:$o[0]}' >"$row"
 fi
 cat -- "$row" >>"$bench/results/live.jsonl"
 jq -c '{trial, kit, passed: .outcome.passed, prs: .outcome.prs, root_calls: .root.calls,
