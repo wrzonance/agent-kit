@@ -34,10 +34,11 @@ ci_summary() {
 
 # ci_wait SHA TIMEOUT ONCE: prints the final RUNS array after polling.
 ci_wait() {
-    local sha=$1 deadline=$((SECONDS + $2)) once=$3 grace=$((SECONDS + ${AK_CI_GRACE:-180})) runs
+    local sha=$1 deadline=$((SECONDS + $2)) once=$3 grace=$((SECONDS + ${AK_CI_GRACE:-180})) runs hinted=0
     while :; do
         runs=$(ci_runs "$sha") || exit 1
         [[ $(ci_summary "$runs") == ci=pending* && $once == 0 ]] || break
+        ((hinted)) || { printf 'ci pending on %s: wait on this with the longest wait your shell allows\n' "${sha:0:12}" >&2; hinted=1; }
         ((SECONDS < deadline)) || break
         # A repo with no CI never registers a run; stop waiting after the grace period.
         [[ $runs != '[]' ]] || ((SECONDS < grace)) || break

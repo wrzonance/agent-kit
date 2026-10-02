@@ -41,6 +41,8 @@ assert_eq '' "$(git status --porcelain)" '.ak/ is excluded from git'
 out=$(run_logged ok 'echo fine'); rc=$?
 assert_eq 'PASS ok' "$(tail -n 1 <<<"$out")" 'run_logged ends with one PASS line'
 assert_eq 'run ok: echo fine' "$(head -n 1 <<<"$out")" 'run_logged says what it started before anything else'
+# A field worker polled a 12-minute check with 1-second waits 165 times; the start line says how to wait.
+assert_contains "$out" 'wait on this with the longest wait your shell allows; a beat prints every 20s' 'run_logged says how to wait on it'
 # A worker whose command yields with no output goes looking for it (field run 2026-10-01: 12M tokens of ps polling).
 out=$(AK_HEARTBEAT=1 run_logged slow 'sleep 3')
 assert_contains "$out" 'slow still running' 'a long command prints a heartbeat while it runs'

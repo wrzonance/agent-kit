@@ -121,7 +121,9 @@ run_logged() {
     local name=$1 command=$2 dir=${3:-.} log rc=0 pid waited=0 beat=${AK_HEARTBEAT:-20}
     log="$(ak_dir)/logs/$name.log"
     mkdir -p -- "$(dirname -- "$log")"
+    # A field worker polled a 12-minute check with 1-second waits, 165 times; each poll re-sent its whole context.
     printf 'run %s: %s%s\n' "$name" "${command:0:100}" "$([[ $dir == . ]] || printf ' (in %s)' "$dir")"
+    printf 'wait on this with the longest wait your shell allows; a beat prints every %ds\n' "$beat"
     (cd -- "$(worktree_root)/$dir" && bash -c "$command") >"$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
