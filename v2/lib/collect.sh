@@ -2,12 +2,28 @@
 # ak collect (--issue N | --pr N): one worker's result, any root cross-write, and newly unblocked spawns.
 # shellcheck source=plan.sh
 source "$AK_HOME/lib/plan.sh"
+# shellcheck source=ci.sh
+source "$AK_HOME/lib/ci.sh"
 
 # run_update FILTER [JQ ARGS...]: rewrite the run file through jq.
 run_update() {
     local filter=$1
     shift
     jq "$@" "$filter" "$RUNFILE" >"$RUNFILE.tmp" && mv -- "$RUNFILE.tmp" "$RUNFILE"
+}
+
+# result_refresh KIND N: when the PR head moved past the worker's result (a base update, a merge-down), replace the
+# recorded ci with the live checks on the new head. A field root collected a stale ci=red after the head went green.
+result_refresh() {
+    local pr=$2 live runs
+    [[ $1 == pr ]] || pr=${r[pr]##*/}
+    [[ $pr =~ ^[0-9]+$ && -n ${r[head]:-} ]] || return 0
+    live=$(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .head.sha // empty' 2>/dev/null) || return 0
+    [[ -n $live && $live != "${r[head]}" ]] || return 0
+    runs=$(ci_runs "$live" 2>/dev/null) || return 0
+    r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
+    # The review stays: the head moves through base merges, not changes to the PR's own diff; the note says so.
+    r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
 }
 
 # result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result.
@@ -22,6 +38,7 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
+    result_refresh "$kind" "$n"
     if [[ $kind == issue ]]; then
         emit "issue=$n pr=${r[pr]:-} ci=${r[ci]:-} review=${r[review]:-} note=${r[note]:-}"
     else

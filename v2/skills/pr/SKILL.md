@@ -14,7 +14,10 @@ You are the root. Workers do the review, fixes and CI; you spawn, wait, collect 
    run=20260930-160210
    spawn pr=12 cwd=/repo/.worktrees/feat/x prompt=/repo/.worktrees/feat/x/.ak/prompt.md model=gpt-5.6-luna effort=medium
    drop pr=13 reason=closed
+   skip pr=14 reason=green-and-reviewed-at-head
    ```
+
+   A `skip` PR needs no worker: it is already green and reviewed at its head, so treat it as collected with `ci=green`.
 
 2. For each `spawn` line, spawn one worker with exactly that model and effort (and that cwd, if
    your spawn tool takes one). Its task is the content of
@@ -22,7 +25,8 @@ You are the root. Workers do the review, fixes and CI; you spawn, wait, collect 
 3. Wait with the harness's native wait, using the longest window it allows. Do not poll or check state between
    waits.
 4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.
-5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says `ci=green`.
+5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says `ci=green`
+   and each PR `ak pr-plan` skipped as green and reviewed.
    A PR based on another PR's branch merges after that PR: when `ak merge` refuses with
    `fix: ak merge --pr M`, merge M first (if its collect said `ci=green`), then retry. When `ak merge` exits 3 it
    prints a `spawn` line: the PR conflicts with its base, so spawn that worker, wait, `ak collect --pr N`, and run

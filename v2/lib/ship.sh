@@ -77,6 +77,19 @@ ship_create_pr() {
     jq -r '"\(.number) \(.html_url)"' <<<"$json"
 }
 
+# ship_resolved: after a merge-down, HEAD must contain the base it conflicted with. A field resolver committed the base's
+# changes by hand instead of merging, so the next update conflicted again and a second resolver was spawned.
+ship_resolved() {
+    local ref
+    [[ -f .ak/resolve ]] || return 0
+    ref=$(<.ak/resolve)
+    git fetch -q origin "${ref#origin/}" ||
+        die "cannot fetch ${ref#origin/} to check the merge-down" "git fetch origin ${ref#origin/}"
+    git merge-base --is-ancestor "$ref" HEAD ||
+        die "HEAD does not contain $ref yet: a merge-down must merge it, not copy its changes" "git merge $ref"
+    rm -f -- .ak/resolve
+}
+
 cmd_main() {
     local message="" body_file="" branch base pr body board=""
     while (($#)); do
@@ -95,6 +108,7 @@ cmd_main() {
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
     ship_commit "$message"
+    ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||
         die "nothing to ship: HEAD has no commits ahead of origin/$base" "commit your change, then ak ship --message '$message'"
     ship_push "$branch"

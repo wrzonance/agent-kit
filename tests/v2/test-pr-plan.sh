@@ -66,4 +66,18 @@ assert_eq no "$([[ -e $wt/.ak/result ]] && echo yes || echo no)" 'a stale result
 run2=$(sed -n 's/^run=//p' <<<"$out")
 assert_eq no "$([[ $run2 == "$run" ]] && echo yes || echo no)" 'a second run gets its own id'
 
+# A PR a worker already took to green and reviewed at this head gets no second worker (field run: re-reviewing seven
+# such PRs cost 19.6M tokens and turned four of them red). A result for an older head still respawns.
+printf 'pr=12\nci=green\nreview=done\nhead=abc\nnote=findings=0\n' >"$wt/.ak/result"
+printf 'keep\n' >"$wt/.ak/prompt.md"
+out=$("$AK" pr-plan --pr 12 2>&1)
+assert_contains "$out" 'skip pr=12 reason=green-and-reviewed-at-head' 'a PR green and reviewed at its head is skipped'
+assert_not_contains "$out" 'spawn pr=12' 'a skipped PR gets no worker'
+assert_eq keep "$(cat "$wt/.ak/prompt.md")" 'a skipped PR keeps its worktree state'
+run3=$(sed -n 's/^run=//p' <<<"$out")
+assert_eq collected "$(jq -r '.items[0].state' "$repo/.ak/runs/$run3.json")" 'a skipped PR is recorded as collected'
+printf 'pr=12\nci=green\nreview=done\nhead=old\n' >"$wt/.ak/result"
+out=$("$AK" pr-plan --pr 12 2>&1)
+assert_contains "$out" 'spawn pr=12' 'a result for an older head respawns the worker'
+
 finish

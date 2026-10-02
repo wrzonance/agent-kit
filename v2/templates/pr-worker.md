@@ -12,7 +12,7 @@ Rules:
 ## Steps
 
 1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git fetch origin && git merge $(cat .ak/resolve)`,
-   resolve each conflict keeping the intent of both sides, delete `.ak/resolve`, run `{{AK}} verify`, then
+   resolve each conflict keeping the intent of both sides, commit the merge, run `{{AK}} verify`, then
    `{{AK}} ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `{{AK}} ci`, and go to step 6 keeping the
    findings file from the earlier run.
 2. Run `{{AK}} review` once. It prints `review=done findings=N` with one `P1:`/`P2:` title per finding; the full
@@ -27,6 +27,8 @@ Rules:
    - Pending: run `{{AK}} ci` again.
    - Red: read the error lines it printed, fix the cause, `{{AK}} verify`, `{{AK}} ship --message "fix: <cause>"`,
      then `{{AK}} ci` again. Stop after 3 red rounds and say so in the result.
+   - Red with an `inherited=` line: those checks also fail on the base branch. Fix every error your diff causes;
+     the errors the base branch shares are named in the result, not chased.
 6. Write `.ak/findings` with one line per finding, then run `{{AK}} receipt --findings .ak/findings`:
 
    ```text

@@ -53,6 +53,20 @@ rm -f stray.txt
 out=$("$AK" collect --pr 9 2>&1)
 assert_eq 'pr=9 ci=green review=done note=findings=2 fixed=2 declined=0' "$out" 'collect --pr prints the pr line'
 
+# A head that moved past the worker's result (a base update) is read live, not from the stale result (field run: a
+# root collected ci=red after the updated head had gone green).
+printf 'pr=9\nci=red\nreview=done\nhead=abc\nnote=n\n' >"$wt/.ak/result"
+routes=$(cat "$FAKE_GH_ROUTES")
+pr_file="$WORK/pr9.json" runs_file="$WORK/runs-def.json"
+printf '{"number":9,"head":{"sha":"def4567"}}' >"$pr_file"
+printf '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}' >"$runs_file"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/def4567/check-runs*\t%s\t0\n%s\n' \
+    "$pr_file" "$runs_file" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --pr 9 2>&1)
+assert_contains "$out" 'pr=9 ci=green' 'a moved head reports its live CI'
+assert_contains "$out" 'ci read live at def4567; review covers abc' 'collect says it read CI live'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+
 out=$("$AK" collect --issue 12345 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue outside the run refuses'
 assert_contains "$out" 'fix: ' 'the refusal names the fix'
