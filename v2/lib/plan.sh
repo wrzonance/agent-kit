@@ -120,10 +120,10 @@ protected_hit() {
     return 0
 }
 
-# check_issue N LABELS: sets REASON (empty when N can be chosen) and WS (its write set).
+# check_issue N LABELS: sets REASON (empty when N can be chosen), WS (its write set) and BLOCKED (chosen blockers).
 check_issue() {
     local n=$1 json hit
-    REASON='' WS=''
+    REASON='' WS='' BLOCKED=''
     hit=$(excluded_label "$2")
     [[ -z $hit ]] || { REASON="label:$hit"; return 0; }
     json=$(api "repos/$SLUG/issues/$n") || { REASON=unreadable; return 0; }
@@ -131,8 +131,12 @@ check_issue() {
     [[ $(jq -r .state <<<"$json") == open ]] || { REASON=closed; return 0; }
     hit=$(excluded_label "$(jq -r '[.labels[]?.name] | join(",")' <<<"$json")")
     [[ -z $hit ]] || { REASON="label:$hit"; return 0; }
-    hit=$(api "repos/$SLUG/issues/$n/dependencies/blocked_by" | jq -r '[.[]? | select(.state == "open") | .number][0] // empty' 2>/dev/null)
-    [[ -z $hit ]] || { REASON="blocked-by:#$hit"; return 0; }
+    # A blocker chosen earlier in this run is a dependency, not a drop: the issue queues behind it (a field run dropped
+    # an issue whose only blocker it had just spawned).
+    for hit in $(api "repos/$SLUG/issues/$n/dependencies/blocked_by" | jq -r '.[]? | select(.state == "open") | .number' 2>/dev/null); do
+        [[ " ${CHOSEN[*]} " == *" $hit "* ]] || { REASON="blocked-by:#$hit"; return 0; }
+        BLOCKED+="${BLOCKED:+,}$hit"
+    done
     hit=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null)
     [[ ${hit:-0} == 0 ]] || { REASON=open-pr; return 0; }
     WS=$(write_set "$(jq -r '.body // ""' <<<"$json")")
@@ -260,7 +264,8 @@ pick() {
         [[ $REASON != closed ]] || continue
         [[ -z $REASON ]] || { emit "drop issue=$n reason=$REASON"; continue; }
         hits=$(collisions "$WS")
-        if [[ -n $hits && $serialize == 0 ]]; then
+        hits=$(tr , '\n' <<<"$BLOCKED${hits:+,$hits}" | awk 'NF && !seen[$0]++' | paste -sd, -)
+        if [[ -n $hits && $serialize == 0 && -z $BLOCKED ]]; then
             emit "drop issue=$n reason=collides-with-#${hits%%,*}"
         elif [[ -n $hits ]]; then
             WRITES[$n]=$WS NEEDS[$n]=$hits

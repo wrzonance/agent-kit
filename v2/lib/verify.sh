@@ -44,6 +44,21 @@ verify_covers() {
     [[ " $command " =~ [[:space:]/=\"\']"$top"(/|[[:space:]]|\"|\') ]]
 }
 
+# verify_areas PATHS: the top-level directories (or root files) the changed paths sit in, one per line.
+verify_areas() {
+    [[ -n $1 ]] || return 0
+    awk -F/ '{ print $1 }' <<<"$1" | LC_ALL=C sort -u
+}
+
+# verify_whole_cached COMMAND AREAS: did COMMAND already pass in this worktree for a superset of AREAS?
+# .ak/verify-whole holds the command on its first line and the areas it passed for after it.
+verify_whole_cached() {
+    local file
+    file="$(ak_dir)/verify-whole"
+    [[ -f $file && -n $2 && $(head -n 1 -- "$file") == "$1" ]] || return 1
+    [[ -z $(LC_ALL=C comm -23 <(printf '%s\n' "$2") <(tail -n +2 -- "$file" | LC_ALL=C sort -u)) ]]
+}
+
 verify_skips() {
     local logs=$1
     shift
@@ -62,7 +77,7 @@ verify_whole() {
 }
 
 cmd_main() {
-    local full=0 name command dir changed path out="" rc=0 skipped whole uncovered=() owned
+    local full=0 name command dir changed path out="" rc=0 skipped whole uncovered=() owned areas cached=0
     local -a ran=() suites=()
     case ${1:-} in --full) full=1 ;; '') ;; *) usage_die "usage: ak verify [--full]" ;; esac
     cd -- "$(worktree_root)" || exit 1
@@ -85,16 +100,28 @@ cmd_main() {
         ((owned)) || uncovered+=("$path")
     done <<<"$changed"
     whole=$(verify_whole)
+    areas=$(verify_areas "$changed")
     if [[ -n $whole ]] && ((full || ${#suites[@]} == 0)); then
-        out+=$(run_logged "${whole%%$'\t'*}" "${whole#*$'\t'}")$'\n' || rc=1
-        ran+=("${whole%%$'\t'*}.log")
+        if ((!full)) && verify_whole_cached "${whole#*$'\t'}" "$areas"; then
+            # A re-verify after review fixes re-ran a 12-minute whole check for the same areas in a field run;
+            # CI repeats it on every push anyway.
+            out+="cached ${whole%%$'\t'*}: passed earlier for these areas ($(paste -sd, - <<<"$areas"))"$'\n'
+            cached=1
+        elif out+=$(run_logged "${whole%%$'\t'*}" "${whole#*$'\t'}")$'\n'; then
+            printf '%s\n%s\n' "${whole#*$'\t'}" "$areas" >"$(ak_dir)/verify-whole"
+            ran+=("${whole%%$'\t'*}.log")
+        else
+            rc=1
+            rm -f -- "$(ak_dir)/verify-whole"
+            ran+=("${whole%%$'\t'*}.log")
+        fi
     fi
     for name in "${suites[@]}"; do
         dir=$(cfg "AGENT_RUNDIR_$name")
         out+=$(run_logged "${name,,}" "$(cfg "AGENT_CMD_$name")" "${dir:-.}")$'\n' || rc=1
         ran+=("${name,,}.log")
     done
-    if ((${#ran[@]} == 0)); then
+    if ((${#ran[@]} == 0 && !cached)); then
         printf 'verify=none oracle=ci\n'
         return 0
     fi
@@ -106,6 +133,6 @@ cmd_main() {
         printf 'uncovered=%s%s\n' "$(printf '%s\n' "${uncovered[@]:0:3}" | paste -sd, -)" \
             "$( ((${#uncovered[@]} > 3)) && printf ' (+%d)' $((${#uncovered[@]} - 3)))"
     fi
-    if [[ -n $skipped ]] || ((${#suites[@]} > 0 && ! full)); then printf 'oracle=ci\n'; fi
+    if [[ -n $skipped ]] || ((cached || (${#suites[@]} > 0 && !full))); then printf 'oracle=ci\n'; fi
     return "$rc"
 }

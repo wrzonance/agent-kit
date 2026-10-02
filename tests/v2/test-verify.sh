@@ -33,6 +33,30 @@ assert_eq 1 "$rc" 'a failing verify exits 1'
 assert_contains "$out" 'verify=fail' 'a failing verify prints verify=fail'
 assert_contains "$out" 'broken' 'the failing tail is printed'
 
+# A passed whole check is not re-run for the same areas (a field run re-ran a 12-minute whole check after
+# review fixes and hit an unrelated flake); --full, a new area or a new command runs it again.
+export AGENT_CMD_VERIFY="echo run >>$WORK/count"
+mkdir -p notes tools && printf 'x\n' >notes/a.md
+"$AK" verify >/dev/null 2>&1
+printf 'y\n' >notes/a.md
+out=$("$AK" verify 2>&1); rc=$?
+assert_eq 0 "$rc" 'a cached whole check passes'
+assert_eq 1 "$(wc -l <"$WORK/count")" 'the whole check is not re-run for the same areas'
+assert_contains "$out" 'cached verify: passed earlier for these areas (notes)' 'the cached pass is named'
+assert_contains "$out" 'oracle=ci' 'a cached pass leaves the proof to CI'
+"$AK" verify --full >/dev/null 2>&1
+assert_eq 2 "$(wc -l <"$WORK/count")" '--full re-runs the whole check'
+printf 'x\n' >tools/b.sh
+"$AK" verify >/dev/null 2>&1
+assert_eq 3 "$(wc -l <"$WORK/count")" 'a new area re-runs the whole check'
+export AGENT_CMD_VERIFY="echo other >>$WORK/count"
+"$AK" verify >/dev/null 2>&1
+assert_eq 4 "$(wc -l <"$WORK/count")" 'a different whole command re-runs'
+export AGENT_CMD_VERIFY="exit 1"
+"$AK" verify >/dev/null 2>&1
+assert_eq no "$([[ -e .ak/verify-whole ]] && echo yes || echo no)" 'a failing whole check clears the cache'
+rm -rf notes tools
+
 # Area suites replace the whole-repo check (a field run: five workers re-ran a 6-minute whole-repo check per diff).
 export AGENT_CMD_VERIFY='echo WHOLE'
 mkdir -p web lib/tests

@@ -106,6 +106,17 @@ ak_dir() {
 # run_logged NAME COMMAND [DIR]: run COMMAND in DIR (relative to the worktree), log it, print PASS or FAIL + tail.
 # A command that runs for minutes shows a heartbeat (AK_HEARTBEAT seconds, default 20: below the ~30 s at which
 # an agent's shell yields), so the agent sees it is alive instead of inspecting processes.
+# run_progress PID LOG: ", now: <newest leaf process>, last: <last log line>", whichever exist.
+run_progress() {
+    local leaf=$1 kids now line
+    while kids=$(pgrep -P "$leaf" 2>/dev/null) && [[ -n $kids ]]; do leaf=$(tail -n 1 <<<"$kids"); done
+    # bash execs a final command in place, so the job's own pid may already be the running process.
+    now=$(ps -o args= -p "$leaf" 2>/dev/null | cut -c1-80)
+    [[ -z $now ]] || printf ', now: %s' "$now"
+    line=$(tr -d '\r' <"$2" | awk 'NF { last = $0 } END { print last }' | cut -c1-100)
+    [[ -z $line ]] || printf ', last: %s' "$line"
+}
+
 run_logged() {
     local name=$1 command=$2 dir=${3:-.} log rc=0 pid waited=0 beat=${AK_HEARTBEAT:-20}
     log="$(ak_dir)/logs/$name.log"
@@ -116,7 +127,7 @@ run_logged() {
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1
         waited=$((waited + 1))
-        ((waited % beat)) || printf '%s still running %ds (log %s)\n' "$name" "$waited" "$log"
+        ((waited % beat)) || printf '%s still running %ds%s (log %s)\n' "$name" "$waited" "$(run_progress "$pid" "$log")" "$log"
     done
     wait "$pid" || rc=$?
     if ((rc == 0)); then

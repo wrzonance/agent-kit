@@ -45,6 +45,11 @@ assert_eq 'run ok: echo fine' "$(head -n 1 <<<"$out")" 'run_logged says what it 
 out=$(AK_HEARTBEAT=1 run_logged slow 'sleep 3')
 assert_contains "$out" 'slow still running' 'a long command prints a heartbeat while it runs'
 assert_eq 'PASS slow' "$(tail -n 1 <<<"$out")" 'the heartbeat ends with the result'
+# A beat that only says "alive" still sent workers to ps; it names the running process and the last log line
+# (field run 2026-10-01: two false "stalled" reports on checks that passed).
+out=$(AK_HEARTBEAT=1 run_logged steps 'echo step-one; sleep 3')
+assert_contains "$out" 'now: sleep 3' 'the heartbeat names the running process'
+assert_contains "$out" 'last: step-one' 'the heartbeat shows the last log line'
 out=$(run_logged bad 'echo boom; exit 3'); rc=$?
 assert_eq 3 "$rc" 'run_logged returns the command status'
 assert_contains "$out" 'FAIL bad rc=3' 'run_logged names the failure'
