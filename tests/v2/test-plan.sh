@@ -116,6 +116,16 @@ standard_board
 out=$(AGENT_PLAN_LIMIT=1 "$AK" plan --issue 671 --issue 693 2>&1)
 assert_eq 2 "$(grep -c '^spawn' <<<"$out")" 'every named issue is planned past the default limit'
 
+# A blocker chosen earlier in the run queues the issue behind it, even without --serialize (a field run dropped an
+# issue as blocked-by an issue it had just spawned).
+fresh
+route 'api repos/acme/widget/issues/693/dependencies/blocked_by*' '[{"number":671,"state":"open"}]'
+standard_board
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'after issue=693 needs=671' 'an issue blocked by a chosen issue queues behind it'
+assert_not_contains "$out" 'drop issue=693' 'an issue blocked by a chosen issue is not dropped'
+assert_contains "$out" 'drop issue=690 reason=blocked-by:#1' 'a blocker outside the run still drops'
+
 fresh
 standard_board
 out=$(CODEX_HOME=/x AGENT_WORKER_MODELS='claude-sonnet-5, gpt-5.6-terra' AGENT_WORKER_EFFORT=high "$AK" plan --yolo --issue 700 2>&1)
