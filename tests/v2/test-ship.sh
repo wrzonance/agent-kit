@@ -99,5 +99,11 @@ git merge -q --no-edit origin/feat/moved
 out=$("$AK" ship --message 'merge: feat/moved into feat/issue-7' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a real merge of the base ships'
 assert_eq no "$([[ -e .ak/resolve ]] && echo yes || echo no)" 'ship clears the resolve marker once the base is merged'
+printf 'origin/feat/gone\n' >.ak/resolve
+printf 'again\n' >>src/b.txt
+out=$("$AK" ship --message 'merge: feat/gone into feat/issue-7' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an unfetchable merge-down base is refused, not checked against a stale ref'
+assert_contains "$out" 'cannot fetch feat/gone' 'the refusal names the base it could not fetch'
+rm -f .ak/resolve
 
 finish

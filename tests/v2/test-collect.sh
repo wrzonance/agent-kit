@@ -64,7 +64,7 @@ printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/def4
     "$pr_file" "$runs_file" "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" collect --pr 9 2>&1)
 assert_contains "$out" 'pr=9 ci=green' 'a moved head reports its live CI'
-assert_contains "$out" 'ci read live: head moved to def4567' 'collect says it read CI live'
+assert_contains "$out" 'ci read live at def4567; review covers abc' 'collect says it read CI live'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 out=$("$AK" collect --issue 12345 2>&1); rc=$?

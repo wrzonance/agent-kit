@@ -83,7 +83,8 @@ ship_resolved() {
     local ref
     [[ -f .ak/resolve ]] || return 0
     ref=$(<.ak/resolve)
-    git fetch -q origin "${ref#origin/}" 2>/dev/null || true
+    git fetch -q origin "${ref#origin/}" ||
+        die "cannot fetch ${ref#origin/} to check the merge-down" "git fetch origin ${ref#origin/}"
     git merge-base --is-ancestor "$ref" HEAD ||
         die "HEAD does not contain $ref yet: a merge-down must merge it, not copy its changes" "git merge $ref"
     rm -f -- .ak/resolve

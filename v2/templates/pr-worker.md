@@ -27,8 +27,8 @@ Rules:
    - Pending: run `{{AK}} ci` again.
    - Red: read the error lines it printed, fix the cause, `{{AK}} verify`, `{{AK}} ship --message "fix: <cause>"`,
      then `{{AK}} ci` again. Stop after 3 red rounds and say so in the result.
-   - Red with an `inherited=` line: those checks fail on the base branch itself. Fix only the others; name the
-     inherited ones in the result.
+   - Red with an `inherited=` line: those checks also fail on the base branch. Fix every error your diff causes;
+     the errors the base branch shares are named in the result, not chased.
 6. Write `.ak/findings` with one line per finding, then run `{{AK}} receipt --findings .ak/findings`:
 
    ```text

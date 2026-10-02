@@ -78,7 +78,7 @@ ci_inherited() {
     names=$(LC_ALL=C comm -12 <(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" | LC_ALL=C sort -u) \
         <(ci_runs "$sha" 2>/dev/null | jq -r '.[] | select(.done and .bad) | .name' | LC_ALL=C sort -u) | paste -sd, -)
     [[ -z $names ]] ||
-        printf 'inherited=%s from=%s note=the base branch fails these too; it gets fixed there, then update this branch\n' \
+        printf 'inherited=%s from=%s note=the base branch fails these checks too; fix any error line its log does not share\n' \
             "$names" "$base"
 }
 

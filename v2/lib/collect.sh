@@ -22,7 +22,8 @@ result_refresh() {
     [[ -n $live && $live != "${r[head]}" ]] || return 0
     runs=$(ci_runs "$live" 2>/dev/null) || return 0
     r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
-    r[note]="${r[note]:+${r[note]}; }ci read live: head moved to ${live:0:7}"
+    # The review stays: the head moves through base merges, not changes to the PR's own diff; the note says so.
+    r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
 }
 
 # result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result.
