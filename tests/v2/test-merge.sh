@@ -130,4 +130,19 @@ rmdir "$repo/.ak/locks/merge-24"
 "$AK" merge --pr 24 >/dev/null 2>&1
 assert_eq no "$([[ -d $repo/.ak/locks/merge-24 ]] && echo yes || echo no)" 'a finished merge releases its lock'
 
+
+# A green PR with open review threads is not merged (a field root went to merge a PR carrying two code-quality threads).
+: >"$FAKE_GH_ROUTES"
+route "api $api/pulls/40" "$(pr_json 40 feat/t main)"
+route "api --paginate $api/commits/sha40/check-runs*" "$green"
+route "api $api/commits/*/check-runs?per_page=100" "$green"
+route 'api graphql -F owner=acme -F name=widget -F n=40 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"path":"src/a.cs","line":294,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch clause\nmore"}]}},{"id":"T2","isResolved":false,"path":"src/a.cs","line":231,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch"}]}},{"id":"T3","isResolved":true,"path":"src/b.cs","line":1,"comments":{"nodes":[{"author":{"login":"alice"},"body":"done"}]}}]}}}}}'
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 40 2>&1); rc=$?
+assert_eq 1 "$rc" 'a PR with open review threads is refused'
+assert_contains "$out" 'PR #40 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the threads by author'
+assert_contains "$out" 'fix: ak pr-plan --pr 40' 'the refusal sends the PR back to a worker'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is merged'
+
 finish

@@ -29,7 +29,9 @@ Rules:
      then `{{AK}} ci` again. Stop after 3 red rounds and say so in the result.
    - Red with an `inherited=` line: those checks also fail on the base branch. Fix every error your diff causes;
      the errors the base branch shares are named in the result, not chased.
-6. Write `.ak/findings` with one line per finding, then run `{{AK}} receipt --findings .ak/findings`:
+6. Run `{{AK}} threads`. Each `thread=ID author path:line: text` is a comment on the PR from a review bot or a
+   person: fix it (verify, ship) or decline it, then run `{{AK}} threads --resolve ID --note "fixed in <sha>"` (or
+   `--note "declined: <reason>"`). The receipt refuses while any thread is open. Then write `.ak/findings` with one line per finding, then run `{{AK}} receipt --findings .ak/findings`:
 
    ```text
    P1|<title>|fixed <sha>

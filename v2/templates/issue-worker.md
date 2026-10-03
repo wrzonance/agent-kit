@@ -28,7 +28,9 @@ with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason 
    `.ak/review.md` and treat each defect it names as a finding. After fixes, run `{{AK}} verify` and `{{AK}} ship --message "fix: <what the review caught>"`.
 5. Run `{{AK}} ci` (exit 0 green or no CI, 1 red, 3 still pending: run it again). On red, read the printed error lines (full logs are in `.ak/ci/`), fix, verify, ship, and run
    `{{AK}} ci` again, at most 3 times. A check that fails for reasons outside your diff (`inherited=` names checks the base branch also fails; its errors, not the name, decide) is noted, not chased.
-6. Write `.ak/findings`, one line per review finding: `P1|title|fixed <sha>` or `P2|title|declined: reason`
+6. Run `{{AK}} threads`. Each `thread=ID author path:line: text` is a comment on the PR from a review bot or a
+   person: fix it (verify, ship) or decline it, then run `{{AK}} threads --resolve ID --note "fixed in <sha>"` (or
+   `--note "declined: <reason>"`). The receipt refuses while any thread is open. Then write `.ak/findings`, one line per review finding: `P1|title|fixed <sha>` or `P2|title|declined: reason`
    (just `none` when there were none). Run `{{AK}} receipt --findings .ak/findings`, adding
    `--remaining "<what is left and why>"` when this PR covers only part of the issue.
 7. End with the one result line the receipt command printed (`pr=… ci=… review=… head=… note=…`).

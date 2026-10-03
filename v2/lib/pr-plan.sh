@@ -1,5 +1,7 @@
 # shellcheck shell=bash
 # ak pr-plan --pr N [--pr N]...: a worktree and worker prompt per open PR, a run file, and spawn lines.
+# shellcheck source=threads.sh
+source "$AK_HOME/lib/threads.sh"
 
 # The directory worktrees live under, absolute, kept out of the main checkout's git status.
 pr_plan_worktree_dir() {
@@ -69,11 +71,14 @@ pr_plan_skip() {
         else empty end' <<<"$json"
 }
 
-# pr_plan_done WORKTREE SHA: did a worker already take this exact head to green with a review? Re-reviewing seven such
+# pr_plan_done WORKTREE SHA SLUG N: did a worker already take this exact head to green with a review? Re-reviewing seven such
 # PRs in a field run cost 19.6M tokens, and its fixes turned four green PRs red.
 pr_plan_done() {
-    local file=$1/.ak/result
-    [[ -f $file ]] && grep -qx "head=$2" "$file" && grep -qx 'ci=green' "$file" && grep -qx 'review=done' "$file"
+    local file=$1/.ak/result open
+    [[ -f $file ]] && grep -qx "head=$2" "$file" && grep -qx 'ci=green' "$file" && grep -qx 'review=done' "$file" ||
+        return 1
+    # Review bots comment after the worker's receipt; a PR with open threads still needs its worker.
+    open=$(threads_open "$3" "$4") && [[ -z $open ]]
 }
 
 # A fresh run id; a second plan in the same second gets a suffix.
@@ -114,7 +119,7 @@ cmd_main() {
             continue
         fi
         wt=$(pr_plan_worktree "$root" "$dir" "$(jq -r .head.ref <<<"$json")")
-        if pr_plan_done "$wt" "$(jq -r .head.sha <<<"$json")"; then
+        if pr_plan_done "$wt" "$(jq -r .head.sha <<<"$json")" "$slug" "$n"; then
             items=$(jq -c --argjson n "$n" --arg wt "$wt" --arg br "$(jq -r .head.ref <<<"$json")" \
                 '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "collected", needs: []}]' <<<"$items")
             spawns+="skip pr=$n reason=green-and-reviewed-at-head"$'\n'
