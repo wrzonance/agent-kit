@@ -241,14 +241,19 @@ assert_contains "$out" 'skip issue=693 reason=running' 'a fresh spawn inside the
 # One plan at a time: a live lock holder makes a second plan wait, then refuse; a dead holder's lock is taken over.
 sleep 30 &
 holder=$!
-mkdir -p "$repo/.ak/locks/plan" && printf '%s\n' "$holder" >"$repo/.ak/locks/plan/pid"
-out=$(AK_PLAN_LOCK_WAIT=1 "$AK" plan --new --issue 700 2>&1); rc=$?
+mkdir -p "$repo/.ak/locks/run" && printf '%s\n' "$holder" >"$repo/.ak/locks/run/pid"
+out=$(AK_RUN_LOCK_WAIT=1 "$AK" plan --new --issue 700 2>&1); rc=$?
 assert_eq 1 "$rc" 'a plan waits for a live lock holder, then refuses'
-assert_contains "$out" 'another ak plan is still running' 'the refusal names the cause'
+assert_contains "$out" 'another ak plan or ak collect is still running' 'the refusal names the cause'
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 out=$("$AK" plan --new --issue 700 2>&1); rc=$?
 assert_eq 0 "$rc" "a dead holder's lock is taken over"
-assert_eq no "$([[ -e $repo/.ak/locks/plan ]] && echo yes || echo no)" 'a finished plan releases its lock'
+assert_eq no "$([[ -e $repo/.ak/locks/run ]] && echo yes || echo no)" 'a finished plan releases its lock'
+# A plan that outlives an agent's shell yield says to wait rather than re-run (a field root re-ran a yielded plan).
+out=$(AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
+assert_contains "$out" 'ak plan: still working; wait for this call to finish, do not re-run it' 'a slow plan says to wait for it'
+out=$("$AK" plan --new --issue 700 2>&1)
+assert_not_contains "$out" 'still working' 'a fast plan prints no notice'
 
 fresh
 standard_board

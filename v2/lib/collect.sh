@@ -108,6 +108,8 @@ cmd_main() {
     esac
     [[ -n $kind && $n =~ ^[0-9]+$ && $# -eq 2 ]] || usage_die 'usage: ak collect (--issue N | --pr N)'
     plan_context collect
+    run_lock collect
+    trap 'run_unlock' EXIT
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'

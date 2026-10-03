@@ -264,20 +264,30 @@ run_live() {
     return 1
 }
 
-# plan_lock: one ak plan per checkout at a time. A field root re-ran a plan whose first call had not returned yet; the
-# two plans split the issues and left five spawns nobody started. The second call now waits, then resumes the first.
-plan_lock() {
-    local dir="$MAIN/.ak/locks/plan" waited=0
+# run_lock NAME: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
+# later a collect, whose first call had not returned yet; the second call now waits, then reports the first's work.
+run_lock() {
+    local name=$1 dir="$MAIN/.ak/locks/run" waited=0
     mkdir -p -- "$MAIN/.ak/locks"
     until mkdir -- "$dir" 2>/dev/null; do
         # A lock whose owner died is free.
         kill -0 "$(cat -- "$dir/pid" 2>/dev/null || echo 0)" 2>/dev/null || { rm -rf -- "$dir"; continue; }
-        ((waited < ${AK_PLAN_LOCK_WAIT:-300})) || die 'another ak plan is still running' "rm -rf $dir   # only if no ak plan is running"
+        ((waited < ${AK_RUN_LOCK_WAIT:-300})) || die 'another ak plan or ak collect is still running' "rm -rf $dir   # only if neither is running"
         sleep 1
         waited=$((waited + 1))
     done
     printf '%s\n' "$$" >"$dir/pid"
-    PLAN_LOCK=$dir
+    RUN_LOCK=$dir
+    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead.
+    { sleep "${AK_SLOW_NOTICE:-3}" >/dev/null 2>&1 &&
+        printf 'ak %s: still working; wait for this call to finish, do not re-run it\n' "$name" >&2; } </dev/null &
+    SLOW_NOTICE=$!
+}
+
+# run_unlock: release the run lock and silence the slow-call notice.
+run_unlock() {
+    kill "${SLOW_NOTICE:-0}" 2>/dev/null || true
+    rm -rf -- "${RUN_LOCK:-/nonexistent}"
 }
 
 pick() {
@@ -393,9 +403,9 @@ cmd_main() {
     TEMPLATE="$AK_HOME/templates/issue-worker.md"
     [[ -f $TEMPLATE ]] || die "worker template missing: $TEMPLATE" 'reinstall the ak plugin'
     plan_context plan
-    plan_lock
+    run_lock plan
     FILES=$(mktemp)
-    trap 'rm -f -- "$FILES"; rm -rf -- "$PLAN_LOCK"' EXIT
+    trap 'rm -f -- "$FILES"; run_unlock' EXIT
     git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
