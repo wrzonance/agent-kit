@@ -100,16 +100,22 @@ assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is
 jq '.items += [{kind: "issue", n: 700, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
 mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
-printf 'pr=elsewhere\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
-printf 'pr=x\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+printf 'pr=https://github.com/acme/widget/pull/77\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
+printf 'pr=https://github.com/acme/widget/pull/78\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
 out=$("$AK" collect --issue 671 2>&1)
-assert_contains "$out" 'skip issue=680 reason=shipped:elsewhere' 'collect does not re-spawn a successor that shipped'
+assert_contains "$out" 'skip issue=680 reason=shipped:https://github.com/acme/widget/pull/77' 'collect does not re-spawn a successor that shipped'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
-assert_eq 'pr=elsewhere' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
+assert_eq 'pr=https://github.com/acme/widget/pull/77' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a shipped successor counts as done'
 assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" 'skip issue=671 reason=shipped:x' 'a shipped issue is not planned again'
+assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
+# A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
+# parked results by hand before re-running).
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 
 fresh
 standard_board

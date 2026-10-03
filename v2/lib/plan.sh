@@ -240,7 +240,9 @@ issue_active() {
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
     [[ $wt == /* ]] || wt="$MAIN/$wt"
-    [[ ! -f $wt/.ak/result ]] || printf 'shipped:%s\n' "$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)"
+    # A parked result (pr=none) is not shipped: once the operator unblocks it, re-running the issue plans it again.
+    [[ ! -f $wt/.ak/result ]] || needs=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
+    [[ ${needs:-} != http* ]] || printf 'shipped:%s\n' "$needs"
     return 0
 }
 
