@@ -54,12 +54,24 @@ case $kit in
 esac
 
 # GitHub's hourly GraphQL pool is shared by every tool on the account; a trial that starts dry fails in seconds.
-budget() { gh api rate_limit --jq '"\(.resources.graphql.remaining) \(.resources.graphql.reset) \(.resources.core.remaining)"'; }
-read -r gql_left gql_reset _ < <(budget)
+# budget: "REMAINING RESET_EPOCH" for the GraphQL pool, read through GraphQL itself. The REST rate_limit view
+# reported 4999 left while GraphQL's own rateLimit said 20, and two sandbox resets died on the throttle. A query that
+# is itself throttled counts as an empty pool and waits for the REST-reported reset.
+budget() {
+    local out
+    if out=$(gh api graphql -f query='query { rateLimit { remaining resetAt } }' \
+        --jq '"\(.data.rateLimit.remaining) \(.data.rateLimit.resetAt | fromdateiso8601)"' 2>/dev/null); then
+        printf '%s\n' "$out"
+    else
+        printf '0 %s\n' "$(gh api rate_limit --jq .resources.graphql.reset)"
+    fi
+}
+read -r gql_left gql_reset < <(budget)
 while ((gql_left < ${AK_BENCH_MIN_GRAPHQL:-1500})); do
     log "GraphQL pool at $gql_left; waiting for reset at $(date -u -d "@$gql_reset" +%H:%M:%SZ)"
-    sleep $((gql_reset - $(date +%s) + 30))
-    read -r gql_left gql_reset _ < <(budget)
+    wait_s=$((gql_reset - $(date +%s) + 30))
+    sleep $((wait_s > 60 ? wait_s : 60))
+    read -r gql_left gql_reset < <(budget)
 done
 
 log "reset sandbox, open issues: $issues"
