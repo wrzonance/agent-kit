@@ -110,22 +110,33 @@ merge_update() {
     return 3
 }
 
-# merge_branch SLUG JSON: delete the merged head branch unless it is a fork's or another open PR's base.
+# merge_branch SLUG JSON: hand every open PR stacked on the merged head branch to the merged PR's base, then delete the
+# head branch and confirm it is gone. Each stacked PR first gets the branch's final state (its review fixes) merged in.
+# A field stack left merged branches behind as "kept (base of #N)", and a later merge landed a PR in one of them.
+# Retargeting before the delete keeps the stack open; one API delete closed a stacked PR instead of retargeting it.
 merge_branch() {
-    local slug=$1 json=$2 ref dependent
+    local slug=$1 json=$2 ref base deps dep head moved=''
     ref=$(jq -r .head.ref <<<"$json")
+    base=$(jq -r .base.ref <<<"$json")
     if [[ $(jq -r '.head.repo.full_name // ""' <<<"$json") != "$slug" ]]; then
         printf 'kept (fork)\n'
         return 0
     fi
-    dependent=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=100" | jq -r '.[0].number // empty') ||
+    deps=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=100" | jq -r '.[] | "\(.number)\t\(.head.ref)"') ||
         { printf 'kept (cannot list dependents)\n'; return 0; }
-    if [[ -n $dependent ]]; then
-        printf 'kept (base of #%s)\n' "$dependent"
-    elif gh api -X DELETE "repos/$slug/git/refs/heads/$ref" >/dev/null 2>&1; then
-        printf 'deleted\n'
+    while IFS=$'\t' read -r dep head; do
+        [[ -n $dep ]] || continue
+        # A conflict here is resolved when that PR's own ak merge updates it from its new base.
+        gh api "repos/$slug/merges" -f "base=$head" -f "head=$ref" -f "commit_message=merge: $ref into $head" >/dev/null 2>&1 || true
+        gh api -X PATCH "repos/$slug/pulls/$dep" -f "base=$base" >/dev/null 2>&1 ||
+            { printf 'kept (cannot retarget #%s; fix: gh api -X PATCH repos/%s/pulls/%s -f base=%s)\n' "$dep" "$slug" "$dep" "$base"; return 0; }
+        moved+="${moved:+,}#$dep"
+    done <<<"$deps"
+    gh api -X DELETE "repos/$slug/git/refs/heads/$ref" >/dev/null 2>&1 || true
+    if gh api "repos/$slug/git/ref/heads/$ref" >/dev/null 2>&1; then
+        printf 'kept (delete failed; fix: gh api -X DELETE repos/%s/git/refs/heads/%s)\n' "$slug" "$ref"
     else
-        printf 'kept (delete failed)\n'
+        printf 'deleted%s\n' "${moved:+ (retargeted $moved to $base)}"
     fi
 }
 
