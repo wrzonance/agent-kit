@@ -4,6 +4,8 @@
 source "$AK_HOME/lib/ship.sh"
 # shellcheck source=ci.sh
 source "$AK_HOME/lib/ci.sh"
+# shellcheck source=threads.sh
+source "$AK_HOME/lib/threads.sh"
 
 FINDING_RE='^ *(P[0-3]) *\| *([^|]*[^| ]) *\| *(fixed [0-9a-f]{7,40}|declined: .+)$'
 
@@ -71,7 +73,7 @@ receipt_body() {
 }
 
 cmd_main() {
-    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count
+    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open
     while (($#)); do
         case $1 in
             --findings) file=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
@@ -97,6 +99,9 @@ cmd_main() {
     # then ran ak review and found the bug too late).
     [[ $review != skipped ]] || die "no review of this branch yet" "ak review"
     receipt_all_decided "$dir" "$findings"
+    # Comments on the PR from review bots and people are findings too; each is resolved or declined before the receipt.
+    open=$(threads_open "$(slug)" "${pr%% *}") || die "cannot read the review threads on PR #${pr%% *}" "gh auth status"
+    [[ -z $open ]] || die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" "ak threads"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
         die "could not post the receipt comment" "gh auth status"

@@ -30,7 +30,9 @@ You are the root. Workers do the review, fixes and CI; you spawn, wait, collect 
    A PR based on another PR's branch merges after that PR: when `ak merge` refuses with
    `fix: ak merge --pr M`, merge M first (if its collect said `ci=green`), then retry. When `ak merge` exits 3 it
    prints a `spawn` line: the PR conflicts with its base, so spawn that worker, wait, `ak collect --pr N`, and run
-   `ak merge --pr N` again. Any other refusal: report its two lines and move on.
+   `ak merge --pr N` again. When it refuses with `fix: ak pr-plan --pr N`, the PR has open review threads: run
+   that, spawn the worker it prints, wait, `ak collect --pr N`, and merge again. Any other refusal: report its two
+   lines and move on.
 6. When no workers remain, report the `drop`, collect and merge lines, and end the turn.
 
 Never mark a PR ready or merge it any other way than `ak merge`, and only under `--merge`.

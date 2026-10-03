@@ -5,6 +5,8 @@
 
 # shellcheck source=ci.sh
 source "$AK_HOME/lib/ci.sh"
+# shellcheck source=threads.sh
+source "$AK_HOME/lib/threads.sh"
 
 # merge_checks SLUG SHA: refuse unless every check run on SHA completed as success, neutral or skipped.
 merge_checks() {
@@ -17,6 +19,15 @@ merge_checks() {
         | "\(.name)=\($s)"] | .[:5] | join(" ")' <<<"$runs")
     [[ $(jq -s '[.[].check_runs[]] | length' <<<"$runs") -gt 0 ]] || die "no check runs on $sha yet" "ak ci --once"
     [[ -z $bad ]] || die "checks are not green on $sha: $bad" "ak ci --once"
+}
+
+# merge_threads SLUG N: refuse while the PR has unresolved review threads; bots post them as their checks finish
+# (a field root went to merge a PR carrying two unresolved code-quality threads).
+merge_threads() {
+    local list
+    list=$(threads_open "$1" "$2") || die "cannot read the review threads on PR #$2" "gh auth status"
+    [[ -z $list ]] || die "PR #$2 has $(grep -c . <<<"$list") unresolved review threads ($(threads_summary "$list"))" \
+        "ak pr-plan --pr $2"
 }
 
 # merge_parent SLUG N BASE: refuse while BASE is an open PR's head; retarget to the parent's base once it merged.
@@ -130,6 +141,7 @@ cmd_main() {
     # Checks still running on a green-collected PR are waited for, not refused (PR bench 2026-10-01: #150).
     ci_wait "$(jq -r .head.sha <<<"$json")" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
     merge_checks "$slug" "$(jq -r .head.sha <<<"$json")"
+    merge_threads "$slug" "$n"
     merge_parent "$slug" "$n" "$(jq -r .base.ref <<<"$json")"
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
     local rc=0

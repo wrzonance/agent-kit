@@ -76,6 +76,11 @@ assert_not_contains "$out" 'spawn pr=12' 'a skipped PR gets no worker'
 assert_eq keep "$(cat "$wt/.ak/prompt.md")" 'a skipped PR keeps its worktree state'
 run3=$(sed -n 's/^run=//p' <<<"$out")
 assert_eq collected "$(jq -r '.items[0].state' "$repo/.ak/runs/$run3.json")" 'a skipped PR is recorded as collected'
+# Review bots comment after the worker's receipt: a PR done at its head but with open threads still gets a worker.
+route 'api graphql -F owner=acme -F name=widget -F n=12 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"path":"a","line":1,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"x"}]}}]}}}}}'
+printf 'pr=12\nci=green\nreview=done\nhead=abc\nnote=findings=0\n' >"$wt/.ak/result"
+out=$("$AK" pr-plan --pr 12 2>&1)
+assert_contains "$out" 'spawn pr=12' 'a PR with open review threads gets a worker'
 printf 'pr=12\nci=green\nreview=done\nhead=old\n' >"$wt/.ak/result"
 out=$("$AK" pr-plan --pr 12 2>&1)
 assert_contains "$out" 'spawn pr=12' 'a result for an older head respawns the worker'

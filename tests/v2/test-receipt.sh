@@ -80,4 +80,14 @@ printf 'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope\
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 0 "$rc" 'a receipt that decides every finding is accepted'
 
+
+# Comments on the PR from review bots and people are findings too (a field root went to merge a PR carrying two
+# unresolved code-quality threads): the receipt refuses while any thread is open.
+route 'api graphql -F owner=acme -F name=widget -F n=9 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"path":"src/a.cs","line":294,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch clause\nmore"}]}},{"id":"T2","isResolved":false,"path":"src/a.cs","line":231,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch"}]}},{"id":"T3","isResolved":true,"path":"src/b.cs","line":1,"comments":{"nodes":[{"author":{"login":"alice"},"body":"done"}]}}]}}}}}'
+mv "$FAKE_GH_ROUTES" "$WORK/routes" && { tail -n 1 "$WORK/routes"; head -n -1 "$WORK/routes"; } >"$FAKE_GH_ROUTES"
+out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt with open review threads is refused'
+assert_contains "$out" 'PR #9 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the open threads by author'
+assert_contains "$out" 'fix: ak threads' 'the refusal points at ak threads'
+
 finish

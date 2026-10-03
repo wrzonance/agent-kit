@@ -14,5 +14,10 @@ while IFS=$'\t' read -r pattern response rc; do
         exit "${rc:-0}"
     fi
 done <"$FAKE_GH_ROUTES"
+# A PR has no review threads unless a test routes some.
+if [[ $args == *reviewThreads* ]]; then
+    printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+    exit 0
+fi
 printf 'fake gh: no route for: %s\n' "$args" >&2
 exit 1
