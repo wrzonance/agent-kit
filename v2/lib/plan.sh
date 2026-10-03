@@ -235,22 +235,61 @@ issue_active() {
         IFS='|' read -r state wt needs <<<"$item"
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            spawned) [[ -f $wt/.ak/result ]] || { printf 'running\n'; return 0; } ;;
+            spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
     [[ $wt == /* ]] || wt="$MAIN/$wt"
-    [[ ! -f $wt/.ak/result ]] || printf 'shipped:%s\n' "$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)"
+    # A parked result (pr=none) is not shipped: once the operator unblocks it, re-running the issue plans it again.
+    [[ ! -f $wt/.ak/result ]] || needs=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
+    [[ ${needs:-} != http* ]] || printf 'shipped:%s\n' "$needs"
     return 0
 }
 
-# run_live FILE: does the run still have a worker out (spawned, no .ak/result)?
+# worker_out WORKTREE RUNFILE: is a worker on this spawned item, i.e. no result yet, and it started (ak setup ran) or the
+# run is under 10 minutes old? A field plan's output was lost, so its spawns never got workers, and every later plan
+# skipped them as running for a day.
+worker_out() {
+    local wt=$1 age
+    [[ -n $wt && ! -f $wt/.ak/result ]] || return 1
+    [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] && return 0
+    age=$(( $(date +%s) - $(stat -c %Y -- "$2") ))
+    ((age < ${AK_SPAWN_GRACE:-600}))
+}
+
+# run_live FILE: does the run still have a worker out?
 run_live() {
     local wt
     while IFS= read -r wt; do
-        [[ -z $wt || -f $wt/.ak/result ]] || return 0
+        worker_out "$wt" "$1" && return 0
     done < <(jq -r '.items[] | select(.state == "spawned") | .worktree // ""' "$1")
     return 1
+}
+
+# run_lock NAME: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
+# later a collect, whose first call had not returned yet; the second call now waits, then reports the first's work.
+run_lock() {
+    local name=$1 dir="$MAIN/.ak/locks/run" waited=0
+    mkdir -p -- "$MAIN/.ak/locks"
+    until mkdir -- "$dir" 2>/dev/null; do
+        # A lock whose owner died is free.
+        kill -0 "$(cat -- "$dir/pid" 2>/dev/null || echo 0)" 2>/dev/null || { rm -rf -- "$dir"; continue; }
+        ((waited < ${AK_RUN_LOCK_WAIT:-300})) || die 'another ak plan or ak collect is still running' "rm -rf $dir   # only if neither is running"
+        sleep 1
+        waited=$((waited + 1))
+    done
+    printf '%s\n' "$$" >"$dir/pid"
+    RUN_LOCK=$dir
+    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead.
+    { sleep "${AK_SLOW_NOTICE:-3}" >/dev/null 2>&1 &&
+        printf 'ak %s: still working; wait for this call to finish, do not re-run it\n' "$name" >&2; } </dev/null &
+    SLOW_NOTICE=$!
+}
+
+# run_unlock: release the run lock and silence the slow-call notice.
+run_unlock() {
+    kill "${SLOW_NOTICE:-0}" 2>/dev/null || true
+    rm -rf -- "${RUN_LOCK:-/nonexistent}"
 }
 
 pick() {
@@ -366,9 +405,10 @@ cmd_main() {
     TEMPLATE="$AK_HOME/templates/issue-worker.md"
     [[ -f $TEMPLATE ]] || die "worker template missing: $TEMPLATE" 'reinstall the ak plugin'
     plan_context plan
-    git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
+    run_lock plan
     FILES=$(mktemp)
-    trap 'rm -f -- "$FILES"' EXIT
+    trap 'rm -f -- "$FILES"; run_unlock' EXIT
+    git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)

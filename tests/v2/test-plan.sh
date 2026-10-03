@@ -100,16 +100,22 @@ assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is
 jq '.items += [{kind: "issue", n: 700, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
 mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
-printf 'pr=elsewhere\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
-printf 'pr=x\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+printf 'pr=https://github.com/acme/widget/pull/77\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
+printf 'pr=https://github.com/acme/widget/pull/78\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
 out=$("$AK" collect --issue 671 2>&1)
-assert_contains "$out" 'skip issue=680 reason=shipped:elsewhere' 'collect does not re-spawn a successor that shipped'
+assert_contains "$out" 'skip issue=680 reason=shipped:https://github.com/acme/widget/pull/77' 'collect does not re-spawn a successor that shipped'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
-assert_eq 'pr=elsewhere' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
+assert_eq 'pr=https://github.com/acme/widget/pull/77' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a shipped successor counts as done'
 assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" 'skip issue=671 reason=shipped:x' 'a shipped issue is not planned again'
+assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
+# A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
+# parked results by hand before re-running).
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 
 fresh
 standard_board
@@ -224,6 +230,37 @@ ws=$(cd "$repo" && bash -c '
     write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
 assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
 
+# A spawn whose worker never started does not block re-planning once the grace has passed (field run: a lost plan
+# output left five never-started spawns that every later plan skipped as running); a started worker still does.
+fresh
+standard_board
+"$AK" plan >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a never-started spawn is planned again'
+mkdir -p "$wt/.ak/logs"
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'a started worker still blocks re-planning'
+out=$("$AK" plan --new --issue 693 2>&1)
+assert_contains "$out" 'skip issue=693 reason=running' 'a fresh spawn inside the grace still counts as running'
+
+# One plan at a time: a live lock holder makes a second plan wait, then refuse; a dead holder's lock is taken over.
+sleep 30 &
+holder=$!
+mkdir -p "$repo/.ak/locks/run" && printf '%s\n' "$holder" >"$repo/.ak/locks/run/pid"
+out=$(AK_RUN_LOCK_WAIT=1 "$AK" plan --new --issue 700 2>&1); rc=$?
+assert_eq 1 "$rc" 'a plan waits for a live lock holder, then refuses'
+assert_contains "$out" 'another ak plan or ak collect is still running' 'the refusal names the cause'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+out=$("$AK" plan --new --issue 700 2>&1); rc=$?
+assert_eq 0 "$rc" "a dead holder's lock is taken over"
+assert_eq no "$([[ -e $repo/.ak/locks/run ]] && echo yes || echo no)" 'a finished plan releases its lock'
+# A plan that outlives an agent's shell yield says to wait rather than re-run (a field root re-ran a yielded plan).
+out=$(AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
+assert_contains "$out" 'ak plan: still working; wait for this call to finish, do not re-run it' 'a slow plan says to wait for it'
+out=$("$AK" plan --new --issue 700 2>&1)
+assert_not_contains "$out" 'still working' 'a fast plan prints no notice'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"
@@ -235,5 +272,6 @@ assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 real="$REPO/v2/templates/issue-worker.md"
 assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
+
 
 finish

@@ -102,12 +102,14 @@ collect_item() {
 }
 
 cmd_main() {
-    local kind='' n='' item worktree state=collected
+    local kind='' n='' item worktree state=collected m
     case ${1:-} in
         --issue | --pr) kind=${1#--}; n=${2:-} ;;
     esac
     [[ -n $kind && $n =~ ^[0-9]+$ && $# -eq 2 ]] || usage_die 'usage: ak collect (--issue N | --pr N)'
     plan_context collect
+    run_lock collect
+    trap 'run_unlock' EXIT
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
@@ -129,7 +131,14 @@ cmd_main() {
         return 0
     fi
     cross_write
+    # A parked issue shipped nothing, so it releases nothing: its successors would start without its work and park too
+    # (a field chain spawned two workers that only found the parked predecessor missing).
+    if [[ $(sed -n 's/^pr=//p' "$worktree/.ak/result" | head -n 1) != http* ]]; then
+        state=parked
+        while IFS= read -r m; do emit "after issue=$m reason=waits-on-parked-#$n"; done < <(jq -r --argjson n "$n" \
+            '.items[] | select(.kind == "issue" and .state == "queued" and (.needs | index($n))) | .n' "$RUNFILE")
+    fi
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
-    [[ $kind != issue ]] || spawn_successors
+    [[ $kind != issue || $state == parked ]] || spawn_successors
     printf '%s\n' "${LINES[@]}"
 }
