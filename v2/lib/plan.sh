@@ -235,7 +235,7 @@ issue_active() {
         IFS='|' read -r state wt needs <<<"$item"
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            spawned) [[ -f $wt/.ak/result ]] || { printf 'running\n'; return 0; } ;;
+            spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
@@ -244,13 +244,40 @@ issue_active() {
     return 0
 }
 
-# run_live FILE: does the run still have a worker out (spawned, no .ak/result)?
+# worker_out WORKTREE RUNFILE: is a worker on this spawned item, i.e. no result yet, and it started (ak setup ran) or the
+# run is under 10 minutes old? A field plan's output was lost, so its spawns never got workers, and every later plan
+# skipped them as running for a day.
+worker_out() {
+    local wt=$1 age
+    [[ -n $wt && ! -f $wt/.ak/result ]] || return 1
+    [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] && return 0
+    age=$(( $(date +%s) - $(stat -c %Y -- "$2") ))
+    ((age < ${AK_SPAWN_GRACE:-600}))
+}
+
+# run_live FILE: does the run still have a worker out?
 run_live() {
     local wt
     while IFS= read -r wt; do
-        [[ -z $wt || -f $wt/.ak/result ]] || return 0
+        worker_out "$wt" "$1" && return 0
     done < <(jq -r '.items[] | select(.state == "spawned") | .worktree // ""' "$1")
     return 1
+}
+
+# plan_lock: one ak plan per checkout at a time. A field root re-ran a plan whose first call had not returned yet; the
+# two plans split the issues and left five spawns nobody started. The second call now waits, then resumes the first.
+plan_lock() {
+    local dir="$MAIN/.ak/locks/plan" waited=0
+    mkdir -p -- "$MAIN/.ak/locks"
+    until mkdir -- "$dir" 2>/dev/null; do
+        # A lock whose owner died is free.
+        kill -0 "$(cat -- "$dir/pid" 2>/dev/null || echo 0)" 2>/dev/null || { rm -rf -- "$dir"; continue; }
+        ((waited < ${AK_PLAN_LOCK_WAIT:-300})) || die 'another ak plan is still running' "rm -rf $dir   # only if no ak plan is running"
+        sleep 1
+        waited=$((waited + 1))
+    done
+    printf '%s\n' "$$" >"$dir/pid"
+    PLAN_LOCK=$dir
 }
 
 pick() {
@@ -366,9 +393,10 @@ cmd_main() {
     TEMPLATE="$AK_HOME/templates/issue-worker.md"
     [[ -f $TEMPLATE ]] || die "worker template missing: $TEMPLATE" 'reinstall the ak plugin'
     plan_context plan
-    git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
+    plan_lock
     FILES=$(mktemp)
-    trap 'rm -f -- "$FILES"' EXIT
+    trap 'rm -f -- "$FILES"; rm -rf -- "$PLAN_LOCK"' EXIT
+    git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)

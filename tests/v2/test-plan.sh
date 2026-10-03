@@ -224,6 +224,32 @@ ws=$(cd "$repo" && bash -c '
     write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
 assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
 
+# A spawn whose worker never started does not block re-planning once the grace has passed (field run: a lost plan
+# output left five never-started spawns that every later plan skipped as running); a started worker still does.
+fresh
+standard_board
+"$AK" plan >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a never-started spawn is planned again'
+mkdir -p "$wt/.ak/logs"
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'a started worker still blocks re-planning'
+out=$("$AK" plan --new --issue 693 2>&1)
+assert_contains "$out" 'skip issue=693 reason=running' 'a fresh spawn inside the grace still counts as running'
+
+# One plan at a time: a live lock holder makes a second plan wait, then refuse; a dead holder's lock is taken over.
+sleep 30 &
+holder=$!
+mkdir -p "$repo/.ak/locks/plan" && printf '%s\n' "$holder" >"$repo/.ak/locks/plan/pid"
+out=$(AK_PLAN_LOCK_WAIT=1 "$AK" plan --new --issue 700 2>&1); rc=$?
+assert_eq 1 "$rc" 'a plan waits for a live lock holder, then refuses'
+assert_contains "$out" 'another ak plan is still running' 'the refusal names the cause'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+out=$("$AK" plan --new --issue 700 2>&1); rc=$?
+assert_eq 0 "$rc" "a dead holder's lock is taken over"
+assert_eq no "$([[ -e $repo/.ak/locks/plan ]] && echo yes || echo no)" 'a finished plan releases its lock'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"
@@ -235,5 +261,6 @@ assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 real="$REPO/v2/templates/issue-worker.md"
 assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
+
 
 finish
