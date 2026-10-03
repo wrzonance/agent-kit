@@ -44,7 +44,9 @@ route "api $api/pulls?state=open&head=acme:feat/a*" '[{"number":24}]'
 route "api $api/pulls?state=open&head=acme:*" '[]'
 route "api $api/pulls?state=closed&head=acme:feat/gone*" '[{"number":20,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
 route "api $api/pulls?state=closed&head=acme:*" '[]'
-route "api $api/pulls?state=open&base=feat/a*" '[{"number":25}]'
+route "api $api/pulls?state=open&base=feat/a*" '[{"number":25,"head":{"ref":"feat/b"}}]'
+route "api $api/merges -f base=feat/b -f head=feat/a*" '{"sha":"mergedown"}'
+route "api -X PATCH $api/pulls/25 -f base=main" '{}'
 route "api $api/pulls?state=open&base=*" '[]'
 route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
@@ -79,8 +81,15 @@ assert_contains "$out" 'job-in_progress' 'the refusal names the pending check'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 24 2>&1); rc=$?
-assert_eq 'merged pr=24 sha=merged123 branch=kept (base of #25)' "$(tail -n 1 <<<"$out")" 'a base of another open PR is kept'
-assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X DELETE' 'no delete for a base branch'
+# Merging a stack's parent hands its child to main and deletes the parent branch (a field stack left merged
+# branches behind, and a later merge landed a PR in one of them).
+assert_eq 'merged pr=24 sha=merged123 branch=deleted (retargeted #25 to main)' "$(tail -n 1 <<<"$out")" 'the stacked child is retargeted and the parent branch deleted'
+log=$(cat "$FAKE_GH_LOG")
+at() { grep -nF -- "$1" <<<"$log" | head -n 1 | cut -d: -f1; }
+down=$(at 'merges -f base=feat/b -f head=feat/a') patch=$(at "PATCH $api/pulls/25 -f base=main") del=$(at "DELETE $api/git/refs/heads/feat/a")
+assert_eq yes "$([[ -n $down && -n $patch && -n $del && $down -lt $patch && $patch -lt $del ]] && echo yes || echo no)" \
+    'the child gets the final branch, then its new base, then the parent branch is deleted'
+assert_contains "$log" "api $api/git/ref/heads/feat/a" 'the delete is confirmed'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'pr ready' 'a non-draft is not flipped'
 
 : >"$FAKE_GH_LOG"
