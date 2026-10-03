@@ -333,6 +333,20 @@ print_lines() {
     ((hidden == 0)) || printf 'drop more=%d log=%s\n' "$hidden" "$AK_LOG"
 }
 
+# plan_next YOLO: when nothing starts or queues, the one line that says how to get work. A field operator re-ran an
+# empty plan twice: Ready held only dropped issues, and nothing said that Backlog needs --yolo.
+plan_next() {
+    local backlog
+    printf '%s\n' "${LINES[@]}" | grep -qE '^(spawn|after) ' && return 0
+    backlog=$([[ $1 == false && -n ${BOARD_ITEMS:-} ]] && jq '[.items[]? | select(.content.type == "Issue" and
+        ((.status // "") | ascii_downcase) == "backlog")] | length' <<<"$BOARD_ITEMS" || echo 0)
+    if ((backlog > 0)); then
+        printf 'next=nothing workable in Ready; --yolo adds %d Backlog issues, or name issues with --issue N\n' "$backlog"
+    else
+        printf 'next=nothing workable; name issues with --issue N\n'
+    fi
+}
+
 cmd_main() {
     local limit='' yolo=false serialize=0 new=0 issues=() run list
     while (($#)); do
@@ -370,4 +384,5 @@ cmd_main() {
     write_run "$run"
     printf 'run=%s\n' "$run"
     print_lines
+    plan_next "$yolo"
 }

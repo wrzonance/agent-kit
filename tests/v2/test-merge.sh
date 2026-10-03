@@ -60,7 +60,8 @@ assert_eq 2 "$rc" 'no --pr is a usage error'
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 21 2>&1); rc=$?
 assert_eq 0 "$rc" 'a green PR merges'
-assert_eq 'merged pr=21 sha=merged123 branch=deleted' "$out" 'merge prints the sha and branch fate'
+assert_eq 'merged pr=21 sha=merged123 branch=deleted' "$(tail -n 1 <<<"$out")" 'merge prints the sha and branch fate'
+assert_contains "$out" 'ci pending on sha21: wait on this with the longest wait your shell allows' 'a CI wait says how to wait on it'
 log=$(cat "$FAKE_GH_LOG")
 assert_contains "$log" 'pr ready 21 --repo acme/widget' 'a draft is marked ready'
 assert_contains "$log" "api -X PUT $api/pulls/21/merge -f merge_method=squash -f sha=sha21" 'the merge is pinned to the checked head'
@@ -78,7 +79,7 @@ assert_contains "$out" 'job-in_progress' 'the refusal names the pending check'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 24 2>&1); rc=$?
-assert_eq 'merged pr=24 sha=merged123 branch=kept (base of #25)' "$out" 'a base of another open PR is kept'
+assert_eq 'merged pr=24 sha=merged123 branch=kept (base of #25)' "$(tail -n 1 <<<"$out")" 'a base of another open PR is kept'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X DELETE' 'no delete for a base branch'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'pr ready' 'a non-draft is not flipped'
 
@@ -98,7 +99,7 @@ assert_eq yes "$( [[ -n $first && -n $patch && $first -lt $patch ]] && echo yes 
 assert_contains "$out" 'merged pr=26' 'then merged'
 
 out=$("$AK" merge --pr 27 2>&1)
-assert_eq 'merged pr=27 sha=merged123 branch=kept (fork)' "$out" 'a fork branch is never deleted'
+assert_eq 'merged pr=27 sha=merged123 branch=kept (fork)' "$(tail -n 1 <<<"$out")" 'a fork branch is never deleted'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 28 2>&1); rc=$?

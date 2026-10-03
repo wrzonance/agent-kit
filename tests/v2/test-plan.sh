@@ -145,6 +145,19 @@ default_routes
 out=$("$AK" plan --yolo 2>&1)
 assert_eq 'spawn issue=671 spawn issue=700' "$(grep -o 'spawn issue=[0-9]*' <<<"$out" | paste -sd' ')" '--yolo adds Backlog after Ready'
 
+# An empty plan says how to get work instead of stopping silently (a field operator re-ran one twice).
+fresh
+route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 701 Backlog)]}"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'next=nothing workable in Ready; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
+out=$("$AK" plan --issue 69 2>&1)
+assert_contains "$out" 'next=nothing workable; name issues with --issue N' 'an empty named plan says so'
+fresh
+standard_board
+out=$("$AK" plan 2>&1)
+assert_not_contains "$out" 'next=' 'a plan that spawns prints no next line'
+
 fresh
 items=$(for n in $(seq 100 130); do printf '%s\n' "$(board_item "$n" Ready '["blocked"]')"; done | paste -sd, -)
 route 'project item-list 5 --owner acme*' "{\"items\":[$items,$(board_item 671 Ready)]}"
