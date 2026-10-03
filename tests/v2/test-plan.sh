@@ -261,6 +261,22 @@ assert_contains "$out" 'ak plan: still working; wait for this call to finish, do
 out=$("$AK" plan --new --issue 700 2>&1)
 assert_not_contains "$out" 'still working' 'a fast plan prints no notice'
 
+# sync_base: a reused worktree with commits of its own merges the new base; on conflict it leaves .ak/resolve.
+sb=$(mktemp -d)
+git -C "$sb" init -q -b main && git -C "$sb" config user.email t@t && git -C "$sb" config user.name t
+printf 'a\n' >"$sb/f" && git -C "$sb" add f && git -C "$sb" commit -q -m base
+git -C "$sb" checkout -q -b pred && printf 'pred\n' >"$sb/p" && git -C "$sb" add p && git -C "$sb" commit -q -m pred
+git -C "$sb" checkout -q -b own main && printf 'own\n' >"$sb/o" && git -C "$sb" add o && git -C "$sb" commit -q -m own
+mkdir -p "$sb/.akd"
+run_sync() { bash -c 'AK_LOG=/dev/null; source "$1/lib/common.sh"; source "$1/lib/plan.sh"; sync_base "$2" "$3" "$4"' _ "$REPO/v2" "$@"; }
+run_sync "$sb" pred "$sb/.akd"
+assert_rc 0 'a worktree with its own commits gets the new base merged in' -- git -C "$sb" merge-base --is-ancestor pred HEAD
+assert_eq no "$([[ -e $sb/.akd/resolve ]] && echo yes || echo no)" 'a clean merge leaves no resolve marker'
+git -C "$sb" checkout -q -b clash main && printf 'clash\n' >"$sb/p" && git -C "$sb" add p && git -C "$sb" commit -q -m clash
+run_sync "$sb" pred "$sb/.akd"
+assert_eq pred "$(cat "$sb/.akd/resolve")" 'a conflicting base is left to the worker as .ak/resolve'
+assert_eq '' "$(git -C "$sb" status --porcelain -- p f o)" 'a conflicting merge is aborted, not left half-done'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"

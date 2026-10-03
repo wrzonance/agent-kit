@@ -37,6 +37,9 @@ out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'after issue=680 note=open-PR lookup failed; collect again' 'a failed PR lookup is reported'
 assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a failed PR lookup leaves the successor queued'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+# A successor's worktree left by an earlier run is reused, and still starts from the predecessor branch (a field
+# successor reused one that never got its predecessor's work, and parked).
+git -C "$repo" worktree add -q -b feat/issue-680 "$repo/.worktrees/feat/issue-680" origin/main
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collect exits 0'
 wt2="$repo/.worktrees/feat/issue-680"

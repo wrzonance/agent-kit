@@ -202,6 +202,21 @@ add_worktree() {
     fi
 }
 
+# sync_base WORKTREE FROM AKDIR: a reused worktree starts from FROM too. A field successor reused a worktree left by
+# an earlier run; its .ak/base named the predecessor branch, but the worktree never got that branch, and it parked.
+# No commits of its own: fast-forward. Commits of its own: merge FROM, or leave .ak/resolve for the worker on conflict.
+sync_base() {
+    local wt=$1 from=$2
+    git -C "$wt" merge-base --is-ancestor "$from" HEAD 2>/dev/null && return 0
+    if [[ -z $(git -C "$wt" rev-list "$from..HEAD" 2>/dev/null) ]]; then
+        git -C "$wt" merge -q --ff-only "$from" >>"$AK_LOG" 2>&1 && return 0
+    elif git -C "$wt" merge -q --no-edit "$from" >>"$AK_LOG" 2>&1; then
+        return 0
+    fi
+    git -C "$wt" merge --abort >>"$AK_LOG" 2>&1 || true
+    printf '%s\n' "$from" >"$3/resolve"
+}
+
 # spawn_issue N FROM BASE: worktree, pushed branch, .ak files, board move, and the spawn line.
 spawn_issue() {
     local n=$1 branch="feat/issue-$1" root wt dir
@@ -211,6 +226,7 @@ spawn_issue() {
     add_worktree "$branch" "$wt" "$2" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
     git -C "$wt" push -q -u origin "$branch" >>"$AK_LOG" 2>&1 || emit "warn issue=$n push failed log=$AK_LOG"
     dir=$(cd -- "$wt" && ak_dir)
+    sync_base "$wt" "$2" "$dir"
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
     rm -f -- "$dir/result"
