@@ -277,6 +277,15 @@ run_sync "$sb" pred "$sb/.akd"
 assert_eq pred "$(cat "$sb/.akd/resolve")" 'a conflicting base is left to the worker as .ak/resolve'
 assert_eq '' "$(git -C "$sb" status --porcelain -- p f o)" 'a conflicting merge is aborted, not left half-done'
 
+# A blocker sitting In progress with no PR is named as such (a field dependent dropped run after run behind a stale one).
+fresh
+route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 1 'In progress'),$(board_item 690 Ready)]}"
+route 'api repos/acme/widget/issues/690/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
+issue_route 690 'x'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'drop issue=690 reason=blocked-by:#1(in-progress-without-pr)' 'an In-progress blocker with no PR is named'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"

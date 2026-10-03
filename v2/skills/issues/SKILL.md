@@ -6,6 +6,7 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 # issues
 
 `ak` is `<this skill's directory>/../../bin/ak`. Pass the operator's flags straight through to `ak plan`.
+Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
 2. For each `spawn issue=N cwd=… prompt=… model=… effort=…` line, spawn one worker with exactly that model

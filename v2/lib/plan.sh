@@ -120,6 +120,17 @@ protected_hit() {
     return 0
 }
 
+# blocker_note N: "(in-progress-without-pr)" when blocker N sits In progress on the board with no feat/issue-N PR open. A
+# field board kept a blocker In progress with no PR or worktree, and its dependent dropped run after run unexplained.
+blocker_note() {
+    local status open
+    [[ -n ${BOARD_ITEMS:-} ]] || return 0
+    status=$(jq -r --argjson n "$1" '[.items[]? | select(.content.number == $n) | (.status // "") | ascii_downcase][0] // ""' <<<"$BOARD_ITEMS")
+    [[ $status == "in progress" ]] || return 0
+    open=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$1&per_page=1" | jq -r 'length' 2>/dev/null)
+    [[ ${open:-0} != 0 ]] || printf '(in-progress-without-pr)'
+}
+
 # check_issue N LABELS: sets REASON (empty when N can be chosen), WS (its write set) and BLOCKED (chosen blockers).
 check_issue() {
     local n=$1 json hit
@@ -134,11 +145,11 @@ check_issue() {
     # A blocker chosen earlier in this run is a dependency, not a drop: the issue queues behind it (a field run dropped
     # an issue whose only blocker it had just spawned).
     for hit in $(api "repos/$SLUG/issues/$n/dependencies/blocked_by" | jq -r '.[]? | select(.state == "open") | .number' 2>/dev/null); do
-        [[ " ${CHOSEN[*]} " == *" $hit "* ]] || { REASON="blocked-by:#$hit"; return 0; }
+        [[ " ${CHOSEN[*]} " == *" $hit "* ]] || { REASON="blocked-by:#$hit$(blocker_note "$hit")"; return 0; }
         BLOCKED+="${BLOCKED:+,}$hit"
     done
     hit=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null)
-    [[ ${hit:-0} == 0 ]] || { REASON=open-pr; return 0; }
+    [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; return 0; }
     WS=$(write_set "$(jq -r '.body // ""' <<<"$json")")
     hit=$(protected_hit "$WS")
     [[ -z $hit ]] || { REASON="protected:$hit"; return 0; }
