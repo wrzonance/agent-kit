@@ -6,9 +6,11 @@ Work only in `{{WORKTREE}}` and run every command below from there.
 When the issue asks for more than one PR, or part of it needs something this worktree can't do (an area the
 issue keeps separate, a live app session, an operator step), do the part that fits as this PR and name the rest
 with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason "<why>"` and end with its line.
+A stop rule in the issue is about changing behaviour. When a spec document (an OpenAPI file, a schema doc)
+disagrees with behaviour the code and its tests already have, fix the document to match and carry on.
 
 1. Run `{{AK}} setup`. When `.ak/resolve` exists, this run is a merge-down: run `git fetch origin && git merge $(cat .ak/resolve)`,
-   resolve each conflict keeping the intent of both sides, delete `.ak/resolve`, then go to step 2 and on to
+   resolve each conflict keeping the intent of both sides, commit the merge, then go to step 2 and on to
    `{{AK}} receipt --findings .ak/findings`, keeping the findings file from the earlier run (skip step 4's review).
    Otherwise read the code the issue touches. Size the method to the change:
    - New behavior or a real unknown: name the data shapes, write the function signatures, list every file and

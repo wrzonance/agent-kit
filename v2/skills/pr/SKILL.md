@@ -7,6 +7,7 @@ description: Take one or more open pull requests to green (review, fix, CI, rece
 
 You are the root. Workers do the review, fixes and CI; you spawn, wait, collect and report. `ak` below means
 `<this skill's directory>/../../bin/ak`, run with that absolute path from the repository.
+Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak pr-plan --pr N` with one `--pr` per PR number in the invocation. It prints:
 

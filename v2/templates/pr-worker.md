@@ -8,6 +8,8 @@ Rules:
 - Work only in `{{WORKTREE}}`, only on {{BRANCH}}. Run every command from there.
 - Never merge, never mark the PR ready, never force-push, never rewrite pushed commits.
 - Each `{{AK}}` command prints what you need next. When one refuses, run the `fix:` line it prints.
+- A stop rule in the issue is about changing behaviour. When a spec document (an OpenAPI file, a schema doc)
+  disagrees with behaviour the code and its tests already have, fix the document to match and carry on.
 
 ## Steps
 
