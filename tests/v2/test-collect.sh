@@ -22,6 +22,13 @@ assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)
 
 printf 'x\n' >"$wt/src/a.txt"
 git -C "$wt" commit -qam work && git -C "$wt" push -q
+# A parked issue releases nothing: its successor stays queued and collect says why (a field chain spawned two
+# successors that only found the parked predecessor's work missing).
+printf 'pr=none\nci=none\nreview=skipped\nhead=abc\nnote=parked: protected path\n' >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'after issue=680 reason=waits-on-parked-#671' 'a parked issue holds its successor'
+assert_not_contains "$out" 'spawn issue=680' 'a parked issue spawns no successor'
+assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run records the park and the held successor'
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
 routes=$(cat "$FAKE_GH_ROUTES")
@@ -67,6 +74,8 @@ assert_contains "$out" 'pr=9 ci=green' 'a moved head reports its live CI'
 assert_contains "$out" 'ci read live at def4567; review covers abc' 'collect says it read CI live'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
+out=$(AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
+assert_contains "$out" 'ak collect: still working; wait for this call to finish, do not re-run it' 'a slow collect says to wait for it'
 out=$("$AK" collect --issue 12345 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue outside the run refuses'
 assert_contains "$out" 'fix: ' 'the refusal names the fix'
