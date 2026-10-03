@@ -40,7 +40,7 @@ merge_parent() {
     parent=$(gh api "repos/$slug/pulls?state=closed&head=$owner:$base&per_page=100" |
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
         die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=closed&head=$owner:$base'"
-    [[ -n $parent ]] || return 0
+    [[ -n $parent ]] || { merge_orphan_base "$slug" "$n" "$base"; return 0; }
     # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
     # parent's first commit, and resolving it against the squash on main kept the parent's old bug
     # (PR bench 2026-10-01: #174 reintroduced the undo bug #173 had fixed).
@@ -52,6 +52,24 @@ merge_parent() {
     fi
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
         die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
+    # The merged parent's branch has served its last child once no open PR is based on it.
+    if [[ -z $(gh api "repos/$slug/pulls?state=open&base=$base&per_page=1" | jq -r '.[0].number // empty') ]]; then
+        gh api -X DELETE "repos/$slug/git/refs/heads/$base" >/dev/null 2>&1 || true
+    fi
+}
+
+# merge_orphan_base SLUG N BASE: a base branch with no PR (its issue parked or never shipped). Merging there would land
+# the PR in that branch, not the default one (a field merge squashed a docs PR into a parked issue's empty branch).
+# An empty base is retargeted to the default branch; a base carrying unmerged work refuses.
+merge_orphan_base() {
+    local slug=$1 n=$2 base=$3 default ahead
+    default=$(base_branch)
+    ahead=$(gh api "repos/$slug/compare/$default...$base" --jq .ahead_by) ||
+        die "cannot compare $base with $default" "gh api repos/$slug/compare/$default...$base"
+    [[ $ahead == 0 ]] ||
+        die "PR #$n is based on $base, which has no PR and $ahead commits not on $default" "ship the issue behind $base first"
+    gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$default" >/dev/null ||
+        die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f base=$default"
 }
 
 # merge_worktree REF: the main checkout's worktree that has REF checked out, or nothing.

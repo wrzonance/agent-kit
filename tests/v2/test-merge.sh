@@ -97,6 +97,7 @@ first=$(grep -n "merges -f base=feat/c -f head=feat/gone" "$FAKE_GH_LOG" | head 
 patch=$(grep -n "PATCH $api/pulls/26" "$FAKE_GH_LOG" | head -1 | cut -d: -f1)
 assert_eq yes "$( [[ -n $first && -n $patch && $first -lt $patch ]] && echo yes || echo no)" "the parent's final branch is merged in before the retarget"
 assert_contains "$out" 'merged pr=26' 'then merged'
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X DELETE $api/git/refs/heads/feat/gone" "the merged parent's branch is deleted once its last child moves off it"
 
 out=$("$AK" merge --pr 27 2>&1)
 assert_eq 'merged pr=27 sha=merged123 branch=kept (fork)' "$(tail -n 1 <<<"$out")" 'a fork branch is never deleted'
@@ -144,5 +145,34 @@ assert_eq 1 "$rc" 'a PR with open review threads is refused'
 assert_contains "$out" 'PR #40 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the threads by author'
 assert_contains "$out" 'fix: ak pr-plan --pr 40' 'the refusal sends the PR back to a worker'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is merged'
+
+
+# A base branch with no PR is never merged into (a field merge squashed a docs PR into a parked issue's branch): an
+# empty base retargets to the default branch first, and a base carrying unmerged work refuses.
+: >"$FAKE_GH_ROUTES"
+route "api $api/pulls/43" "$(pr_json 43 feat/docs feat/parked)"
+route "api $api/pulls/44" "$(pr_json 44 feat/docs2 feat/empty)"
+route "api --paginate $api/commits/sha4*/check-runs*" "$green"
+route "api $api/commits/*/check-runs?per_page=100" "$green"
+route "api $api/pulls?state=*" '[]'
+route "api $api/compare/main...feat/parked*" '2'
+route "api $api/compare/main...feat/empty*" '0'
+route "api -X PATCH $api/pulls/44 -f base=main" '{}'
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 43 2>&1); rc=$?
+assert_eq 1 "$rc" 'a PR based on a branch with no PR and unmerged work is refused'
+assert_contains "$out" 'PR #43 is based on feat/parked, which has no PR and 2 commits not on main' 'the refusal names the base and its work'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is merged into the side branch'
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 44 2>&1); rc=$?
+assert_eq 0 "$rc" 'a PR based on an empty branch with no PR merges'
+log=$(cat "$FAKE_GH_LOG")
+assert_contains "$log" "api -X PATCH $api/pulls/44 -f base=main" 'it is retargeted to the default branch first'
+patch=$(grep -n "PATCH $api/pulls/44" <<<"$log" | head -1 | cut -d: -f1)
+merge=$(grep -n 'merge_method=squash' <<<"$log" | head -1 | cut -d: -f1)
+assert_eq yes "$([[ -n $patch && -n $merge && $patch -lt $merge ]] && echo yes || echo no)" 'the retarget happens before the merge'
 
 finish
