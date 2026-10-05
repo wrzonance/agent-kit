@@ -293,7 +293,7 @@ spawn_issue() {
     fi
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
-    rm -f -- "$dir/result"
+    rm -f -- "$dir/result" "$dir/ci-only"
     issue_block "$n" >"$dir/issue.md"
     compose_prompt "$n" "$wt" "$3" "$dir" >"$dir/prompt.md"
     board_move "$n" 'In progress' >>"$AK_LOG" 2>&1
