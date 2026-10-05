@@ -1,31 +1,48 @@
 # shellcheck shell=bash
 # ak board --issue N --status S: move the issue's Projects v2 Status. Never fails the caller over a board.
 
-# Cached per process so one plan moves several issues with one field and one project read.
-BOARD_FIELDS=''
-BOARD_PROJECT_ID=''
+# One query reads the project id, the Status field with its options, and the items still in play. The porcelain
+# (`gh project item-list`, then field-list and view) took 9.2 s on a 349-item field board, 312 of them Done, before a
+# plan could choose anything, and again inside every worker's ship; this read took 1.6 s there.
+# shellcheck disable=SC2016 # GraphQL variables, not shell
+BOARD_QUERY='query($owner:String!,$number:Int!,$cursor:String,$filter:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){id field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name}}} items(first:100,after:$cursor,query:$filter){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{__typename ... on Issue{number repository{nameWithOwner} labels(first:30){nodes{name}}}}}}}}}}'
 
-# board_gh ARGS...: run gh project, print its stdout; on failure print the no-op reason and return 1.
-board_gh() {
-    local out
-    if out=$(gh project "$@" 2>&1); then
-        printf '%s\n' "$out"
-        return 0
-    fi
-    if [[ $out == *scope* ]]; then
+# board_fail OUTPUT: the no-op reason for a failed gh call; returns 1.
+board_fail() {
+    local text=$1
+    # gh prints the response body, then its own `gh: <message>` line; the message is the readable part.
+    [[ $text != *'gh: '* ]] || text=${text##*gh: }
+    if [[ $1 == *scope* ]]; then
         printf 'no project scope\n'
     else
-        printf 'gh project %s failed: %s\n' "$1" "$(head -n 1 <<<"$out" | cut -c1-160)"
+        printf 'board call failed: %s\n' "$(head -n 1 <<<"$text" | cut -c1-160)"
     fi
     return 1
 }
 
-# board_items: the board's item list JSON (one read; plan reuses it through BOARD_ITEMS).
+# board_items: `{project, field: {id, options}, items: [{id, status, labels, content: {type, number, repository}}]}`,
+# without the Done items unless AK_BOARD_FILTER says otherwise. One read; plan reuses it through BOARD_ITEMS.
 board_items() {
-    local owner number
+    local owner number query=$BOARD_QUERY filter=${AK_BOARD_FILTER--status:Done} cursor='' page pages='' i
     owner=$(cfg AGENT_PROJECT_OWNER)
     number=$(cfg AGENT_PROJECT_NUMBER)
-    board_gh item-list "$number" --owner "$owner" --format json --limit 500
+    for ((i = 0; i < 20; i++)); do
+        if ! page=$(gh api graphql -f "query=$query" -f "owner=$owner" -F "number=$number" -f "filter=$filter" ${cursor:+-f "cursor=$cursor"} 2>&1); then
+            # A server whose items take no search query gets the whole board instead.
+            [[ $i == 0 && $page == *"'query'"* && $query == *',query:$filter'* ]] || { board_fail "$page"; return 1; }
+            query=${query//',query:$filter'/}
+            query=${query//',$filter:String'/}
+            i=-1
+            continue
+        fi
+        pages+=$(jq -c '.data.repositoryOwner.projectV2 | {project: .id, field: (.field // {}), items: [.items.nodes[] | {id,
+            status: (.fieldValueByName.name // ""), labels: [.content.labels.nodes[]?.name],
+            content: {type: .content.__typename, number: .content.number, repository: .content.repository.nameWithOwner}}]}' <<<"$page" 2>/dev/null)$'\n' ||
+            { board_fail "${page:-no project $number for $owner}"; return 1; }
+        [[ $(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.hasNextPage' <<<"$page") == true ]] || break
+        cursor=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.endCursor' <<<"$page")
+    done
+    jq -cs '{project: .[0].project, field: .[0].field, items: (map(.items) | add)}' <<<"$pages"
 }
 
 # board_fix ERROR: the one command that fixes a failed board read. A missing scope needs the operator's browser,
@@ -47,30 +64,22 @@ board_item_id() {
 
 # board_move N STATUS: print one `board #N -> S` or `board #N: no-op (reason)` line; always returns 0.
 board_move() {
-    local n=$1 status=$2 owner number reason field option item
-    owner=$(cfg AGENT_PROJECT_OWNER)
-    number=$(cfg AGENT_PROJECT_NUMBER)
-    [[ -n $owner && -n $number ]] || { board_noop "$n" 'no board configured'; return 0; }
-    if [[ -z $BOARD_FIELDS ]]; then
-        BOARD_FIELDS=$(board_gh field-list "$number" --owner "$owner" --format json) ||
-            { board_noop "$n" "$BOARD_FIELDS"; BOARD_FIELDS=''; return 0; }
-    fi
-    field=$(jq -r '[.fields[]? | select(.name == "Status")][0].id // empty' <<<"$BOARD_FIELDS")
-    [[ -n $field ]] || { board_noop "$n" 'no Status field'; return 0; }
-    option=$(jq -r --arg s "$status" '[.fields[] | select(.name == "Status") | .options[]? |
-        select((.name | ascii_downcase) == ($s | ascii_downcase))][0] // empty | "\(.id)\t\(.name)"' <<<"$BOARD_FIELDS")
-    [[ -n $option ]] || { board_noop "$n" "no Status option \"$status\""; return 0; }
+    local n=$1 status=$2 reason field option item
+    [[ -n $(cfg AGENT_PROJECT_OWNER) && -n $(cfg AGENT_PROJECT_NUMBER) ]] || { board_noop "$n" 'no board configured'; return 0; }
     if [[ -z ${BOARD_ITEMS:-} ]]; then
         BOARD_ITEMS=$(board_items) || { board_noop "$n" "$BOARD_ITEMS"; BOARD_ITEMS=''; return 0; }
     fi
+    field=$(jq -r '.field.id // empty' <<<"$BOARD_ITEMS")
+    [[ -n $field ]] || { board_noop "$n" 'no Status field'; return 0; }
+    option=$(jq -r --arg s "$status" '[.field.options[]? |
+        select((.name | ascii_downcase) == ($s | ascii_downcase))][0] // empty | "\(.id)\t\(.name)"' <<<"$BOARD_ITEMS")
+    [[ -n $option ]] || { board_noop "$n" "no Status option \"$status\""; return 0; }
     item=$(board_item_id "$n" "$BOARD_ITEMS")
+    # An issue reopened from Done is outside the filtered read; look once at the whole board before giving up.
+    [[ -n $item ]] || item=$(board_item_id "$n" "$(AK_BOARD_FILTER='' board_items)")
     [[ -n $item ]] || { board_noop "$n" 'not on the board'; return 0; }
-    if [[ -z $BOARD_PROJECT_ID ]]; then
-        reason=$(board_gh view "$number" --owner "$owner" --format json) || { board_noop "$n" "$reason"; return 0; }
-        BOARD_PROJECT_ID=$(jq -r '.id // empty' <<<"$reason")
-    fi
-    reason=$(board_gh item-edit --id "$item" --project-id "$BOARD_PROJECT_ID" --field-id "$field" \
-        --single-select-option-id "${option%%$'\t'*}") || { board_noop "$n" "$reason"; return 0; }
+    reason=$(gh project item-edit --id "$item" --project-id "$(jq -r .project <<<"$BOARD_ITEMS")" --field-id "$field" \
+        --single-select-option-id "${option%%$'\t'*}" 2>&1) || { board_noop "$n" "$(board_fail "$reason")"; return 0; }
     printf 'board #%s -> %s\n' "$n" "${option#*$'\t'}"
 }
 

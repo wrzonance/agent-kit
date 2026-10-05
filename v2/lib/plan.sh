@@ -12,6 +12,8 @@ declare -A WORKTREE    # spawned issue number -> worktree path
 declare -A OTHERS      # dropped or skipped issue number -> its output line
 declare -A HELD        # dropped issue number -> write set, for the named issues that would build on it
 declare -A STACKS      # queued issue number -> shipped blocker outside the run whose branch it also needs
+SPAWNED=()             # issues spawned by this call, whose branch push and board move wait for spawn_flush
+CACHE=''               # directory of prefetched API responses, one file per path
 
 # plan_context: the globals every step reads. AK_LOG is where everything but the result lines goes.
 plan_context() {
@@ -29,8 +31,29 @@ emit() {
     printf '%s\n' "$1" >>"$AK_LOG"
 }
 
+# api PATH: a REST read. Inside a plan (CACHE set) each path is read once: a re-check of a dropped issue, or six issues
+# behind the same outside blocker, ask GitHub nothing new.
 api() {
-    gh api "$1" 2>>"$AK_LOG"
+    local file="$CACHE/${1//[^A-Za-z0-9]/_}" part
+    [[ -n $CACHE ]] || { gh api "$1" 2>>"$AK_LOG"; return; }
+    # A failed read leaves no file, so the next caller reads again and gets the failure itself.
+    part="$file.$BASHPID"
+    [[ -f $file ]] || { gh api "$1" >"$part" 2>>"$AK_LOG" && mv -- "$part" "$file"; } || return 1
+    cat -- "$file"
+}
+
+# prefetch N...: read each issue, its blockers and its open-PR lookup at once, for check_issue to find. A field plan
+# made these three reads one after another for 26 candidates and took 60 s to print 3 spawn lines.
+prefetch() {
+    local n path pids=()
+    for n in "$@"; do
+        for path in "repos/$SLUG/issues/$n" "repos/$SLUG/issues/$n/dependencies/blocked_by" \
+            "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1"; do
+            api "$path" >/dev/null &
+            pids+=("$!")
+        done
+    done
+    ((${#pids[@]} == 0)) || wait "${pids[@]}" || true
 }
 
 # split_list VALUE: comma/space separated words, one per line.
@@ -281,7 +304,6 @@ spawn_issue() {
     [[ $root == /* ]] || root="$MAIN/$root"
     wt="$root/$branch"
     add_worktree "$branch" "$wt" "$2" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
-    git -C "$wt" push -q -u origin "$branch" >>"$AK_LOG" 2>&1 || emit "warn issue=$n push failed log=$AK_LOG"
     dir=$(cd -- "$wt" && ak_dir)
     sync_base "$wt" "$2" "$dir"
     # A queued issue that also needs a shipped blocker from outside the run gets that branch too: its in-run
@@ -296,9 +318,25 @@ spawn_issue() {
     rm -f -- "$dir/result" "$dir/ci-only"
     issue_block "$n" >"$dir/issue.md"
     compose_prompt "$n" "$wt" "$3" "$dir" >"$dir/prompt.md"
-    board_move "$n" 'In progress' >>"$AK_LOG" 2>&1
+    SPAWNED+=("$n")
     WORKTREE[$n]=$wt
     emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"
+}
+
+# spawn_flush: push every spawned branch in one connection while the board moves run beside it. One push and one
+# board move per spawn, in turn, was most of what a field plan did after choosing its issues.
+spawn_flush() {
+    local n moves
+    ((${#SPAWNED[@]})) || return 0
+    { for n in "${SPAWNED[@]}"; do board_move "$n" 'In progress'; done >>"$AK_LOG" 2>&1; } &
+    moves=$!
+    if ! git -C "$MAIN" push -q -u origin "${SPAWNED[@]/#/feat/issue-}" >>"$AK_LOG" 2>&1; then
+        for n in "${SPAWNED[@]}"; do
+            git -C "$MAIN" push -q -u origin "feat/issue-$n" >>"$AK_LOG" 2>&1 || emit "warn issue=$n push failed log=$AK_LOG"
+        done
+    fi
+    wait "$moves" || true
+    SPAWNED=()
 }
 
 # pick LIMIT SERIALIZE: walk candidates on fd 3, choosing up to LIMIT spawns.
@@ -428,8 +466,21 @@ unblock() {
 }
 
 pick() {
-    local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=()
-    while ((spawned < limit)) && IFS=$'\t' read -r -u 3 n labels; do
+    local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=() rows=() i=0 ahead=0 batch
+    mapfile -t -u 3 rows
+    while ((spawned < limit && i < ${#rows[@]})); do
+        # Read ahead in batches. The first is as wide as the limit: when the top of the board is all workable, nothing
+        # more is read. A board that drops some of those is walked eight at a time.
+        if ((i >= ahead)); then
+            batch=()
+            for ((ahead = i; ahead < ${#rows[@]} && ${#batch[@]} < (i ? 8 : limit); ahead++)); do
+                IFS=$'\t' read -r n labels <<<"${rows[ahead]}"
+                [[ ! $n =~ ^[0-9]+$ || -n $(excluded_label "$labels") ]] || batch+=("$n")
+            done
+            prefetch "${batch[@]}"
+        fi
+        IFS=$'\t' read -r n labels <<<"${rows[i]}"
+        i=$((i + 1))
         [[ $n =~ ^[0-9]+$ ]] || continue
         active=$(issue_active "$n")
         [[ -z $active ]] || { other "$n" "skip issue=$n reason=$active"; continue; }
@@ -553,7 +604,8 @@ cmd_main() {
     plan_context plan
     run_lock plan
     FILES=$(mktemp)
-    trap 'rm -f -- "$FILES"; run_unlock' EXIT
+    CACHE=$(mktemp -d)
+    trap 'rm -rf -- "$FILES" "$CACHE"; run_unlock' EXIT
     git -C "$MAIN" fetch -q origin "$BASE" >>"$AK_LOG" 2>&1 || die "git fetch origin $BASE failed" "git -C $MAIN fetch origin $BASE"
     git -C "$MAIN" ls-tree -r --name-only "origin/$BASE" >"$FILES"
     MODEL=$(worker_model)
@@ -567,6 +619,7 @@ cmd_main() {
     fi
     list=$(candidates "$yolo" "${issues[@]}")
     pick "$limit" "$serialize" "${#issues[@]}" 3<<<"$list"
+    spawn_flush
     write_run "$run"
     printf 'run=%s\n' "$run"
     print_lines

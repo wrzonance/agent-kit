@@ -146,7 +146,7 @@ out=$(CLAUDECODE=1 AGENT_WORKER_MODELS='gpt-5.6-terra,claude-sonnet-5' "$AK" pla
 assert_contains "$out" 'model=claude-sonnet-5' 'claude skips the codex roster entry'
 
 fresh
-route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 700 Backlog),$(board_item 671 Ready)]}"
+board_route 5 "{\"items\":[$(board_item 700 Backlog),$(board_item 671 Ready)]}"
 issue_route 671 'x'
 issue_route 700 'y'
 default_routes
@@ -155,7 +155,7 @@ assert_eq 'spawn issue=671 spawn issue=700' "$(grep -o 'spawn issue=[0-9]*' <<<"
 
 # An empty plan says how to get work instead of stopping silently (a field operator re-ran one twice).
 fresh
-route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 701 Backlog)]}"
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 701 Backlog)]}"
 default_routes
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'next=nothing workable in Ready; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
@@ -168,7 +168,7 @@ assert_not_contains "$out" 'next=' 'a plan that spawns prints no next line'
 
 fresh
 items=$(for n in $(seq 100 130); do printf '%s\n' "$(board_item "$n" Ready '["blocked"]')"; done | paste -sd, -)
-route 'project item-list 5 --owner acme*' "{\"items\":[$items,$(board_item 671 Ready)]}"
+board_route 5 "{\"items\":[$items,$(board_item 671 Ready)]}"
 issue_route 671 'x'
 default_routes
 out=$("$AK" plan 2>&1)
@@ -205,14 +205,14 @@ assert_contains "$out" 'drop issue=803 reason=collides-with-#801' 'a real shared
 # A failed board read names its real cause; throttling never sends the root into an interactive login
 # (bench 2026-10-01: a throttled read was reported as a missing scope and the root started a device login).
 fresh
-route 'project item-list 5 --owner acme*' 'GraphQL: API rate limit already exceeded for user ID 1.' 1
+route 'api graphql*' 'gh: GraphQL: API rate limit already exceeded for user ID 1.' 1
 out=$("$AK" plan 2>&1); rc=$?
 assert_eq 1 "$rc" 'a throttled board read refuses'
 assert_contains "$out" 'API rate limit already exceeded' 'the refusal quotes the real error'
 assert_contains "$out" 'fix: wait for the GitHub rate limit' 'throttling says wait'
 assert_not_contains "$out" 'gh auth refresh' 'throttling never suggests a login'
 fresh
-route 'project item-list 5 --owner acme*' 'error: your token has not been granted the required scopes' 1
+route 'api graphql*' 'gh: your token has not been granted the required scopes' 1
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'fix: operator: gh auth refresh -h github.com -s project' 'a missing scope is an operator step'
 # A script path run with flags, or a "Run ..." instruction line, is a command, not a write (a field run,
@@ -282,7 +282,7 @@ assert_eq '' "$(git -C "$sb" status --porcelain -- p f o)" 'a conflicting merge 
 
 # A blocker sitting In progress with no PR is named as such (a field dependent dropped run after run behind a stale one).
 fresh
-route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 1 'In progress'),$(board_item 690 Ready)]}"
+board_route 5 "{\"items\":[$(board_item 1 'In progress'),$(board_item 690 Ready)]}"
 route 'api repos/acme/widget/issues/690/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
 issue_route 690 'x'
 default_routes
@@ -378,7 +378,7 @@ assert_eq 4 "$(jq '.others | length' "$repo/.ak/runs/$(cat "$repo/.ak/runs/curre
 # An issue listed above its blocker queues behind it once the blocker is chosen, and so does the issue behind that one
 # (a field board listed a three-issue chain in reverse: the blocker spawned and the other two stayed dropped).
 fresh
-route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 852 Ready),$(board_item 851 Ready),$(board_item 850 Ready),$(board_item 853 Ready)]}"
+board_route 5 "{\"items\":[$(board_item 852 Ready),$(board_item 851 Ready),$(board_item 850 Ready),$(board_item 853 Ready)]}"
 issue_route 850 'Edit src/a.txt'
 issue_route 851 'Edit lib/core.sh'
 issue_route 852 'Edit src/b.txt'
@@ -395,6 +395,28 @@ assert_not_contains "$out" 'drop issue=851' 'its earlier drop line is withdrawn'
 assert_contains "$out" 'drop issue=853 reason=blocked-by:#1' 'a blocker outside the run still drops'
 assert_eq '850 851 852' "$(jq -r '[.items[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'the run file holds the chain in dependency order'
 assert_eq '853' "$(jq -r '[.others[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'only the real drop is stored'
+assert_eq 1 "$(grep -c 'issues/851/dependencies' "$FAKE_GH_LOG")" 'the second look at a dropped issue reads GitHub no further'
+for n in 850; do
+    assert_eq "origin/feat/issue-$n" "$(git -C "$repo/.worktrees/feat/issue-$n" rev-parse --abbrev-ref '@{u}' 2>&1)" 'the spawned branch is pushed and tracked'
+done
+
+# The reads for a batch of candidates run at once (a field plan read 26 candidates one call after another and took
+# 60 s to print 3 spawn lines), and every spawned branch goes up in one push.
+fresh
+items=$(for n in $(seq 900 907); do printf '%s\n' "$(board_item "$n" Ready)"; done | paste -sd, -)
+board_route 5 "{\"items\":[$items]}"
+for n in $(seq 900 907); do issue_route "$n" "Edit only docs/$n.md"; done
+route 'api repos/acme/widget/issues/90[2-7]/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
+default_routes
+start=$(date +%s%N)
+out=$(FAKE_GH_DELAY=0.3 "$AK" plan --limit 8 2>&1)
+took=$(( ($(date +%s%N) - start) / 1000000 ))
+assert_eq 2 "$(grep -c '^spawn issue=90[01] ' <<<"$out")" 'the plan spawns the two unblocked issues'
+assert_eq 6 "$(grep -c '^drop issue=90[2-7] reason=blocked-by:#1' <<<"$out")" 'and drops the six blocked ones'
+# One call after another: 1 board read, 24 issue reads, 2 comment reads and 2 board edits at 0.3 s is over 8 s.
+assert_eq 1 "$((took < 7000))" "eight candidates are read at once (took ${took} ms)"
+assert_eq 'origin/feat/issue-900 origin/feat/issue-901' "$(for n in 900 901; do git -C "$repo/.worktrees/feat/issue-$n" rev-parse --abbrev-ref '@{u}'; done | paste -sd' ')" 'both branches are pushed and tracked'
+assert_eq 2 "$(grep -c 'project item-edit' "$FAKE_GH_LOG")" 'both issues move on the board'
 
 # A queued issue that needs both an in-run blocker and a shipped one outside the run gets the shipped branch too
 # when it spawns, and a collision drop holds what would build on it.
