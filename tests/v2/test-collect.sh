@@ -130,4 +130,50 @@ assert_eq 0 "$rc" 'an item from an earlier run is still collectable'
 assert_contains "$out" 'issue=693 pr=https://github.com/acme/widget/pull/11' 'collect finds the item in its own run'
 assert_eq collected "$(jq -r '.items[] | select(.n == 693) | .state' "$runfile")" 'the earlier run file records the collection'
 
+# A stack follows its base: when a parent's worker reports a newer green head than the one a shipped child holds,
+# collect hands the child back as a merge-down (a field root merged three stacked PRs up by hand for 25 minutes).
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671" wt2="$repo/.worktrees/feat/issue-680"
+# ship WORKTREE FILE PR CI: commit FILE, push, and write the result a receipt would.
+ship() {
+    printf '%s\n' "$RANDOM" >>"$1/$2"
+    git -C "$1" add -A && git -C "$1" commit -qm work && git -C "$1" push -q origin HEAD
+    printf 'pr=https://github.com/acme/widget/pull/%s\nci=%s\nreview=done\nhead=%s\nnote=n\n' "$3" "$4" "$(git -C "$1" rev-parse HEAD)" >"$1/.ak/result"
+}
+ship "$wt" src/a.txt 9 green
+"$AK" collect --issue 671 >/dev/null 2>&1
+ship "$wt2" lib/core.sh 10 green
+out=$("$AK" collect --issue 680 2>&1)
+assert_not_contains "$out" 'merge-up' 'a child that holds its parent head is left alone'
+ship "$wt" src/a.txt 9 red
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'merge-up' 'a parent that is not green yet moves nothing'
+ship "$wt" src/a.txt 9 green
+moved=$(git -C "$wt" rev-parse --short=7 HEAD)
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" "merge-up issue=680 note=feat/issue-671 moved to $moved after this shipped" 'a reworked parent names the child that must follow'
+assert_contains "$out" "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" 'the child goes back to its worker'
+assert_eq origin/feat/issue-671 "$(cat "$wt2/.ak/resolve")" 'the worker is told what to merge'
+assert_eq no "$([[ -f $wt2/.ak/result ]] && echo yes || echo no)" 'the stale result is gone, so the child reads as running'
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'spawn' 'a second collect does not hand the child out twice'
+git -C "$wt2" fetch -q origin && git -C "$wt2" merge -q --no-edit origin/feat/issue-671
+rm -f -- "$wt2/.ak/resolve"
+ship "$wt2" lib/core.sh 10 green
+out=$("$AK" collect --issue 680 2>&1)
+assert_not_contains "$out" 'merge-up' 'a child that merged the new head is done'
+assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and is collected'
+# The child's own collect catches a parent that moved while the child was still working.
+ship "$wt" src/a.txt 9 green
+out=$("$AK" collect --issue 680 2>&1)
+assert_contains "$out" 'merge-up issue=680 ' 'a child that reports on a stale base goes back first'
+assert_not_contains "$out" 'next=' 'a merge-up is not an operator step'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and counts as running, so nothing is built on it'
+
 finish
