@@ -43,6 +43,43 @@ assert_contains "$out" 'the PR description lacks: ## Tests' 'a heading inside a 
 printf '## The problem\nShort one. Second sentence %s.\n\n## What changed\nx\n\n## Tests\ny\n' "$(printf 'w %.0s' $(seq 44))" >"$WORK/body.md"
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_contains "$out" 'a sentence over 45 words, starting: Second sentence w w w' 'a 46-word sentence after the first is caught too'
+# Run output is not what the tests prove, and a plan label means nothing to a reader who has not seen the plan (a field
+# description ended its Tests section with a pasted command and `oracle=ci`, and explained a change as "for Packet 7").
+ok_body='## The problem\nIt broke.\n\n## What changed\n%s\n\n## Tests\n%s\n'
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body" 'x' '- `ak verify` passed. It reported `oracle=ci`, so CI decides.' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a status line in Tests refuses'
+assert_contains "$out" 'the ## Tests section carries run output, starting: - `ak verify` passed' 'the refusal quotes the line'
+# shellcheck disable=SC2059
+printf "$ok_body" 'x' "- \`pytest $(printf 'tests/test_%s.py ' $(seq 20))\` passed." >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'the ## Tests section carries run output' 'a pasted command in Tests refuses'
+# shellcheck disable=SC2059
+printf "$ok_body" 'The issued branch keeps its writer as required for Packet 7.' 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'names "Packet 7", a label from the issue or its plan' 'a plan label refuses and is quoted'
+assert_contains "$out" 'fix: say what that part is in plain words' 'the refusal says what to write instead'
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body\n## Still to do\nTask 2 (the export endpoint) is left. %s.\n" 'The `Phase 2` cable type and `verify=pass` are product words here.' 'y' "$long" >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'a label from' 'a backticked name and the Still to do list pass'
+assert_not_contains "$out" 'run output' 'a status word outside Tests passes'
+assert_contains "$out" 'a sentence over 45 words' 'that description reaches the next check'
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body\n## Contests\nThe endpoint returns \`verify=required\`. %s.\n\n## Not still to do\nPacket 7.\n" 'x' 'y' "$long" >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'run output' 'a heading that only contains the word tests is not the Tests section'
+assert_contains "$out" 'names "Packet 7"' 'only the exact Still to do heading exempts a label'
+# shellcheck disable=SC2059
+printf "$ok_body\n## Packet 7\nMore.\n" 'x' 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'names "Packet 7"' 'a label in a heading refuses too'
+# shellcheck disable=SC2059
+printf "$ok_body" "The SubTask 3 runner and the Task 3D mesh keep their names. $long." 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'a label from' 'a word that only contains a label passes'
+assert_contains "$out" 'a sentence over 45 words' 'and reaches the next check'
 printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n\nCloses #7\n' \
     "$(printf 'a %.0s' $(seq 30))" "$(printf 'b %.0s' $(seq 30))" "$long" "$long" >"$WORK/body.md"
 export CLAUDECODE=1
