@@ -83,20 +83,22 @@ closing_ref() {
     local repo
     [[ $1 =~ ^[0-9]+$ ]] || die "not an issue number: $1" "echo <number> > .ak/issue"
     # Only this repository's issue: owner/repo#N or a URL for another repository is someone else's issue N.
-    repo=$(slug | sed 's/[^A-Za-z0-9_/-]/\\\\&/g')
-    printf ':?[[:space:]]+(#%s|%s#%s|https://github\\.com/%s/issues/%s)' "$1" "$repo" "$1" "$repo" "$1"
+    repo=$(slug | sed 's/[^A-Za-z0-9_/-]/\\&/g')
+    printf ':?[[:space:]]+(#%s|GH-%s|%s#%s|https?://(www\\.)?github\\.com/%s/issues/%s)' "$1" "$1" "$repo" "$1" "$repo" "$1"
 }
 
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
 ship_body() {
-    local message=$1 source=$2 out n
+    local message=$1 source=$2 out n ref
     n=$(issue_number)
+    # Resolved before the body is written: a pattern that failed to build must stop ship, not read as "already closes".
+    ref=$(closing_ref "$n") || exit 1
     out="$(ak_dir)/pr-body.md"
     {
         printf '%s\n\n' "$BANNER"
         if [[ -n $source ]]; then cat -- "$source"; else printf '%s\n' "$message"; fi
         # A worker that wrote its own closing line gets no second one (a field PR said "Closes #N" twice).
-        [[ -n $source ]] && grep -qiE "(^|[^[:alnum:]])($(closing_words)|part of)$(closing_ref "$n")([^0-9]|\$)" -- "$source" ||
+        [[ -n $source ]] && grep -qiE "(^|[^[:alnum:]])($(closing_words)|part of)$ref([^0-9]|\$)" -- "$source" ||
             printf '\nCloses #%s\n' "$n"
         printf '\n'
         attribution

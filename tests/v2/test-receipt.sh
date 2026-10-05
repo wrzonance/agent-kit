@@ -75,7 +75,7 @@ printf 'none\n' >"$WORK/none2"
 : >"$FAKE_GH_LOG"
 # A partial PR must not close its issue on merge (a field PR for task 1 of 7 said "Closes #N").
 routes=$(cat "$FAKE_GH_ROUTES")
-printf 'Intro.\n\nCloses #7\n\nSee also closes #70.\nFIXED: #7, resolves acme/widget#7 and close https://github.com/acme/widget/issues/7.\nFixes other/repo#7 and closes https://github.com/other/repo/issues/7\n' >"$WORK/prbody.txt"
+printf 'Intro.\n\nCloses #7\n\nSee also closes #70.\nFIXED: #7, resolves acme/widget#7 and close https://github.com/acme/widget/issues/7.\nfixes GH-7; Resolved http://www.github.com/ACME/Widget/issues/7 and closes acmeXwidget#7\nFixes other/repo#7 and closes https://github.com/other/repo/issues/7\n' >"$WORK/prbody.txt"
 printf 'api repos/acme/widget/pulls/9 --jq*\t%s\t0\napi -X PATCH repos/acme/widget/pulls/9 *\t-\t0\n%s\n' "$WORK/prbody.txt" "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" receipt --findings "$WORK/none2" --remaining 'Packet B (add-in dialogs) needs its own PR' 2>&1); rc=$?
 assert_eq 0 "$rc" 'receipt accepts --remaining'
@@ -86,7 +86,8 @@ assert_contains "$(cat .ak/pr-body.md)" 'Part of #7' 'the closing line becomes P
 assert_not_contains "$(cat .ak/pr-body.md)" 'Closes #7' 'nothing in the body still closes the issue'
 assert_contains "$(cat .ak/pr-body.md)" 'closes #70' 'a line about another issue is left alone'
 assert_contains "$(cat .ak/pr-body.md)" 'Part of #7, Part of acme/widget#7 and Part of https://github.com/acme/widget/issues/7.' 'every closing form GitHub reads is rewritten: colon, any case, owner/repo and URL'
-assert_eq 0 "$(grep -v 'other/repo' .ak/pr-body.md | grep -ciE '(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+[^[:space:]]*(#|issues/)7([^0-9]|$)')" 'no closing keyword for the issue survives'
+assert_eq 0 "$(grep -v 'other/repo' .ak/pr-body.md | sed 's/closes acmeXwidget#7//' | grep -ciE '(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+[^[:space:]]*(#|issues/)7([^0-9]|$)')" 'no closing keyword for the issue survives'
+assert_contains "$(cat .ak/pr-body.md)" 'Part of GH-7; Part of http://www.github.com/ACME/Widget/issues/7 and closes acmeXwidget#7' 'GH-N, www and any-case repository names are rewritten; a look-alike repository name is not'
 assert_contains "$(cat .ak/pr-body.md)" 'Fixes other/repo#7 and closes https://github.com/other/repo/issues/7' 'issue 7 of another repository is left alone'
 printf 'api repos/acme/widget/pulls/9 --jq*\t-\t1\n%s\n' "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" receipt --findings "$WORK/none2" --remaining 'y' 2>&1); rc=$?

@@ -81,10 +81,10 @@ receipt_part_of() {
     # Not being able to read the body is not "nothing to rewrite": the receipt stops rather than leave a closing line.
     body=$(gh api "repos/$(slug)/pulls/$pr" --jq '.body // ""') ||
         die "could not read the body of PR #$pr to keep it from closing #$n" "gh auth status"
-    ref=$(closing_ref "$n")
+    ref=$(closing_ref "$n") || exit 1
     grep -qiE "(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)" <<<"$body" || return 0
-    # Groups: 1 the character before, 2-3 the keyword, 4 the reference, 5 the character after.
-    sed -E "s~(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)~\\1Part of \\4\\5~Ig" <<<"$body" >"$dir/pr-body.md"
+    # Groups: 1 the character before, 2-3 the keyword, 4 the reference (5 inside it), 6 the character after.
+    sed -E "s~(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)~\\1Part of \\4\\6~Ig" <<<"$body" >"$dir/pr-body.md"
     gh api -X PATCH "repos/$(slug)/pulls/$pr" -F "body=@$dir/pr-body.md" >/dev/null ||
         die "could not change \"Closes #$n\" to \"Part of #$n\" on PR #$pr" "gh auth status"
 }
