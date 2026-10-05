@@ -72,6 +72,18 @@ ship_body_check() {
         "split it into shorter sentences or one bullet per change in $file, then run ak ship again"
 }
 
+# closing_words and closing_ref N: the pieces of GitHub's closing-keyword syntax for issue N of this repository
+# ("Closes #7", "fixed: #7", "resolves owner/repo#7", "close https://github.com/owner/repo/issues/7"). ship and
+# receipt must read a body the way GitHub does, or a line they miss still closes the issue. N is digits only.
+closing_words() {
+    printf '%s' 'close[sd]?|fix(e[sd])?|resolve[sd]?'
+}
+
+closing_ref() {
+    [[ $1 =~ ^[0-9]+$ ]] || die "not an issue number: $1" "echo <number> > .ak/issue"
+    printf ':?[[:space:]]+(#%s|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#%s|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/%s)' "$1" "$1" "$1"
+}
+
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
 ship_body() {
     local message=$1 source=$2 out n
@@ -81,7 +93,7 @@ ship_body() {
         printf '%s\n\n' "$BANNER"
         if [[ -n $source ]]; then cat -- "$source"; else printf '%s\n' "$message"; fi
         # A worker that wrote its own closing line gets no second one (a field PR said "Closes #N" twice).
-        [[ -n $source ]] && grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?|part of)[[:space:]]+#$n([^0-9]|\$)" -- "$source" ||
+        [[ -n $source ]] && grep -qiE "(^|[^[:alnum:]])($(closing_words)|part of)$(closing_ref "$n")([^0-9]|\$)" -- "$source" ||
             printf '\nCloses #%s\n' "$n"
         printf '\n'
         attribution

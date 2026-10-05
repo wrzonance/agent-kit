@@ -75,12 +75,14 @@ receipt_body() {
 # receipt_part_of PR: a PR that covers part of its issue must not close it on merge. A field PR for task 1 of a
 # seven-task issue said "Closes #N"; merging it would have closed the issue with six tasks undone.
 receipt_part_of() {
-    local pr=$1 n body dir
+    local pr=$1 n body dir ref
     n=$(issue_number)
     dir=$(ak_dir)
     body=$(gh api "repos/$(slug)/pulls/$pr" --jq '.body // ""') || return 0
-    grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#$n([^0-9]|\$)" <<<"$body" || return 0
-    sed -E "s/(^|[^[:alnum:]])([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)([[:space:]]+#$n)([^0-9]|\$)/\\1Part of\\4\\5/g" <<<"$body" >"$dir/pr-body.md"
+    ref=$(closing_ref "$n")
+    grep -qiE "(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)" <<<"$body" || return 0
+    # Groups: 1 the character before, 2-3 the keyword, 4 the reference, 5 the character after.
+    sed -E "s~(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)~\\1Part of \\4\\5~Ig" <<<"$body" >"$dir/pr-body.md"
     gh api -X PATCH "repos/$(slug)/pulls/$pr" -F "body=@$dir/pr-body.md" >/dev/null ||
         die "could not change \"Closes #$n\" to \"Part of #$n\" on PR #$pr" "gh auth status"
 }
