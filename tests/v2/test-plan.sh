@@ -113,9 +113,11 @@ assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/wi
 # A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
 # parked results by hand before re-running).
 printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+printf 'lint\n' >"$repo/.worktrees/feat/issue-671/.ak/ci-only"
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
+assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/ci-only ]] && echo yes || echo no)" 're-planning clears the CI-only record of the earlier attempt'
 
 fresh
 standard_board
