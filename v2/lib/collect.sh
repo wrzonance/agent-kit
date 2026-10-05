@@ -125,9 +125,11 @@ collect_next() {
 # head the parent's own worker recorded, so a parent still being reworked moves nothing. A field stack's first PR was
 # reworked after three PRs had shipped on top of it, and the root merged each one up by hand for 25 minutes.
 merge_up() {
-    local wt=$1 base parent head kind n='' file
+    local wt=$1 base parent head kind n='' file pr
     [[ -s $wt/.ak/base && -f $wt/.ak/prompt.md ]] || return 1
-    [[ $(sed -n 's/^pr=//p' "$wt/.ak/result" 2>/dev/null | head -n 1) == http* ]] || return 1
+    pr=$(sed -n 's/^pr=//p' "$wt/.ak/result" 2>/dev/null | head -n 1)
+    [[ $pr =~ ^https?://[^[:space:]]+/([0-9]+)$ ]] || return 1
+    pr=${BASH_REMATCH[1]}
     base=$(head -n 1 -- "$wt/.ak/base")
     # Everything read from a worktree's .ak files is a worker's writing: it reaches the root's lines only as a branch
     # name, a commit id and a number.
@@ -138,6 +140,8 @@ merge_up() {
     head=$(sed -n 's/^head=//p' "$parent/.ak/result" | head -n 1)
     # The green result must describe the parent as it stands, since the worker merges the branch, not this commit.
     [[ $head =~ ^[0-9a-f]{7,40}$ && $(git -C "$parent" rev-parse HEAD 2>/dev/null) == "$head"* ]] || return 1
+    # And it must be what the parent pushed: origin's branch is what the worker will merge.
+    [[ $(git -C "$MAIN" rev-parse --verify -q "refs/remotes/origin/$base") == "$head"* ]] || return 1
     git -C "$wt" cat-file -e "$head^{commit}" 2>/dev/null || return 1
     # Already merged, here or on the pushed branch: nothing to do.
     ! git -C "$wt" merge-base --is-ancestor "$head" HEAD 2>/dev/null || return 1
@@ -150,27 +154,29 @@ merge_up() {
     done < <(ls -t -- "$MAIN"/.ak/runs/*.json 2>/dev/null)
     [[ $n =~ ^(issue|pr)\ [0-9]+$ ]] || return 1
     kind=${n% *} n=${n#* }
-    printf 'origin/%s\n' "$base" >"$wt/.ak/resolve"
-    rm -f -- "$wt/.ak/result"
+    # A worktree kept after its PR merged or closed is finished work, not a child to hand back.
+    [[ $(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .state // empty' 2>/dev/null) == open ]] || return 1
+    # The resolve file is written fresh (never through a link a worker left) and before the result goes.
+    rm -f -- "$wt/.ak/resolve"
+    printf 'origin/%s\n' "$base" >"$wt/.ak/resolve" || return 1
+    rm -f -- "$wt/.ak/result" || return 1
     emit "merge-up $kind=$n note=$base moved to ${head:0:7} after this shipped; the worker below merges it, verifies and reports again"
     emit "spawn $kind=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$(worker_model) effort=$(cfg AGENT_WORKER_EFFORT medium)"
-    MERGED_UP="$kind $n"
+    MERGED_UP="$kind $n $file"
 }
 
 # merge_up_children WORKTREE: every shipped worktree stacked on this one's branch gets its turn. Each child's own
 # collect then reaches the next level, so a stack follows its base one finished link at a time.
 merge_up_children() {
-    local branch wt file
+    local branch wt file kind n
     branch=$(git -C "$1" branch --show-current 2>/dev/null)
     [[ -n $branch ]] || return 0
     while IFS= read -r wt; do
         [[ $wt != "$1" && $(head -n 1 -- "$wt/.ak/base" 2>/dev/null) == "$branch" ]] || continue
         merge_up "$wt" || continue
         # The child is out again: no run may count it as done and build on it meanwhile.
-        for file in "$MAIN"/.ak/runs/*.json; do
-            RUNFILE=$file run_update '(.items[] | select(.kind == $k and .n == $n)).state = "spawned"' \
-                --arg k "${MERGED_UP% *}" --argjson n "${MERGED_UP#* }"
-        done
+        read -r kind n file <<<"$MERGED_UP"
+        RUNFILE=$file run_update '(.items[] | select(.kind == $k and .n == $n)).state = "spawned"' --arg k "$kind" --argjson n "$n"
     done < <(git -C "$MAIN" worktree list --porcelain | sed -n 's/^worktree //p')
 }
 

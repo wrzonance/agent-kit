@@ -146,6 +146,8 @@ ship() {
     git -C "$1" add -A && git -C "$1" commit -qm work && git -C "$1" push -q origin HEAD
     printf 'pr=https://github.com/acme/widget/pull/%s\nci=%s\nreview=done\nhead=%s\nnote=n\n' "$3" "$4" "$(git -C "$1" rev-parse HEAD)" >"$1/.ak/result"
 }
+printf '{"number":10,"state":"open"}' >"$WORK/pr10.json"
+printf 'api repos/acme/widget/pulls/10\t%s\t0\n%s\n' "$WORK/pr10.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
 ship "$wt" src/a.txt 9 green
 "$AK" collect --issue 671 >/dev/null 2>&1
 ship "$wt2" lib/core.sh 10 green
@@ -188,6 +190,21 @@ assert_not_contains "$out" 'merge-up' 'a result older than the parent head moves
 git -C "$wt" reset -q --hard HEAD~1
 git -C "$wt2" fetch -q origin && git -C "$wt2" merge -q --no-edit origin/feat/issue-671
 ship "$wt2" lib/core.sh 10 green
+# A child whose PR is closed or merged is finished work, and a resolve file a worker left as a link is not written through.
+ship "$wt" src/a.txt 9 green
+printf '{"number":10,"state":"closed"}' >"$WORK/pr10.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'merge-up' 'a child whose PR is closed is not handed back'
+printf '{"number":10,"state":"open"}' >"$WORK/pr10.json"
+printf 'keep\n' >"$WORK/victim"
+ln -sf "$WORK/victim" "$wt2/.ak/resolve"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'merge-up issue=680 ' 'the open child is handed back'
+assert_eq keep "$(cat "$WORK/victim")" 'a linked resolve file is replaced, not written through'
+git -C "$wt2" fetch -q origin && git -C "$wt2" merge -q --no-edit origin/feat/issue-671
+rm -f -- "$wt2/.ak/resolve"
+ship "$wt2" lib/core.sh 10 green
+"$AK" collect --issue 680 >/dev/null 2>&1
 # The child's own collect catches a parent that moved while the child was still working.
 ship "$wt" src/a.txt 9 green
 out=$("$AK" collect --issue 680 2>&1)
