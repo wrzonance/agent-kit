@@ -38,7 +38,7 @@ board_items() {
         pages+=$(jq -c '.data.repositoryOwner.projectV2 | {project: .id, field: (.field // {}), items: [.items.nodes[] | {id,
             status: (.fieldValueByName.name // ""), labels: [.content.labels.nodes[]?.name],
             content: {type: .content.__typename, number: .content.number, repository: .content.repository.nameWithOwner}}]}' <<<"$page" 2>/dev/null)$'\n' ||
-            { board_fail "${page:-no project $number for $owner}"; return 1; }
+            { board_fail "the response holds no project $number for $owner"; return 1; }
         [[ $(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.hasNextPage' <<<"$page") == true ]] || { cursor=''; break; }
         cursor=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.endCursor' <<<"$page")
     done

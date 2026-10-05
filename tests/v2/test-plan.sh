@@ -406,13 +406,12 @@ board_route 5 "{\"items\":[$items]}"
 for n in $(seq 900 907); do issue_route "$n" "Edit only docs/$n.md"; done
 route 'api repos/acme/widget/issues/90[2-7]/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
 default_routes
-start=$(date +%s%N)
 out=$(FAKE_GH_DELAY=0.3 "$AK" plan --limit 8 2>&1)
-took=$(( ($(date +%s%N) - start) / 1000000 ))
 assert_eq 2 "$(grep -c '^spawn issue=90[01] ' <<<"$out")" 'the plan spawns the two unblocked issues'
 assert_eq 6 "$(grep -c '^drop issue=90[2-7] reason=blocked-by:#1' <<<"$out")" 'and drops the six blocked ones'
-# One call after another: 1 board read, 24 issue reads, 2 comment reads and 2 board edits at 0.3 s is over 8 s.
-assert_eq 1 "$((took < 7000))" "eight candidates are read at once (took ${took} ms)"
+# Calls in flight at once, from the fake gh log: a line per call when it starts and `done` when it ends.
+peak=$(awk '$0 == "done" { now-- ; next } { now++; if (now > max) max = now } END { print max + 0 }' "$FAKE_GH_LOG")
+assert_eq 1 "$((peak >= 8))" "a batch of candidate reads is in flight at once (peak $peak)"
 assert_eq 'origin/feat/issue-900 origin/feat/issue-901' "$(for n in 900 901; do git -C "$repo/.worktrees/feat/issue-$n" rev-parse --abbrev-ref '@{u}'; done | paste -sd' ')" 'both branches are pushed and tracked'
 assert_eq 2 "$(grep -c 'project item-edit' "$FAKE_GH_LOG")" 'both issues move on the board'
 

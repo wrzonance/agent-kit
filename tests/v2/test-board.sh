@@ -47,6 +47,12 @@ route 'api graphql*' '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_4","fie
 out=$("$AK" board --issue 5 --status Done 2>&1)
 assert_eq 'board #5: no-op (no Status field)' "$out" 'a board without Status is a no-op'
 
+# A response without the project says so, instead of quoting the response.
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*' '{"data":{"repositoryOwner":{"projectV2":null}}}'
+out=$("$AK" board --issue 5 --status Done 2>&1)
+assert_eq 'board #5: no-op (board call failed: the response holds no project 4 for acme)' "$out" 'a missing project is named'
+
 # One query per move: the porcelain's item-list, field-list and view cost 9.2 s on a field board, in every worker's ship.
 : >"$FAKE_GH_ROUTES"
 : >"$FAKE_GH_LOG"

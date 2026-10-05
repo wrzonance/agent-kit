@@ -323,12 +323,20 @@ spawn_issue() {
     emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"
 }
 
+# board_moves N...: move each issue to In progress. collect arrives without the board, so it is read once here, not once
+# per move.
+board_moves() {
+    local n
+    [[ -n ${BOARD_ITEMS:-} ]] || BOARD_ITEMS=$(board_items) || BOARD_ITEMS=''
+    for n in "$@"; do board_move "$n" 'In progress'; done
+}
+
 # spawn_flush: push every spawned branch in one connection while the board moves run beside it. One push and one
 # board move per spawn, in turn, was most of what a field plan did after choosing its issues.
 spawn_flush() {
     local n moves
     ((${#SPAWNED[@]})) || return 0
-    { for n in "${SPAWNED[@]}"; do board_move "$n" 'In progress'; done >>"$AK_LOG" 2>&1; } &
+    board_moves "${SPAWNED[@]}" >>"$AK_LOG" 2>&1 &
     moves=$!
     if ! git -C "$MAIN" push -q -u origin "${SPAWNED[@]/#/feat/issue-}" >>"$AK_LOG" 2>&1; then
         for n in "${SPAWNED[@]}"; do
