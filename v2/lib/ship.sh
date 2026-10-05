@@ -74,12 +74,16 @@ ship_body_check() {
 
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
 ship_body() {
-    local message=$1 source=$2 out
+    local message=$1 source=$2 out n
+    n=$(issue_number)
     out="$(ak_dir)/pr-body.md"
     {
         printf '%s\n\n' "$BANNER"
         if [[ -n $source ]]; then cat -- "$source"; else printf '%s\n' "$message"; fi
-        printf '\nCloses #%s\n\n' "$(issue_number)"
+        # A worker that wrote its own closing line gets no second one (a field PR said "Closes #N" twice).
+        [[ -n $source ]] && grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?|part of)[[:space:]]+#$n([^0-9]|\$)" -- "$source" ||
+            printf '\nCloses #%s\n' "$n"
+        printf '\n'
         attribution
     } >"$out"
     printf '%s\n' "$out"

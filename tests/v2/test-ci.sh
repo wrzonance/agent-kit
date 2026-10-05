@@ -42,6 +42,8 @@ log=$'2026-09-30T10:00:00.0000000Z \033[31mERROR one\033[0m\nnoise\n'
 for i in 2 3 4 5 6 7 8 9 10 11; do log+="##[error]line $i"$'\n'; done
 set_checks '{"check_runs":[{"name":"test","status":"completed","conclusion":"failure","details_url":"https://github.com/acme/widget/actions/runs/5/job/77"},{"name":"ext","status":"completed","conclusion":"failure","html_url":"https://example.invalid/x"},{"name":"ok","status":"completed","conclusion":"success"}]}'
 route 'api --allow-escape-sequences repos/acme/widget/actions/jobs/77/logs' "$log"
+# The failed step says which command to add locally (a field note said only "Server"; the step was the type check).
+route 'api repos/acme/widget/actions/jobs/77 *' 'Type check (mypy)'
 : >"$FAKE_GH_LOG"
 out=$("$AK" ci 2>&1); rc=$?
 assert_eq 1 "$rc" 'red exits 1'
@@ -53,8 +55,8 @@ assert_not_contains "$out" '2026-09-30T' 'timestamps are stripped'
 assert_not_contains "$out" 'noise' 'non-error lines are not printed'
 assert_not_contains "$out" 'line 9' 'at most 8 error lines per job'
 assert_eq 1 "$(($(wc -l <<<"$out") <= 20))" 'red output is at most 20 lines'
-assert_contains "$out" 'ci-only=test,ext note=failed in CI after local verify' 'red names the checks only CI caught'
-assert_eq $'ext\ntest' "$(cat .ak/ci-only)" 'the CI-only checks are recorded for the receipt'
+assert_contains "$out" 'ci-only=test/Type check (mypy),ext note=failed in CI after local verify' 'red names the checks only CI caught, with the failed step'
+assert_eq $'ext\ntest/Type check (mypy)' "$(cat .ak/ci-only)" 'the CI-only checks are recorded for the receipt'
 "$AK" ci >/dev/null 2>&1
 assert_eq 2 "$(wc -l <.ak/ci-only)" 'a second red run records each check once'
 assert_rc 0 'the full log is saved' -- test -f .ak/ci/77.log

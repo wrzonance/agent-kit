@@ -73,10 +73,19 @@ touch .ak/review.unavailable
 # A worker that ships part of an issue names the rest (2026-10-01 field run: an issue asked for two PRs).
 printf 'none\n' >"$WORK/none2"
 : >"$FAKE_GH_LOG"
+# A partial PR must not close its issue on merge (a field PR for task 1 of 7 said "Closes #N").
+routes=$(cat "$FAKE_GH_ROUTES")
+printf 'Intro.\n\nCloses #7\n\nSee also closes #70.\n' >"$WORK/prbody.txt"
+printf 'api repos/acme/widget/pulls/9 --jq*\t%s\t0\napi -X PATCH repos/acme/widget/pulls/9 *\t-\t0\n%s\n' "$WORK/prbody.txt" "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" receipt --findings "$WORK/none2" --remaining 'Packet B (add-in dialogs) needs its own PR' 2>&1); rc=$?
 assert_eq 0 "$rc" 'receipt accepts --remaining'
 assert_contains "$(cat .ak/result)" 'remaining: Packet B (add-in dialogs) needs its own PR' 'the result note carries what is left'
 assert_contains "$(cat .ak/receipt.md)" 'Remaining: Packet B (add-in dialogs) needs its own PR' 'the receipt comment names what is left'
+assert_contains "$(cat "$FAKE_GH_LOG")" 'api -X PATCH repos/acme/widget/pulls/9 -F body=@' 'a partial PR has its body rewritten'
+assert_contains "$(cat .ak/pr-body.md)" 'Part of #7' 'the closing line becomes Part of'
+assert_not_contains "$(cat .ak/pr-body.md)" 'Closes #7' 'nothing in the body still closes the issue'
+assert_contains "$(cat .ak/pr-body.md)" 'closes #70' 'a line about another issue is left alone'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" receipt --remaining x 2>&1); rc=$?
 assert_eq 2 "$rc" '--remaining without --findings is a usage error'
 
