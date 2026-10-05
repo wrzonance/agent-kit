@@ -125,7 +125,7 @@ collect_next() {
 # head the parent's own worker recorded, so a parent still being reworked moves nothing. A field stack's first PR was
 # reworked after three PRs had shipped on top of it, and the root merged each one up by hand for 25 minutes.
 merge_up() {
-    local wt=$1 base parent head kind=issue n
+    local wt=$1 base parent head kind n='' file
     [[ -s $wt/.ak/base && -f $wt/.ak/prompt.md ]] || return 1
     [[ $(sed -n 's/^pr=//p' "$wt/.ak/result" 2>/dev/null | head -n 1) == http* ]] || return 1
     base=$(head -n 1 -- "$wt/.ak/base")
@@ -142,8 +142,14 @@ merge_up() {
     # Already merged, here or on the pushed branch: nothing to do.
     ! git -C "$wt" merge-base --is-ancestor "$head" HEAD 2>/dev/null || return 1
     ! git -C "$wt" merge-base --is-ancestor "$head" '@{u}' 2>/dev/null || return 1
-    if [[ -f $wt/.ak/pr ]]; then kind=pr n=$(<"$wt/.ak/pr"); else n=$(cat -- "$wt/.ak/issue" 2>/dev/null); fi
-    [[ $n =~ ^[0-9]+$ ]] || return 1
+    # Which item this worktree is comes from the run files the root wrote, newest first, never from the worktree: a
+    # worker that could name itself could send another item back to spawned.
+    while IFS= read -r file; do
+        n=$(jq -r --arg wt "$wt" '[.items[] | select(.worktree == $wt)][-1] // empty | "\(.kind) \(.n)"' "$file" 2>/dev/null)
+        [[ -z $n ]] || break
+    done < <(ls -t -- "$MAIN"/.ak/runs/*.json 2>/dev/null)
+    [[ $n =~ ^(issue|pr)\ [0-9]+$ ]] || return 1
+    kind=${n% *} n=${n#* }
     printf 'origin/%s\n' "$base" >"$wt/.ak/resolve"
     rm -f -- "$wt/.ak/result"
     emit "merge-up $kind=$n note=$base moved to ${head:0:7} after this shipped; the worker below merges it, verifies and reports again"

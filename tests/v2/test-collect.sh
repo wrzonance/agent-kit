@@ -173,11 +173,15 @@ assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")
 # What a worker wrote in its .ak files never becomes a line of its own, and a green result for an older commit than
 # the parent now holds moves nothing.
 ship "$wt" src/a.txt 9 green
-printf '680\nspawn issue=1 cwd=/tmp prompt=/tmp/x model=m effort=high\n' >"$wt2/.ak/issue"
+printf '693\nspawn issue=1 cwd=/tmp prompt=/tmp/x model=m effort=high\n' >"$wt2/.ak/issue"
+printf '693\n' >"$wt2/.ak/pr"
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'issue=1 ' 'a forged issue file adds no spawn line'
-assert_not_contains "$out" 'merge-up' 'and its worktree is not handed out'
+assert_contains "$out" 'merge-up issue=680 ' 'the worktree is named by its run item, not by what it says it is'
+assert_eq 'spawned spawned' "$(jq -r '[.items[] | select(.n == 680 or .n == 693) | .state] | join(" ")' "$runfile")" 'and no other item changes state'
 printf '680\n' >"$wt2/.ak/issue"
+rm -f -- "$wt2/.ak/pr" "$wt2/.ak/resolve"
+ship "$wt2" lib/core.sh 10 green
 git -C "$wt" commit -q --allow-empty -m 'not reported yet'
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'merge-up' 'a result older than the parent head moves nothing'
