@@ -65,9 +65,21 @@ route 'project item-edit*' ''
 out=$("$AK" board --issue 8 --status Ready 2>&1)
 assert_eq 'board #8 -> Ready' "$out" 'an item on the second page is found'
 
+# A board that never ends is an error, and a failed second look reports its own cause.
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*' "$(page true 7)"
+out=$("$AK" board --issue 7 --status Ready 2>&1)
+assert_eq 'board #7: no-op (board call failed: the board has more than 2000 items in play)' "$out" 'a board past the page cap is not read as complete'
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*filter=-status:Done*' "$(page false 7)"
+route 'api graphql*' 'gh: API rate limit already exceeded' 1
+out=$("$AK" board --issue 9 --status Ready 2>&1)
+assert_eq 'board #9: no-op (board call failed: API rate limit already exceeded)' "$out" 'a failed look at the whole board names its cause'
+
 # A server whose items field takes no search query still gets its board.
 : >"$FAKE_GH_ROUTES"
 : >"$FAKE_GH_LOG"
+# shellcheck disable=SC2016 # the literal GraphQL variable
 route 'api graphql*query:$filter*' "gh: Field 'items' doesn't accept argument 'query'" 1
 route 'api graphql*' "$(page false 7)"
 route 'project item-edit*' ''

@@ -39,9 +39,11 @@ board_items() {
             status: (.fieldValueByName.name // ""), labels: [.content.labels.nodes[]?.name],
             content: {type: .content.__typename, number: .content.number, repository: .content.repository.nameWithOwner}}]}' <<<"$page" 2>/dev/null)$'\n' ||
             { board_fail "${page:-no project $number for $owner}"; return 1; }
-        [[ $(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.hasNextPage' <<<"$page") == true ]] || break
+        [[ $(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.hasNextPage' <<<"$page") == true ]] || { cursor=''; break; }
         cursor=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo.endCursor' <<<"$page")
     done
+    # A board longer than the cap is an error, never a short list that reads as the whole board.
+    [[ -z $cursor ]] || { board_fail "the board has more than $((i * 100)) items in play"; return 1; }
     jq -cs '{project: .[0].project, field: .[0].field, items: (map(.items) | add)}' <<<"$pages"
 }
 
@@ -76,7 +78,10 @@ board_move() {
     [[ -n $option ]] || { board_noop "$n" "no Status option \"$status\""; return 0; }
     item=$(board_item_id "$n" "$BOARD_ITEMS")
     # An issue reopened from Done is outside the filtered read; look once at the whole board before giving up.
-    [[ -n $item ]] || item=$(board_item_id "$n" "$(AK_BOARD_FILTER='' board_items)")
+    if [[ -z $item ]]; then
+        reason=$(AK_BOARD_FILTER='' board_items) || { board_noop "$n" "$reason"; return 0; }
+        item=$(board_item_id "$n" "$reason")
+    fi
     [[ -n $item ]] || { board_noop "$n" 'not on the board'; return 0; }
     reason=$(gh project item-edit --id "$item" --project-id "$(jq -r .project <<<"$BOARD_ITEMS")" --field-id "$field" \
         --single-select-option-id "${option%%$'\t'*}" 2>&1) || { board_noop "$n" "$(board_fail "$reason")"; return 0; }

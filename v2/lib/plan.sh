@@ -469,11 +469,11 @@ pick() {
     local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=() rows=() i=0 ahead=0 batch
     mapfile -t -u 3 rows
     while ((spawned < limit && i < ${#rows[@]})); do
-        # Read ahead in batches. The first is as wide as the limit: when the top of the board is all workable, nothing
-        # more is read. A board that drops some of those is walked eight at a time.
+        # Read ahead in batches of at most eight. The first is no wider than the limit: when the top of the board is
+        # all workable, nothing more is read.
         if ((i >= ahead)); then
             batch=()
-            for ((ahead = i; ahead < ${#rows[@]} && ${#batch[@]} < (i ? 8 : limit); ahead++)); do
+            for ((ahead = i; ahead < ${#rows[@]} && ${#batch[@]} < (i || limit > 8 ? 8 : limit); ahead++)); do
                 IFS=$'\t' read -r n labels <<<"${rows[ahead]}"
                 [[ ! $n =~ ^[0-9]+$ || -n $(excluded_label "$labels") ]] || batch+=("$n")
             done
