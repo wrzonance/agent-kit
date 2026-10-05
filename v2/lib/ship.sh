@@ -44,13 +44,34 @@ ship_title() {
 # sentence of abstractions under "Why/What", and the operator rewrote each by hand. The sections give the reader the
 # problem first; the length cap turns a sentence that lists five changes into bullets.
 ship_body_check() {
-    local file=$1 heading missing=() long max=${AK_BODY_SENTENCE_WORDS:-45}
+    local file=$1 heading missing=() long found max=${AK_BODY_SENTENCE_WORDS:-45}
     for heading in 'The problem' 'What changed' 'Tests'; do
         awk '/^[[:space:]]*```/ { fence = !fence } !fence' "$file" |
             grep -qixE "##[[:space:]]+${heading}[[:space:]]*" || missing+=("## $heading")
     done
     ((${#missing[@]} == 0)) || die "the PR description lacks: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" \
         "add the sections to $file as step 3 of your playbook describes, then run ak ship again"
+    # Two things field descriptions still carried: the Tests section ended in a pasted 330-character command and
+    # `ak verify` status words, and a change was explained as "required for Packet 7", a label from the issue's plan.
+    found=$(awk '
+        /^[[:space:]]*```/ { fence = !fence; next }
+        fence { next }
+        /^##[[:space:]]/ { section = tolower($0); next }
+        section ~ /tests/ {
+            span = 0
+            for (rest = $0; match(rest, /`[^`]*`/); rest = substr(rest, RSTART + RLENGTH)) if (RLENGTH > 100) span = 1
+            if (span || /(oracle|verify)=[a-z]+/) { print "log\t" substr($0, 1, 60); exit }
+        }
+        section !~ /still to do/ {
+            gsub(/`[^`]*`/, "")
+            if (match($0, /(Packet|Task|Phase|Wave|Slice|Milestone|Workstream|Sprint) [0-9]+/)) { print "label\t" substr($0, RSTART, RLENGTH); exit }
+        }' "$file")
+    case $found in
+        log*) die "the ## Tests section carries run output, starting: ${found#*$'\t'}" \
+            "say there what each test file proves and drop commands and status lines from $file, then run ak ship again" ;;
+        label*) die "the PR description names \"${found#*$'\t'}\", a label from the issue or its plan that the reader has not seen" \
+            "say what that part is in plain words in $file (a real product name goes in backticks), then run ak ship again" ;;
+    esac
     # Longest sentence, outside fenced blocks; a list item or heading ends a sentence, and code spans count as one word.
     long=$(awk -v max="$max" '
         /^[[:space:]]*```/ { fence = !fence; next }
