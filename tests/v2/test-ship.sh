@@ -71,6 +71,15 @@ printf "$ok_body\n## Contests\nThe endpoint returns \`verify=required\`. %s.\n\n
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_not_contains "$out" 'run output' 'a heading that only contains the word tests is not the Tests section'
 assert_contains "$out" 'names "Packet 7"' 'only the exact Still to do heading exempts a label'
+# shellcheck disable=SC2059
+printf "$ok_body\n## Packet 7\nMore.\n" 'x' 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'names "Packet 7"' 'a label in a heading refuses too'
+# shellcheck disable=SC2059
+printf "$ok_body" "The SubTask 3 runner and the Task 3D mesh keep their names. $long." 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'a label from' 'a word that only contains a label passes'
+assert_contains "$out" 'a sentence over 45 words' 'and reaches the next check'
 printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n\nCloses #7\n' \
     "$(printf 'a %.0s' $(seq 30))" "$(printf 'b %.0s' $(seq 30))" "$long" "$long" >"$WORK/body.md"
 export CLAUDECODE=1

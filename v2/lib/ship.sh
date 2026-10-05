@@ -59,7 +59,6 @@ ship_body_check() {
         /^[[:space:]]*##[[:space:]]/ {
             section = tolower($0)
             gsub(/^[[:space:]]*##[[:space:]]+|[[:space:]]+$/, "", section)
-            next
         }
         section == "tests" {
             span = 0
@@ -68,7 +67,12 @@ ship_body_check() {
         }
         section != "still to do" {
             gsub(/`[^`]*`/, "")
-            if (match($0, /(Packet|Task|Phase|Wave|Slice|Milestone|Workstream|Sprint) [0-9]+/)) { print "label\t" substr($0, RSTART, RLENGTH); exit }
+            # A whole label only: "SubTask 3" and "Task 3D" are other words.
+            line = " " $0 " "
+            if (match(line, /[^A-Za-z0-9](Packet|Task|Phase|Wave|Slice|Milestone|Workstream|Sprint) [0-9]+[^A-Za-z0-9]/)) {
+                print "label\t" substr(line, RSTART + 1, RLENGTH - 2)
+                exit
+            }
         }' "$file")
     case $found in
         log*) die "the ## Tests section carries run output, starting: ${found#*$'\t'}" \
