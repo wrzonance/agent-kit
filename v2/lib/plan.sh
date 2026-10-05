@@ -11,6 +11,7 @@ declare -A NEEDS       # queued issue number -> comma-separated predecessors
 declare -A WORKTREE    # spawned issue number -> worktree path
 declare -A OTHERS      # dropped or skipped issue number -> its output line
 declare -A HELD        # dropped issue number -> write set, for the named issues that would build on it
+declare -A STACKS      # queued issue number -> shipped blocker outside the run whose branch it also needs
 
 # plan_context: the globals every step reads. AK_LOG is where everything but the result lines goes.
 plan_context() {
@@ -140,12 +141,13 @@ missing_at_base() {
     local t
     while IFS= read -r t; do
         t=${t#./}
-        [[ -f $MAIN/$t ]] || continue
+        # The body is untrusted text: a token never leaves the checkout.
+        [[ $t != /* && $t != *..* && -f $MAIN/$t ]] || continue
         ! grep -qxF -- "$t" "$FILES" || continue
         git -C "$MAIN" check-ignore -q -- "$t" 2>/dev/null && continue
         printf '%s\n' "$t"
         return 0
-    done < <(grep -oE '[A-Za-z0-9_.@+-]*/[A-Za-z0-9_./@+-]*[A-Za-z0-9_]' <<<"$1" | LC_ALL=C sort -u)
+    done < <(grep -oE '[A-Za-z0-9_.@+-]*/[A-Za-z0-9_./@+-]*[A-Za-z0-9_]|[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*\.[A-Za-z0-9]+' <<<"$1" | LC_ALL=C sort -u)
     return 0
 }
 
@@ -194,7 +196,9 @@ check_issue() {
     hit=$(protected_hit "$WS")
     [[ -z $hit ]] || { REASON="protected:$hit"; return 0; }
     hit=$(missing_at_base "$body")
-    [[ -z $hit ]] || { REASON="missing-at-base:$hit fix=commit and push $hit to $BASE; the worker's worktree cannot see it"; return 0; }
+    # The line states the gap and leaves the commit to the operator: the issue's author chose that path, and an agent
+    # told to commit it would publish whatever local file an issue names.
+    [[ -z $hit ]] || { REASON="missing-at-base:$hit note=only in the operator's checkout, so no worker can see it; the operator decides whether it belongs on $BASE"; return 0; }
     ISSUE_JSON[$n]=$json
 }
 
@@ -272,7 +276,7 @@ sync_base() {
 
 # spawn_issue N FROM BASE: worktree, pushed branch, .ak files, board move, and the spawn line.
 spawn_issue() {
-    local n=$1 branch="feat/issue-$1" root wt dir
+    local n=$1 branch="feat/issue-$1" root wt dir stack
     root=$(cfg AGENT_WORKTREE_ROOT .worktrees)
     [[ $root == /* ]] || root="$MAIN/$root"
     wt="$root/$branch"
@@ -280,6 +284,13 @@ spawn_issue() {
     git -C "$wt" push -q -u origin "$branch" >>"$AK_LOG" 2>&1 || emit "warn issue=$n push failed log=$AK_LOG"
     dir=$(cd -- "$wt" && ak_dir)
     sync_base "$wt" "$2" "$dir"
+    # A queued issue that also needs a shipped blocker from outside the run gets that branch too: its in-run
+    # predecessor is not always stacked on it.
+    stack=${STACKS[$n]:-}
+    [[ -n $stack || ! -f ${RUNFILE:-} ]] || stack=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n) | .stack // empty][0] // empty' "$RUNFILE")
+    if [[ -n $stack && "feat/issue-$stack" != "$3" ]] && git -C "$MAIN" fetch -q origin "feat/issue-$stack" >>"$AK_LOG" 2>&1; then
+        sync_base "$wt" "origin/feat/issue-$stack" "$dir"
+    fi
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
     rm -f -- "$dir/result"
@@ -395,9 +406,10 @@ pick() {
         hits=$(collisions "$WS")
         hits=$(tr , '\n' <<<"$BLOCKED${hits:+,$hits}" | awk 'NF && !seen[$0]++' | paste -sd, -)
         if [[ -n $hits && $serialize == 0 && -z $BLOCKED ]]; then
+            HELD[$n]=$WS
             other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
         elif [[ -n $hits ]]; then
-            WRITES[$n]=$WS NEEDS[$n]=$hits
+            WRITES[$n]=$WS NEEDS[$n]=$hits STACKS[$n]=$STACK
             CHOSEN+=("$n")
             emit "after issue=$n needs=$hits"
         elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
@@ -412,10 +424,11 @@ pick() {
 write_run() {
     local n items='[]' others='[]'
     for n in "${CHOSEN[@]}"; do
-        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" \
+        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" \
             '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)",
                    state: (if $needs == "" then "spawned" else "queued" end),
-                   needs: ($needs | split(",") | map(select(. != "") | tonumber))}]' <<<"$items")
+                   needs: ($needs | split(",") | map(select(. != "") | tonumber))}
+                  + (if $stack == "" then {} else {stack: ($stack | tonumber)} end)]' <<<"$items")
     done
     for n in "${!OTHERS[@]}"; do
         others=$(jq -c --argjson n "$n" --arg line "${OTHERS[$n]}" '. + [{n: $n, line: $line}]' <<<"$others")

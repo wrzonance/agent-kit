@@ -295,7 +295,8 @@ issue_route 800 'Implement per docs/spec.md and .agent/notes.md in src/a.txt'
 issue_route 801 'Edit src/b.txt per docs/absent.md'
 default_routes
 out=$("$AK" plan --issue 800 --issue 801 2>&1)
-assert_contains "$out" 'drop issue=800 reason=missing-at-base:docs/spec.md fix=commit and push docs/spec.md to main' 'an untracked file the issue names drops it, with the fix'
+assert_contains "$out" "drop issue=800 reason=missing-at-base:docs/spec.md note=only in the operator's checkout, so no worker can see it; the operator decides whether it belongs on main" 'an untracked file the issue names drops it and leaves the commit to the operator'
+assert_not_contains "$out" 'commit and push' 'the drop never tells an agent to publish a file an issue named'
 assert_contains "$out" 'spawn issue=801' 'a named path that exists nowhere (a file to create) and a git-ignored one do not drop'
 git add docs/spec.md && git commit -q -m spec
 out=$("$AK" plan --new --issue 800 2>&1)
@@ -303,6 +304,17 @@ assert_contains "$out" 'missing-at-base:docs/spec.md' 'a committed but unpushed 
 git push -q origin main
 out=$("$AK" plan --new --issue 800 2>&1)
 assert_contains "$out" 'spawn issue=800' 'once the file is on the base branch the issue spawns'
+printf 'spec\n' >SPEC.md
+issue_route 802 'Follow SPEC.md (v2.0, e.g. src/b.txt)'
+out=$("$AK" plan --new --issue 802 2>&1)
+assert_contains "$out" 'drop issue=802 reason=missing-at-base:SPEC.md' 'a root-level file the issue names counts too'
+rm -f SPEC.md
+printf 'secret\n' >"$WORK/outside.txt"
+issue_route 803 "Use ../$(basename "$WORK")/outside.txt and ../outside.txt and src/a.txt"
+( cd "$repo" && ln -s "$WORK" up 2>/dev/null )
+out=$("$AK" plan --new --issue 803 2>&1)
+assert_not_contains "$out" 'missing-at-base' 'a path that climbs out of the checkout is never probed or printed'
+rm -f "$repo/up"
 
 # A re-run of the same plan resumes even when one named issue was dropped, and reprints that drop (a field root lost the
 # plan output and could not get it back: the dropped issue made the re-run a new plan that skipped everything).
@@ -346,6 +358,27 @@ assert_eq "$(git rev-parse origin/feat/issue-820)" "$(git -C "$wt821" rev-parse 
 assert_contains "$out" 'after issue=822 needs=821' 'the next link queues behind it'
 assert_contains "$out" 'drop issue=823 reason=blocked-by:#1' 'a blocker with no PR still drops'
 assert_contains "$out" 'drop issue=824 reason=needs-dropped-#823' 'a named issue that overlaps a dropped one is dropped with it, not spawned'
+# A queued issue that needs both an in-run blocker and a shipped one outside the run gets the shipped branch too
+# when it spawns, and a collision drop holds what would build on it.
+fresh
+git checkout -q -b feat/issue-830 && printf 'q\n' >src/q.txt && git add src/q.txt && git commit -q -m q && git push -q origin feat/issue-830 && git checkout -q main
+issue_route 831 'Edit src/a.txt'
+issue_route 832 'Edit lib/core.sh'
+issue_route 833 'Edit src/a.txt and src/b.txt'
+issue_route 834 'Edit src/b.txt'
+route 'api repos/acme/widget/issues/832/dependencies/blocked_by*' '[{"number":831,"state":"open"},{"number":830,"state":"open"}]'
+route 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-830*' '[{"number":51}]'
+default_routes
+out=$("$AK" plan --issue 831 --issue 832 --issue 833 --issue 834 2>&1)
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+assert_contains "$out" 'after issue=832 needs=831' 'an issue with an in-run and a shipped blocker queues behind the in-run one'
+assert_eq 830 "$(jq -r '.items[] | select(.n == 832) | .stack' "$runfile")" 'the run records the shipped blocker it also needs'
+assert_contains "$out" 'drop issue=833 reason=collides-with-#831' 'without --serialize a collision drops'
+assert_contains "$out" 'drop issue=834 reason=needs-dropped-#833' 'what overlaps a collision drop is held with it'
+printf 'pr=https://github.com/acme/widget/pull/52\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-831/.ak/result"
+out=$("$AK" collect --issue 831 2>&1)
+assert_contains "$out" 'spawn issue=832' 'collecting the in-run blocker releases it'
+assert_rc 0 'the spawned successor contains the shipped blocker branch' -- git -C "$repo/.worktrees/feat/issue-832" merge-base --is-ancestor origin/feat/issue-830 HEAD
 
 fresh
 standard_board
