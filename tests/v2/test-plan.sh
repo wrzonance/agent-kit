@@ -396,9 +396,7 @@ assert_contains "$out" 'drop issue=853 reason=blocked-by:#1' 'a blocker outside 
 assert_eq '850 851 852' "$(jq -r '[.items[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'the run file holds the chain in dependency order'
 assert_eq '853' "$(jq -r '[.others[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'only the real drop is stored'
 assert_eq 1 "$(grep -c 'issues/851/dependencies' "$FAKE_GH_LOG")" 'the second look at a dropped issue reads GitHub no further'
-for n in 850; do
-    assert_eq "origin/feat/issue-$n" "$(git -C "$repo/.worktrees/feat/issue-$n" rev-parse --abbrev-ref '@{u}' 2>&1)" 'the spawned branch is pushed and tracked'
-done
+assert_eq origin/feat/issue-850 "$(git -C "$repo/.worktrees/feat/issue-850" rev-parse --abbrev-ref '@{u}' 2>&1)" 'the spawned branch is pushed and tracked'
 
 # The reads for a batch of candidates run at once (a field plan read 26 candidates one call after another and took
 # 60 s to print 3 spawn lines), and every spawned branch goes up in one push.
