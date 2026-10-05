@@ -19,9 +19,12 @@ result_refresh() {
     [[ $1 == pr ]] || pr=${r[pr]##*/}
     [[ $pr =~ ^[0-9]+$ && -n ${r[head]:-} ]] || return 0
     live=$(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .head.sha // empty' 2>/dev/null) || return 0
-    [[ -n $live && $live != "${r[head]}" ]] || return 0
+    # A recorded red is read again even at the same head: a re-run check can turn it green without a new commit, and
+    # the successors it holds wait on exactly that.
+    [[ -n $live && ($live != "${r[head]}" || ${r[ci]:-} == red) ]] || return 0
     runs=$(ci_runs "$live" 2>/dev/null) || return 0
     r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
+    [[ $live != "${r[head]}" ]] || return 0
     # The review stays: the head moves through base merges, not changes to the PR's own diff; the note says so.
     r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
 }
