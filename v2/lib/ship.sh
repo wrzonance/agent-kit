@@ -46,7 +46,8 @@ ship_title() {
 ship_body_check() {
     local file=$1 heading missing=() long max=${AK_BODY_SENTENCE_WORDS:-45}
     for heading in 'The problem' 'What changed' 'Tests'; do
-        grep -qixE "##[[:space:]]+${heading}[[:space:]]*" -- "$file" || missing+=("## $heading")
+        awk '/^[[:space:]]*```/ { fence = !fence } !fence' "$file" |
+            grep -qixE "##[[:space:]]+${heading}[[:space:]]*" || missing+=("## $heading")
     done
     ((${#missing[@]} == 0)) || die "the PR description lacks: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" \
         "add the sections to $file as step 3 of your playbook describes, then run ak ship again"
@@ -61,8 +62,9 @@ ship_body_check() {
         function flush(   n, i, parts, words, w) {
             n = split(buf, parts, /[.!?:;]([[:space:]]|$)/)
             for (i = 1; i <= n; i++) {
+                sub(/^[[:space:]]+/, "", parts[i])
                 w = split(parts[i], words, /[[:space:]]+/)
-                if (w > max + 1 && worst == "") worst = words[2] " " words[3] " " words[4] " " words[5] " " words[6]
+                if (w > max && worst == "") worst = words[1] " " words[2] " " words[3] " " words[4] " " words[5]
             }
             buf = ""
         }' "$file")
