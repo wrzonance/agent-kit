@@ -78,7 +78,9 @@ receipt_part_of() {
     local pr=$1 n body dir ref
     n=$(issue_number)
     dir=$(ak_dir)
-    body=$(gh api "repos/$(slug)/pulls/$pr" --jq '.body // ""') || return 0
+    # Not being able to read the body is not "nothing to rewrite": the receipt stops rather than leave a closing line.
+    body=$(gh api "repos/$(slug)/pulls/$pr" --jq '.body // ""') ||
+        die "could not read the body of PR #$pr to keep it from closing #$n" "gh auth status"
     ref=$(closing_ref "$n")
     grep -qiE "(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)" <<<"$body" || return 0
     # Groups: 1 the character before, 2-3 the keyword, 4 the reference, 5 the character after.

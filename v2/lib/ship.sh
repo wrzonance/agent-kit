@@ -80,8 +80,11 @@ closing_words() {
 }
 
 closing_ref() {
+    local repo
     [[ $1 =~ ^[0-9]+$ ]] || die "not an issue number: $1" "echo <number> > .ak/issue"
-    printf ':?[[:space:]]+(#%s|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#%s|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/%s)' "$1" "$1" "$1"
+    # Only this repository's issue: owner/repo#N or a URL for another repository is someone else's issue N.
+    repo=$(slug | sed 's/[^A-Za-z0-9_/-]/\\\\&/g')
+    printf ':?[[:space:]]+(#%s|%s#%s|https://github\\.com/%s/issues/%s)' "$1" "$repo" "$1" "$repo" "$1"
 }
 
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
