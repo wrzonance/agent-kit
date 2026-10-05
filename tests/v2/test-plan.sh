@@ -375,6 +375,27 @@ assert_contains "$out" 'drop issue=842 reason=worktree-unusable' 'a dirty leftov
 assert_contains "$out" 'drop issue=843 reason=needs-dropped-#842' 'an issue overlapping a worktree drop is held with it'
 assert_eq 4 "$(jq '.others | length' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'every drop, the worktree one included, is stored for a resume'
 
+# An issue listed above its blocker queues behind it once the blocker is chosen, and so does the issue behind that one
+# (a field board listed a three-issue chain in reverse: the blocker spawned and the other two stayed dropped).
+fresh
+route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 852 Ready),$(board_item 851 Ready),$(board_item 850 Ready),$(board_item 853 Ready)]}"
+issue_route 850 'Edit src/a.txt'
+issue_route 851 'Edit lib/core.sh'
+issue_route 852 'Edit src/b.txt'
+issue_route 853 'Anything else'
+route 'api repos/acme/widget/issues/851/dependencies/blocked_by*' '[{"number":850,"state":"open"}]'
+route 'api repos/acme/widget/issues/852/dependencies/blocked_by*' '[{"number":851,"state":"open"}]'
+route 'api repos/acme/widget/issues/853/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
+default_routes
+out=$("$AK" plan --limit 5 2>&1)
+assert_contains "$out" 'spawn issue=850' 'the blocker spawns'
+assert_contains "$out" 'after issue=851 needs=850' 'the issue listed above its blocker queues behind it'
+assert_contains "$out" 'after issue=852 needs=851' 'and the issue behind that one follows'
+assert_not_contains "$out" 'drop issue=851' 'its earlier drop line is withdrawn'
+assert_contains "$out" 'drop issue=853 reason=blocked-by:#1' 'a blocker outside the run still drops'
+assert_eq '850 851 852' "$(jq -r '[.items[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'the run file holds the chain in dependency order'
+assert_eq '853' "$(jq -r '[.others[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'only the real drop is stored'
+
 # A queued issue that needs both an in-run blocker and a shipped one outside the run gets the shipped branch too
 # when it spawns, and a collision drop holds what would build on it.
 fresh

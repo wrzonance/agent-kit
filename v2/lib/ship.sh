@@ -72,14 +72,35 @@ ship_body_check() {
         "split it into shorter sentences or one bullet per change in $file, then run ak ship again"
 }
 
+# closing_words and closing_ref N: the pieces of GitHub's closing-keyword syntax for issue N of this repository
+# ("Closes #7", "fixed: #7", "resolves owner/repo#7", "close https://github.com/owner/repo/issues/7"). ship and
+# receipt must read a body the way GitHub does, or a line they miss still closes the issue. N is digits only.
+closing_words() {
+    printf '%s' 'close[sd]?|fix(e[sd])?|resolve[sd]?'
+}
+
+closing_ref() {
+    local repo
+    [[ $1 =~ ^[0-9]+$ ]] || die "not an issue number: $1" "echo <number> > .ak/issue"
+    # Only this repository's issue: owner/repo#N or a URL for another repository is someone else's issue N.
+    repo=$(slug | sed 's/[^A-Za-z0-9_/-]/\\&/g')
+    printf ':?[[:space:]]+(#%s|GH-%s|%s#%s|https?://(www\\.)?github\\.com/%s/issues/%s)' "$1" "$1" "$repo" "$1" "$repo" "$1"
+}
+
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
 ship_body() {
-    local message=$1 source=$2 out
+    local message=$1 source=$2 out n ref
+    n=$(issue_number)
+    # Resolved before the body is written: a pattern that failed to build must stop ship, not read as "already closes".
+    ref=$(closing_ref "$n") || exit 1
     out="$(ak_dir)/pr-body.md"
     {
         printf '%s\n\n' "$BANNER"
         if [[ -n $source ]]; then cat -- "$source"; else printf '%s\n' "$message"; fi
-        printf '\nCloses #%s\n\n' "$(issue_number)"
+        # A worker that wrote its own closing line gets no second one (a field PR said "Closes #N" twice).
+        [[ -n $source ]] && grep -qiE "(^|[^[:alnum:]])($(closing_words)|part of)$ref([^0-9]|\$)" -- "$source" ||
+            printf '\nCloses #%s\n' "$n"
+        printf '\n'
         attribution
     } >"$out"
     printf '%s\n' "$out"

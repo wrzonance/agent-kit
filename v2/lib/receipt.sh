@@ -72,6 +72,23 @@ receipt_body() {
     attribution
 }
 
+# receipt_part_of PR: a PR that covers part of its issue must not close it on merge. A field PR for task 1 of a
+# seven-task issue said "Closes #N"; merging it would have closed the issue with six tasks undone.
+receipt_part_of() {
+    local pr=$1 n body dir ref
+    n=$(issue_number)
+    dir=$(ak_dir)
+    # Not being able to read the body is not "nothing to rewrite": the receipt stops rather than leave a closing line.
+    body=$(gh api "repos/$(slug)/pulls/$pr" --jq '.body // ""') ||
+        die "could not read the body of PR #$pr to keep it from closing #$n" "gh auth status"
+    ref=$(closing_ref "$n") || exit 1
+    grep -qiE "(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)" <<<"$body" || return 0
+    # Groups: 1 the character before, 2-3 the keyword, 4 the reference (5 inside it), 6 the character after.
+    sed -E "s~(^|[^[:alnum:]])($(closing_words))$ref([^0-9]|\$)~\\1Part of \\4\\6~Ig" <<<"$body" >"$dir/pr-body.md"
+    gh api -X PATCH "repos/$(slug)/pulls/$pr" -F "body=@$dir/pr-body.md" >/dev/null ||
+        die "could not change \"Closes #$n\" to \"Part of #$n\" on PR #$pr" "gh auth status"
+}
+
 cmd_main() {
     local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open
     while (($#)); do
@@ -102,6 +119,7 @@ cmd_main() {
     # Comments on the PR from review bots and people are findings too; each is resolved or declined before the receipt.
     open=$(threads_open "$(slug)" "${pr%% *}") || die "cannot read the review threads on PR #${pr%% *}" "gh auth status"
     [[ -z $open ]] || die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" "ak threads"
+    [[ -z $remaining ]] || receipt_part_of "${pr%% *}"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
         die "could not post the receipt comment" "gh auth status"

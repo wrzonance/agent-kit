@@ -86,6 +86,17 @@ ci_inherited() {
             "$names" "$base"
 }
 
+# ci_failed_step URL: "/<step>" for the first failed step of an Actions job, or nothing. A field note said only
+# "Server", which did not tell the operator that the step was the type check no local suite runs. The step name is
+# workflow text like the job name, so it gets the same plain characters.
+ci_failed_step() {
+    local step
+    [[ $1 =~ /job/([0-9]+) ]] || return 0
+    step=$(gh api "repos/$(slug)/actions/jobs/${BASH_REMATCH[1]}" \
+        --jq '[.steps[]? | select(.conclusion == "failure") | .name][0] // "" | gsub("[^A-Za-z0-9 _.()-]"; "") | .[0:40]' 2>/dev/null) || return 0
+    [[ -z $step ]] || printf '/%s' "$step"
+}
+
 # ci_only RUNS INHERITED_LINE: record and print the failing checks that are this branch's own. They failed after local
 # verify let the push through, so each costs a push and a CI round on every PR until a local suite covers it. A field
 # repo paid that round for a type check and a docs lint on PR after PR; the receipt now names them to the operator.
@@ -100,10 +111,15 @@ ci_only_trusted() {
 }
 
 ci_only() {
-    local file names
+    local file names name url
     file="$(ak_dir)/ci-only"
-    names=$(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" |
-        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') | grep . || true)
+    names=$(jq -r '.[] | select(.done and .bad) | [.name, .url] | @tsv' <<<"$1" |
+        awk -F'\t' -v list="$(sed -nE 's/^inherited=(.*) from=.*/\1/p' <<<"$2")" \
+            'BEGIN { n = split(list, a, ","); for (i = 1; i <= n; i++) skip[a[i]] } !($1 in skip)' |
+        while IFS=$'\t' read -r name url; do
+            [[ -n $name ]] || continue
+            printf '%s%s\n' "$name" "$(ci_failed_step "$url")"
+        done)
     [[ -n $names ]] || return 0
     ci_only_trusted "$file" || rm -f -- "$file"
     rm -f -- "$file.tmp"

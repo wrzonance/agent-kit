@@ -380,8 +380,55 @@ other() {
     emit "$2"
 }
 
+# choose N SERIALIZE: place an issue that passed check_issue: drop on a collision, queue it, or spawn it.
+# Returns 0 when it spawned.
+choose() {
+    local n=$1 hits
+    hits=$(collisions "$WS")
+    hits=$(tr , '\n' <<<"$BLOCKED${hits:+,$hits}" | awk 'NF && !seen[$0]++' | paste -sd, -)
+    if [[ -n $hits && $2 == 0 && -z $BLOCKED ]]; then
+        HELD[$n]=$WS
+        other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
+    elif [[ -n $hits ]]; then
+        WRITES[$n]=$WS NEEDS[$n]=$hits STACKS[$n]=$STACK
+        CHOSEN+=("$n")
+        emit "after issue=$n needs=$hits"
+    elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
+        WRITES[$n]=$WS
+        CHOSEN+=("$n")
+        return 0
+    else
+        # spawn_issue printed the drop (an unusable worktree); it holds what would build on it like any other.
+        [[ -z $WS ]] || HELD[$n]=$WS
+        OTHERS[$n]=${LINES[-1]}
+    fi
+    return 1
+}
+
+# unblock SERIALIZE N...: issues dropped for a blocker that this plan went on to choose queue behind it after all.
+# A board listed an issue above its blocker: the blocker spawned, the issue stayed dropped with the two behind it,
+# and most of the run's slots sat empty. Repeats until nothing more unblocks, so a chain listed in reverse follows.
+unblock() {
+    local serialize=$1 n line keep moved=1
+    shift
+    while ((moved)); do
+        moved=0
+        for n in "$@"; do
+            [[ ${OTHERS[$n]:-} == *reason=blocked-by:* ]] || continue
+            check_issue "$n" ''
+            [[ -z $REASON ]] || continue
+            keep=()
+            for line in "${LINES[@]}"; do [[ $line == "${OTHERS[$n]}" ]] || keep+=("$line"); done
+            LINES=("${keep[@]}")
+            unset "OTHERS[$n]" "HELD[$n]"
+            choose "$n" "$serialize" || true
+            moved=1
+        done
+    done
+}
+
 pick() {
-    local limit=$1 serialize=$2 named=$3 spawned=0 n labels hits active held m
+    local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=()
     while ((spawned < limit)) && IFS=$'\t' read -r -u 3 n labels; do
         [[ $n =~ ^[0-9]+$ ]] || continue
         active=$(issue_active "$n")
@@ -400,28 +447,13 @@ pick() {
         [[ -n $REASON || -z $held ]] || REASON="needs-dropped-#$held"
         if [[ -n $REASON ]]; then
             [[ -z $WS ]] || HELD[$n]=$WS
+            [[ $REASON != blocked-by:* ]] || blocked+=("$n")
             other "$n" "drop issue=$n reason=$REASON"
             continue
         fi
-        hits=$(collisions "$WS")
-        hits=$(tr , '\n' <<<"$BLOCKED${hits:+,$hits}" | awk 'NF && !seen[$0]++' | paste -sd, -)
-        if [[ -n $hits && $serialize == 0 && -z $BLOCKED ]]; then
-            HELD[$n]=$WS
-            other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
-        elif [[ -n $hits ]]; then
-            WRITES[$n]=$WS NEEDS[$n]=$hits STACKS[$n]=$STACK
-            CHOSEN+=("$n")
-            emit "after issue=$n needs=$hits"
-        elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
-            WRITES[$n]=$WS
-            CHOSEN+=("$n")
-            spawned=$((spawned + 1))
-        else
-            # spawn_issue printed the drop (an unusable worktree); it holds what would build on it like any other.
-            [[ -z $WS ]] || HELD[$n]=$WS
-            OTHERS[$n]=${LINES[-1]}
-        fi
+        ! choose "$n" "$serialize" || spawned=$((spawned + 1))
     done
+    ((${#blocked[@]} == 0)) || unblock "$serialize" "${blocked[@]}"
 }
 
 # write_run ID: the run file and the current pointer.

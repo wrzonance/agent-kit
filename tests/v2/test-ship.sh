@@ -43,7 +43,7 @@ assert_contains "$out" 'the PR description lacks: ## Tests' 'a heading inside a 
 printf '## The problem\nShort one. Second sentence %s.\n\n## What changed\nx\n\n## Tests\ny\n' "$(printf 'w %.0s' $(seq 44))" >"$WORK/body.md"
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_contains "$out" 'a sentence over 45 words, starting: Second sentence w w w' 'a 46-word sentence after the first is caught too'
-printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n' \
+printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n\nCloses #7\n' \
     "$(printf 'a %.0s' $(seq 30))" "$(printf 'b %.0s' $(seq 30))" "$long" "$long" >"$WORK/body.md"
 export CLAUDECODE=1
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1); rc=$?
@@ -63,6 +63,7 @@ body=$(cat .ak/pr-body.md)
 assert_contains "$body" 'This was written agentically; verify its assertions:' 'the body opens with the banner'
 assert_contains "$body" '`save()` in `src/b.txt` wrote nothing; it now writes the file.' 'the body carries the body file'
 assert_contains "$body" 'Closes #7' 'the body closes the issue'
+assert_eq 1 "$(grep -c 'Closes #7' <<<"$body")" 'a description that already closes the issue gets no second closing line'
 assert_contains "$body" 'Co-authored by the Claude agent.' 'the body closes with the attribution'
 assert_eq '' "$(git status --porcelain)" '.ak/ state is not committed'
 
