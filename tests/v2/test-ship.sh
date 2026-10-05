@@ -66,6 +66,15 @@ out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_not_contains "$out" 'a label from' 'a backticked name and the Still to do list pass'
 assert_not_contains "$out" 'run output' 'a status word outside Tests passes'
 assert_contains "$out" 'a sentence over 45 words' 'that description reaches the next check'
+# shellcheck disable=SC2016
+printf '## The problem\nIt broke.\n\n## What changed\nx\n\n  ## Tests\n- It reported `oracle=ci`.\n' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'the ## Tests section carries run output' 'an indented Tests heading is still the Tests section'
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body\n## Contests\nThe endpoint returns \`verify=required\`. %s.\n\n## Not still to do\nPacket 7.\n" 'x' 'y' "$long" >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'run output' 'a heading that only contains the word tests is not the Tests section'
+assert_contains "$out" 'names "Packet 7"' 'only the exact Still to do heading exempts a label'
 printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n\nCloses #7\n' \
     "$(printf 'a %.0s' $(seq 30))" "$(printf 'b %.0s' $(seq 30))" "$long" "$long" >"$WORK/body.md"
 export CLAUDECODE=1

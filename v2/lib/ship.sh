@@ -56,13 +56,17 @@ ship_body_check() {
     found=$(awk '
         /^[[:space:]]*```/ { fence = !fence; next }
         fence { next }
-        /^##[[:space:]]/ { section = tolower($0); next }
-        section ~ /tests/ {
+        /^[[:space:]]*##[[:space:]]/ {
+            section = tolower($0)
+            gsub(/^[[:space:]]*##[[:space:]]+|[[:space:]]+$/, "", section)
+            next
+        }
+        section == "tests" {
             span = 0
             for (rest = $0; match(rest, /`[^`]*`/); rest = substr(rest, RSTART + RLENGTH)) if (RLENGTH > 100) span = 1
             if (span || /(oracle|verify)=[a-z]+/) { print "log\t" substr($0, 1, 60); exit }
         }
-        section !~ /still to do/ {
+        section != "still to do" {
             gsub(/`[^`]*`/, "")
             if (match($0, /(Packet|Task|Phase|Wave|Slice|Milestone|Workstream|Sprint) [0-9]+/)) { print "label\t" substr($0, RSTART, RLENGTH); exit }
         }' "$file")
