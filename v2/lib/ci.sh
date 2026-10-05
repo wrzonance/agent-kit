@@ -92,7 +92,11 @@ ci_inherited() {
 # ci_only_trusted FILE: the record counts only as a regular file ak wrote here, never a link or a file the checkout
 # brought along (a tracked .ak/ci-only would put a branch author's text in the result note).
 ci_only_trusted() {
-    [[ -f $1 && ! -L $1 ]] && ! git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+    local tracked
+    [[ -f $1 && ! -L $1 ]] || return 1
+    # Not being able to ask git is not "untracked".
+    tracked=$(git ls-files -- "$1" 2>/dev/null) || return 1
+    [[ -z $tracked ]]
 }
 
 ci_only() {
