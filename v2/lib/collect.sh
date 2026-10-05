@@ -60,7 +60,8 @@ cross_write() {
 # branch below the blocker's, without the blocker's work.
 spawn_successors() {
     local n pred from ready active open again=0
-    ready=$(jq -r '[.items[] | select(.state == "collected") | .n] as $done | [.items[].n] as $order |
+    ready=$(jq -r '[.items[] | select(.kind == "issue" and .state == "collected") | .n] as $done |
+        [.items[] | select(.kind == "issue") | .n] as $order |
         .items[] | select(.kind == "issue" and .state == "queued" and ((.needs - $done) | length) == 0) |
         "\(.n)\t\(.needs | max_by(. as $x | $order | index($x) // -1))"' "$RUNFILE")
     [[ -n $ready ]] || return 0
@@ -152,7 +153,8 @@ cmd_main() {
         state=parked
     elif [[ $kind == issue && $RESULT_CI == red ]]; then
         # A red predecessor releases nothing either: a field successor was spawned on a red branch, and every PR above
-        # it would have inherited the failing check. The item stays spawned, so the next collect reads CI again.
+        # it would have inherited the failing check. The item goes back to spawned, so nothing queued counts it as
+        # done (even if an earlier collect had) and the next collect reads CI again.
         state=red
     fi
     if [[ $state != collected ]]; then
@@ -160,8 +162,8 @@ cmd_main() {
             '.items[] | select(.kind == "issue" and .state == "queued" and (.needs | index($n))) | .n' "$RUNFILE")
         [[ $kind != issue ]] || collect_next "$state" "$n" "$worktree"
     fi
-    [[ $state == red ]] ||
-        run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
+    run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
+        --arg s "$([[ $state == red ]] && echo spawned || echo "$state")"
     [[ $kind != issue || $state != collected ]] || spawn_successors
     printf '%s\n' "${LINES[@]}"
 }

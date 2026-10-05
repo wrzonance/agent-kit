@@ -37,7 +37,7 @@ assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'a red issue h
 assert_not_contains "$out" 'spawn issue=680' 'a red issue spawns no successor'
 assert_contains "$out" 'next=issue=671 has red CI' 'a red collect names the next step'
 assert_contains "$out" 'then: ak collect --issue 671' 'the next step ends in the collect that releases the successor'
-assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red collect leaves the run states alone'
+assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red issue goes back to spawned, so nothing counts it as done'
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
 routes=$(cat "$FAKE_GH_ROUTES")
@@ -91,14 +91,14 @@ printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 git -C "$repo" push -q origin "origin/main:refs/heads/feat/issue-693" 2>/dev/null
 git -C "$wt" push -q origin "HEAD:refs/heads/feat/issue-671"
 jq --arg wt693 "$repo/.worktrees/feat/issue-693" '.items += [{kind:"issue",n:692,worktree:"",branch:"feat/issue-692",state:"queued",needs:[671,693]}] |
-    .items |= (map(select(.n == 693)) + map(select(.n != 693)))' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+    .items |= ([{kind:"pr",n:671,worktree:"",branch:"x",state:"collected",needs:[]}] + map(select(.n == 693)) + map(select(.n != 693)))' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 routes=$(cat "$FAKE_GH_ROUTES")
 printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-692*\t%s\t0\n%s\n' "$WORK/empty.json" "$routes" >"$FAKE_GH_ROUTES"
 printf '[]' >"$WORK/empty.json"
 printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=def\nnote=n\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
 out=$("$AK" collect --issue 693 2>&1)
 assert_contains "$out" 'spawn issue=692' 'the successor of two collected issues spawns'
-assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-692/.ak/base")" 'its base is the predecessor latest in run order, not the last listed need'
+assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-692/.ak/base")" 'its base is the predecessor latest in run order (a PR item sharing the number does not count), not the last listed need'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 out=$(AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
