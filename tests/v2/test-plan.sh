@@ -358,6 +358,21 @@ assert_eq "$(git rev-parse origin/feat/issue-820)" "$(git -C "$wt821" rev-parse 
 assert_contains "$out" 'after issue=822 needs=821' 'the next link queues behind it'
 assert_contains "$out" 'drop issue=823 reason=blocked-by:#1' 'a blocker with no PR still drops'
 assert_contains "$out" 'drop issue=824 reason=needs-dropped-#823' 'a named issue that overlaps a dropped one is dropped with it, not spawned'
+# An issue with an open PR, and one whose worktree cannot be reused, hold the named issues that overlap them too.
+fresh
+issue_route 840 'Edit src/a.txt'
+issue_route 841 'Edit src/a.txt as well'
+issue_route 842 'Edit src/b.txt'
+issue_route 843 'Edit src/b.txt as well'
+route 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-840*' '[{"number":60}]'
+default_routes
+git worktree add -q -b feat/issue-842 "$repo/.worktrees/feat/issue-842" origin/main && printf 'dirty\n' >"$repo/.worktrees/feat/issue-842/src/b.txt"
+out=$("$AK" plan --issue 840 --issue 841 --issue 842 --issue 843 2>&1)
+assert_contains "$out" 'drop issue=841 reason=needs-dropped-#840' 'an issue overlapping one with an open PR is held with it'
+assert_contains "$out" 'drop issue=842 reason=worktree-unusable' 'a dirty leftover worktree drops its issue'
+assert_contains "$out" 'drop issue=843 reason=needs-dropped-#842' 'an issue overlapping a worktree drop is held with it'
+assert_eq 4 "$(jq '.others | length' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'every drop, the worktree one included, is stored for a resume'
+
 # A queued issue that needs both an in-run blocker and a shipped one outside the run gets the shipped branch too
 # when it spawns, and a collision drop holds what would build on it.
 fresh

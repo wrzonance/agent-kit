@@ -192,7 +192,7 @@ check_issue() {
         STACK=$(stack_parent "${outside[@]}") || { REASON="blocked-by:#${outside[0]}$(blocker_note "${outside[0]}")"; return 0; }
     fi
     hit=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null)
-    [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; WS=''; return 0; }
+    [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; return 0; }
     hit=$(protected_hit "$WS")
     [[ -z $hit ]] || { REASON="protected:$hit"; return 0; }
     hit=$(missing_at_base "$body")
@@ -416,6 +416,10 @@ pick() {
             WRITES[$n]=$WS
             CHOSEN+=("$n")
             spawned=$((spawned + 1))
+        else
+            # spawn_issue printed the drop (an unusable worktree); it holds what would build on it like any other.
+            [[ -z $WS ]] || HELD[$n]=$WS
+            OTHERS[$n]=${LINES[-1]}
         fi
     done
 }
