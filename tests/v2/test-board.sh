@@ -15,9 +15,8 @@ out=$("$AK" board --issue x --status Done 2>&1); rc=$?
 assert_eq 2 "$rc" 'a non-numeric issue is a usage error'
 
 printf 'AGENT_PROJECT_OWNER=acme\nAGENT_PROJECT_NUMBER=4\n' >>.agent/config.env
-route 'project field-list 4 --owner acme*' '{"fields":[{"id":"F_S","name":"Status","options":[{"id":"O_R","name":"Ready"},{"id":"O_P","name":"In progress"},{"id":"O_D","name":"Done"}]}]}'
-route 'project view 4 --owner acme*' '{"id":"PVT_4","number":4}'
-route 'project item-list 4 --owner acme*' '{"items":[{"id":"I_5","content":{"type":"Issue","number":5,"repository":"acme/widget"},"status":"Ready"},{"id":"I_X","content":{"type":"Issue","number":6,"repository":"other/repo"}}]}'
+items='{"items":[{"id":"I_5","content":{"type":"Issue","number":5,"repository":"acme/widget"},"status":"Ready"},{"id":"I_X","content":{"type":"Issue","number":6,"repository":"other/repo"}}]}'
+board_route 4 "$items"
 route 'project item-edit*' ''
 
 out=$("$AK" board --issue 5 --status 'in progress' 2>&1); rc=$?
@@ -32,14 +31,65 @@ out=$("$AK" board --issue 5 --status Shipped 2>&1)
 assert_eq 'board #5: no-op (no Status option "Shipped")' "$out" 'an unknown option is a no-op'
 
 : >"$FAKE_GH_ROUTES"
-route 'project field-list*' 'error: your authentication token is missing required scopes [read:project]' 1
+: >"$FAKE_GH_LOG"
+route 'api graphql*' '{"errors":[]}gh: Your token has not been granted the required scopes to execute this query' 1
 out=$("$AK" board --issue 5 --status Done 2>&1); rc=$?
 assert_eq 0 "$rc" 'a scope error never fails the caller'
 assert_eq 'board #5: no-op (no project scope)' "$out" 'a scope error is a no-op with its reason'
 
 : >"$FAKE_GH_ROUTES"
-route 'project field-list*' '{"fields":[{"id":"F_T","name":"Title"}]}'
+board_route 4 "$items" '[]'
+route 'api graphql*' '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_4","field":{},"items":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+out=$("$AK" board --issue 5 --status Done 2>&1)
+assert_eq 'board #5: no-op (no Status option "Done")' "$out" 'a Status field without the option is a no-op'
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*' '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_4","field":{},"items":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
 out=$("$AK" board --issue 5 --status Done 2>&1)
 assert_eq 'board #5: no-op (no Status field)' "$out" 'a board without Status is a no-op'
+
+# A response without the project says so, instead of quoting the response.
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*' '{"data":{"repositoryOwner":{"projectV2":null}}}'
+out=$("$AK" board --issue 5 --status Done 2>&1)
+assert_eq 'board #5: no-op (board call failed: the response holds no project 4 for acme)' "$out" 'a missing project is named'
+
+# One query per move: the porcelain's item-list, field-list and view cost 9.2 s on a field board, in every worker's ship.
+: >"$FAKE_GH_ROUTES"
+: >"$FAKE_GH_LOG"
+board_route 4 "$items"
+route 'project item-edit*' ''
+"$AK" board --issue 5 --status Ready >/dev/null 2>&1
+assert_eq 2 "$(wc -l <"$FAKE_GH_LOG")" 'a move is one board read and one edit'
+assert_contains "$(head -n 1 "$FAKE_GH_LOG")" 'filter=-status:Done' 'the read leaves the Done items on the server'
+
+# A board that spans pages is read to the end.
+: >"$FAKE_GH_ROUTES"
+page() { printf '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_4","field":{"id":"F_S","options":[{"id":"O_R","name":"Ready"}]},"items":{"pageInfo":{"hasNextPage":%s,"endCursor":"C1"},"nodes":[{"id":"I_%s","fieldValueByName":{"name":"Ready"},"content":{"__typename":"Issue","number":%s,"repository":{"nameWithOwner":"acme/widget"},"labels":{"nodes":[]}}}]}}}}}' "$1" "$2" "$2"; }
+route 'api graphql*cursor=C1' "$(page false 8)"
+route 'api graphql*' "$(page true 7)"
+route 'project item-edit*' ''
+out=$("$AK" board --issue 8 --status Ready 2>&1)
+assert_eq 'board #8 -> Ready' "$out" 'an item on the second page is found'
+
+# A board that never ends is an error, and a failed second look reports its own cause.
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*' "$(page true 7)"
+out=$("$AK" board --issue 7 --status Ready 2>&1)
+assert_eq 'board #7: no-op (board call failed: the board has more than 2000 items in play)' "$out" 'a board past the page cap is not read as complete'
+: >"$FAKE_GH_ROUTES"
+route 'api graphql*filter=-status:Done*' "$(page false 7)"
+route 'api graphql*' 'gh: API rate limit already exceeded' 1
+out=$("$AK" board --issue 9 --status Ready 2>&1)
+assert_eq 'board #9: no-op (board call failed: API rate limit already exceeded)' "$out" 'a failed look at the whole board names its cause'
+
+# A server whose items field takes no search query still gets its board.
+: >"$FAKE_GH_ROUTES"
+: >"$FAKE_GH_LOG"
+# shellcheck disable=SC2016 # the literal GraphQL variable
+route 'api graphql*query:$filter*' "gh: Field 'items' doesn't accept argument 'query'" 1
+route 'api graphql*' "$(page false 7)"
+route 'project item-edit*' ''
+out=$("$AK" board --issue 7 --status Ready 2>&1)
+assert_eq 'board #7 -> Ready' "$out" 'the read falls back to the whole board'
 
 finish
