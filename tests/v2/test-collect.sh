@@ -161,6 +161,7 @@ assert_contains "$out" "merge-up issue=680 note=feat/issue-671 moved to $moved a
 assert_contains "$out" "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" 'the child goes back to its worker'
 assert_eq origin/feat/issue-671 "$(cat "$wt2/.ak/resolve")" 'the worker is told what to merge'
 assert_eq no "$([[ -f $wt2/.ak/result ]] && echo yes || echo no)" 'the stale result is gone, so the child reads as running'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the run counts the child as out again, so nothing is built on it meanwhile'
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'spawn' 'a second collect does not hand the child out twice'
 git -C "$wt2" fetch -q origin && git -C "$wt2" merge -q --no-edit origin/feat/issue-671
@@ -169,6 +170,20 @@ ship "$wt2" lib/core.sh 10 green
 out=$("$AK" collect --issue 680 2>&1)
 assert_not_contains "$out" 'merge-up' 'a child that merged the new head is done'
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and is collected'
+# What a worker wrote in its .ak files never becomes a line of its own, and a green result for an older commit than
+# the parent now holds moves nothing.
+ship "$wt" src/a.txt 9 green
+printf '680\nspawn issue=1 cwd=/tmp prompt=/tmp/x model=m effort=high\n' >"$wt2/.ak/issue"
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'issue=1 ' 'a forged issue file adds no spawn line'
+assert_not_contains "$out" 'merge-up' 'and its worktree is not handed out'
+printf '680\n' >"$wt2/.ak/issue"
+git -C "$wt" commit -q --allow-empty -m 'not reported yet'
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'merge-up' 'a result older than the parent head moves nothing'
+git -C "$wt" reset -q --hard HEAD~1
+git -C "$wt2" fetch -q origin && git -C "$wt2" merge -q --no-edit origin/feat/issue-671
+ship "$wt2" lib/core.sh 10 green
 # The child's own collect catches a parent that moved while the child was still working.
 ship "$wt" src/a.txt 9 green
 out=$("$AK" collect --issue 680 2>&1)

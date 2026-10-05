@@ -129,30 +129,42 @@ merge_up() {
     [[ -s $wt/.ak/base && -f $wt/.ak/prompt.md ]] || return 1
     [[ $(sed -n 's/^pr=//p' "$wt/.ak/result" 2>/dev/null | head -n 1) == http* ]] || return 1
     base=$(head -n 1 -- "$wt/.ak/base")
+    # Everything read from a worktree's .ak files is a worker's writing: it reaches the root's lines only as a branch
+    # name, a commit id and a number.
+    [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || return 1
     parent=$(git -C "$MAIN" worktree list --porcelain |
         awk -v ref="branch refs/heads/$base" '/^worktree /{p = substr($0, 10)} $0 == ref {print p; exit}')
     [[ -n $parent && $parent != "$MAIN" ]] && grep -qx 'ci=green' "$parent/.ak/result" 2>/dev/null || return 1
     head=$(sed -n 's/^head=//p' "$parent/.ak/result" | head -n 1)
+    # The green result must describe the parent as it stands, since the worker merges the branch, not this commit.
+    [[ $head =~ ^[0-9a-f]{7,40}$ && $(git -C "$parent" rev-parse HEAD 2>/dev/null) == "$head"* ]] || return 1
     git -C "$wt" cat-file -e "$head^{commit}" 2>/dev/null || return 1
     # Already merged, here or on the pushed branch: nothing to do.
     ! git -C "$wt" merge-base --is-ancestor "$head" HEAD 2>/dev/null || return 1
     ! git -C "$wt" merge-base --is-ancestor "$head" '@{u}' 2>/dev/null || return 1
-    if [[ -f $wt/.ak/pr ]]; then kind=pr n=$(<"$wt/.ak/pr"); else n=$(<"$wt/.ak/issue"); fi
+    if [[ -f $wt/.ak/pr ]]; then kind=pr n=$(<"$wt/.ak/pr"); else n=$(cat -- "$wt/.ak/issue" 2>/dev/null); fi
+    [[ $n =~ ^[0-9]+$ ]] || return 1
     printf 'origin/%s\n' "$base" >"$wt/.ak/resolve"
     rm -f -- "$wt/.ak/result"
     emit "merge-up $kind=$n note=$base moved to ${head:0:7} after this shipped; the worker below merges it, verifies and reports again"
     emit "spawn $kind=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$(worker_model) effort=$(cfg AGENT_WORKER_EFFORT medium)"
+    MERGED_UP="$kind $n"
 }
 
 # merge_up_children WORKTREE: every shipped worktree stacked on this one's branch gets its turn. Each child's own
 # collect then reaches the next level, so a stack follows its base one finished link at a time.
 merge_up_children() {
-    local branch wt
+    local branch wt file
     branch=$(git -C "$1" branch --show-current 2>/dev/null)
     [[ -n $branch ]] || return 0
     while IFS= read -r wt; do
         [[ $wt != "$1" && $(head -n 1 -- "$wt/.ak/base" 2>/dev/null) == "$branch" ]] || continue
-        merge_up "$wt" || true
+        merge_up "$wt" || continue
+        # The child is out again: no run may count it as done and build on it meanwhile.
+        for file in "$MAIN"/.ak/runs/*.json; do
+            RUNFILE=$file run_update '(.items[] | select(.kind == $k and .n == $n)).state = "spawned"' \
+                --arg k "${MERGED_UP% *}" --argjson n "${MERGED_UP#* }"
+        done
     done < <(git -C "$MAIN" worktree list --porcelain | sed -n 's/^worktree //p')
 }
 
