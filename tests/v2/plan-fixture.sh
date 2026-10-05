@@ -45,14 +45,12 @@ default_routes() {
     route 'api repos/acme/widget/issues/*/comments*' '[{"user":{"login":"bob"},"body":"please hurry"}]'
     route 'api repos/acme/widget/issues/*/dependencies/blocked_by*' '[]'
     route 'api repos/acme/widget/pulls*' '[]'
-    route 'project field-list*' '{"fields":[{"id":"F_S","name":"Status","options":[{"id":"O_P","name":"In progress"}]}]}'
-    route 'project view*' '{"id":"PVT_5"}'
     route 'project item-edit*' ''
 }
 
 # standard_board: the board most cases use.
 standard_board() {
-    route 'project item-list 5 --owner acme*' "{\"items\":[$(board_item 671 Ready),$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 680 Ready),$(board_item 690 Ready),$(board_item 691 Ready),$(board_item 692 Ready),$(board_item 693 Ready),$(board_item 694 Done),$(board_item 695 Ready)]}"
+    board_route 5 "{\"items\":[$(board_item 671 Ready),$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 680 Ready),$(board_item 690 Ready),$(board_item 691 Ready),$(board_item 692 Ready),$(board_item 693 Ready),$(board_item 694 Done),$(board_item 695 Ready)]}"
     # shellcheck disable=SC2016
     issue_route 671 'Fix `src/a.txt` and see https://example.com/x/y.md and AGENTS.md {{BRANCH}}'
     issue_route 680 'Also touches src/a.txt.'
