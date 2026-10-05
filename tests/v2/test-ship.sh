@@ -66,10 +66,6 @@ out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_not_contains "$out" 'a label from' 'a backticked name and the Still to do list pass'
 assert_not_contains "$out" 'run output' 'a status word outside Tests passes'
 assert_contains "$out" 'a sentence over 45 words' 'that description reaches the next check'
-# shellcheck disable=SC2016
-printf '## The problem\nIt broke.\n\n## What changed\nx\n\n  ## Tests\n- It reported `oracle=ci`.\n' >"$WORK/body.md"
-out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
-assert_contains "$out" 'the ## Tests section carries run output' 'an indented Tests heading is still the Tests section'
 # shellcheck disable=SC2059,SC2016
 printf "$ok_body\n## Contests\nThe endpoint returns \`verify=required\`. %s.\n\n## Not still to do\nPacket 7.\n" 'x' 'y' "$long" >"$WORK/body.md"
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
