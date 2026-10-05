@@ -29,6 +29,15 @@ out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'after issue=680 reason=waits-on-parked-#671' 'a parked issue holds its successor'
 assert_not_contains "$out" 'spawn issue=680' 'a parked issue spawns no successor'
 assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run records the park and the held successor'
+assert_contains "$out" "next=issue=671 is parked in $wt (uncommitted paths: 0); clear what its note names, commit and push there what only you may commit, then: ak plan --issue 671" 'a park says where the work waits and the command that continues it'
+# A red predecessor holds its successor too, and stays collectable (a field successor was spawned on a red branch).
+printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'a red issue holds its successor'
+assert_not_contains "$out" 'spawn issue=680' 'a red issue spawns no successor'
+assert_contains "$out" 'next=issue=671 has red CI' 'a red collect names the next step'
+assert_contains "$out" 'then: ak collect --issue 671' 'the next step ends in the collect that releases the successor'
+assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red collect leaves the run states alone'
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
 routes=$(cat "$FAKE_GH_ROUTES")
@@ -75,6 +84,21 @@ printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/def4
 out=$("$AK" collect --pr 9 2>&1)
 assert_contains "$out" 'pr=9 ci=green' 'a moved head reports its live CI'
 assert_contains "$out" 'ci read live at def4567; review covers abc' 'collect says it read CI live'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+
+# The stack parent is the latest predecessor in run order, wherever it sits in the needs list (a field successor whose
+# needs were [blocker, colliding, colliding] was based on the branch below its blocker).
+git -C "$repo" push -q origin "origin/main:refs/heads/feat/issue-693" 2>/dev/null
+git -C "$wt" push -q origin "HEAD:refs/heads/feat/issue-671"
+jq --arg wt693 "$repo/.worktrees/feat/issue-693" '.items += [{kind:"issue",n:692,worktree:"",branch:"feat/issue-692",state:"queued",needs:[671,693]}] |
+    .items |= (map(select(.n == 693)) + map(select(.n != 693)))' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+routes=$(cat "$FAKE_GH_ROUTES")
+printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-692*\t%s\t0\n%s\n' "$WORK/empty.json" "$routes" >"$FAKE_GH_ROUTES"
+printf '[]' >"$WORK/empty.json"
+printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=def\nnote=n\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
+out=$("$AK" collect --issue 693 2>&1)
+assert_contains "$out" 'spawn issue=692' 'the successor of two collected issues spawns'
+assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-692/.ak/base")" 'its base is the predecessor latest in run order, not the last listed need'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 out=$(AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)

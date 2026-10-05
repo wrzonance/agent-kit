@@ -39,6 +39,7 @@ result_line() {
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
     result_refresh "$kind" "$n"
+    RESULT_CI=${r[ci]:-}
     if [[ $kind == issue ]]; then
         emit "issue=$n pr=${r[pr]:-} ci=${r[ci]:-} review=${r[review]:-} note=${r[note]:-}"
     else
@@ -54,12 +55,14 @@ cross_write() {
     [[ -z $paths ]] || emit "cross-write=$paths"
 }
 
-# spawn_successors: queued issues whose needs are all collected, each from its last predecessor's branch.
+# spawn_successors: queued issues whose needs are all collected, each from the branch of its latest predecessor in run
+# order. A field successor needed [its blocker, then two colliding issues]; taking the last of that list based it on a
+# branch below the blocker's, without the blocker's work.
 spawn_successors() {
     local n pred from ready active open again=0
-    ready=$(jq -r '[.items[] | select(.state == "collected") | .n] as $done |
+    ready=$(jq -r '[.items[] | select(.state == "collected") | .n] as $done | [.items[].n] as $order |
         .items[] | select(.kind == "issue" and .state == "queued" and ((.needs - $done) | length) == 0) |
-        "\(.n)\t\(.needs[-1])"' "$RUNFILE")
+        "\(.n)\t\(.needs | max_by(. as $x | $order | index($x) // -1))"' "$RUNFILE")
     [[ -n $ready ]] || return 0
     TEMPLATE="$AK_HOME/templates/issue-worker.md"
     [[ -f $TEMPLATE ]] || die "worker template missing: $TEMPLATE" 'reinstall the ak plugin'
@@ -101,6 +104,18 @@ collect_item() {
     jq -c --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$3"
 }
 
+# collect_next STATE N WORKTREE: the one line that says how a parked or red issue continues. A field operator had to ask
+# for the commands after a park, and the root then finished the parked work itself instead of handing it to a worker.
+collect_next() {
+    local dirty
+    if [[ $1 == red ]]; then
+        emit "next=issue=$2 has red CI; get its PR green (ak ci in $3 prints the failing lines), then: ak collect --issue $2"
+        return 0
+    fi
+    dirty=$(git -C "$3" status --porcelain 2>/dev/null | wc -l)
+    emit "next=issue=$2 is parked in $3 (uncommitted paths: $((dirty))); clear what its note names, commit and push there what only you may commit, then: ak plan --issue $2"
+}
+
 cmd_main() {
     local kind='' n='' item worktree state=collected m
     case ${1:-} in
@@ -135,10 +150,18 @@ cmd_main() {
     # (a field chain spawned two workers that only found the parked predecessor missing).
     if [[ $(sed -n 's/^pr=//p' "$worktree/.ak/result" | head -n 1) != http* ]]; then
         state=parked
-        while IFS= read -r m; do emit "after issue=$m reason=waits-on-parked-#$n"; done < <(jq -r --argjson n "$n" \
-            '.items[] | select(.kind == "issue" and .state == "queued" and (.needs | index($n))) | .n' "$RUNFILE")
+    elif [[ $kind == issue && $RESULT_CI == red ]]; then
+        # A red predecessor releases nothing either: a field successor was spawned on a red branch, and every PR above
+        # it would have inherited the failing check. The item stays spawned, so the next collect reads CI again.
+        state=red
     fi
-    run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
-    [[ $kind != issue || $state == parked ]] || spawn_successors
+    if [[ $state != collected ]]; then
+        while IFS= read -r m; do emit "after issue=$m reason=waits-on-$state-#$n"; done < <(jq -r --argjson n "$n" \
+            '.items[] | select(.kind == "issue" and .state == "queued" and (.needs | index($n))) | .n' "$RUNFILE")
+        [[ $kind != issue ]] || collect_next "$state" "$n" "$worktree"
+    fi
+    [[ $state == red ]] ||
+        run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" --arg s "$state"
+    [[ $kind != issue || $state != collected ]] || spawn_successors
     printf '%s\n' "${LINES[@]}"
 }
