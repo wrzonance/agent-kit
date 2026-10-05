@@ -40,6 +40,36 @@ ship_title() {
     git log -1 --format=%s
 }
 
+# ship_body_check FILE: refuse a PR description a person cannot follow. Field PR bodies packed every change into one
+# sentence of abstractions under "Why/What", and the operator rewrote each by hand. The sections give the reader the
+# problem first; the length cap turns a sentence that lists five changes into bullets.
+ship_body_check() {
+    local file=$1 heading missing=() long max=${AK_BODY_SENTENCE_WORDS:-45}
+    for heading in 'The problem' 'What changed' 'Tests'; do
+        grep -qixE "##[[:space:]]+${heading}[[:space:]]*" -- "$file" || missing+=("## $heading")
+    done
+    ((${#missing[@]} == 0)) || die "the PR description lacks: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" \
+        "add the sections to $file as step 3 of your playbook describes, then run ak ship again"
+    # Longest sentence, outside fenced blocks; a list item or heading ends a sentence, and code spans count as one word.
+    long=$(awk -v max="$max" '
+        /^[[:space:]]*```/ { fence = !fence; next }
+        fence { next }
+        /^#/ { flush(); next }
+        /^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]|^[[:space:]]*$/ { flush() }
+        { gsub(/`[^`]*`/, "CODE"); buf = buf " " $0 }
+        END { flush(); if (worst != "") print worst }
+        function flush(   n, i, parts, words, w) {
+            n = split(buf, parts, /[.!?:;]([[:space:]]|$)/)
+            for (i = 1; i <= n; i++) {
+                w = split(parts[i], words, /[[:space:]]+/)
+                if (w > max + 1 && worst == "") worst = words[2] " " words[3] " " words[4] " " words[5] " " words[6]
+            }
+            buf = ""
+        }' "$file")
+    [[ -z $long ]] || die "the PR description has a sentence over $max words, starting: $long" \
+        "split it into shorter sentences or one bullet per change in $file, then run ak ship again"
+}
+
 # ship_body MESSAGE BODY_FILE: writes the PR body to .ak/pr-body.md and prints its path.
 ship_body() {
     local message=$1 source=$2 out
@@ -102,6 +132,7 @@ cmd_main() {
     [[ -n $message ]] || usage_die "usage: ak ship --message M [--body-file F]"
     [[ -z $body_file || -f $body_file ]] || die "body file not found: $body_file" "ak ship --message '$message'"
     [[ -z $body_file ]] || body_file="$(cd -- "$(dirname -- "$body_file")" && pwd)/$(basename -- "$body_file")"
+    [[ -z $body_file ]] || ship_body_check "$body_file"
     cd -- "$(worktree_root)" || exit 1
     branch=$(git branch --show-current)
     base=$(work_base)

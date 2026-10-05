@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ak ship: commit with the trailer, push, open or reuse the draft PR.
+# shellcheck disable=SC2016 # markdown code spans in single-quoted fixtures
 TEST_NAME=v2-ship
 # shellcheck source=lib.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -22,7 +23,22 @@ route "$lookup" '[]'
 route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=closed*' '[]'
 route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}'
 printf 'two\n' >src/b.txt
+# A description a person cannot follow is refused before anything is committed (field PR bodies packed every change
+# into one sentence under Why/What, and the operator rewrote each by hand).
 printf '## Why\nBecause.\n' >"$WORK/body.md"
+before=$(git rev-parse HEAD)
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a description without the sections is refused'
+assert_contains "$out" 'the PR description lacks: ## The problem, ## What changed, ## Tests' 'the refusal names the missing sections'
+assert_contains "$out" 'fix: add the sections' 'the refusal says what to do'
+assert_eq "$before" "$(git rev-parse HEAD)" 'a refused description commits nothing'
+long=$(printf 'word %.0s' $(seq 50))
+printf '## The problem\nIt broke.\n\n## What changed\nThe `x y z` helper now %s.\n\n## Tests\nOne.\n' "$long" >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a 50-word sentence is refused'
+assert_contains "$out" 'a sentence over 45 words, starting: The CODE helper now word' 'the refusal quotes how the sentence starts'
+printf '## The problem\nIt broke when a user saved.\n\n## What changed\n- **Save.** `save()` in `src/b.txt` wrote nothing; it now writes the file.\n- %s\n- %s\n\n```text\n%s %s\n```\n\n## Tests\n`t.sh` proves the write.\n' \
+    "$(printf 'a %.0s' $(seq 30))" "$(printf 'b %.0s' $(seq 30))" "$long" "$long" >"$WORK/body.md"
 export CLAUDECODE=1
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1); rc=$?
 unset CLAUDECODE
@@ -39,7 +55,7 @@ assert_contains "$log" '-f base=main' 'the PR targets the base'
 assert_contains "$log" '-f title=Fix the widget' 'the title comes from .ak/issue.md'
 body=$(cat .ak/pr-body.md)
 assert_contains "$body" 'This was written agentically; verify its assertions:' 'the body opens with the banner'
-assert_contains "$body" 'Because.' 'the body carries the body file'
+assert_contains "$body" '`save()` in `src/b.txt` wrote nothing; it now writes the file.' 'the body carries the body file'
 assert_contains "$body" 'Closes #7' 'the body closes the issue'
 assert_contains "$body" 'Co-authored by the Claude agent.' 'the body closes with the attribution'
 assert_eq '' "$(git status --porcelain)" '.ak/ state is not committed'
