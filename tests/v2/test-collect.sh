@@ -59,6 +59,7 @@ printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 # A successor's worktree left by an earlier run is reused, and still starts from the predecessor branch (a field
 # successor reused one that never got its predecessor's work, and parked).
 git -C "$repo" worktree add -q -b feat/issue-680 "$repo/.worktrees/feat/issue-680" origin/main
+reads=$(grep -c 'api graphql' "$FAKE_GH_LOG")
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collect exits 0'
 wt2="$repo/.worktrees/feat/issue-680"
@@ -69,6 +70,7 @@ assert_contains "$(cat "$wt2/.ak/prompt.md")" 'base=feat/issue-671' 'the success
 assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
 assert_eq 'collected spawned' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run file records both states'
 assert_eq "$wt2" "$(jq -r '.items[] | select(.n == 680) | .worktree' "$runfile")" 'the run file records the successor worktree'
+assert_eq 1 "$(($(grep -c 'api graphql' "$FAKE_GH_LOG") - reads))" 'collect reads the board once for the successor it moves'
 
 printf 'stray\n' >stray.txt
 out=$("$AK" collect --issue 693 2>&1)

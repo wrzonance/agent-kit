@@ -100,6 +100,7 @@ spawn_successors() {
                 --argjson n "$n" --arg wt "${WORKTREE[$n]}"
         fi
     done 3<<<"$ready"
+    spawn_flush
     ((again == 0)) || spawn_successors
 }
 

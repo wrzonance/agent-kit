@@ -22,6 +22,17 @@ route() {
     printf '%s\t%s\t%s\n' "$1" "$file" "${3:-0}" >>"$FAKE_GH_ROUTES"
 }
 
+# board_route NUMBER ITEMS [OPTIONS]: answer the board query for project NUMBER. ITEMS is
+# `{"items":[{id,status,labels,content:{type,number,repository}}]}`; OPTIONS are the Status field's options.
+board_route() {
+    local options=${3:-'[{"id":"O_B","name":"Backlog"},{"id":"O_R","name":"Ready"},{"id":"O_P","name":"In progress"},{"id":"O_D","name":"Done"}]'}
+    route "api graphql*-F number=$1 -f filter=*" "$(jq -c --arg id "PVT_$1" --argjson options "$options" '
+        {data: {repositoryOwner: {projectV2: {id: $id, field: {id: "F_S", options: $options}, items: {pageInfo: {hasNextPage: false},
+            nodes: [.items[] | {id, fieldValueByName: {name: (.status // null)}, content: {__typename: .content.type,
+                number: .content.number, repository: {nameWithOwner: .content.repository},
+                labels: {nodes: [(.labels // [])[] | {name: .}]}}}]}}}}}' <<<"$2")"
+}
+
 # fixture_repo: a clone at $WORK/repo with a bare origin, one commit on main, origin/HEAD set. Echoes the path.
 fixture_repo() {
     git init -q --bare -b main "$WORK/origin.git"

@@ -5,6 +5,11 @@
 set -uo pipefail
 args="$*"
 printf '%s\n' "$args" >>"${FAKE_GH_LOG:-/dev/null}"
+# FAKE_GH_DELAY: seconds every call takes; the call then logs `done`, so a suite can count how many ran at once.
+if [[ -n ${FAKE_GH_DELAY:-} ]]; then
+    sleep "$FAKE_GH_DELAY"
+    printf 'done\n' >>"${FAKE_GH_LOG:-/dev/null}"
+fi
 [[ -f ${FAKE_GH_ROUTES:-} ]] || { printf 'fake gh: no routes for: %s\n' "$args" >&2; exit 1; }
 while IFS=$'\t' read -r pattern response rc; do
     [[ -n $pattern && $pattern != \#* ]] || continue
