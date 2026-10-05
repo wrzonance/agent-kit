@@ -89,10 +89,15 @@ ci_inherited() {
 ci_only() {
     local file names
     file="$(ak_dir)/ci-only"
+    # A check name is text from the repository's workflows and reaches the root through the result note: keep only
+    # plain name characters, 60 at most. The record is a regular file ak made, never a link a checkout brought along.
     names=$(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" |
-        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') || true)
+        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') |
+        LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' | cut -c1-60 | grep . || true)
     [[ -n $names ]] || return 0
-    { cat -- "$file" 2>/dev/null; printf '%s\n' "$names"; } | LC_ALL=C sort -u >"$file.tmp" && mv -- "$file.tmp" "$file"
+    [[ ! -L $file ]] || rm -f -- "$file"
+    rm -f -- "$file.tmp"
+    { cat -- "$file" 2>/dev/null; printf '%s\n' "$names"; } | LC_ALL=C sort -u | head -n 20 >"$file.tmp" && mv -f -- "$file.tmp" "$file"
     printf 'ci-only=%s note=failed in CI after local verify; an AGENT_CMD_<NAME> suite in .agent/config.env would catch it before the push\n' \
         "$(paste -sd, - <<<"$names")"
 }
