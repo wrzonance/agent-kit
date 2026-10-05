@@ -78,7 +78,7 @@ assert_contains "$out" 'ci read live at def4567; review covers abc' 'collect say
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 out=$(AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
-assert_contains "$out" 'ak collect: still working; wait for this call to finish, do not re-run it' 'a slow collect says to wait for it'
+assert_contains "$out" 'ak collect: still working; wait for this call to finish' 'a slow collect says to wait for it'
 out=$("$AK" collect --issue 12345 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue outside the run refuses'
 assert_contains "$out" 'fix: ' 'the refusal names the fix'

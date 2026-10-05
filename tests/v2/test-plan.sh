@@ -257,7 +257,8 @@ assert_eq 0 "$rc" "a dead holder's lock is taken over"
 assert_eq no "$([[ -e $repo/.ak/locks/run ]] && echo yes || echo no)" 'a finished plan releases its lock'
 # A plan that outlives an agent's shell yield says to wait rather than re-run (a field root re-ran a yielded plan).
 out=$(AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
-assert_contains "$out" 'ak plan: still working; wait for this call to finish, do not re-run it' 'a slow plan says to wait for it'
+assert_contains "$out" 'ak plan: still working; wait for this call to finish. If its output is lost, run the same ak plan again' 'a slow plan says to wait, and how to get lost output back'
+assert_not_contains "$out" 'do not re-run' 'the notice never forbids the re-run that recovers a lost plan (a field root stopped for good on it)'
 out=$("$AK" plan --new --issue 700 2>&1)
 assert_not_contains "$out" 'still working' 'a fast plan prints no notice'
 
@@ -285,6 +286,66 @@ issue_route 690 'x'
 default_routes
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'drop issue=690 reason=blocked-by:#1(in-progress-without-pr)' 'an In-progress blocker with no PR is named'
+
+# A path the issue names that sits only in the operator's checkout drops the issue with the fix (a field worker built
+# without the untracked spec its issue named; two later issues parked on the gap).
+fresh
+mkdir -p docs && printf 'spec\n' >docs/spec.md && printf 'ignored\n' >.agent/notes.md
+issue_route 800 'Implement per docs/spec.md and .agent/notes.md in src/a.txt'
+issue_route 801 'Edit src/b.txt per docs/absent.md'
+default_routes
+out=$("$AK" plan --issue 800 --issue 801 2>&1)
+assert_contains "$out" 'drop issue=800 reason=missing-at-base:docs/spec.md fix=commit and push docs/spec.md to main' 'an untracked file the issue names drops it, with the fix'
+assert_contains "$out" 'spawn issue=801' 'a named path that exists nowhere (a file to create) and a git-ignored one do not drop'
+git add docs/spec.md && git commit -q -m spec
+out=$("$AK" plan --new --issue 800 2>&1)
+assert_contains "$out" 'missing-at-base:docs/spec.md' 'a committed but unpushed file is still missing at the base'
+git push -q origin main
+out=$("$AK" plan --new --issue 800 2>&1)
+assert_contains "$out" 'spawn issue=800' 'once the file is on the base branch the issue spawns'
+
+# A re-run of the same plan resumes even when one named issue was dropped, and reprints that drop (a field root lost the
+# plan output and could not get it back: the dropped issue made the re-run a new plan that skipped everything).
+fresh
+issue_route 810 'Edit src/a.txt'
+route 'api repos/acme/widget/issues/811' '{"number":811,"title":"T","state":"open","body":"x","labels":[{"name":"needs:brainstorm"}]}'
+default_routes
+first=$("$AK" plan --issue 810 --issue 811 2>&1)
+assert_contains "$first" 'drop issue=811 reason=label:needs:brainstorm' 'the labelled issue drops'
+again=$("$AK" plan --issue 810 --issue 811 2>&1)
+assert_eq "$(sed -n 1p <<<"$first") resumed" "$(sed -n 1p <<<"$again")" 'the identical re-run resumes the run'
+assert_eq "$(sed 1d <<<"$first")" "$(sed 1d <<<"$again")" 'the resume prints the same spawn and drop lines'
+mkdir -p "$repo/.worktrees/feat/issue-810/.ak/logs"
+issue_route 812 'Edit src/b.txt'
+out=$("$AK" plan --issue 810 --issue 812 2>&1)
+assert_contains "$out" 'skip issue=810 reason=running' 'a started worker is skipped by a later plan'
+again=$("$AK" plan --issue 810 --issue 812 2>&1)
+assert_contains "$again" 'resumed' 'a re-run with a skipped issue also resumes'
+assert_eq 1 "$(grep -c 'spawn issue=812' <<<"$again")" 'the unstarted spawn is offered again'
+mkdir -p "$repo/.worktrees/feat/issue-812/.ak/logs"
+again=$("$AK" plan --issue 810 --issue 812 2>&1)
+assert_not_contains "$again" 'spawn issue=812' 'once its worker started, a resume never offers the spawn a second time'
+
+# A blocker that already shipped (open PR on its branch) is the stack parent, not a drop; and a named issue that
+# overlaps a dropped one is held with it (a field re-plan of a chain dropped four links and spawned the fifth on main).
+fresh
+git checkout -q -b feat/issue-820 && printf 'p\n' >src/p.txt && git add src/p.txt && git commit -q -m p && git push -q origin feat/issue-820 && git checkout -q main
+issue_route 821 'Edit src/a.txt'
+issue_route 822 'Edit src/a.txt too'
+issue_route 823 'Edit src/b.txt'
+issue_route 824 'Edit src/b.txt too'
+route 'api repos/acme/widget/issues/821/dependencies/blocked_by*' '[{"number":820,"state":"open"}]'
+route 'api repos/acme/widget/issues/823/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
+route 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-820*' '[{"number":50}]'
+default_routes
+out=$("$AK" plan --serialize --issue 821 --issue 822 --issue 823 --issue 824 2>&1)
+wt821="$repo/.worktrees/feat/issue-821"
+assert_contains "$out" "spawn issue=821 cwd=$wt821" 'an issue blocked only by a shipped issue spawns'
+assert_eq 'feat/issue-820' "$(cat "$wt821/.ak/base")" 'its PR base is the shipped blocker branch'
+assert_eq "$(git rev-parse origin/feat/issue-820)" "$(git -C "$wt821" rev-parse HEAD)" 'its worktree starts from that branch'
+assert_contains "$out" 'after issue=822 needs=821' 'the next link queues behind it'
+assert_contains "$out" 'drop issue=823 reason=blocked-by:#1' 'a blocker with no PR still drops'
+assert_contains "$out" 'drop issue=824 reason=needs-dropped-#823' 'a named issue that overlaps a dropped one is dropped with it, not spawned'
 
 fresh
 standard_board

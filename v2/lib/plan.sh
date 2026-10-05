@@ -9,6 +9,8 @@ declare -A WRITES      # chosen issue number -> write set, one path per line
 CHOSEN=()              # spawned and queued issue numbers, in order
 declare -A NEEDS       # queued issue number -> comma-separated predecessors
 declare -A WORKTREE    # spawned issue number -> worktree path
+declare -A OTHERS      # dropped or skipped issue number -> its output line
+declare -A HELD        # dropped issue number -> write set, for the named issues that would build on it
 
 # plan_context: the globals every step reads. AK_LOG is where everything but the result lines goes.
 plan_context() {
@@ -131,28 +133,68 @@ blocker_note() {
     [[ ${open:-0} != 0 ]] || printf '(in-progress-without-pr)'
 }
 
-# check_issue N LABELS: sets REASON (empty when N can be chosen), WS (its write set) and BLOCKED (chosen blockers).
+# missing_at_base BODY: the first path BODY names that exists in the operator's checkout but not on the base branch
+# (untracked, or committed and never pushed). A field worker built an API without the spec its issue named, because the
+# spec was an untracked file its worktree never got; two later issues parked on the gap.
+missing_at_base() {
+    local t
+    while IFS= read -r t; do
+        t=${t#./}
+        [[ -f $MAIN/$t ]] || continue
+        ! grep -qxF -- "$t" "$FILES" || continue
+        git -C "$MAIN" check-ignore -q -- "$t" 2>/dev/null && continue
+        printf '%s\n' "$t"
+        return 0
+    done < <(grep -oE '[A-Za-z0-9_.@+-]*/[A-Za-z0-9_./@+-]*[A-Za-z0-9_]' <<<"$1" | LC_ALL=C sort -u)
+    return 0
+}
+
+# stack_parent N...: the unmerged blocker the others are already merged into, when each has an open PR on feat/issue-N.
+# That blocker's branch is where the dependent starts. A field re-plan dropped every issue behind a shipped link.
+stack_parent() {
+    local n m tip
+    for n in "$@"; do
+        [[ $(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null) == 1 ]] || return 1
+        git -C "$MAIN" fetch -q origin "feat/issue-$n" >>"$AK_LOG" 2>&1 || return 1
+    done
+    for n in "$@"; do
+        tip=$n
+        for m in "$@"; do
+            git -C "$MAIN" merge-base --is-ancestor "origin/feat/issue-$m" "origin/feat/issue-$n" 2>/dev/null || { tip=''; break; }
+        done
+        [[ -z $tip ]] || { printf '%s\n' "$tip"; return 0; }
+    done
+    return 1
+}
+
+# check_issue N LABELS: sets REASON (empty when N can be chosen), WS (its write set), BLOCKED (chosen blockers) and
+# STACK (the shipped blocker whose branch N starts from).
 check_issue() {
-    local n=$1 json hit
-    REASON='' WS='' BLOCKED=''
+    local n=$1 json hit body outside=()
+    REASON='' WS='' BLOCKED='' STACK=''
     hit=$(excluded_label "$2")
     [[ -z $hit ]] || { REASON="label:$hit"; return 0; }
     json=$(api "repos/$SLUG/issues/$n") || { REASON=unreadable; return 0; }
     jq -e 'has("pull_request") | not' <<<"$json" >/dev/null || { REASON=not-an-issue; return 0; }
     [[ $(jq -r .state <<<"$json") == open ]] || { REASON=closed; return 0; }
+    body=$(jq -r '.body // ""' <<<"$json")
+    WS=$(write_set "$body")
     hit=$(excluded_label "$(jq -r '[.labels[]?.name] | join(",")' <<<"$json")")
     [[ -z $hit ]] || { REASON="label:$hit"; return 0; }
     # A blocker chosen earlier in this run is a dependency, not a drop: the issue queues behind it (a field run dropped
     # an issue whose only blocker it had just spawned).
     for hit in $(api "repos/$SLUG/issues/$n/dependencies/blocked_by" | jq -r '.[]? | select(.state == "open") | .number' 2>/dev/null); do
-        [[ " ${CHOSEN[*]} " == *" $hit "* ]] || { REASON="blocked-by:#$hit$(blocker_note "$hit")"; return 0; }
-        BLOCKED+="${BLOCKED:+,}$hit"
+        if [[ " ${CHOSEN[*]} " == *" $hit "* ]]; then BLOCKED+="${BLOCKED:+,}$hit"; else outside+=("$hit"); fi
     done
+    if ((${#outside[@]})); then
+        STACK=$(stack_parent "${outside[@]}") || { REASON="blocked-by:#${outside[0]}$(blocker_note "${outside[0]}")"; return 0; }
+    fi
     hit=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null)
-    [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; return 0; }
-    WS=$(write_set "$(jq -r '.body // ""' <<<"$json")")
+    [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; WS=''; return 0; }
     hit=$(protected_hit "$WS")
     [[ -z $hit ]] || { REASON="protected:$hit"; return 0; }
+    hit=$(missing_at_base "$body")
+    [[ -z $hit ]] || { REASON="missing-at-base:$hit fix=commit and push $hit to $BASE; the worker's worktree cannot see it"; return 0; }
     ISSUE_JSON[$n]=$json
 }
 
@@ -296,7 +338,7 @@ run_live() {
 # run_lock NAME: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
 # later a collect, whose first call had not returned yet; the second call now waits, then reports the first's work.
 run_lock() {
-    local name=$1 dir="$MAIN/.ak/locks/run" waited=0
+    local name=$1 dir="$MAIN/.ak/locks/run" waited=0 lost=''
     mkdir -p -- "$MAIN/.ak/locks"
     until mkdir -- "$dir" 2>/dev/null; do
         # A lock whose owner died is free.
@@ -307,9 +349,11 @@ run_lock() {
     done
     printf '%s\n' "$$" >"$dir/pid"
     RUN_LOCK=$dir
-    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead.
+    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead. A
+    # field root that then lost the plan's output stopped for good on "do not re-run it", so say what recovers it.
+    [[ $name != plan ]] || lost='. If its output is lost, run the same ak plan again: it prints the same lines'
     { sleep "${AK_SLOW_NOTICE:-3}" >/dev/null 2>&1 &&
-        printf 'ak %s: still working; wait for this call to finish, do not re-run it\n' "$name" >&2; } </dev/null &
+            printf 'ak %s: still working; wait for this call to finish%s\n' "$name" "$lost" >&2; } </dev/null &
     SLOW_NOTICE=$!
 }
 
@@ -319,25 +363,44 @@ run_unlock() {
     rm -rf -- "${RUN_LOCK:-/nonexistent}"
 }
 
+# other N LINE: a drop or skip line, kept so a re-run of the same plan resumes instead of planning again.
+other() {
+    OTHERS[$1]=$2
+    emit "$2"
+}
+
 pick() {
-    local limit=$1 serialize=$2 spawned=0 n labels hits active
+    local limit=$1 serialize=$2 named=$3 spawned=0 n labels hits active held m
     while ((spawned < limit)) && IFS=$'\t' read -r -u 3 n labels; do
         [[ $n =~ ^[0-9]+$ ]] || continue
         active=$(issue_active "$n")
-        [[ -z $active ]] || { emit "skip issue=$n reason=$active"; continue; }
+        [[ -z $active ]] || { other "$n" "skip issue=$n reason=$active"; continue; }
         check_issue "$n" "$labels"
         # A closed issue on the board is finished work, not a decision anyone needs to read.
         [[ $REASON != closed ]] || continue
-        [[ -z $REASON ]] || { emit "drop issue=$n reason=$REASON"; continue; }
+        # Named issues are an ordered request: one that overlaps a dropped issue would start without that issue's work.
+        # A field plan dropped four links of a chain and spawned the fifth on the default branch.
+        held=''
+        if ((named)) && [[ -n $WS ]]; then
+            for m in "${!HELD[@]}"; do
+                [[ -z $(LC_ALL=C comm -12 <(printf '%s\n' "$WS") <(printf '%s\n' "${HELD[$m]}")) ]] || { held=$m; break; }
+            done
+        fi
+        [[ -n $REASON || -z $held ]] || REASON="needs-dropped-#$held"
+        if [[ -n $REASON ]]; then
+            [[ -z $WS ]] || HELD[$n]=$WS
+            other "$n" "drop issue=$n reason=$REASON"
+            continue
+        fi
         hits=$(collisions "$WS")
         hits=$(tr , '\n' <<<"$BLOCKED${hits:+,$hits}" | awk 'NF && !seen[$0]++' | paste -sd, -)
         if [[ -n $hits && $serialize == 0 && -z $BLOCKED ]]; then
-            emit "drop issue=$n reason=collides-with-#${hits%%,*}"
+            other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
         elif [[ -n $hits ]]; then
             WRITES[$n]=$WS NEEDS[$n]=$hits
             CHOSEN+=("$n")
             emit "after issue=$n needs=$hits"
-        elif spawn_issue "$n" "origin/$BASE" "$BASE"; then
+        elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
             WRITES[$n]=$WS
             CHOSEN+=("$n")
             spawned=$((spawned + 1))
@@ -347,15 +410,18 @@ pick() {
 
 # write_run ID: the run file and the current pointer.
 write_run() {
-    local n items='[]'
+    local n items='[]' others='[]'
     for n in "${CHOSEN[@]}"; do
         items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" \
             '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)",
                    state: (if $needs == "" then "spawned" else "queued" end),
                    needs: ($needs | split(",") | map(select(. != "") | tonumber))}]' <<<"$items")
     done
-    jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" \
-        '{run: $run, porcelain: $porcelain, items: $items}' >"$MAIN/.ak/runs/$1.json"
+    for n in "${!OTHERS[@]}"; do
+        others=$(jq -c --argjson n "$n" --arg line "${OTHERS[$n]}" '. + [{n: $n, line: $line}]' <<<"$others")
+    done
+    jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" --argjson others "$others" \
+        '{run: $run, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
@@ -367,21 +433,25 @@ resume_run() {
     current=$(<"$MAIN/.ak/runs/current")
     file="$MAIN/.ak/runs/$current.json"
     [[ -f $file ]] || return 1
-    # Issues named on this call that the current run never planned are new work, not a resume.
+    # Issues named on this call that the current run never saw are new work, not a resume. Its drops and skips count
+    # as seen: a field root that lost the plan output could not get it back, because one named issue had been dropped.
     for n in "$@"; do
-        jq -e --argjson n "$n" 'any(.items[]; .kind == "issue" and .n == $n)' "$file" >/dev/null || return 1
+        jq -e --argjson n "$n" 'any(.items[], (.others // [])[]; (.kind // "issue") == "issue" and .n == $n)' "$file" >/dev/null || return 1
     done
     age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
     ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
-    local lines=()
+    local lines=() running=()
     while IFS=$'\t' read -r n wt; do
         [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || continue
+        # A worker that already started is not offered again: the same lines twice would start a second one.
+        [[ ! -e $wt/.ak/logs && ! -e $wt/.ak/setup.ok ]] || { running+=("skip issue=$n reason=running"); continue; }
         lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT")
     done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned") | [.n, .worktree] | @tsv' "$file")
     ((${#lines[@]})) || return 1
     printf 'run=%s resumed\n' "$current"
-    printf '%s\n' "${lines[@]}"
-    jq -r '.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(","))"' "$file"
+    printf '%s\n' "${lines[@]}" "${running[@]}"
+    jq -r '(.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(","))"),
+        ((.others // [])[] | .line)' "$file"
 }
 
 # print_lines: at most 20 lines; drops beyond that stay in the log.
@@ -447,7 +517,7 @@ cmd_main() {
         BOARD_ITEMS=$(board_items) || die "cannot read the project board: $BOARD_ITEMS" "$(board_fix "$BOARD_ITEMS")"
     fi
     list=$(candidates "$yolo" "${issues[@]}")
-    pick "$limit" "$serialize" 3<<<"$list"
+    pick "$limit" "$serialize" "${#issues[@]}" 3<<<"$list"
     write_run "$run"
     printf 'run=%s\n' "$run"
     print_lines
