@@ -53,6 +53,10 @@ assert_not_contains "$out" '2026-09-30T' 'timestamps are stripped'
 assert_not_contains "$out" 'noise' 'non-error lines are not printed'
 assert_not_contains "$out" 'line 9' 'at most 8 error lines per job'
 assert_eq 1 "$(($(wc -l <<<"$out") <= 20))" 'red output is at most 20 lines'
+assert_contains "$out" 'ci-only=test,ext note=failed in CI after local verify' 'red names the checks only CI caught'
+assert_eq $'ext\ntest' "$(cat .ak/ci-only)" 'the CI-only checks are recorded for the receipt'
+"$AK" ci >/dev/null 2>&1
+assert_eq 2 "$(wc -l <.ak/ci-only)" 'a second red run records each check once'
 assert_rc 0 'the full log is saved' -- test -f .ak/ci/77.log
 assert_not_contains "$(cat .ak/ci/77.log)" $'\033' 'the saved log is stripped'
 
@@ -65,11 +69,14 @@ set_checks "$own"
 out=$("$AK" ci --once 2>&1)
 assert_not_contains "$out" 'inherited=' 'a branch on the default base reports nothing inherited'
 printf 'feat/parent\n' >.ak/base
+rm -f .ak/ci-only
 route "api repos/acme/widget/commits/$parent/check-runs?per_page=100" \
     '{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"success"}]}'
 out=$("$AK" ci --once 2>&1); rc=$?
 assert_eq 1 "$rc" 'an inherited failure is still red'
 assert_contains "$out" 'inherited=installer from=feat/parent' 'a failure the base branch shares is named as inherited'
+assert_contains "$out" 'ci-only=lint note=' 'only the failure the base does not share counts as CI-only'
+assert_not_contains "$(cat .ak/ci-only)" 'installer' 'an inherited failure is not recorded as CI-only'
 rm -f .ak/base
 
 printf 'three\n' >src/c.txt

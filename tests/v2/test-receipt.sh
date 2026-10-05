@@ -44,6 +44,12 @@ assert_contains "$result" 'ci=green' 'result has CI'
 assert_contains "$result" 'review=done' 'result has the review status'
 assert_contains "$result" "head=$head" 'result has the head'
 assert_contains "$result" 'note=findings=2 fixed=1 declined=1' 'result notes the dispositions'
+assert_not_contains "$result" 'ci-only' 'a PR whose CI never failed names no CI-only check'
+# Checks only CI caught reach the operator through the result note (a field repo paid a CI round per PR for a type check).
+printf 'lint\nmypy\n' >.ak/ci-only
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1; ci-only: lint,mypy' 'the result note names the checks only CI caught'
+rm -f .ak/ci-only
 
 rm .ak/review.md
 touch .ak/review.unavailable

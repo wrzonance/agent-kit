@@ -111,6 +111,8 @@ cmd_main() {
     declined=$(grep -c ' | declined: ' <<<"$findings" || true)
     note="findings=$count fixed=$fixed declined=$declined"
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
+    # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
+    [[ ! -s $dir/ci-only ]] || note+="; ci-only: $(paste -sd, - <"$dir/ci-only")"
     printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     printf 'receipt=%s\n' "$url"
     paste -sd' ' "$dir/result"

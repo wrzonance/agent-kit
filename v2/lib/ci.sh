@@ -83,6 +83,20 @@ ci_inherited() {
             "$names" "$base"
 }
 
+# ci_only RUNS INHERITED_LINE: record and print the failing checks that are this branch's own. They failed after local
+# verify let the push through, so each costs a push and a CI round on every PR until a local suite covers it. A field
+# repo paid that round for a type check and a docs lint on PR after PR; the receipt now names them to the operator.
+ci_only() {
+    local file names
+    file="$(ak_dir)/ci-only"
+    names=$(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" |
+        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') || true)
+    [[ -n $names ]] || return 0
+    { cat -- "$file" 2>/dev/null; printf '%s\n' "$names"; } | LC_ALL=C sort -u >"$file.tmp" && mv -- "$file.tmp" "$file"
+    printf 'ci-only=%s note=failed in CI after local verify; an AGENT_CMD_<NAME> suite in .agent/config.env would catch it before the push\n' \
+        "$(paste -sd, - <<<"$names")"
+}
+
 ci_print_failures() {
     local runs=$1 name url used=1 out
     while IFS=$'\t' read -r name url; do
@@ -94,7 +108,7 @@ ci_print_failures() {
 }
 
 cmd_main() {
-    local timeout=1800 once=0 sha runs line
+    local timeout=1800 once=0 sha runs line inherited
     while (($#)); do
         case $1 in
             --timeout) timeout=${2:-}; shift 2 || usage_die "--timeout needs seconds" ;;
@@ -114,7 +128,13 @@ cmd_main() {
     printf '%s\n' "$line"
     case $line in
         ci=green*) return 0 ;;
-        ci=red*) ci_inherited "$runs"; ci_print_failures "$runs"; return 1 ;;
+        ci=red*)
+            inherited=$(ci_inherited "$runs")
+            [[ -z $inherited ]] || printf '%s\n' "$inherited"
+            ci_only "$runs" "$inherited"
+            ci_print_failures "$runs"
+            return 1
+            ;;
         *) return 3 ;;
     esac
 }
