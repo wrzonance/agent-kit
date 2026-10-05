@@ -49,6 +49,11 @@ assert_not_contains "$result" 'ci-only' 'a PR whose CI never failed names no CI-
 printf 'lint\nmypy\n' >.ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1; ci-only: lint,mypy' 'the result note names the checks only CI caught'
+# A record the checkout brought along (tracked) is a branch author's text, not ak's: it never reaches the note.
+git add -f .ak/ci-only
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_not_contains "$(cat .ak/result)" 'ci-only' 'a tracked record is ignored'
+git rm -q --cached .ak/ci-only
 rm -f .ak/ci-only
 
 rm .ak/review.md

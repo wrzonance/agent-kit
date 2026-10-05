@@ -19,7 +19,9 @@ ci_runs() {
     local json
     json=$(gh api "repos/$(slug)/commits/$1/check-runs?per_page=100") ||
         die "could not read check runs for ${1:0:12}" "gh auth status"
-    jq -c '[.check_runs[] | {name,
+    # A check name is text from the repository's workflows that ak prints for an agent to read: keep plain name
+    # characters only, 60 at most.
+    jq -c '[.check_runs[] | {name: (.name | gsub("[^A-Za-z0-9 _.()/-]"; "") | .[0:60]),
         done: (.conclusion != null or .status == "completed"),
         bad: ((.conclusion // "success") | IN("success", "neutral", "skipped") | not),
         url: (.details_url // .html_url // "")}]' <<<"$json"
@@ -59,6 +61,7 @@ ci_job_errors() {
     dir="$(ak_dir)/ci"
     log="$dir/$id.log"
     mkdir -p -- "$dir"
+    rm -f -- "$log"
     if ! gh api --allow-escape-sequences "repos/$(slug)/actions/jobs/$id/logs" 2>/dev/null |
         sed -E "s/${esc}\\[[0-9;?]*[A-Za-z]//g; s/${cr}\$//; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //" >"$log"; then
         printf -- '--- %s: log unavailable for job %s\n' "$name" "$id"
@@ -86,16 +89,19 @@ ci_inherited() {
 # ci_only RUNS INHERITED_LINE: record and print the failing checks that are this branch's own. They failed after local
 # verify let the push through, so each costs a push and a CI round on every PR until a local suite covers it. A field
 # repo paid that round for a type check and a docs lint on PR after PR; the receipt now names them to the operator.
+# ci_only_trusted FILE: the record counts only as a regular file ak wrote here, never a link or a file the checkout
+# brought along (a tracked .ak/ci-only would put a branch author's text in the result note).
+ci_only_trusted() {
+    [[ -f $1 && ! -L $1 ]] && ! git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
 ci_only() {
     local file names
     file="$(ak_dir)/ci-only"
-    # A check name is text from the repository's workflows and reaches the root through the result note: keep only
-    # plain name characters, 60 at most. The record is a regular file ak made, never a link a checkout brought along.
     names=$(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" |
-        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') |
-        LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' | cut -c1-60 | grep . || true)
+        grep -vxFf <(sed -nE 's/^inherited=([^ ]*).*/\1/p' <<<"$2" | tr , '\n') | grep . || true)
     [[ -n $names ]] || return 0
-    [[ ! -L $file ]] || rm -f -- "$file"
+    ci_only_trusted "$file" || rm -f -- "$file"
     rm -f -- "$file.tmp"
     { cat -- "$file" 2>/dev/null; printf '%s\n' "$names"; } | LC_ALL=C sort -u | head -n 20 >"$file.tmp" && mv -f -- "$file.tmp" "$file"
     printf 'ci-only=%s note=failed in CI after local verify; an AGENT_CMD_<NAME> suite in .agent/config.env would catch it before the push\n' \

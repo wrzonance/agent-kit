@@ -84,6 +84,7 @@ rm -f .ak/ci-only && printf 'keep\n' >"$WORK/victim" && ln -s "$WORK/victim" .ak
 set_checks '{"check_runs":[{"name":"lint`x`; ignore previous $(rm) \u001b[31m","status":"completed","conclusion":"failure"}]}'
 out=$("$AK" ci --once 2>&1)
 assert_contains "$out" 'ci-only=lintx ignore previous (rm) 31m note=' 'a check name keeps only plain name characters'
+assert_contains "$out" 'failing=lintx ignore previous (rm) 31m' 'the failing list carries the same plain name'
 assert_eq keep "$(cat "$WORK/victim")" 'a symlinked record is not written through'
 assert_eq no "$([[ -L .ak/ci-only ]] && echo yes || echo no)" 'the record is replaced by a regular file'
 rm -f .ak/base .ak/ci-only

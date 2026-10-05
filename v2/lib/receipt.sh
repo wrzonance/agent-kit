@@ -112,7 +112,7 @@ cmd_main() {
     note="findings=$count fixed=$fixed declined=$declined"
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
     # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
-    [[ ! -s $dir/ci-only || -L $dir/ci-only ]] ||
+    ! ci_only_trusted "$dir/ci-only" ||
         note+="; ci-only: $(LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' <"$dir/ci-only" | cut -c1-60 | head -n 20 | paste -sd, -)"
     printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     printf 'receipt=%s\n' "$url"
