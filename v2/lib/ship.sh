@@ -139,10 +139,11 @@ ship_body() {
 }
 
 # ship_protected: the first path changed against origin/<base> (committed, staged, or untracked) that
-# AGENT_PROTECTED_PATHS names. An entry with a glob character is a pattern; any other entry matches itself and every
-# path under it. Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
+# AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
+# matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
+# Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
 ship_protected() {
-    local base entries entry path
+    local base entries entry prefix path
     # cfg reads .agent/config.env from the main checkout (main_root), never this worktree: a worker cannot edit the list
     # it is guarded by.
     IFS=$', \t' read -ra entries <<<"$(cfg AGENT_PROTECTED_PATHS)"
@@ -155,13 +156,12 @@ ship_protected() {
     while IFS= read -r -d '' path; do
         [[ -n $path ]] || continue
         for entry in "${entries[@]}"; do
-            if [[ $entry == *[*?[]* ]]; then
-                # shellcheck disable=SC2053
-                [[ $path == $entry ]] || continue
-            else
-                entry=${entry%/}
-                [[ $path == "$entry" || $path == "$entry/"* ]] || continue
-            fi
+            entry=${entry#./}
+            [[ -n $entry && $entry != / && $entry != . ]] || continue
+            prefix=${entry%/}/
+            [[ $entry == *[*?[]* ]] && prefix=
+            # shellcheck disable=SC2053
+            [[ $path == $entry || (-n $prefix && $path == "$prefix"*) ]] || continue
             printf '%s\n' "$path"
             return 0
         done

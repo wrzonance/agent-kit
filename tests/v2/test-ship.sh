@@ -183,6 +183,19 @@ assert_eq "$head" "$(git rev-parse HEAD)" 'an unlistable base commits nothing'
 assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unlistable base pushes nothing'
 rm -f .ak/base && git checkout -q -- src/b.txt
 sed -i '$d' "$repo/.agent/config.env"
+# Entries are read the way ak plan reads them: a leading ./ is dropped, and /, ., ./ or an empty item protect nothing.
+printf 'AGENT_PROTECTED_PATHS=./docs/adrs\n' >>"$repo/.agent/config.env"
+mkdir -p docs/adrs && printf 'x\n' >docs/adrs/x.md
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an entry with a leading ./ protects its directory'
+assert_contains "$out" 'protected path in this change: docs/adrs/x.md' 'the ./ entry names the path'
+sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
+head=$(git rev-parse HEAD)
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+sed -i '$d' "$repo/.agent/config.env"
 
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'
