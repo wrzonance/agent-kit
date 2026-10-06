@@ -233,4 +233,48 @@ assert_contains "$out" 'merge-up issue=680 ' 'a child that reports on a stale ba
 assert_not_contains "$out" 'next=' 'a merge-up is not an operator step'
 assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and counts as running, so nothing is built on it'
 
+# A re-planned park releases the successors the earlier run still holds: after `ak plan --issue N` makes a new run for
+# the parked issue, collecting it there also walks the earlier run (a field operator re-planned the whole list by
+# hand to keep the chain alive).
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+run_a="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671" wt2="$repo/.worktrees/feat/issue-680" wt3="$repo/.worktrees/feat/issue-693"
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$run_a")" 'the first run queues the successor'
+printf 'x\n' >"$wt/src/a.txt"
+git -C "$wt" commit -qam work && git -C "$wt" push -q
+printf 'pr=none\nci=none\nreview=skipped\nhead=abc\nnote=parked: protected path\n' >"$wt/.ak/result"
+"$AK" collect --issue 671 >/dev/null 2>&1
+# The other spawned item of the first run finishes, so the re-plan is not a resume of that run.
+printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=%s\nnote=n\n' "$(git -C "$wt3" rev-parse HEAD)" >"$wt3/.ak/result"
+"$AK" collect --issue 693 >/dev/null 2>&1
+assert_eq 'parked queued collected' "$(jq -r '[.items[] | select(.n == 671 or .n == 680 or .n == 693) | .state] | join(" ")' "$run_a")" 'the first run holds the park and its queued successor'
+out=$("$AK" plan --issue 671 2>&1)
+assert_contains "$out" "spawn issue=671 cwd=$wt " 'the re-plan spawns the parked issue again'
+run_b="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+assert_eq yes "$([[ $run_b != "$run_a" ]] && echo yes || echo no)" 'the re-plan is a new current run'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 671) | .state' "$run_b")" 'the new run holds the issue as spawned'
+assert_eq '' "$(jq -r '.items[] | select(.n == 680) | .n' "$run_b")" 'the new run does not hold the successor'
+head=$(git -C "$wt" rev-parse HEAD)
+printf '{"number":9,"state":"open","head":{"sha":"%s"}}' "$head" >"$WORK/pr9-head.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-head.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+    "$WORK/pr9-head.json" "$head" "$WORK/runs-head.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=%s\nnote=n\n' "$head" >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1); rc=$?
+assert_eq 0 "$rc" 'collecting the re-planned issue exits 0'
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green' 'the re-planned issue reports its result'
+assert_contains "$out" "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" 'the successor queued in the earlier run spawns'
+assert_eq "$head" "$(git -C "$wt2" rev-parse HEAD)" 'the successor starts from the predecessor branch'
+assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
+assert_eq 'collected spawned' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the earlier run records the collection and the spawn'
+assert_eq "$wt2" "$(jq -r '.items[] | select(.n == 680) | .worktree' "$run_a")" 'the earlier run records the successor worktree'
+assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$run_b")" 'the new run records the collection too'
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'spawn' 'a second collect spawns nothing more'
+
 finish
