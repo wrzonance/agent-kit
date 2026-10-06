@@ -34,16 +34,19 @@ merge_threads() {
         "ak pr-plan --pr $2"
 }
 
+# merge_q VALUE: VALUE shell-quoted, so a branch name in a printed fix hint cannot become executable text.
+merge_q() { printf '%q' "$1"; }
+
 # merge_parent SLUG N BASE: refuse while BASE is an open PR's head; retarget to the parent's base once it merged.
 merge_parent() {
     local slug=$1 n=$2 base=$3 owner=${1%%/*} open parent
     [[ $base != "$(base_branch)" ]] || return 0
     open=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "head=$owner:$base" -F per_page=100 | jq -r '.[0].number // empty') ||
-        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=open -f head=$owner:$base"
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=open -f $(merge_q "head=$owner:$base")"
     [[ -z $open ]] || die "PR #$n is based on #$open's branch $base" "ak merge --pr $open"
     parent=$(gh api -X GET "repos/$slug/pulls" -f state=closed -f "head=$owner:$base" -F per_page=100 |
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
-        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=closed -f head=$owner:$base"
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=closed -f $(merge_q "head=$owner:$base")"
     [[ -n $parent ]] || { merge_orphan_base "$slug" "$n" "$base"; return 0; }
     # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
     # parent's first commit, and resolving it against the squash on main kept the parent's old bug
@@ -52,10 +55,10 @@ merge_parent() {
     head=$(gh api "repos/$slug/pulls/$n" | jq -r .head.ref) || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
     if ! out=$(gh api "repos/$slug/merges" -f "base=$head" -f "head=$base" \
         -f "commit_message=merge: $base into $head" 2>&1); then
-        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f base=$head -f head=$base"
+        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f $(merge_q "base=$head") -f $(merge_q "head=$base")"
     fi
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
-        die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
+        die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f $(merge_q "base=$parent")"
     # The merged parent's branch has served its last child once no open PR is based on it.
     if [[ -z $(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$base" -F per_page=1 | jq -r '.[0].number // empty') ]]; then
         gh api -X DELETE "repos/$slug/git/refs/heads/$base" >/dev/null 2>&1 || true
@@ -69,11 +72,11 @@ merge_orphan_base() {
     local slug=$1 n=$2 base=$3 default ahead
     default=$(base_branch)
     ahead=$(gh api "repos/$slug/compare/$default...$base" --jq .ahead_by) ||
-        die "cannot compare $base with $default" "gh api repos/$slug/compare/$default...$base"
+        die "cannot compare $base with $default" "gh api repos/$slug/compare/$(merge_q "$default...$base")"
     [[ $ahead == 0 ]] ||
         die "PR #$n is based on $base, which has no PR and $ahead commits not on $default" "ship the issue behind $base first"
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$default" >/dev/null ||
-        die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f base=$default"
+        die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f $(merge_q "base=$default")"
 }
 
 # merge_worktree REF: the main checkout's worktree that has REF checked out, or nothing.
@@ -135,12 +138,12 @@ merge_branch() {
         # A conflict here is resolved when that PR's own ak merge updates it from its new base.
         gh api "repos/$slug/merges" -f "base=$head" -f "head=$ref" -f "commit_message=merge: $ref into $head" >/dev/null 2>&1 || true
         gh api -X PATCH "repos/$slug/pulls/$dep" -f "base=$base" >/dev/null 2>&1 ||
-            { printf 'kept (cannot retarget #%s; fix: gh api -X PATCH repos/%s/pulls/%s -f base=%s)\n' "$dep" "$slug" "$dep" "$base"; return 0; }
+            { printf 'kept (cannot retarget #%s; fix: gh api -X PATCH repos/%s/pulls/%s -f %s)\n' "$dep" "$slug" "$dep" "$(merge_q "base=$base")"; return 0; }
         moved+="${moved:+,}#$dep"
     done <<<"$deps"
     gh api -X DELETE "repos/$slug/git/refs/heads/$ref" >/dev/null 2>&1 || true
     if gh api "repos/$slug/git/ref/heads/$ref" >/dev/null 2>&1; then
-        printf 'kept (delete failed; fix: gh api -X DELETE repos/%s/git/refs/heads/%s)\n' "$slug" "$ref"
+        printf 'kept (delete failed; fix: gh api -X DELETE repos/%s/git/refs/heads/%s)\n' "$slug" "$(merge_q "$ref")"
     else
         printf 'deleted%s\n' "${moved:+ (retargeted $moved to $base)}"
     fi

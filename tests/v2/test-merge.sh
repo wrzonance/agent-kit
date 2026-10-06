@@ -185,6 +185,15 @@ assert_contains "$out" 'merged pr=18 sha=merged123 method=merge' 'it is not misr
 assert_contains "$out" 'branch=deleted' 'its branch is deleted, not kept as a fork'
 assert_not_contains "$out" 'kept (fork)' 'a case difference is not a fork'
 
+# A fix hint never carries a branch name as executable text (the unrouted compare call fails like a broken API).
+# shellcheck disable=SC2016 # the literal $(x) is the point
+evil='feat/$(x)'
+route "api $api/pulls/15" "$(pr_json 15 feat/m "$evil")"
+route "api --paginate $api/commits/sha15/check-runs*" "$green"
+out=$("$AK" merge --pr 15 2>&1); rc=$?
+assert_eq 1 "$rc" 'a failed lookup on an odd-named base refuses'
+assert_contains "$out" 'fix: gh api repos/acme/widget/compare/main...feat/\$\(x\)' 'the hint shell-quotes the branch name'
+
 # merge_parent passes a base branch with query-string characters as encoded fields too.
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 17 2>&1); rc=$?
