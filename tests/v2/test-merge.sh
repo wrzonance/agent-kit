@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ak merge: squash-merge a green PR at its checked head; keep a branch another open PR is based on.
+# ak merge: merge a green PR at its checked head (a merge commit while a child PR is stacked on it, a squash otherwise);
+# keep a branch another open PR is based on.
 TEST_NAME=v2-merge
 # shellcheck source=lib.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -52,6 +53,7 @@ route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
 route "api $api/merges -f base=feat/c -f head=feat/gone*" '{"sha":"mergedparent"}'
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X PUT $api/pulls/* -f merge_method=merge -f sha=sha*" '{"sha":"merged123","merged":true}'
 route "api -X PUT $api/pulls/3[0-9]/update-branch*" 'gh: Merge conflict between base and head (HTTP 422)' 1
 route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
 route "api -X DELETE $api/git/refs/heads/*" ''
@@ -62,11 +64,11 @@ assert_eq 2 "$rc" 'no --pr is a usage error'
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 21 2>&1); rc=$?
 assert_eq 0 "$rc" 'a green PR merges'
-assert_eq 'merged pr=21 sha=merged123 branch=deleted' "$(tail -n 1 <<<"$out")" 'merge prints the sha and branch fate'
+assert_eq 'merged pr=21 sha=merged123 method=squash branch=deleted' "$(tail -n 1 <<<"$out")" 'merge prints the sha, method and branch fate'
 assert_contains "$out" 'ci pending on sha21: wait on this with the longest wait your shell allows' 'a CI wait says how to wait on it'
 log=$(cat "$FAKE_GH_LOG")
 assert_contains "$log" 'pr ready 21 --repo acme/widget' 'a draft is marked ready'
-assert_contains "$log" "api -X PUT $api/pulls/21/merge -f merge_method=squash -f sha=sha21" 'the merge is pinned to the checked head'
+assert_contains "$log" "api -X PUT $api/pulls/21/merge -f merge_method=squash -f sha=sha21" 'a PR with no dependents is squash-merged, pinned to the checked head'
 assert_contains "$log" "api -X DELETE $api/git/refs/heads/feat/x" 'the head branch is deleted'
 
 # A required check with no completed run on the head refuses the merge (field run 2026-10-05: a conflicted stacked PR
@@ -94,7 +96,7 @@ assert_contains "$out" 'job-in_progress' 'the refusal names the pending check'
 out=$("$AK" merge --pr 24 2>&1); rc=$?
 # Merging a stack's parent hands its child to main and deletes the parent branch (a field stack left merged
 # branches behind, and a later merge landed a PR in one of them).
-assert_eq 'merged pr=24 sha=merged123 branch=deleted (retargeted #25 to main)' "$(tail -n 1 <<<"$out")" 'the stacked child is retargeted and the parent branch deleted'
+assert_eq 'merged pr=24 sha=merged123 method=merge branch=deleted (retargeted #25 to main)' "$(tail -n 1 <<<"$out")" 'the stacked child is retargeted and the parent branch deleted'
 log=$(cat "$FAKE_GH_LOG")
 at() { grep -nF -- "$1" <<<"$log" | head -n 1 | cut -d: -f1; }
 down=$(at 'merges -f base=feat/b -f head=feat/a') patch=$(at "PATCH $api/pulls/25 -f base=main") del=$(at "DELETE $api/git/refs/heads/feat/a")
@@ -102,6 +104,25 @@ assert_eq yes "$([[ -n $down && -n $patch && -n $del && $down -lt $patch && $pat
     'the child gets the final branch, then its new base, then the parent branch is deleted'
 assert_contains "$log" "api $api/git/ref/heads/feat/a" 'the delete is confirmed'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'pr ready' 'a non-draft is not flipped'
+
+# A stack's parent merges as a merge commit so main carries the commits its child already has (field run 2026-10-05:
+# every child went dirty the moment its parent squash-merged, costing a resolve worker and a second CI round per link).
+assert_contains "$log" "api -X PUT $api/pulls/24/merge -f merge_method=merge -f sha=sha24" 'a PR with an open dependent merges as a merge commit'
+assert_contains "$log" "api $api/pulls?state=open&base=feat/a&per_page=1" 'the dependent check is one single-item list call'
+: >"$FAKE_GH_LOG"
+out=$(AGENT_MERGE_METHOD=squash "$AK" merge --pr 24 2>&1); rc=$?
+assert_eq 0 "$rc" 'AGENT_MERGE_METHOD=squash still merges'
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/24/merge -f merge_method=squash -f sha=sha24" 'AGENT_MERGE_METHOD=squash squashes a PR with a dependent'
+assert_contains "$out" 'merged pr=24 sha=merged123 method=squash' 'the merged line names the forced method'
+: >"$FAKE_GH_LOG"
+out=$(AGENT_MERGE_METHOD=merge "$AK" merge --pr 21 2>&1)
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/21/merge -f merge_method=merge -f sha=sha21" 'AGENT_MERGE_METHOD=merge merge-commits a PR with no dependents'
+assert_contains "$out" 'merged pr=21 sha=merged123 method=merge' 'the merged line names the forced method'
+: >"$FAKE_GH_LOG"
+out=$(AGENT_MERGE_METHOD=rebase "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'an unknown AGENT_MERGE_METHOD refuses'
+assert_contains "$out" 'AGENT_MERGE_METHOD=rebase is not squash or merge' 'the refusal names the bad value'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing is merged under an unknown method'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 25 2>&1); rc=$?
@@ -120,7 +141,7 @@ assert_contains "$out" 'merged pr=26' 'then merged'
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X DELETE $api/git/refs/heads/feat/gone" "the merged parent's branch is deleted once its last child moves off it"
 
 out=$("$AK" merge --pr 27 2>&1)
-assert_eq 'merged pr=27 sha=merged123 branch=kept (fork)' "$(tail -n 1 <<<"$out")" 'a fork branch is never deleted'
+assert_eq 'merged pr=27 sha=merged123 method=squash branch=kept (fork)' "$(tail -n 1 <<<"$out")" 'a fork branch is never deleted'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 28 2>&1); rc=$?
@@ -140,7 +161,7 @@ assert_contains "$out" 'resolve pr=30 conflicts-with=main' 'the conflict is name
 assert_contains "$out" "spawn pr=30 cwd=$WORK/wtq prompt=$WORK/wtq/.ak/prompt.md" 'the PR worker is respawned in its worktree'
 assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records what to merge in'
 assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
-assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'a conflicting PR is not merged'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'a conflicting PR is not merged'
 
 # Two merges of one PR never run at once: the second waits for the first (bench 2026-10-01: #136 twice).
 mkdir -p "$repo/.ak/locks/merge-24"
@@ -164,7 +185,7 @@ out=$("$AK" merge --pr 40 2>&1); rc=$?
 assert_eq 1 "$rc" 'a PR with open review threads is refused'
 assert_contains "$out" 'PR #40 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the threads by author'
 assert_contains "$out" 'fix: ak pr-plan --pr 40' 'the refusal sends the PR back to a worker'
-assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is merged'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing is merged'
 
 
 # A base branch with no PR is never merged into (a field merge squashed a docs PR into a parked issue's branch): an
@@ -185,7 +206,7 @@ route "api -X DELETE $api/git/refs/heads/*" ''
 out=$("$AK" merge --pr 43 2>&1); rc=$?
 assert_eq 1 "$rc" 'a PR based on a branch with no PR and unmerged work is refused'
 assert_contains "$out" 'PR #43 is based on feat/parked, which has no PR and 2 commits not on main' 'the refusal names the base and its work'
-assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is merged into the side branch'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing is merged into the side branch'
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 44 2>&1); rc=$?
 assert_eq 0 "$rc" 'a PR based on an empty branch with no PR merges'

@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# ak merge --pr N: bring the PR up to date with its base, squash-merge it once its head checks are green
-# (pinned to that head), then delete its branch unless another open PR is based on it. Exit 3 with a spawn
-# line when the update conflicts: the PR's worker resolves it, then ak merge runs again.
+# ak merge --pr N: bring the PR up to date with its base, merge it once its head checks are green (pinned to that
+# head; a merge commit while a child PR is stacked on it, a squash otherwise), then delete its branch unless another
+# open PR is based on it. Exit 3 with a spawn line when the update conflicts: the PR's worker resolves it, then ak merge
+# runs again.
 
 # shellcheck source=ci.sh
 source "$AK_HOME/lib/ci.sh"
@@ -143,6 +144,22 @@ merge_branch() {
     fi
 }
 
+# merge_method SLUG REF: `merge` while an open PR is based on REF, so the base carries the commits the child already
+# has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a resolve worker and
+# a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one method everywhere.
+merge_method() {
+    local slug=$1 ref=$2 forced dep
+    forced=$(cfg AGENT_MERGE_METHOD '')
+    case $forced in
+        squash | merge) printf '%s\n' "$forced"; return 0 ;;
+        '') ;;
+        *) die "AGENT_MERGE_METHOD=$forced is not squash or merge" "unset AGENT_MERGE_METHOD or set it to squash or merge" ;;
+    esac
+    dep=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=1" | jq -r '.[0].number // empty') ||
+        die "cannot list PRs based on $ref" "gh api 'repos/$slug/pulls?state=open&base=$ref&per_page=1'"
+    if [[ -n $dep ]]; then printf 'merge\n'; else printf 'squash\n'; fi
+}
+
 # merge_lock N: one ak merge per PR at a time; a second caller waits, then sees the first one's result
 # (bench 2026-10-01: two parallel merges of #136 respawned a worker for a PR that had just merged).
 merge_lock() {
@@ -161,7 +178,7 @@ merge_lock() {
 
 cmd_main() {
     [[ $# -eq 2 && $1 == --pr && $2 =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N"
-    local n=$2 slug json sha merged
+    local n=$2 slug json sha method merged
     merge_lock "$n"
     slug=$(slug)
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
@@ -188,8 +205,9 @@ cmd_main() {
     if [[ $(jq -r .draft <<<"$json") == true ]]; then
         gh pr ready "$n" --repo "$slug" >/dev/null || die "cannot mark PR #$n ready" "gh pr ready $n --repo $slug"
     fi
-    merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f merge_method=squash -f "sha=$sha" | jq -r '.sha // empty') ||
+    method=$(merge_method "$slug" "$(jq -r .head.ref <<<"$json")") || exit $?
+    merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f "merge_method=$method" -f "sha=$sha" | jq -r '.sha // empty') ||
         die "GitHub refused to merge PR #$n at $sha" "gh api repos/$slug/pulls/$n --jq .mergeable_state"
     [[ -n $merged ]] || die "the merge of PR #$n returned no sha" "gh api repos/$slug/pulls/$n --jq .merge_commit_sha"
-    printf 'merged pr=%s sha=%s branch=%s\n' "$n" "$merged" "$(merge_branch "$slug" "$json")"
+    printf 'merged pr=%s sha=%s method=%s branch=%s\n' "$n" "$merged" "$method" "$(merge_branch "$slug" "$json")"
 }
