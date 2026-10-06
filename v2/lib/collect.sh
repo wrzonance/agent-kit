@@ -45,8 +45,21 @@ result_refresh() {
             return 0
         fi
         RESULT_WAITED=$((SECONDS - start))
-        now=$(api "repos/$SLUG/pulls/$pr" 2>/dev/null | jq -r 'objects | .head.sha // empty' 2>/dev/null) || now=
-        [[ -z $now || $now == "$live" ]] && break
+        pr_json=$(api "repos/$SLUG/pulls/$pr" 2>/dev/null) || pr_json=
+        now=$(jq -r 'objects | .head.sha // empty' <<<"$pr_json" 2>/dev/null) || now=
+        if [[ -z $now ]]; then
+            # An empty reread is not a stable head: the checks read above may belong to a head that has moved on.
+            r[ci]=pending
+            r[note]="${r[note]:+${r[note]}; }head reread failed at ${live:0:7}"
+            return 0
+        fi
+        mergeable=$(jq -r 'objects | .mergeable_state // empty' <<<"$pr_json" 2>/dev/null) || mergeable=
+        if [[ $mergeable == dirty ]]; then
+            r[ci]=blocked
+            r[note]="PR #$pr conflicts with its base"
+            return 0
+        fi
+        [[ $now == "$live" ]] && break
         live=$now RESULT_HEAD=$now
         if ((++moves > 2)); then
             r[ci]=pending
@@ -164,7 +177,9 @@ collect_next() {
                 emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
             fi
         else
-            emit "next=issue=$2 has red CI; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue $2"
+            local why='has red CI'
+            [[ $1 != blocked ]] || why='PR conflicts with its base'
+            emit "next=issue=$2 $why; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue $2"
         fi
         return 0
     elif [[ $1 == pending ]]; then

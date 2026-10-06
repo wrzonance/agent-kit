@@ -317,6 +317,39 @@ wait "$swap"
 assert_contains "$out" 'ci read live at newhead' 'a head that moved during the wait is read at its new value'
 assert_contains "$out" 'ci=red' 'the new head is judged by its own checks, not the old head'"'"'s'
 assert_not_contains "$out" 'spawn issue=680' 'the moved head is not collected on the old head'"'"'s runs'
+# A PR that goes conflicted during the wait is blocked, not accepted on the checks read before the conflict.
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+write_result pending
+case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-a.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\n%s\n' "$WORK/pr9-dirty.json" "$(cat "$FAKE_GH_ROUTES")" >"$WORK/routes-dirty"
+( sleep 1; cp -- "$WORK/routes-dirty" "$FAKE_GH_ROUTES" ) &
+swap=$!
+out=$(AK_CI_INTERVAL=1 AK_COLLECT_CI_TIMEOUT=2 "$AK" collect --issue 671 2>&1)
+wait "$swap"
+assert_contains "$out" 'ci=blocked' 'a PR that went dirty during the wait is blocked'
+assert_contains "$out" 'note=PR #9 conflicts with its base' 'and says why'
+assert_not_contains "$out" 'spawn issue=680' 'a conflict found after the wait holds the successor'
+
+# An empty reread after the wait is not a stable head: the item is held and read again.
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+write_result pending
+case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-a.json"
+printf 'api repos/acme/widget/pulls/9\t-\t1\n%s\n' "$(cat "$FAKE_GH_ROUTES")" >"$WORK/routes-fail"
+( sleep 1; cp -- "$WORK/routes-fail" "$FAKE_GH_ROUTES" ) &
+swap=$!
+out=$(AK_CI_INTERVAL=1 AK_COLLECT_CI_TIMEOUT=2 "$AK" collect --issue 671 2>&1)
+wait "$swap"
+assert_contains "$out" 'ci=pending' 'a failed reread after the wait holds the item'
+assert_contains "$out" 'head reread failed at' 'and says the reread failed'
+assert_not_contains "$out" 'spawn issue=680' 'a failed reread holds the successor'
+
+# A blocked issue whose pr= is not a PR URL still says it is a conflict, not red CI.
+printf 'pr=https://github.com/acme/widget/pull/9; rm -rf x\nci=blocked\nreview=done\nhead=%s\nnote=n\n' "$sha" >"$wt/.ak/result"
+case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-ok.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'next=issue=671 PR conflicts with its base; hand its PR to a worker' 'a blocked state with a malformed pr= names the conflict'
+assert_not_contains "$(grep '^next=' <<<"$out")" 'red CI' 'and not red CI'
+
 # The hold after three moving heads (note "head moved during the wait") needs a PR route that changes on every read;
 # the stub answers from static files, so that branch is not asserted here.
 
