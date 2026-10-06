@@ -15,7 +15,7 @@ run_update() {
 # result_refresh KIND N: when the PR head moved past the worker's result (a base update, a merge-down), replace the
 # recorded ci with the live checks on the new head. A field root collected a stale ci=red after the head went green.
 result_refresh() {
-    local pr=$2 live runs ci=${r[ci]:-pending}
+    local pr=$2 live runs ci=${r[ci]:-pending} start=$SECONDS
     [[ $1 == pr ]] || pr=${r[pr]##*/}
     [[ $pr =~ ^[0-9]+$ && -n ${r[head]:-} ]] || return 0
     live=$(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .head.sha // empty' 2>/dev/null) || return 0
@@ -24,7 +24,10 @@ result_refresh() {
     # whose CI had not concluded). The successors it holds wait on exactly that.
     [[ -n $live && ($live != "${r[head]}" || $ci == red || $ci == pending) ]] || return 0
     RESULT_HEAD=$live
-    runs=$(ci_runs "$live" 2>/dev/null) || return 0
+    # Checks still running are waited on here, not handed back as a root turn: ci_wait holds this call until they
+    # conclude or AK_COLLECT_CI_TIMEOUT (default 1800 s) passes.
+    runs=$(ci_wait "$live" "${AK_COLLECT_CI_TIMEOUT:-1800}" 0) || return 0
+    RESULT_WAITED=$((SECONDS - start))
     r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
     [[ $live != "${r[head]}" ]] || return 0
     # The review stays: the head moves through base merges, not changes to the PR's own diff; the note says so.
@@ -43,7 +46,7 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
-    RESULT_HEAD=${r[head]:-}
+    RESULT_HEAD=${r[head]:-} RESULT_WAITED=0
     result_refresh "$kind" "$n"
     RESULT_CI=${r[ci]:-}
     if [[ $kind == issue ]]; then
@@ -125,7 +128,7 @@ collect_next() {
         emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
         return 0
     elif [[ $1 == pending ]]; then
-        emit "next=issue=$2 CI is pending on ${RESULT_HEAD:0:7}; collect again once it concludes"
+        emit "next=issue=$2 CI is still pending on ${RESULT_HEAD:0:7} after ${RESULT_WAITED}s; collect again once it concludes"
         return 0
     fi
     dirty=$(git -C "$3" status --porcelain 2>/dev/null | wc -l)
@@ -232,8 +235,8 @@ cmd_main() {
         # done (even if an earlier collect had) and the next collect reads CI again.
         state=red
     elif [[ $kind == issue && ${RESULT_CI:-pending} == pending ]]; then
-        # A pending predecessor is not done either: a merge-down worker's receipt can land before CI concludes, and a
-        # field successor was spawned twice on exactly that.
+        # A predecessor still pending after the wait is not done either: a merge-down worker's receipt can land before
+        # CI concludes, and a field successor was spawned twice on exactly that.
         state=pending
     elif merge_up "$worktree"; then
         # Its own base moved while it worked: it goes back to its worker before anything is built on it.
