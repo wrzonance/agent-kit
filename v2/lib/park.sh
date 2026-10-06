@@ -8,5 +8,7 @@ cmd_main() {
     cd -- "$(worktree_root)" || exit 1
     dir=$(ak_dir)
     printf 'pr=none\nci=none\nreview=skipped\nhead=%s\nnote=parked: %s\n' "$(git rev-parse HEAD)" "$reason" >"$dir/result"
+    # The marker keeps the park time after a worker resumed in place removes the result (ak plan reads it).
+    : >"$dir/parked"
     paste -sd' ' "$dir/result"
 }
