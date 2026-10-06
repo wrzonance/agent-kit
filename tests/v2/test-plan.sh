@@ -118,6 +118,15 @@ out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/ci-only ]] && echo yes || echo no)" 're-planning clears the CI-only record of the earlier attempt'
+# A parked item whose worker was resumed in place (a field root answered the park by messaging the worker, which
+# removed its result and carried on) is running, not free: a plan that spawned it again would start a second worker.
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: plan review\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+"$AK" collect --issue 671 >/dev/null 2>&1
+assert_eq parked "$(jq -r '.items[] | select(.n == 671) | .state' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'collect records the park'
+rm -f "$repo/.worktrees/feat/issue-671/.ak/result"
+mkdir -p "$repo/.worktrees/feat/issue-671/.ak/logs"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'a parked item without a result has a worker on it again'
 
 fresh
 standard_board

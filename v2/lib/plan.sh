@@ -362,6 +362,9 @@ issue_active() {
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
             spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
+            # A park answered in place: a field root messaged the parked worker, which removed its result and carried on
+            # while the run file still said parked. Only ak plan clears a park, so a missing result means a worker is on it.
+            parked) [[ -n $wt && -f $wt/.ak/result ]] || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
@@ -383,12 +386,12 @@ worker_out() {
     ((age < ${AK_SPAWN_GRACE:-600}))
 }
 
-# run_live FILE: does the run still have a worker out?
+# run_live FILE: does the run still have a worker out? A parked item counts when its result is gone (see issue_active).
 run_live() {
     local wt
     while IFS= read -r wt; do
         worker_out "$wt" "$1" && return 0
-    done < <(jq -r '.items[] | select(.state == "spawned") | .worktree // ""' "$1")
+    done < <(jq -r '.items[] | select(.state == "spawned" or .state == "parked") | .worktree // ""' "$1")
     return 1
 }
 
