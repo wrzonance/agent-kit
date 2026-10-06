@@ -50,7 +50,7 @@ rm .agent/config.env
 linked_route "[$(board 4 'Widget board'),$(board 9 'Platform')]"
 out=$("$AK" onboard 2>&1); rc=$?
 assert_eq 0 "$rc" 'two linked boards still write the rest of the config'
-assert_contains "$out" $'board=choose\n  4 Widget board\n  9 Platform\nfix: ak onboard --project N --owner acme' 'two boards are listed with the command that picks one'
+assert_contains "$out" $'board=choose\n  --project 4 --owner acme  Widget board\n  --project 9 --owner acme  Platform\nfix: ak onboard <one line above>' 'two boards are listed as the flags that pick one'
 assert_not_contains "$out" 'AGENT_PROJECT_NUMBER' 'no board is guessed'
 route 'api graphql*projectV2(number*' "$(jq -c '{data: {repositoryOwner: {projectV2: .}}}' <<<"$(board 9 Platform '[{"name":"Todo"},{"name":"Ready"},{"name":"In progress"},{"name":"Done"}]')")"
 out=$("$AK" onboard --project 9 --owner acme 2>&1); rc=$?
@@ -81,13 +81,16 @@ assert_contains "$out" 'board=unavailable (gh: Bad credentials (HTTP 401)); fix:
 # --- Makefile wins; per-directory toolchains become suites ---
 rm -f .agent/config.env
 printf 'test:\n\ttrue\n' >Makefile
+printf '{"name":"root"}\n' >package.json && : >package-lock.json
 mkdir -p api web services/jobs
 printf '[project]\nname="api"\n' >api/pyproject.toml && : >api/uv.lock
 printf '{"scripts":{"test":"vitest"}}\n' >web/package.json && : >web/pnpm-lock.yaml
 printf 'module jobs\n' >services/jobs/go.mod
 mkdir -p tools/site && printf '{"name":"site"}\n' >tools/site/package.json && : >tools/site/package-lock.json
 mkdir -p 'x;id' && printf 'module x\n' >'x;id/go.mod'
-git add Makefile api web services tools 'x;id' && git commit -q -m mono
+mkdir -p api-v1 api_v1 && printf 'module v1\n' >api-v1/go.mod && printf 'module v1\n' >api_v1/go.mod
+printf 'x' >.agent/config.env   # a hand-written file whose last line has no newline
+git add Makefile package.json package-lock.json api web services tools 'x;id' api-v1 api_v1 && git commit -q -m mono
 linked_route '[]'
 out=$("$AK" onboard 2>&1); rc=$?
 assert_eq 0 "$rc" 'a monorepo onboards'
@@ -95,11 +98,14 @@ assert_contains "$out" $'\nAGENT_CMD_TEST=make test\n' 'a Makefile test target i
 assert_contains "$out" $'\nAGENT_CMD_API=uv run pytest\nAGENT_RUNDIR_API=api\n' 'a uv project is a suite in its directory'
 assert_contains "$out" $'\nAGENT_CMD_WEB=pnpm test\nAGENT_RUNDIR_WEB=web\n' 'a pnpm project is a suite in its directory'
 assert_contains "$out" $'\nAGENT_CMD_SERVICES_JOBS=go test ./...\nAGENT_RUNDIR_SERVICES_JOBS=services/jobs\n' 'a nested go module is a suite named by its path'
-assert_contains "$out" $'\nAGENT_CMD_SETUP=(cd api && uv sync) && (cd web && pnpm install --frozen-lockfile)\n' 'suite installs compose the setup when the root has none'
+assert_contains "$out" $'\nAGENT_CMD_SETUP=npm ci && (cd api && uv sync) && (cd web && pnpm install --frozen-lockfile)\n' 'the root install comes first, then each suite with its own lockfile'
+assert_contains "$out" $'\nsuite-skipped=api_v1 (AGENT_CMD_API_V1 is taken; add it by hand)' 'a second directory with the same normalised name is named, not duplicated'
+assert_eq 'api-v1' "$(sed -n 's/^AGENT_RUNDIR_API_V1=//p' .agent/config.env)" 'the first API_V1 directory keeps the name'
+assert_eq 'x' "$(head -n 1 .agent/config.env)" 'a last line without a newline keeps its own value'
 assert_not_contains "$out" 'tools/site' 'a package.json with no test script is neither a suite nor an install'
 assert_not_contains "$out" 'x;id' 'a directory name with shell characters never reaches a command'
-assert_eq "$(printf '%s\n' AGENT_BASE_BRANCH AGENT_CMD_API AGENT_CMD_SERVICES_JOBS AGENT_CMD_SETUP AGENT_CMD_TEST AGENT_CMD_WEB AGENT_REPO_SLUG AGENT_RUNDIR_API AGENT_RUNDIR_SERVICES_JOBS AGENT_RUNDIR_WEB)" \
-    "$(grep -oE '^AGENT_[A-Z_]+' .agent/config.env | LC_ALL=C sort)" 'the file holds exactly the discovered keys'
+assert_eq "$(printf '%s\n' AGENT_BASE_BRANCH AGENT_CMD_API AGENT_CMD_API_V1 AGENT_CMD_SERVICES_JOBS AGENT_CMD_SETUP AGENT_CMD_TEST AGENT_CMD_WEB AGENT_REPO_SLUG AGENT_RUNDIR_API AGENT_RUNDIR_API_V1 AGENT_RUNDIR_SERVICES_JOBS AGENT_RUNDIR_WEB)" \
+    "$(grep -oE '^AGENT_[A-Z0-9_]+' .agent/config.env | LC_ALL=C sort)" 'the file holds exactly the discovered keys'
 
 # --- a config behind a symlink is refused ---
 mv .agent/config.env "$WORK/real.env" && ln -s "$WORK/real.env" .agent/config.env
@@ -113,5 +119,7 @@ rm .agent/config.env && mv "$WORK/real.env" .agent/config.env
 assert_rc 0 'an untracked .agent/ is ignored' -- git check-ignore -q .agent/config.env
 rm .gitignore && git rm -q --cached .gitignore && git commit -q -m noignore
 assert_rc 0 '.agent/ stays ignored through info/exclude' -- git check-ignore -q .agent/config.env
+mkdir -p web/.agent && : >web/.agent/x
+assert_rc 1 'the exclude is anchored to the root' -- git check-ignore -q web/.agent/x
 
 finish
