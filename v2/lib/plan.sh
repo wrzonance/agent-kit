@@ -347,7 +347,7 @@ spawn_issue() {
     fi
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
-    rm -f -- "$dir/result" "$dir/ci-only"
+    rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     issue_block "$n" >"$dir/issue.md"
     compose_prompt "$n" "$wt" "$3" "$dir" >"$dir/prompt.md"
     SPAWNED+=("$n")
@@ -394,6 +394,7 @@ issue_active() {
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
             spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
+            parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
@@ -415,12 +416,22 @@ worker_out() {
     ((age < ${AK_SPAWN_GRACE:-600}))
 }
 
+# resumed_park WORKTREE: a park answered in place. A field root messaged the parked worker instead of re-planning; the
+# worker removed its result and carried on while the run file still said parked, so the next plan would have spawned a
+# second worker there. The sign is work after the park: a log newer than the marker ak park left. A result removed by
+# hand with no work after it leaves the issue free to plan again.
+resumed_park() {
+    local wt=$1
+    [[ -n $wt && ! -f $wt/.ak/result && -f $wt/.ak/parked ]] || return 1
+    [[ -n $(find "$wt/.ak/logs" -type f -newer "$wt/.ak/parked" -print -quit 2>/dev/null) ]]
+}
+
 # run_live FILE: does the run still have a worker out?
 run_live() {
-    local wt
-    while IFS= read -r wt; do
-        worker_out "$wt" "$1" && return 0
-    done < <(jq -r '.items[] | select(.state == "spawned") | .worktree // ""' "$1")
+    local wt state
+    while IFS=$'\t' read -r state wt; do
+        if [[ $state == parked ]]; then resumed_park "$wt" && return 0; else worker_out "$wt" "$1" && return 0; fi
+    done < <(jq -r '.items[] | select(.state == "spawned" or .state == "parked") | [.state, .worktree // ""] | @tsv' "$1")
     return 1
 }
 

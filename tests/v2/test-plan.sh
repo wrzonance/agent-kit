@@ -118,6 +118,30 @@ out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/ci-only ]] && echo yes || echo no)" 're-planning clears the CI-only record of the earlier attempt'
+# A parked item whose worker was resumed in place (a field root answered the park by messaging the worker, which
+# removed its result and carried on) is running, not free: a plan that spawned it again would start a second worker.
+# The sign is work after the park (a log newer than the park marker); a result removed by hand is free to plan.
+wt="$repo/.worktrees/feat/issue-671"
+(cd "$wt" && "$AK" park --reason 'plan review' >/dev/null 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+# The earlier runs above still list 671 as spawned; age them out so only the park decides.
+find "$repo/.ak/runs" -name '*.json' ! -name "$(cat "$repo/.ak/runs/current").json" -exec touch -d '-2 days' {} +
+assert_eq parked "$(jq -r '.items[] | select(.n == 671) | .state' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'collect records the park'
+mkdir -p "$wt/.ak/logs"
+touch -d '-2 minutes' "$wt"/.ak/logs/* "$wt/.ak/logs/setup.log"
+touch -d '-1 minute' "$wt/.ak/parked"
+rm -f "$wt/.ak/result"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a parked result removed with no work after it is planned again'
+assert_eq no "$([[ -e $wt/.ak/parked ]] && echo yes || echo no)" 're-planning clears the park marker'
+(cd "$wt" && "$AK" park --reason 'plan review' >/dev/null 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+touch -d '-2 minutes' "$wt"/.ak/logs/*
+touch -d '-1 minute' "$wt/.ak/parked"
+rm -f "$wt/.ak/result"
+touch "$wt/.ak/logs/verify.log"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'a parked item with work after the park has a worker on it again'
 
 fresh
 standard_board
