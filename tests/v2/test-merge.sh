@@ -49,6 +49,7 @@ route "api -X GET $api/pulls -f state=closed -f head=acme:feat/p+q -F per_page=1
 route "api -X GET $api/pulls -f state=closed -f head=acme:* -F per_page=100" '[]'
 route "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=1" '[{"number":25,"head":{"ref":"feat/b"}}]'
 route "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=1" '[{"number":40}]'
+route "api -X GET $api/pulls -f state=open -f base=feat/lost -F per_page=1" 'gh: boom' 1
 route "api -X GET $api/pulls -f state=open -f base=feat/w -F per_page=1" '[{"number":41}]'
 route "api -X GET $api/pulls -f state=open -f base=* -F per_page=1" '[]'
 route "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=100" '[{"number":25,"head":{"ref":"feat/b"}}]'
@@ -175,6 +176,16 @@ assert_contains "$(cat "$FAKE_GH_LOG")" "api -X GET $api/pulls -f state=open -f 
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=100" 'the dependents lookup encodes the odd name too'
 assert_contains "$out" 'branch=deleted (retargeted #40 to main)' 'a dependent of an odd-named branch is retargeted before the delete'
 
+# A dependents lookup that fails never falls back to a squash: a stacked parent squashed by guesswork strands its child.
+route "api $api/pulls/14" "$(pr_json 14 feat/lost main)"
+route "api --paginate $api/commits/sha14/check-runs*" "$green"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 14 2>&1); rc=$?
+assert_eq 1 "$rc" 'a failed dependents lookup refuses the merge'
+assert_contains "$out" 'cannot list PRs based on feat/lost; not merging' 'the refusal names the branch'
+assert_contains "$out" 'fix: ak merge --pr 14' 'the refusal says to run it again'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '/merge' 'nothing is merged'
+
 # Repository identity is case-insensitive: GitHub may report the owner or name in another case than the slug.
 route "api $api/pulls/18" "$(pr_json 18 feat/w main false ACME/Widget)"
 route "api --paginate $api/commits/sha18/check-runs*" "$green"
@@ -256,6 +267,7 @@ route "api $api/pulls/44" "$(pr_json 44 feat/docs2 feat/empty)"
 route "api --paginate $api/commits/sha4*/check-runs*" "$green"
 route "api $api/commits/*/check-runs?per_page=100" "$green"
 route "api -X GET $api/pulls -f state=* -f head=acme:* -F per_page=100" '[]'
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=1" '[]'
 route "api $api/compare/main...feat/parked*" '2'
 route "api $api/compare/main...feat/empty*" '0'
 route "api -X PATCH $api/pulls/44 -f base=main" '{}'

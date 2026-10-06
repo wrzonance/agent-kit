@@ -163,16 +163,14 @@ merge_forced() {
 }
 
 merge_method() {
-    local slug=$1 json=$2 forced ref dep repo
+    local slug=$1 json=$2 n=$3 forced ref dep repo
     forced=$(merge_forced) || return $?
     [[ -z $forced ]] || { printf '%s\n' "$forced"; return 0; }
     repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
     [[ ${repo,,} == "${slug,,}" ]] || { printf 'squash\n'; return 0; }
     ref=$(jq -r .head.ref <<<"$json")
     if ! dep=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$ref" -F per_page=1 2>/dev/null | jq -r '.[0].number // empty'); then
-        printf 'note=cannot list PRs based on %s; squashing\n' "$ref" >&2
-        printf 'squash\n'
-        return 0
+        die "cannot list PRs based on $ref; not merging" "ak merge --pr $n"
     fi
     if [[ -n $dep ]]; then printf 'merge\n'; else printf 'squash\n'; fi
 }
@@ -223,7 +221,7 @@ cmd_main() {
     if [[ $(jq -r .draft <<<"$json") == true ]]; then
         gh pr ready "$n" --repo "$slug" >/dev/null || die "cannot mark PR #$n ready" "gh pr ready $n --repo $slug"
     fi
-    method=$(merge_method "$slug" "$json") || exit $?
+    method=$(merge_method "$slug" "$json" "$n") || exit $?
     merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f "merge_method=$method" -f "sha=$sha" | jq -r '.sha // empty') ||
         die "GitHub refused to merge PR #$n at $sha" "gh api repos/$slug/pulls/$n --jq .mergeable_state"
     [[ -n $merged ]] || die "the merge of PR #$n returned no sha" "gh api repos/$slug/pulls/$n --jq .merge_commit_sha"
