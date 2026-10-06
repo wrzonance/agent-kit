@@ -19,7 +19,7 @@ ci_head() {
     printf '%s\n' "$head"
 }
 
-# ci_runs SHA: one compact JSON array of {name, raw, done, bad, url}. name is the sanitised text ak prints; raw is the
+# ci_runs SHA: one compact JSON array of {name, raw, conclusion, done, bad, url}. name is the sanitised text ak prints; raw is the
 # check's own name, the identity a required check is compared by. A conclusion means done, whatever status says.
 ci_runs() {
     local json
@@ -27,20 +27,21 @@ ci_runs() {
         die "could not read check runs for ${1:0:12}" "gh auth status"
     # A check name is text from the repository's workflows that ak prints for an agent to read: keep plain name
     # characters only, 60 at most.
-    jq -cs '[.[].check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'), raw: .name,
+    jq -cs '[.[].check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'), raw: .name, conclusion: .conclusion,
         done: (.conclusion != null or .status == "completed"),
         bad: ((.conclusion // "success") | IN("success", "neutral", "skipped") | not),
         url: (.details_url // .html_url // "")}]' <<<"$json"
 }
 
-# ci_missing DONE: the AGENT_REQUIRED_CHECKS names (comma list, names may hold spaces) without a completed run in DONE
-# (one raw run name per line), comma-joined. Names match exactly, so `buildtest` never stands in for `build:test`; only
-# the printed list is sanitised. A stacked PR that conflicted with its base got no pull_request workflow, and its head read
+# ci_missing RUNS: the AGENT_REQUIRED_CHECKS names (comma list, names may hold spaces) without a run in RUNS (a JSON array
+# of {raw, done, conclusion}) that completed as success, comma-joined. A skipped or neutral run does not satisfy a
+# requirement. Names match exactly, in jq, so neither `buildtest` nor a run name holding a newline stands in for
+# `build:test`; only the printed list is sanitised. A stacked PR that conflicted with its base got no pull_request workflow, and its head read
 # as green on CodeQL and a push lint alone (field run 2026-10-05).
 ci_missing() {
     local name out=''
     while IFS= read -r name; do
-        [[ -z $name ]] || grep -qxF -- "$name" <<<"$1" ||
+        [[ -z $name ]] || jq -e --arg n "$name" 'any(.[]; .raw == $n and .done and .conclusion == "success")' <<<"$1" >/dev/null ||
             out+="${out:+,}$(jq -nr --arg n "$name" "\$n | $CI_NAME_FILTER")"
     done < <(tr ',' '\n' <<<"$(cfg AGENT_REQUIRED_CHECKS)" | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
     printf '%s\n' "$out"
@@ -50,7 +51,7 @@ ci_missing() {
 # run, counts as pending.
 ci_summary() {
     local missing
-    missing=$(ci_missing "$(jq -r '.[] | select(.done) | .raw' <<<"$1")")
+    missing=$(ci_missing "$1")
     jq -r --arg m "$missing" '(length) as $n | (map(select(.done and .bad) | .name) | join(",")) as $f
         | (if $n == 0 or $m != "" or any(.[]; .done | not) then "pending" elif $f != "" then "red" else "green" end) as $s
         | "ci=\($s) checks=\($n) failing=\($f)" + (if $m == "" then "" else " missing=\($m)" end)' <<<"$1"

@@ -94,6 +94,13 @@ cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
 out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" merge --pr 21 2>&1); rc=$?
 assert_eq 1 "$rc" 'a run named buildtest does not satisfy a required build:test'
 assert_contains "$out" 'missing=buildtest' 'the refusal names the missing check'
+# A skipped run does not satisfy a required name.
+: >"$FAKE_GH_ROUTES"
+route "api --paginate $api/commits/sha21/check-runs*" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"skipped"}]}'
+cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS='lint' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'a skipped run does not satisfy a required check'
+assert_contains "$out" 'missing=lint' 'the refusal names the skipped required check'
 cp "$WORK/routes.keep" "$FAKE_GH_ROUTES"
 
 for n in 22 23 29; do
