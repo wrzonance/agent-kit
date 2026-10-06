@@ -122,10 +122,15 @@ collect_next() {
     local dirty pr
     if [[ $1 == red ]]; then
         # The red PR goes to a PR worker: a field root told to "get its PR green" rebased and shipped in the worker's
-        # worktree itself.
+        # worktree itself. The number comes from the worker-written result and lands in a command the root runs, so
+        # only the digits of a well-formed PR URL reach the line.
         pr=$(sed -n 's/^pr=//p' "$3/.ak/result" | head -n 1)
-        pr=${pr##*/}
-        emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
+        if [[ $pr =~ ^https?://[^[:space:]]+/([0-9]+)$ ]]; then
+            pr=${BASH_REMATCH[1]}
+            emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
+        else
+            emit "next=issue=$2 has red CI; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue $2"
+        fi
         return 0
     elif [[ $1 == pending ]]; then
         emit "next=issue=$2 CI is still pending on ${RESULT_HEAD:0:7} after ${RESULT_WAITED}s; collect again once it concludes"

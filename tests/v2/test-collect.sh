@@ -37,6 +37,12 @@ assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'a red issue h
 assert_not_contains "$out" 'spawn issue=680' 'a red issue spawns no successor'
 assert_contains "$out" 'next=issue=671 has red CI on PR 9; hand it to a worker: ak pr-plan --pr 9, spawn what it prints, then ak collect --pr 9 and ak collect --issue 671' 'a red collect hands the PR to a worker (a field root fixed it in the worktree itself)'
 assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red issue goes back to spawned, so nothing counts it as done'
+# The PR number in that command is a worker's writing: a pr= value that is not a PR URL puts no text into the line.
+printf 'pr=https://github.com/acme/widget/pull/9; rm -rf x\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'next=issue=671 has red CI; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue 671' 'a malformed pr= URL reaches no command'
+assert_not_contains "$(grep '^next=' <<<"$out")" 'rm -rf' 'the worker text stays out of the command'
+printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
 # A check re-run that turns the same head green releases the successor on the next collect (no new commit needed).
 routes=$(cat "$FAKE_GH_ROUTES")
 printf '{"number":9,"head":{"sha":"abc"}}' >"$WORK/pr9-same.json"
