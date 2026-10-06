@@ -127,6 +127,30 @@ assert_eq 'earlier park note: "protected" path in `ci.yml`' "$(grep -B1 '^----- 
 assert_not_contains "$prompt" 'rm -rf' 'only the first note line is carried'
 assert_eq 0 "$(grep -c 'earlier park note' "$repo/.worktrees/feat/issue-693/.ak/issue.md")" 'a first spawn carries no note'
 
+# A parked item whose worker was resumed in place (a field root answered the park by messaging the worker, which
+# removed its result and carried on) is running, not free: a plan that spawned it again would start a second worker.
+# The sign is work after the park (a log newer than the park marker); a result removed by hand is free to plan.
+wt="$repo/.worktrees/feat/issue-671"
+(cd "$wt" && "$AK" park --reason 'plan review' >/dev/null 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+# The earlier runs above still list 671 as spawned; age them out so only the park decides.
+find "$repo/.ak/runs" -name '*.json' ! -name "$(cat "$repo/.ak/runs/current").json" -exec touch -d '-2 days' {} +
+assert_eq parked "$(jq -r '.items[] | select(.n == 671) | .state' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'collect records the park'
+mkdir -p "$wt/.ak/logs"
+touch -d '-2 minutes' "$wt"/.ak/logs/* "$wt/.ak/logs/setup.log"
+touch -d '-1 minute' "$wt/.ak/parked"
+rm -f "$wt/.ak/result"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a parked result removed with no work after it is planned again'
+assert_eq no "$([[ -e $wt/.ak/parked ]] && echo yes || echo no)" 're-planning clears the park marker'
+(cd "$wt" && "$AK" park --reason 'plan review' >/dev/null 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+touch -d '-2 minutes' "$wt"/.ak/logs/*
+touch -d '-1 minute' "$wt/.ak/parked"
+rm -f "$wt/.ak/result"
+touch "$wt/.ak/logs/verify.log"
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'skip issue=671 reason=running' 'a parked item with work after the park has a worker on it again'
 
 fresh
 standard_board
@@ -240,6 +264,50 @@ ws=$(cd "$repo" && bash -c '
     FILES=$(mktemp); git ls-files >"$FILES"
     write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
 assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
+
+# An explicit file list is the author's write set, and a fenced block is a command, not a write (a field run,
+# 2026-10-05: three independent issues shared a contract paragraph and a fenced command naming four paths, so two of
+# three named issues were dropped as collisions).
+fresh
+shared=$'Rules: do not change src/b.txt or the lib/core.sh runner.\n\n```sh\npy scripts/q.py -- lib/core.sh\n```\n'
+# shellcheck disable=SC2016
+issue_route 821 "$(printf 'Owned paths:\n\n- Modify: `src/a.txt`\n- Create: `lib/new.sh`\n\n%s' "$shared")"
+# shellcheck disable=SC2016
+issue_route 822 "$(printf 'Owned paths:\n\n- Create: `src/c.txt`\n\n%s' "$shared")"
+# shellcheck disable=SC2016
+issue_route 823 "$(printf 'Owned paths:\n\n- Modify: `lib/new.sh`\n\n%s' "$shared")"
+# shellcheck disable=SC2016
+issue_route 824 "$(printf 'Change `src/b.txt`.\n\n```\nnode lib/core.sh\n```')"
+# shellcheck disable=SC2016
+issue_route 825 'Rewrite `lib/core.sh`.'
+default_routes
+out=$("$AK" plan --issue 821 --issue 822 --issue 823 --issue 824 --issue 825 2>&1)
+assert_contains "$out" 'spawn issue=821' 'the first listed issue spawns'
+assert_contains "$out" 'spawn issue=822' 'shared prose and fenced paths outside the list do not collide'
+assert_contains "$out" 'drop issue=823 reason=collides-with-#821' 'a listed path shared with an earlier list still collides'
+assert_contains "$out" 'spawn issue=825' 'without a list, a path inside a fenced block is not a write'
+# The list narrows collisions, never the protected-path guard: a worker reads the whole body.
+fresh
+# shellcheck disable=SC2016
+issue_route 826 "$(printf 'Owned paths:\n\n- Modify: `src/a.txt`\n\nAlso edit .github/workflows/ci.yml to add the step.')"
+# shellcheck disable=SC2016
+issue_route 827 "$(printf 'Change `src/b.txt`.\n\n```\nsed -i s/a/b/ .github/workflows/ci.yml\n```')"
+default_routes
+out=$("$AK" plan --issue 826 --issue 827 2>&1)
+assert_contains "$out" 'drop issue=826 reason=protected:.github/workflows/ci.yml' 'a protected path outside the list still drops'
+assert_contains "$out" 'drop issue=827 reason=protected:.github/workflows/ci.yml' 'a protected path inside a fenced block still drops'
+# shellcheck disable=SC2016
+ws=$(cd "$repo" && bash -c '
+    AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    FILES=$(mktemp); git ls-files >"$FILES"
+    write_set "$2"' _ "$REPO/v2" "$(printf -- '- Modify: `src/a.txt`, `./src/b.txt`.\n- Create: `deploy/native/lock.json`\n- Test: `tests/t.sh`\nAlso see lib/core.sh.')")
+assert_eq $'deploy/native/lock.json\nsrc/a.txt\nsrc/b.txt\ntests/t.sh' "$ws" 'listed paths are taken as written, new directories included, and prose paths are left out'
+# shellcheck disable=SC2016
+ws=$(cd "$repo" && bash -c '
+    AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    FILES=$(mktemp); git ls-files >"$FILES"
+    write_set "$2"' _ "$REPO/v2" "$(printf -- '- Modify: `src/../.github/workflows/ci.yml`, `lib/./core.sh`, `../outside.txt`, `/etc/passwd`\n```sh\n~~~\n```\n- Create: `src/c.txt`')")
+assert_eq $'.github/workflows/ci.yml\nlib/core.sh\nsrc/c.txt' "$ws" 'listed paths are normalised, paths that leave the repository are dropped, and a ~~~ inside a backtick fence does not close it'
 
 # A spawn whose worker never started does not block re-planning once the grace has passed (field run: a lost plan
 # output left five never-started spawns that every later plan skipped as running); a started worker still does.
