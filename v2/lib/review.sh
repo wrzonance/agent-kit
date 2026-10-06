@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # ak review: one blind review of the pushed head by the other provider. Writes .ak/review.md, or
-# .ak/review.unavailable when the reviewer cannot run. The invocation is the consent.
+# .ak/review.unavailable when the reviewer cannot run. A review of an ancestor of HEAD is reused
+# unless --again is given: one review per PR, fixes follow it. The invocation is the consent.
 
 REVIEW_HEADER='You are an adversarial code reviewer. Below is a unified diff and nothing else; judge only what
 the code does. Report real defects: wrong behavior, security holes, data loss, broken contracts,
@@ -84,16 +85,45 @@ review_titles() {
     done <"$1"
 }
 
-# review_report FILE: the summary line plus finding titles, capped at 20 lines.
+# review_patch BASE_REF HEAD_REF: the stable patch-id of the diff BASE_REF...HEAD_REF; empty for an empty diff.
+review_patch() {
+    { git diff "$1...$2" 2>/dev/null | git patch-id --stable | cut -d' ' -f1; } || true
+}
+
+# review_reusable FILE BASE: FILE reviews a commit of this branch beyond origin/BASE, and HEAD has since moved only
+# by review fixes (`fix:` subjects) and merge-downs; prints that head. Anything else is work the reviewer never saw.
+# FILE also records the base and patch-id it reviewed: a retargeted PR reuses it only when the reviewed head's diff
+# against the new base is the same patch; a review without that record is never reused across a base change.
+# (Field run 10: 10 PRs cost 23 reviewer runs because heads that had only moved by a fix or a base update were
+# reviewed again.)
+review_reusable() {
+    local file=$1 base=$2 line old subject after='^(fix[:(]|merge:)'
+    local re='^reviewer=[^ ]+ model=[^ ]+ head=([0-9a-f]{40})( base=([^ ]+) patch=([0-9a-f]*))?$'
+    [[ -f $file ]] || return 1
+    IFS= read -r line <"$file" || true
+    [[ $line =~ $re ]] || return 1
+    old=${BASH_REMATCH[1]}
+    [[ ${BASH_REMATCH[3]} == "$base" ]] || {
+        [[ -n ${BASH_REMATCH[4]} && ${BASH_REMATCH[4]} == "$(review_patch "origin/$base" "$old")" ]] || return 1
+    }
+    git merge-base --is-ancestor "$old" HEAD 2>/dev/null || return 1
+    ! git merge-base --is-ancestor "$old" "origin/$base" 2>/dev/null || return 1
+    while IFS= read -r subject; do
+        [[ $subject =~ $after ]] || return 1
+    done < <(git log --no-merges --format=%s "$old..HEAD" "^origin/$base")
+    printf '%s\n' "$old"
+}
+
+# review_report FILE [NOTE]: the summary line (NOTE appended) plus finding titles, capped at 20 lines.
 review_report() {
-    local file=$1 titles count=0
+    local file=$1 note=${2:+ $2} titles count=0
     titles=$(review_titles "$file")
     [[ -z $titles ]] || count=$(wc -l <<<"$titles")
     if ((count == 0)) && ! grep -qx '[[:space:]]*NO FINDINGS[[:space:]]*' "$file"; then
-        printf 'review=done findings=unparsed read=%s\n' "$file"
+        printf 'review=done findings=unparsed read=%s%s\n' "$file" "$note"
         return 0
     fi
-    printf 'review=done findings=%d\n' "$count"
+    printf 'review=done findings=%d%s\n' "$count" "$note"
     if ((count > 19)); then
         head -n 18 <<<"$titles"
         printf 'more=%d read=%s\n' "$((count - 18))" "$file"
@@ -103,13 +133,22 @@ review_report() {
 }
 
 cmd_main() {
-    (($# == 0)) || usage_die "usage: ak review"
-    local dir base diff provider model effort scratch reason head
+    local again=0 dir base diff provider model effort scratch reason head old
+    while (($#)); do
+        case $1 in
+            --again) again=1; shift ;;
+            *) usage_die "usage: ak review [--again]" ;;
+        esac
+    done
     cd -- "$(worktree_root)" || die "cannot enter the worktree" "cd into the worktree"
     dir=$(ak_dir)
     base=$(work_base)
     diff=$(review_diff "$base")
     head=$(git rev-parse HEAD)
+    if ((!again)) && old=$(review_reusable "$dir/review.md" "$base"); then
+        review_report "$dir/review.md" "reused head=${old:0:7} note=one review per PR; ak review --again reviews the current diff"
+        return 0
+    fi
     rm -f -- "$dir/review.md" "$dir/review.unavailable"
     provider=$(review_provider)
     model=$(review_model "$provider")
@@ -122,6 +161,7 @@ cmd_main() {
         printf 'review=unavailable reason=%s\n' "$reason"
         return 0
     fi
-    { printf 'reviewer=%s model=%s head=%s\n' "$provider" "$model" "$head"; cat -- "$scratch/out"; } >"$dir/review.md"
+    { printf 'reviewer=%s model=%s head=%s base=%s patch=%s\n' "$provider" "$model" "$head" "$base" \
+        "$(review_patch "origin/$base" "$head")"; cat -- "$scratch/out"; } >"$dir/review.md"
     review_report "$dir/review.md"
 }

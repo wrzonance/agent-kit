@@ -17,8 +17,8 @@ Rules:
    resolve each conflict keeping the intent of both sides, commit the merge, run `{{AK}} verify`, then
    `{{AK}} ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `{{AK}} ci`, and go to step 6 keeping the
    findings file from the earlier run.
-2. Run `{{AK}} review` once. It prints `review=done findings=N` with one `P1:`/`P2:` title per finding; the full
-   findings are in `.ak/review.md`. When it prints `review=unavailable`, there is nothing to decide: go to step 5.
+2. Run `{{AK}} review` once (a review this branch already has is reused). It prints `review=done findings=N` with
+   one `P1:`/`P2:` title per finding; the full findings are in `.ak/review.md`. When it prints `review=unavailable`, there is nothing to decide: go to step 5.
    When it prints `findings=unparsed`, read `.ak/review.md` and treat each defect it names as a finding.
 3. Decide each finding on its merits. It comes from a reviewer that saw only the diff, so check it against the code.
    Fix the ones that are real, with a test that fails before the fix and is not edited to pass. Decline the rest with
