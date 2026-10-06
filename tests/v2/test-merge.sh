@@ -41,18 +41,28 @@ route "api --paginate $api/commits/sha27/check-runs*" "$green"
 route "api $api/pulls/28" "$(pr_json 28 feat/z main false acme/widget closed true)"
 route "api $api/pulls/29" "$(pr_json 29 feat/n main)"
 route "api --paginate $api/commits/sha29/check-runs*" '{"total_count":0,"check_runs":[]}'
-route "api $api/pulls?state=open&head=acme:feat/a*" '[{"number":24}]'
-route "api $api/pulls?state=open&head=acme:*" '[]'
-route "api $api/pulls?state=closed&head=acme:feat/gone*" '[{"number":20,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
-route "api $api/pulls?state=closed&head=acme:*" '[]'
+route "api -X GET $api/pulls -f state=open -f head=acme:feat/a -F per_page=100" '[{"number":24}]'
+route "api -X GET $api/pulls -f state=open -f head=acme:feat/p+q -F per_page=100" '[]'
+route "api -X GET $api/pulls -f state=open -f head=acme:* -F per_page=100" '[]'
+route "api -X GET $api/pulls -f state=closed -f head=acme:feat/gone -F per_page=100" '[{"number":20,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
+route "api -X GET $api/pulls -f state=closed -f head=acme:feat/p+q -F per_page=100" '[{"number":16,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
+route "api -X GET $api/pulls -f state=closed -f head=acme:* -F per_page=100" '[]'
 route "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=1" '[{"number":25,"head":{"ref":"feat/b"}}]'
 route "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=1" '[{"number":40}]'
 route "api -X GET $api/pulls -f state=open -f base=feat/w -F per_page=1" '[{"number":41}]'
 route "api -X GET $api/pulls -f state=open -f base=* -F per_page=1" '[]'
-route "api $api/pulls?state=open&base=feat/a*" '[{"number":25,"head":{"ref":"feat/b"}}]'
+route "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=100" '[{"number":25,"head":{"ref":"feat/b"}}]'
+route "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=100" '[{"number":40,"head":{"ref":"feat/dep"}}]'
+route "api $api/merges -f base=feat/dep -f head=feat/x&y*" '{"sha":"mergeddown"}'
+route "api -X PATCH $api/pulls/40 -f base=main" '{}'
+route "api $api/pulls/17" "$(pr_json 17 feat/k feat/p+q)"
+route "api --paginate $api/commits/sha17/check-runs*" "$green"
+route "api $api/merges -f base=feat/k -f head=feat/p+q*" '{"sha":"mergedparent"}'
+route "api -X PATCH $api/pulls/17 -f base=main" '{}'
 route "api $api/merges -f base=feat/b -f head=feat/a*" '{"sha":"mergedown"}'
 route "api -X PATCH $api/pulls/25 -f base=main" '{}'
-route "api $api/pulls?state=open&base=*" '[]'
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=1" '[]'
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=100" '[]'
 route "pr ready *" ''
 route "api -X PATCH $api/pulls/26 -f base=main" '{}'
 route "api $api/merges -f base=feat/c -f head=feat/gone*" '{"sha":"mergedparent"}'
@@ -127,6 +137,9 @@ out=$(AGENT_MERGE_METHOD=rebase "$AK" merge --pr 21 2>&1); rc=$?
 assert_eq 1 "$rc" 'an unknown AGENT_MERGE_METHOD refuses'
 assert_contains "$out" 'AGENT_MERGE_METHOD=rebase is not squash or merge' 'the refusal names the bad value'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing is merged under an unknown method'
+for call in update-branch 'pr ready' '/merge'; do
+    assert_not_contains "$(cat "$FAKE_GH_LOG")" "$call" "an unknown method refuses before any '$call' call"
+done
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 25 2>&1); rc=$?
@@ -159,6 +172,8 @@ out=$("$AK" merge --pr 19 2>&1); rc=$?
 assert_eq 0 "$rc" 'a head branch with an ampersand still merges'
 assert_contains "$out" 'merged pr=19 sha=merged123 method=merge' 'a dependent on an odd-named parent makes it a merge commit'
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=1" 'the odd name goes in as an encoded field'
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=100" 'the dependents lookup encodes the odd name too'
+assert_contains "$out" 'branch=deleted (retargeted #40 to main)' 'a dependent of an odd-named branch is retargeted before the delete'
 
 # Repository identity is case-insensitive: GitHub may report the owner or name in another case than the slug.
 route "api $api/pulls/18" "$(pr_json 18 feat/w main false ACME/Widget)"
@@ -167,6 +182,17 @@ route "api --paginate $api/commits/sha18/check-runs*" "$green"
 out=$("$AK" merge --pr 18 2>&1); rc=$?
 assert_eq 0 "$rc" 'a same-repository PR reported in another case merges'
 assert_contains "$out" 'merged pr=18 sha=merged123 method=merge' 'it is not misread as a fork'
+assert_contains "$out" 'branch=deleted' 'its branch is deleted, not kept as a fork'
+assert_not_contains "$out" 'kept (fork)' 'a case difference is not a fork'
+
+# merge_parent passes a base branch with query-string characters as encoded fields too.
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 17 2>&1); rc=$?
+assert_eq 0 "$rc" 'a PR based on an odd-named merged parent merges'
+log=$(cat "$FAKE_GH_LOG")
+assert_contains "$log" "api -X GET $api/pulls -f state=open -f head=acme:feat/p+q -F per_page=100" 'the open-head lookup encodes the base'
+assert_contains "$log" "api -X GET $api/pulls -f state=closed -f head=acme:feat/p+q -F per_page=100" 'the closed-head lookup encodes the base'
+assert_contains "$log" "api -X GET $api/pulls -f state=open -f base=feat/p+q -F per_page=1" 'the last-child lookup encodes the base'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 28 2>&1); rc=$?
@@ -220,7 +246,7 @@ route "api $api/pulls/43" "$(pr_json 43 feat/docs feat/parked)"
 route "api $api/pulls/44" "$(pr_json 44 feat/docs2 feat/empty)"
 route "api --paginate $api/commits/sha4*/check-runs*" "$green"
 route "api $api/commits/*/check-runs?per_page=100" "$green"
-route "api $api/pulls?state=*" '[]'
+route "api -X GET $api/pulls -f state=* -f head=acme:* -F per_page=100" '[]'
 route "api $api/compare/main...feat/parked*" '2'
 route "api $api/compare/main...feat/empty*" '0'
 route "api -X PATCH $api/pulls/44 -f base=main" '{}'

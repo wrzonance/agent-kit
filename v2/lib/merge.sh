@@ -38,12 +38,12 @@ merge_threads() {
 merge_parent() {
     local slug=$1 n=$2 base=$3 owner=${1%%/*} open parent
     [[ $base != "$(base_branch)" ]] || return 0
-    open=$(gh api "repos/$slug/pulls?state=open&head=$owner:$base&per_page=100" | jq -r '.[0].number // empty') ||
-        die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=open&head=$owner:$base'"
+    open=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "head=$owner:$base" -F per_page=100 | jq -r '.[0].number // empty') ||
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=open -f head=$owner:$base"
     [[ -z $open ]] || die "PR #$n is based on #$open's branch $base" "ak merge --pr $open"
-    parent=$(gh api "repos/$slug/pulls?state=closed&head=$owner:$base&per_page=100" |
+    parent=$(gh api -X GET "repos/$slug/pulls" -f state=closed -f "head=$owner:$base" -F per_page=100 |
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
-        die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=closed&head=$owner:$base'"
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=closed -f head=$owner:$base"
     [[ -n $parent ]] || { merge_orphan_base "$slug" "$n" "$base"; return 0; }
     # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
     # parent's first commit, and resolving it against the squash on main kept the parent's old bug
@@ -57,7 +57,7 @@ merge_parent() {
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
         die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
     # The merged parent's branch has served its last child once no open PR is based on it.
-    if [[ -z $(gh api "repos/$slug/pulls?state=open&base=$base&per_page=1" | jq -r '.[0].number // empty') ]]; then
+    if [[ -z $(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$base" -F per_page=1 | jq -r '.[0].number // empty') ]]; then
         gh api -X DELETE "repos/$slug/git/refs/heads/$base" >/dev/null 2>&1 || true
     fi
 }
@@ -122,11 +122,13 @@ merge_branch() {
     local slug=$1 json=$2 ref base deps dep head moved=''
     ref=$(jq -r .head.ref <<<"$json")
     base=$(jq -r .base.ref <<<"$json")
-    if [[ $(jq -r '.head.repo.full_name // ""' <<<"$json") != "$slug" ]]; then
+    local repo
+    repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
+    if [[ ${repo,,} != "${slug,,}" ]]; then
         printf 'kept (fork)\n'
         return 0
     fi
-    deps=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=100" | jq -r '.[] | "\(.number)\t\(.head.ref)"') ||
+    deps=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$ref" -F per_page=100 | jq -r '.[] | "\(.number)\t\(.head.ref)"') ||
         { printf 'kept (cannot list dependents)\n'; return 0; }
     while IFS=$'\t' read -r dep head; do
         [[ -n $dep ]] || continue
@@ -148,14 +150,19 @@ merge_branch() {
 # the child already has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a
 # resolve worker and a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one
 # method everywhere. A fork's head is not a branch here; the ref goes in as an encoded field, so any valid branch name lists.
-merge_method() {
-    local slug=$1 json=$2 forced ref dep repo
+merge_forced() {
+    local forced
     forced=$(cfg AGENT_MERGE_METHOD '')
     case $forced in
-        squash | merge) printf '%s\n' "$forced"; return 0 ;;
-        '') ;;
+        squash | merge | '') printf '%s\n' "$forced" ;;
         *) die "AGENT_MERGE_METHOD=$forced is not squash or merge" "unset AGENT_MERGE_METHOD or set it to squash or merge" ;;
     esac
+}
+
+merge_method() {
+    local slug=$1 json=$2 forced ref dep repo
+    forced=$(merge_forced) || return $?
+    [[ -z $forced ]] || { printf '%s\n' "$forced"; return 0; }
     repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
     [[ ${repo,,} == "${slug,,}" ]] || { printf 'squash\n'; return 0; }
     ref=$(jq -r .head.ref <<<"$json")
@@ -186,6 +193,7 @@ merge_lock() {
 cmd_main() {
     [[ $# -eq 2 && $1 == --pr && $2 =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N"
     local n=$2 slug json sha method merged
+    merge_forced >/dev/null || exit $?
     merge_lock "$n"
     slug=$(slug)
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
