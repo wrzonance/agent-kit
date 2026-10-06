@@ -235,14 +235,16 @@ merge_up_children() {
     done < <(git -C "$MAIN" worktree list --porcelain | sed -n 's/^worktree //p')
 }
 
-# release_other_runs N WORKTREE: every run of the last day that still holds N (parked, spawned or queued) with a
-# successor queued behind it records N as collected and spawns from there. After a park, `ak plan --issue N` makes a
-# new run holding only N; a field operator re-planned the whole list by hand to keep the earlier run's chain alive.
+# release_other_runs N WORKTREE: every run of the last day that holds N as parked or spawned (a prior attempt that
+# owned the issue) with a successor queued behind it records N as collected and spawns from there. After a park,
+# `ak plan --issue N` makes a new run holding only N; a field operator re-planned the whole list by hand to keep the
+# earlier run's chain alive. A queued N is left alone: it waited on a predecessor that never finished there, so the
+# branch collected elsewhere does not hold that predecessor's work.
 release_other_runs() {
     local n=$1 wt=$2 file own=$RUNFILE
     while IFS= read -r file; do
         [[ $file != "$own" ]] || continue
-        jq -e --argjson n "$n" '(.items | any(.kind == "issue" and .n == $n and (.state | IN("parked", "spawned", "queued"))))
+        jq -e --argjson n "$n" '(.items | any(.kind == "issue" and .n == $n and (.state | IN("parked", "spawned"))))
             and (.items | any(.kind == "issue" and .state == "queued" and (.needs | index($n))))' "$file" >/dev/null 2>&1 || continue
         RUNFILE=$file
         run_update '(.items[] | select(.kind == "issue" and .n == $n)) |= (.state = "collected" | .worktree = $wt)' \

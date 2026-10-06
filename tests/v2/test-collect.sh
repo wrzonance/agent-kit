@@ -364,4 +364,36 @@ assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$run_b")" 
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'spawn' 'a second collect spawns nothing more'
 
+# A queued item is not released: 680 waited behind 671 in run A, 671 parked, and `ak plan --issue 680` started 680 in a
+# new run from the default branch. Its branch never held 671's work, so run A must not count it done or build on it.
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+run_a="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671" wt2="$repo/.worktrees/feat/issue-680" wt3="$repo/.worktrees/feat/issue-693"
+printf 'x\n' >"$wt/src/a.txt"
+git -C "$wt" commit -qam work && git -C "$wt" push -q
+printf 'pr=none\nci=none\nreview=skipped\nhead=abc\nnote=parked: protected path\n' >"$wt/.ak/result"
+"$AK" collect --issue 671 >/dev/null 2>&1
+printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=%s\nnote=n\n' "$(git -C "$wt3" rev-parse HEAD)" >"$wt3/.ak/result"
+"$AK" collect --issue 693 >/dev/null 2>&1
+out=$("$AK" plan --issue 680 2>&1)
+assert_contains "$out" 'spawn issue=680' 'the re-plan starts the queued issue in a new run'
+run_b="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+assert_eq yes "$([[ $run_b != "$run_a" ]] && echo yes || echo no)" 'the new run is not the first run'
+# Run A now also holds a descendant of 680 that would spawn if 680 counted as collected there.
+jq '(.items[] | select(.n == 693)) |= (.state = "queued" | .needs = [680])' "$run_a" >"$run_a.tmp" && mv "$run_a.tmp" "$run_a"
+ship "$wt2" lib/core.sh 10 green
+printf '{"number":10,"state":"open","head":{"sha":"%s"}}' "$(git -C "$wt2" rev-parse HEAD)" >"$WORK/pr10.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-10.json"
+printf 'api repos/acme/widget/pulls/10\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+    "$WORK/pr10.json" "$(git -C "$wt2" rev-parse HEAD)" "$WORK/runs-10.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+"$AK" collect --issue 680 >/dev/null 2>&1
+assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$run_b")" 'the new run records the collection'
+assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the first run keeps its queued item queued'
+assert_eq queued "$(jq -r '.items[] | select(.n == 693) | .state' "$run_a")" 'and spawns no descendant from it'
+
 finish
