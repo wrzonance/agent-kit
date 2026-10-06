@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# ak merge --pr N: bring the PR up to date with its base, squash-merge it once its head checks are green
-# (pinned to that head), then delete its branch unless another open PR is based on it. Exit 3 with a spawn
-# line when the update conflicts: the PR's worker resolves it, then ak merge runs again.
+# ak merge --pr N: bring the PR up to date with its base, merge it once its head checks are green (pinned to that
+# head; a merge commit while a child PR is stacked on it, a squash otherwise), then delete its branch unless another
+# open PR is based on it. Exit 3 with a spawn line when the update conflicts: the PR's worker resolves it, then ak merge
+# runs again.
 
 # shellcheck source=ci.sh
 source "$AK_HOME/lib/ci.sh"
@@ -34,16 +35,19 @@ merge_threads() {
         "ak pr-plan --pr $2"
 }
 
+# merge_q VALUE: VALUE shell-quoted, so a branch name in a printed fix hint cannot become executable text.
+merge_q() { printf '%q' "$1"; }
+
 # merge_parent SLUG N BASE: refuse while BASE is an open PR's head; retarget to the parent's base once it merged.
 merge_parent() {
     local slug=$1 n=$2 base=$3 owner=${1%%/*} open parent
     [[ $base != "$(base_branch)" ]] || return 0
-    open=$(gh api "repos/$slug/pulls?state=open&head=$owner:$base&per_page=100" | jq -r '.[0].number // empty') ||
-        die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=open&head=$owner:$base'"
+    open=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "head=$owner:$base" -F per_page=100 | jq -r '.[0].number // empty') ||
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=open -f $(merge_q "head=$owner:$base")"
     [[ -z $open ]] || die "PR #$n is based on #$open's branch $base" "ak merge --pr $open"
-    parent=$(gh api "repos/$slug/pulls?state=closed&head=$owner:$base&per_page=100" |
+    parent=$(gh api -X GET "repos/$slug/pulls" -f state=closed -f "head=$owner:$base" -F per_page=100 |
         jq -r '[.[] | select(.merged_at != null)][0].base.ref // empty') ||
-        die "cannot list PRs with head $base" "gh api 'repos/$slug/pulls?state=closed&head=$owner:$base'"
+        die "cannot list PRs with head $base" "gh api -X GET repos/$slug/pulls -f state=closed -f $(merge_q "head=$owner:$base")"
     [[ -n $parent ]] || { merge_orphan_base "$slug" "$n" "$base"; return 0; }
     # Take the parent's final branch (its review fixes included) before leaving it: the child was built on the
     # parent's first commit, and resolving it against the squash on main kept the parent's old bug
@@ -52,12 +56,12 @@ merge_parent() {
     head=$(gh api "repos/$slug/pulls/$n" | jq -r .head.ref) || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
     if ! out=$(gh api "repos/$slug/merges" -f "base=$head" -f "head=$base" \
         -f "commit_message=merge: $base into $head" 2>&1); then
-        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f base=$head -f head=$base"
+        [[ $out == *[Cc]onflict* ]] || die "cannot merge $base into $head: ${out:0:160}" "gh api repos/$slug/merges -f $(merge_q "base=$head") -f $(merge_q "head=$base")"
     fi
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$parent" >/dev/null ||
-        die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f base=$parent"
+        die "cannot retarget PR #$n to $parent" "gh api -X PATCH repos/$slug/pulls/$n -f $(merge_q "base=$parent")"
     # The merged parent's branch has served its last child once no open PR is based on it.
-    if [[ -z $(gh api "repos/$slug/pulls?state=open&base=$base&per_page=1" | jq -r '.[0].number // empty') ]]; then
+    if [[ -z $(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$base" -F per_page=1 | jq -r '.[0].number // empty') ]]; then
         gh api -X DELETE "repos/$slug/git/refs/heads/$base" >/dev/null 2>&1 || true
     fi
 }
@@ -69,11 +73,11 @@ merge_orphan_base() {
     local slug=$1 n=$2 base=$3 default ahead
     default=$(base_branch)
     ahead=$(gh api "repos/$slug/compare/$default...$base" --jq .ahead_by) ||
-        die "cannot compare $base with $default" "gh api repos/$slug/compare/$default...$base"
+        die "cannot compare $base with $default" "gh api repos/$slug/compare/$(merge_q "$default...$base")"
     [[ $ahead == 0 ]] ||
         die "PR #$n is based on $base, which has no PR and $ahead commits not on $default" "ship the issue behind $base first"
     gh api -X PATCH "repos/$slug/pulls/$n" -f "base=$default" >/dev/null ||
-        die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f base=$default"
+        die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f $(merge_q "base=$default")"
 }
 
 # merge_worktree REF: the main checkout's worktree that has REF checked out, or nothing.
@@ -122,26 +126,54 @@ merge_branch() {
     local slug=$1 json=$2 ref base deps dep head moved=''
     ref=$(jq -r .head.ref <<<"$json")
     base=$(jq -r .base.ref <<<"$json")
-    if [[ $(jq -r '.head.repo.full_name // ""' <<<"$json") != "$slug" ]]; then
+    local repo
+    repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
+    if [[ ${repo,,} != "${slug,,}" ]]; then
         printf 'kept (fork)\n'
         return 0
     fi
-    deps=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=100" | jq -r '.[] | "\(.number)\t\(.head.ref)"') ||
+    deps=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$ref" -F per_page=100 | jq -r '.[] | "\(.number)\t\(.head.ref)"') ||
         { printf 'kept (cannot list dependents)\n'; return 0; }
     while IFS=$'\t' read -r dep head; do
         [[ -n $dep ]] || continue
         # A conflict here is resolved when that PR's own ak merge updates it from its new base.
         gh api "repos/$slug/merges" -f "base=$head" -f "head=$ref" -f "commit_message=merge: $ref into $head" >/dev/null 2>&1 || true
         gh api -X PATCH "repos/$slug/pulls/$dep" -f "base=$base" >/dev/null 2>&1 ||
-            { printf 'kept (cannot retarget #%s; fix: gh api -X PATCH repos/%s/pulls/%s -f base=%s)\n' "$dep" "$slug" "$dep" "$base"; return 0; }
+            { printf 'kept (cannot retarget #%s; fix: gh api -X PATCH repos/%s/pulls/%s -f %s)\n' "$dep" "$slug" "$dep" "$(merge_q "base=$base")"; return 0; }
         moved+="${moved:+,}#$dep"
     done <<<"$deps"
     gh api -X DELETE "repos/$slug/git/refs/heads/$ref" >/dev/null 2>&1 || true
     if gh api "repos/$slug/git/ref/heads/$ref" >/dev/null 2>&1; then
-        printf 'kept (delete failed; fix: gh api -X DELETE repos/%s/git/refs/heads/%s)\n' "$slug" "$ref"
+        printf 'kept (delete failed; fix: gh api -X DELETE repos/%s/git/refs/heads/%s)\n' "$slug" "$(merge_q "$ref")"
     else
         printf 'deleted%s\n' "${moved:+ (retargeted $moved to $base)}"
     fi
+}
+
+# merge_method SLUG JSON: `merge` while an open PR is based on the PR's head branch, so the base carries the commits
+# the child already has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a
+# resolve worker and a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one
+# method everywhere. A fork's head is not a branch here; the ref goes in as an encoded field, so any valid branch name lists.
+merge_forced() {
+    local forced
+    forced=$(cfg AGENT_MERGE_METHOD '')
+    case $forced in
+        squash | merge | '') printf '%s\n' "$forced" ;;
+        *) die "AGENT_MERGE_METHOD=$forced is not squash or merge" "unset AGENT_MERGE_METHOD or set it to squash or merge" ;;
+    esac
+}
+
+merge_method() {
+    local slug=$1 json=$2 n=$3 forced ref dep repo
+    forced=$(merge_forced) || return $?
+    [[ -z $forced ]] || { printf '%s\n' "$forced"; return 0; }
+    repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
+    [[ ${repo,,} == "${slug,,}" ]] || { printf 'squash\n'; return 0; }
+    ref=$(jq -r .head.ref <<<"$json")
+    if ! dep=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$ref" -F per_page=1 2>/dev/null | jq -r '.[0].number // empty'); then
+        die "cannot list PRs based on $ref; not merging" "ak merge --pr $n"
+    fi
+    if [[ -n $dep ]]; then printf 'merge\n'; else printf 'squash\n'; fi
 }
 
 # merge_lock N: one ak merge per PR at a time; a second caller waits, then sees the first one's result
@@ -162,7 +194,8 @@ merge_lock() {
 
 cmd_main() {
     [[ $# -eq 2 && $1 == --pr && $2 =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N"
-    local n=$2 slug json sha merged
+    local n=$2 slug json sha method merged
+    merge_forced >/dev/null || exit $?
     merge_lock "$n"
     slug=$(slug)
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
@@ -189,8 +222,9 @@ cmd_main() {
     if [[ $(jq -r .draft <<<"$json") == true ]]; then
         gh pr ready "$n" --repo "$slug" >/dev/null || die "cannot mark PR #$n ready" "gh pr ready $n --repo $slug"
     fi
-    merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f merge_method=squash -f "sha=$sha" | jq -r '.sha // empty') ||
+    method=$(merge_method "$slug" "$json" "$n") || exit $?
+    merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f "merge_method=$method" -f "sha=$sha" | jq -r '.sha // empty') ||
         die "GitHub refused to merge PR #$n at $sha" "gh api repos/$slug/pulls/$n --jq .mergeable_state"
     [[ -n $merged ]] || die "the merge of PR #$n returned no sha" "gh api repos/$slug/pulls/$n --jq .merge_commit_sha"
-    printf 'merged pr=%s sha=%s branch=%s\n' "$n" "$merged" "$(merge_branch "$slug" "$json")"
+    printf 'merged pr=%s sha=%s method=%s branch=%s\n' "$n" "$merged" "$method" "$(merge_branch "$slug" "$json")"
 }
