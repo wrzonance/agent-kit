@@ -26,26 +26,31 @@ main_root() {
     dirname -- "$common"
 }
 
-# cfg KEY [DEFAULT]: environment first, then .agent/config.env, then DEFAULT. The file is parsed, never sourced.
+# cfg_file KEY: the value of KEY in .agent/config.env of the main checkout, or nothing. The file is parsed, never sourced,
+# and the environment is ignored.
+cfg_file() {
+    local key=$1 file line value
+    file="$(main_root)/.agent/config.env"
+    [[ -f $file ]] || return 0
+    line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+    [[ -n $line ]] || return 0
+    value=${line#*=}
+    value=${value%$'\r'}
+    if [[ $value == \"*\" || $value == \'*\' ]]; then
+        value=${value:1:${#value}-2}
+    fi
+    [[ -z $value ]] || printf '%s\n' "$value"
+}
+
+# cfg KEY [DEFAULT]: environment first, then .agent/config.env, then DEFAULT.
 cfg() {
-    local key=$1 default=${2:-} file line value
+    local key=$1 default=${2:-} value
     if [[ -n ${!key:-} ]]; then
         printf '%s\n' "${!key}"
         return 0
     fi
-    file="$(main_root)/.agent/config.env"
-    if [[ -f $file ]]; then
-        line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
-        if [[ -n $line ]]; then
-            value=${line#*=}
-            value=${value%$'\r'}
-            if [[ $value == \"*\" || $value == \'*\' ]]; then
-                value=${value:1:${#value}-2}
-            fi
-            [[ -z $value ]] || { printf '%s\n' "$value"; return 0; }
-        fi
-    fi
-    printf '%s\n' "$default"
+    value=$(cfg_file "$key")
+    printf '%s\n' "${value:-$default}"
 }
 
 slug() {

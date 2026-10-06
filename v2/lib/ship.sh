@@ -138,21 +138,37 @@ ship_body() {
     printf '%s\n' "$out"
 }
 
+# ship_changed_list BASE FILE: write every changed path (committed, staged, untracked) to FILE, NUL-separated and
+# unique; fails when any of the three git commands does.
+ship_changed_list() {
+    (
+        set -o pipefail
+        { git -c core.quotePath=false diff --name-only -z --no-renames "origin/$1...HEAD" &&
+            git -c core.quotePath=false diff --name-only -z --no-renames HEAD &&
+            git -c core.quotePath=false ls-files --others --exclude-standard -z; } 2>/dev/null |
+            LC_ALL=C sort -z -u >"$2"
+    )
+}
+
 # ship_protected: the first path changed against origin/<base> (committed, staged, or untracked) that
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
 ship_protected() {
-    local base entries entry prefix path
-    # cfg reads .agent/config.env from the main checkout (main_root), never this worktree: a worker cannot edit the list
-    # it is guarded by.
-    IFS=$', \t' read -ra entries <<<"$(cfg AGENT_PROTECTED_PATHS)"
+    local base entries entry prefix path list fetch found=""
+    # cfg_file reads .agent/config.env from the main checkout (main_root) and ignores the environment: neither a worker
+    # editing its worktree nor AGENT_PROTECTED_PATHS=... on the command line can replace the list it is guarded by.
+    IFS=$', \t' read -ra entries <<<"$(cfg_file AGENT_PROTECTED_PATHS)"
     ((${#entries[@]})) || return 0
     base=$(work_base)
-    # Checked here, before the listing: a failure inside the process substitution below could not stop ship, and a base
-    # origin lacks would drop every committed path from the guard.
-    git rev-parse -q --verify "origin/$base^{commit}" >/dev/null ||
-        die "cannot list this branch's changes against origin/$base" "git fetch origin $base && ak ship --message '<message>'"
+    printf -v fetch 'git fetch origin %q && ak ship --message '"'<message>'" "$base"
+    list=$(mktemp) || die "cannot create a temporary file" "check TMPDIR"
+    # Literal NUL-separated paths with no rename pairing: git's quoted form or a rename would hide a protected path.
+    # Any failing listing (a base origin lacks, no merge base) refuses, so a failure never reads as "nothing changed".
+    if ! ship_changed_list "$base" "$list"; then
+        rm -f -- "$list"
+        die "cannot list this branch's changes against origin/$base" "$fetch"
+    fi
     while IFS= read -r -d '' path; do
         [[ -n $path ]] || continue
         for entry in "${entries[@]}"; do
@@ -162,15 +178,12 @@ ship_protected() {
             [[ $entry == *[*?[]* ]] && prefix=
             # shellcheck disable=SC2053
             [[ $path == $entry || (-n $prefix && $path == "$prefix"*) ]] || continue
-            printf '%s\n' "$path"
-            return 0
+            found=$path
+            break 2
         done
-    done < <({
-        # Literal NUL-separated paths with no rename pairing: git's quoted form or a rename would hide a protected path.
-        git -c core.quotePath=false diff --name-only -z --no-renames "origin/$base...HEAD"
-        git -c core.quotePath=false diff --name-only -z --no-renames HEAD
-        git -c core.quotePath=false ls-files --others --exclude-standard -z
-    } | LC_ALL=C sort -z -u)
+    done <"$list"
+    rm -f -- "$list"
+    [[ -z $found ]] || printf '%s\n' "$found"
 }
 
 ship_commit() {
@@ -211,7 +224,7 @@ ship_resolved() {
 }
 
 cmd_main() {
-    local message="" body_file="" branch base pr body board="" hit
+    local message="" body_file="" branch base pr body board="" hit quoted
     while (($#)); do
         case $1 in
             --message) message=${2:-}; shift 2 || usage_die "--message needs a value" ;;
@@ -229,7 +242,12 @@ cmd_main() {
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
     hit=$(ship_protected)
-    [[ -z $hit ]] || die "protected path in this change: $hit" "ak park --reason \"protected path $hit needs the operator's commit\""
+    if [[ -n $hit ]]; then
+        # The path is attacker-influenced text an agent may copy from the fix line: quote it, and drop control characters.
+        hit=$(printf '%s' "$hit" | tr -d '[:cntrl:]')
+        printf -v quoted '%q' "$hit"
+        die "protected path in this change: $hit" "ak park --reason \"protected path $quoted needs the operator's commit\""
+    fi
     ship_commit "$message"
     ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||

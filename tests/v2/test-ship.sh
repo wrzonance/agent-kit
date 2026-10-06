@@ -182,6 +182,32 @@ assert_contains "$out" "fix: git fetch origin feat/nowhere && ak ship --message 
 assert_eq "$head" "$(git rev-parse HEAD)" 'an unlistable base commits nothing'
 assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unlistable base pushes nothing'
 rm -f .ak/base && git checkout -q -- src/b.txt
+# A hostile filename must reach the fix line quoted: an agent that copies the line must not run the path as a command.
+mkdir -p docs/adrs && printf 'x\n' >'docs/adrs/$(touch pwned).md'
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path with a command substitution is refused'
+fixline=$(grep '^fix: ' <<<"$out")
+assert_contains "$fixline" '\$\(touch\ pwned\)' 'the fix line carries the path shell-quoted'
+eval "${fixline#fix: ak park --reason }" 2>/dev/null || true
+assert_eq no "$([[ -e pwned ]] && echo yes || echo no)" 'running the fix line text does not execute the path'
+rm -rf docs pwned
+# The policy comes from the config file only: an environment override cannot discard it.
+mkdir -p docs/adrs && printf 'x\n' >docs/adrs/env.md
+out=$(AGENT_PROTECTED_PATHS=unrelated "$AK" ship --message 'docs: env' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an environment AGENT_PROTECTED_PATHS does not replace the configured list'
+assert_contains "$out" 'protected path in this change: docs/adrs/env.md' 'the configured list still names the path'
+rm -rf docs
+# A branch with no merge base against origin/main cannot be listed; the guard refuses instead of passing.
+git worktree add -q --detach "$WORK/orphan" HEAD
+wt=$PWD
+cd "$WORK/orphan" || exit 1
+git checkout -q --orphan feat/orphan && git rm -rq --cached . && git commit -q --no-verify --allow-empty -m orphan
+out=$("$AK" ship --message 'feat: orphan' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a branch without a merge base is refused'
+assert_contains "$out" "ak: cannot list this branch's changes against origin/main" 'the refusal says the listing failed'
+assert_contains "$out" "fix: git fetch origin main && ak ship --message '<message>'" 'the refusal says to fetch the base'
+cd "$wt" || exit 1
+git worktree remove --force "$WORK/orphan"
 sed -i '$d' "$repo/.agent/config.env"
 # Entries are read the way ak plan reads them: a leading ./ is dropped, and /, ., ./ or an empty item protect nothing.
 printf 'AGENT_PROTECTED_PATHS=./docs/adrs\n' >>"$repo/.agent/config.env"
