@@ -131,6 +131,7 @@ assert_eq 0 "$(grep -c 'earlier park note' "$repo/.worktrees/feat/issue-693/.ak/
 # removed its result and carried on) is running, not free: a plan that spawned it again would start a second worker.
 # The sign is work after the park (a log newer than the park marker); a result removed by hand is free to plan.
 wt="$repo/.worktrees/feat/issue-671"
+mkdir -p "$wt/.ak/logs" && : >"$wt/.ak/logs/verify.log"
 (cd "$wt" && "$AK" park --reason 'plan review' >/dev/null 2>&1)
 "$AK" collect --issue 671 >/dev/null 2>&1
 # The earlier runs above still list 671 as spawned; age them out so only the park decides.
