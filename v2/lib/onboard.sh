@@ -113,7 +113,8 @@ onboard_board() {
             fix='board=none; ak plan reads AGENT_READY_LABEL=<label> instead, or name one: ak onboard --project N --owner O'
         NOTES+=("$fix")
     elif ((count > 1)); then
-        NOTES+=('board=choose' "$(head -n 5 <<<"$rows" | awk -F'\t' '{ print "  --project " $1 " --owner " $2 "  " $3 }')" \
+        # The title sits behind a #: a pasted line keeps only the flags, so a title that looks like flags changes nothing.
+        NOTES+=('board=choose' "$(head -n 5 <<<"$rows" | awk -F'\t' '{ print "  --project " $1 " --owner " $2 "  # " $3 }')" \
             'fix: ak onboard <one line above>')
     else
         onboard_pick "$rows"

