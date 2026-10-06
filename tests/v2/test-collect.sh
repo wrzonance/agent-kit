@@ -37,6 +37,12 @@ assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'a red issue h
 assert_not_contains "$out" 'spawn issue=680' 'a red issue spawns no successor'
 assert_contains "$out" 'next=issue=671 has red CI on PR 9; hand it to a worker: ak pr-plan --pr 9, spawn what it prints, then ak collect --pr 9 and ak collect --issue 671' 'a red collect hands the PR to a worker (a field root fixed it in the worktree itself)'
 assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red issue goes back to spawned, so nothing counts it as done'
+# The PR number in that command is a worker's writing: a pr= value that is not a PR URL puts no text into the line.
+printf 'pr=https://github.com/acme/widget/pull/9; rm -rf x\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'next=issue=671 has red CI; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue 671' 'a malformed pr= URL reaches no command'
+assert_not_contains "$(grep '^next=' <<<"$out")" 'rm -rf' 'the worker text stays out of the command'
+printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
 # A check re-run that turns the same head green releases the successor on the next collect (no new commit needed).
 routes=$(cat "$FAKE_GH_ROUTES")
 printf '{"number":9,"head":{"sha":"abc"}}' >"$WORK/pr9-same.json"
@@ -57,7 +63,7 @@ assert_contains "$out" 'ci pending on abc: wait on this' 'collect says it is wai
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=pending' 'a pending receipt is read live and stays pending past the timeout'
 assert_contains "$out" 'after issue=680 reason=waits-on-pending-#671' 'a pending issue holds its successor'
 assert_not_contains "$out" 'spawn issue=680' 'a pending issue spawns no successor'
-assert_contains "$out" 'next=issue=671 CI is still pending on abc after 0s; collect again once it concludes' 'a timed-out wait says to collect again'
+assert_eq 1 "$(grep -Ec '^next=issue=671 CI is still pending on abc after [0-9]+s; collect again once it concludes$' <<<"$out")" 'a timed-out wait says to collect again, with the seconds waited'
 assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a pending issue goes back to spawned'
 printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/abc/check-runs*\t%s\t0\napi repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' \
     "$WORK/pr9-same.json" "$WORK/runs-abc.json" "$routes" >"$FAKE_GH_ROUTES"
@@ -66,6 +72,16 @@ assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=gr
 assert_not_contains "$out" 'waits-on-pending' 'a head that concluded green no longer holds its successor'
 assert_not_contains "$out" 'next=' 'a wait that concluded is not an operator step'
 assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'and the issue is collected, releasing its successor'
+# A live read that fails on a moved head keeps no recorded green (fail-open): the item is held and read again.
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=n\n' >"$wt/.ak/result"
+printf '{"number":9,"head":{"sha":"moved11"}}' >"$WORK/pr9-moved.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/moved11/check-runs*\t-\t1\n%s\n' \
+    "$WORK/pr9-moved.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=pending' 'a failed live read reports pending, not the stale green'
+assert_contains "$out" 'ci read failed at moved11' 'and says the read failed'
+assert_contains "$out" 'after issue=680 reason=waits-on-pending-#671' 'a failed live read holds the successor'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'and the item goes back to spawned'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
