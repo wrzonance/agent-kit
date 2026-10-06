@@ -26,7 +26,12 @@ result_refresh() {
     RESULT_HEAD=$live
     # Checks still running are waited on here, not handed back as a root turn: ci_wait holds this call until they
     # conclude or AK_COLLECT_CI_TIMEOUT (default 1800 s) passes.
-    runs=$(ci_wait "$live" "${AK_COLLECT_CI_TIMEOUT:-1800}" 0) || return 0
+    if ! runs=$(ci_wait "$live" "${AK_COLLECT_CI_TIMEOUT:-1800}" 0); then
+        # A failed live read keeps no recorded green: the item is held and read again on the next collect.
+        r[ci]=pending
+        r[note]="${r[note]:+${r[note]}; }ci read failed at ${live:0:7}"
+        return 0
+    fi
     RESULT_WAITED=$((SECONDS - start))
     r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
     [[ $live != "${r[head]}" ]] || return 0
