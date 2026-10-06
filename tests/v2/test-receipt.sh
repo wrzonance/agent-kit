@@ -12,7 +12,7 @@ git add src && git commit -q -m 'add b' && git push -q -u origin HEAD 2>/dev/nul
 head=$(git rev-parse HEAD)
 mkdir -p .ak
 route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
-route "api repos/acme/widget/commits/$head/check-runs?per_page=100" '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}'
+route "api repos/acme/widget/commits/$head/check-runs?per_page=100 --paginate" '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}'
 route 'api -X POST repos/acme/widget/issues/9/comments *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-1"}'
 
 printf 'P1|bad thing\n' >"$WORK/bad"
