@@ -114,6 +114,38 @@ assert_eq 'review=done findings=0' "$out" 'a review of a head outside this branc
 assert_contains "$(cat "$FAKE_REVIEW_LOG")" 'bin=' 'replacing a foreign review runs the reviewer'
 assert_eq "reviewer=claude model=claude-opus-5 head=$(git rev-parse HEAD)" "$(head -n 1 .ak/review.md)" 'the replacement names the current head'
 
+# Only review fixes and merge-downs may follow a reused review; other commits are work the reviewer never saw.
+printf 'four\n' >>src/a.txt
+git commit -q -am 'feat: more'
+git push -q origin fix/thing 2>/dev/null
+: >"$FAKE_REVIEW_LOG"
+out=$("$AK" review 2>&1)
+assert_eq 'review=done findings=0' "$out" 'a feat: commit after the review gets a fresh review'
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '+four' 'the fresh review sees the new work'
+assert_eq "reviewer=claude model=claude-opus-5 head=$(git rev-parse HEAD)" "$(head -n 1 .ak/review.md)" 'the fresh review names the new head'
+reviewed=$(git rev-parse HEAD)
+
+printf 'five\n' >>src/a.txt
+git commit -q -am 'fix(a): review finding'
+git push -q origin fix/thing 2>/dev/null
+: >"$FAKE_REVIEW_LOG"
+out=$("$AK" review 2>&1)
+assert_contains "$out" "findings=0 reused head=${reviewed:0:7}" 'a fix(scope): commit reuses the review'
+assert_eq '' "$(cat "$FAKE_REVIEW_LOG")" 'the fix commit does not run the reviewer'
+
+(cd "$repo" && printf 'b\n' >src/b.txt && git add src/b.txt && git commit -q -m 'feat: main work' && git push -q origin main 2>/dev/null)
+git fetch -q origin
+git merge -q --no-edit origin/main
+git push -q origin fix/thing 2>/dev/null
+out=$("$AK" review 2>&1)
+assert_contains "$out" "findings=0 reused head=${reviewed:0:7}" 'a merge-down of new base work reuses the review'
+assert_eq '' "$(cat "$FAKE_REVIEW_LOG")" 'the merge-down does not run the reviewer'
+
+sed -i "1s/head=.*/head=$(git rev-parse origin/main)/" .ak/review.md
+out=$("$AK" review 2>&1)
+assert_eq 'review=done findings=0' "$out" 'a review of a base commit is not reused'
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" 'bin=' 'the base-commit review is replaced by a fresh run'
+
 out=$("$AK" review --nope 2>&1); rc=$?
 assert_eq 2 "$rc" 'an unknown flag is a usage error'
 

@@ -85,15 +85,22 @@ review_titles() {
     done <"$1"
 }
 
-# review_reusable FILE: FILE reviews an ancestor of HEAD; prints that head. (Field run 10: 10 PRs cost 23
-# reviewer runs because heads that had only moved by a fix or a base update were reviewed again.)
+# review_reusable FILE BASE: FILE reviews a commit of this branch beyond origin/BASE, and HEAD has since moved only
+# by review fixes (`fix:` subjects) and merge-downs; prints that head. Anything else is work the reviewer never saw.
+# (Field run 10: 10 PRs cost 23 reviewer runs because heads that had only moved by a fix or a base update were
+# reviewed again.)
 review_reusable() {
-    local line re='^reviewer=[^ ]+ model=[^ ]+ head=([0-9a-f]{40})$'
-    [[ -f $1 ]] || return 1
-    IFS= read -r line <"$1" || true
+    local file=$1 base=$2 line old subject re='^reviewer=[^ ]+ model=[^ ]+ head=([0-9a-f]{40})$' after='^(fix[:(]|merge:)'
+    [[ -f $file ]] || return 1
+    IFS= read -r line <"$file" || true
     [[ $line =~ $re ]] || return 1
-    git merge-base --is-ancestor "${BASH_REMATCH[1]}" HEAD 2>/dev/null || return 1
-    printf '%s\n' "${BASH_REMATCH[1]}"
+    old=${BASH_REMATCH[1]}
+    git merge-base --is-ancestor "$old" HEAD 2>/dev/null || return 1
+    ! git merge-base --is-ancestor "$old" "origin/$base" 2>/dev/null || return 1
+    while IFS= read -r subject; do
+        [[ $subject =~ $after ]] || return 1
+    done < <(git log --no-merges --format=%s "$old..HEAD" "^origin/$base")
+    printf '%s\n' "$old"
 }
 
 # review_report FILE [NOTE]: the summary line (NOTE appended) plus finding titles, capped at 20 lines.
@@ -127,7 +134,7 @@ cmd_main() {
     base=$(work_base)
     diff=$(review_diff "$base")
     head=$(git rev-parse HEAD)
-    if ((!again)) && old=$(review_reusable "$dir/review.md"); then
+    if ((!again)) && old=$(review_reusable "$dir/review.md" "$base"); then
         review_report "$dir/review.md" "reused head=${old:0:7} note=one review per PR; ak review --again reviews the current diff"
         return 0
     fi
