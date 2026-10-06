@@ -15,13 +15,15 @@ run_update() {
 # result_refresh KIND N: when the PR head moved past the worker's result (a base update, a merge-down), replace the
 # recorded ci with the live checks on the new head. A field root collected a stale ci=red after the head went green.
 result_refresh() {
-    local pr=$2 live runs
+    local pr=$2 live runs ci=${r[ci]:-pending}
     [[ $1 == pr ]] || pr=${r[pr]##*/}
     [[ $pr =~ ^[0-9]+$ && -n ${r[head]:-} ]] || return 0
     live=$(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .head.sha // empty' 2>/dev/null) || return 0
-    # A recorded red is read again even at the same head: a re-run check can turn it green without a new commit, and
-    # the successors it holds wait on exactly that.
-    [[ -n $live && ($live != "${r[head]}" || ${r[ci]:-} == red) ]] || return 0
+    # A recorded red or pending is read again even at the same head: a re-run check can turn red green without a new
+    # commit, and a merge-down worker's receipt can carry ci=pending (a field successor was spawned twice on a parent
+    # whose CI had not concluded). The successors it holds wait on exactly that.
+    [[ -n $live && ($live != "${r[head]}" || $ci == red || $ci == pending) ]] || return 0
+    RESULT_HEAD=$live
     runs=$(ci_runs "$live" 2>/dev/null) || return 0
     r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
     [[ $live != "${r[head]}" ]] || return 0
@@ -41,6 +43,7 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
+    RESULT_HEAD=${r[head]:-}
     result_refresh "$kind" "$n"
     RESULT_CI=${r[ci]:-}
     if [[ $kind == issue ]]; then
@@ -109,12 +112,20 @@ collect_item() {
     jq -c --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$3"
 }
 
-# collect_next STATE N WORKTREE: the one line that says how a parked or red issue continues. A field operator had to ask
-# for the commands after a park, and the root then finished the parked work itself instead of handing it to a worker.
+# collect_next STATE N WORKTREE: the one line that says how a parked, red or pending issue continues. A field operator
+# had to ask for the commands after a park, and the root then finished the parked work itself instead of handing it to
+# a worker.
 collect_next() {
-    local dirty
+    local dirty pr
     if [[ $1 == red ]]; then
-        emit "next=issue=$2 has red CI; get its PR green (ak ci in $3 prints the failing lines), then: ak collect --issue $2"
+        # The red PR goes to a PR worker: a field root told to "get its PR green" rebased and shipped in the worker's
+        # worktree itself.
+        pr=$(sed -n 's/^pr=//p' "$3/.ak/result" | head -n 1)
+        pr=${pr##*/}
+        emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
+        return 0
+    elif [[ $1 == pending ]]; then
+        emit "next=issue=$2 CI is pending on ${RESULT_HEAD:0:7}; collect again once it concludes"
         return 0
     fi
     dirty=$(git -C "$3" status --porcelain 2>/dev/null | wc -l)
@@ -220,6 +231,10 @@ cmd_main() {
         # it would have inherited the failing check. The item goes back to spawned, so nothing queued counts it as
         # done (even if an earlier collect had) and the next collect reads CI again.
         state=red
+    elif [[ $kind == issue && ${RESULT_CI:-pending} == pending ]]; then
+        # A pending predecessor is not done either: a merge-down worker's receipt can land before CI concludes, and a
+        # field successor was spawned twice on exactly that.
+        state=pending
     elif merge_up "$worktree"; then
         # Its own base moved while it worked: it goes back to its worker before anything is built on it.
         state=merge-up
@@ -230,7 +245,7 @@ cmd_main() {
         [[ $kind != issue || $state == merge-up ]] || collect_next "$state" "$n" "$worktree"
     fi
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
-        --arg s "$([[ $state == red || $state == merge-up ]] && echo spawned || echo "$state")"
+        --arg s "$([[ $state =~ ^(red|pending|merge-up)$ ]] && echo spawned || echo "$state")"
     [[ $state != collected ]] || merge_up_children "$worktree"
     [[ $kind != issue || $state != collected ]] || spawn_successors
     printf '%s\n' "${LINES[@]}"

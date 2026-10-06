@@ -35,8 +35,7 @@ printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\
 out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'a red issue holds its successor'
 assert_not_contains "$out" 'spawn issue=680' 'a red issue spawns no successor'
-assert_contains "$out" 'next=issue=671 has red CI' 'a red collect names the next step'
-assert_contains "$out" 'then: ak collect --issue 671' 'the next step ends in the collect that releases the successor'
+assert_contains "$out" 'next=issue=671 has red CI on PR 9; hand it to a worker: ak pr-plan --pr 9, spawn what it prints, then ak collect --pr 9 and ak collect --issue 671' 'a red collect hands the PR to a worker (a field root fixed it in the worktree itself)'
 assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a red issue goes back to spawned, so nothing counts it as done'
 # A check re-run that turns the same head green releases the successor on the next collect (no new commit needed).
 routes=$(cat "$FAKE_GH_ROUTES")
@@ -47,6 +46,24 @@ printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/abc/
 out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green' 'a recorded red is read live again at the same head'
 assert_not_contains "$out" 'waits-on-red' 'a head that went green no longer holds its successor'
+# A ci=pending receipt (a merge-down worker reported before CI concluded) holds the successor until the live head
+# concludes (a field successor was spawned twice on a parent whose CI had not concluded).
+printf 'pr=https://github.com/acme/widget/pull/9\nci=pending\nreview=done\nhead=abc\nnote=n\n' >"$wt/.ak/result"
+printf '{"check_runs":[{"name":"lint","status":"in_progress","conclusion":null}]}' >"$WORK/runs-abc-pending.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/abc/check-runs*\t%s\t0\napi repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' \
+    "$WORK/pr9-same.json" "$WORK/runs-abc-pending.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=pending' 'a pending receipt is read live and stays pending while checks run'
+assert_contains "$out" 'after issue=680 reason=waits-on-pending-#671' 'a pending issue holds its successor'
+assert_not_contains "$out" 'spawn issue=680' 'a pending issue spawns no successor'
+assert_contains "$out" 'next=issue=671 CI is pending on abc; collect again once it concludes' 'a pending collect says to collect again'
+assert_eq 'spawned queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'a pending issue goes back to spawned'
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/abc/check-runs*\t%s\t0\napi repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' \
+    "$WORK/pr9-same.json" "$WORK/runs-abc.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green' 'a pending receipt whose checks concluded reports the live green'
+assert_not_contains "$out" 'waits-on-pending' 'a head that concluded green no longer holds its successor'
+assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'and the issue is collected, releasing its successor'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=findings=2 fixed=2 declined=0\n' >"$wt/.ak/result"
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
