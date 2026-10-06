@@ -129,6 +129,34 @@ assert_eq "$head" "$(git rev-parse HEAD)" 'nothing staged means no new commit'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9' 'the existing PR is reused'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'POST' 'an existing PR is not recreated or edited'
 
+# A protected path is refused before anything is committed or pushed (field run: two workers hit the pre-commit guard
+# on .github/ and docs/adrs/ paths, committed with --no-verify, and ship pushed them and opened the PRs).
+printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+mkdir -p docs/adrs && printf 'adr\n' >docs/adrs/adr-001.md
+out=$("$AK" ship --message 'docs: adr' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an untracked file under a protected directory is refused'
+assert_contains "$out" 'ak: protected path in this change: docs/adrs/adr-001.md' 'the refusal names the path'
+assert_contains "$out" "fix: ak park --reason \"protected path docs/adrs/adr-001.md needs the operator's commit\"" 'the refusal says to park'
+assert_eq "$head" "$(git rev-parse HEAD)" 'a refused protected change commits nothing'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'a refused protected change pushes nothing'
+rm -rf docs
+printf 'elsewhere\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: elsewhere' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a change outside the protected paths ships'
+head=$(git rev-parse HEAD)
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=.github/**\n' >>"$repo/.agent/config.env"
+mkdir -p .github/workflows && printf 'ci\n' >.github/workflows/ci.yml
+git add .github && git commit -q --no-verify -m 'ci: bypassed'
+out=$("$AK" ship --message 'ci: workflow' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a glob entry protects a committed path under it'
+assert_contains "$out" 'protected path in this change: .github/workflows/ci.yml' 'the committed protected path is named'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the bypassed commit is not pushed'
+git reset -q --hard "$head"
+sed -i '$d' "$repo/.agent/config.env"
+
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'
 assert_contains "$out" 'base branch' 'the base-branch refusal names the cause'

@@ -138,6 +138,34 @@ ship_body() {
     printf '%s\n' "$out"
 }
 
+# ship_protected: the first path changed against origin/<base> (committed, staged, or untracked) that
+# AGENT_PROTECTED_PATHS names. An entry with a glob character is a pattern; any other entry matches itself and every
+# path under it. Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
+ship_protected() {
+    local base entries entry path
+    IFS=$', \t' read -ra entries <<<"$(cfg AGENT_PROTECTED_PATHS)"
+    ((${#entries[@]})) || return 0
+    base=$(work_base)
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        for entry in "${entries[@]}"; do
+            if [[ $entry == *[*?[]* ]]; then
+                # shellcheck disable=SC2053
+                [[ $path == $entry ]] || continue
+            else
+                entry=${entry%/}
+                [[ $path == "$entry" || $path == "$entry/"* ]] || continue
+            fi
+            printf '%s\n' "$path"
+            return 0
+        done
+    done < <({
+        git diff --name-only "origin/$base...HEAD" 2>/dev/null || true
+        git diff --name-only HEAD
+        git ls-files --others --exclude-standard
+    } | LC_ALL=C sort -u)
+}
+
 ship_commit() {
     local message=$1
     git add -A
@@ -176,7 +204,7 @@ ship_resolved() {
 }
 
 cmd_main() {
-    local message="" body_file="" branch base pr body board=""
+    local message="" body_file="" branch base pr body board="" hit
     while (($#)); do
         case $1 in
             --message) message=${2:-}; shift 2 || usage_die "--message needs a value" ;;
@@ -193,6 +221,8 @@ cmd_main() {
     base=$(work_base)
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
+    hit=$(ship_protected)
+    [[ -z $hit ]] || die "protected path in this change: $hit" "ak park --reason \"protected path $hit needs the operator's commit\""
     ship_commit "$message"
     ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||
