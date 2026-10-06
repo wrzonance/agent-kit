@@ -129,6 +129,117 @@ assert_eq "$head" "$(git rev-parse HEAD)" 'nothing staged means no new commit'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9' 'the existing PR is reused'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'POST' 'an existing PR is not recreated or edited'
 
+# A protected path is refused before anything is committed or pushed (field run: two workers hit the pre-commit guard
+# on .github/ and docs/adrs/ paths, committed with --no-verify, and ship pushed them and opened the PRs).
+printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+mkdir -p docs/adrs && printf 'adr\n' >docs/adrs/adr-001.md
+out=$("$AK" ship --message 'docs: adr' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an untracked file under a protected directory is refused'
+assert_contains "$out" 'ak: protected path in this change: docs/adrs/adr-001.md' 'the refusal names the path'
+assert_contains "$out" "fix: ak park --reason \"protected path docs/adrs/adr-001.md needs the operator's commit\"" 'the refusal says to park'
+assert_eq "$head" "$(git rev-parse HEAD)" 'a refused protected change commits nothing'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'a refused protected change pushes nothing'
+rm -rf docs
+printf 'elsewhere\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: elsewhere' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a change outside the protected paths ships'
+head=$(git rev-parse HEAD)
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=.github/**\n' >>"$repo/.agent/config.env"
+mkdir -p .github/workflows && printf 'ci\n' >.github/workflows/ci.yml
+git add .github && git commit -q --no-verify -m 'ci: bypassed'
+out=$("$AK" ship --message 'ci: workflow' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a glob entry protects a committed path under it'
+assert_contains "$out" 'protected path in this change: .github/workflows/ci.yml' 'the committed protected path is named'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the bypassed commit is not pushed'
+git reset -q --hard "$head"
+sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+# git's quoted form of a path ("docs/adrs/adr tv\303\245.md") must not slip past the prefix match.
+mkdir -p docs/adrs && printf 'adr\n' >'docs/adrs/adr två.md'
+out=$("$AK" ship --message 'docs: adr' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path with a space and a non-ASCII byte is refused'
+assert_contains "$out" 'protected path in this change: docs/adrs/adr två.md' 'the refusal names the path literally'
+rm -rf docs
+# A protected file renamed away still changes the protected directory; rename pairing would list only the new path.
+mkdir -p "$repo/docs/adrs" && printf 'old\n' >"$repo/docs/adrs/old.md"
+git -C "$repo" add docs && git -C "$repo" commit -q -m adr && git -C "$repo" push -q origin main 2>/dev/null
+git fetch -q origin && git merge -q --no-edit origin/main
+git mv docs/adrs/old.md src/old.md && git commit -q --no-verify -m 'move adr'
+out=$("$AK" ship --message 'docs: move' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected file renamed out of its directory is refused'
+assert_contains "$out" 'protected path in this change: docs/adrs/old.md' 'the refusal names the removed protected path'
+git reset -q --hard "$head"
+# A base that origin does not have would drop the committed paths from the listing; the guard fails closed instead.
+printf 'feat/nowhere\n' >.ak/base
+printf 'x\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a base missing from origin is refused, not passed through the guard'
+assert_contains "$out" "ak: cannot list this branch's changes against origin/feat/nowhere" 'the refusal names the base'
+assert_contains "$out" "fix: git fetch origin feat/nowhere && ak ship --message '<message>'" 'the refusal says to fetch it'
+assert_eq "$head" "$(git rev-parse HEAD)" 'an unlistable base commits nothing'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unlistable base pushes nothing'
+rm -f .ak/base && git checkout -q -- src/b.txt
+# A hostile filename must reach the fix line quoted: an agent that copies the line must not run the path as a command.
+mkdir -p docs/adrs && printf 'x\n' >'docs/adrs/$(touch pwned).md'
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path with a command substitution is refused'
+fixline=$(grep '^fix: ' <<<"$out")
+assert_contains "$fixline" '\$\(touch\ pwned\)' 'the fix line carries the path shell-quoted'
+eval "${fixline#fix: ak park --reason }" 2>/dev/null || true
+assert_eq no "$([[ -e pwned ]] && echo yes || echo no)" 'running the fix line text does not execute the path'
+rm -rf docs pwned
+# The policy comes from the config file only: an environment override cannot discard it.
+mkdir -p docs/adrs && printf 'x\n' >docs/adrs/env.md
+out=$(AGENT_PROTECTED_PATHS=unrelated "$AK" ship --message 'docs: env' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an environment AGENT_PROTECTED_PATHS does not replace the configured list'
+assert_contains "$out" 'protected path in this change: docs/adrs/env.md' 'the configured list still names the path'
+rm -rf docs
+# A branch with no merge base against origin/main cannot be listed; the guard refuses instead of passing.
+git worktree add -q --detach "$WORK/orphan" HEAD
+wt=$PWD
+cd "$WORK/orphan" || exit 1
+git checkout -q --orphan feat/orphan && git rm -rq --cached . && git commit -q --no-verify --allow-empty -m orphan
+out=$("$AK" ship --message 'feat: orphan' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a branch without a merge base is refused'
+assert_contains "$out" "ak: cannot list this branch's changes against origin/main" 'the refusal says the listing failed'
+assert_contains "$out" "fix: git fetch origin main && ak ship --message '<message>'" 'the refusal says to fetch the base'
+cd "$wt" || exit 1
+git worktree remove --force "$WORK/orphan"
+sed -i '$d' "$repo/.agent/config.env"
+# Entries are read the way ak plan reads them: a leading ./ is dropped, and /, ., ./ or an empty item protect nothing.
+printf 'AGENT_PROTECTED_PATHS=./docs/adrs\n' >>"$repo/.agent/config.env"
+mkdir -p docs/adrs && printf 'x\n' >docs/adrs/x.md
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an entry with a leading ./ protects its directory'
+assert_contains "$out" 'protected path in this change: docs/adrs/x.md' 'the ./ entry names the path'
+sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
+out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
+assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
+head=$(git rev-parse HEAD)
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+sed -i '$d' "$repo/.agent/config.env"
+
+# An unreadable policy file must refuse, never read as "nothing protected".
+if [[ $(id -u) -eq 0 ]]; then
+    echo "skip: unreadable-policy case needs a non-root user (chmod 000 does not bind root)"
+else
+    printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+    chmod 000 "$repo/.agent/config.env"
+    printf 'unreadable\n' >>src/b.txt
+    out=$("$AK" ship --message 'feat: unreadable' 2>&1); rc=$?
+    chmod 644 "$repo/.agent/config.env"
+    assert_eq 1 "$rc" 'an unreadable policy file refuses the ship'
+    assert_contains "$out" "cannot read the protected-path policy in $repo/.agent/config.env" 'the refusal names the policy file'
+    assert_eq "$head" "$(git rev-parse HEAD)" 'an unreadable policy commits nothing'
+    assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unreadable policy pushes nothing'
+    git checkout -q -- src/b.txt
+    sed -i '$d' "$repo/.agent/config.env"
+fi
+
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'
 assert_contains "$out" 'base branch' 'the base-branch refusal names the cause'

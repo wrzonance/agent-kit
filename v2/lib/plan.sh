@@ -169,7 +169,10 @@ write_set() {
 # prefix with or without its trailing slash (a field run shipped two ADR edits past `docs/adrs`); `/`, `.`, `./` and
 # an empty item protect nothing rather than everything.
 protected_hit() {
-    local path glob prefix
+    local path glob prefix policy=${AGENT_PROTECTED_PATHS:-}
+    # Like cfg, but an unreadable config.env refuses: a policy that cannot be read must not plan protected issues as free.
+    [[ -n $policy ]] || policy=$(cfg_file AGENT_PROTECTED_PATHS) ||
+        die "cannot read the protected-path policy in $(main_root)/.agent/config.env" "fix the file's permissions, then ak plan again"
     while IFS= read -r glob; do
         glob=${glob#./}
         [[ -n $glob && $glob != / && $glob != . ]] || continue
@@ -180,7 +183,7 @@ protected_hit() {
             # shellcheck disable=SC2053
             [[ $path == $glob || (-n $prefix && $path == "$prefix"*) ]] && { printf '%s\n' "$path"; return 0; }
         done <<<"$1"
-    done < <(split_list "$(cfg AGENT_PROTECTED_PATHS)")
+    done < <(split_list "$policy")
     return 0
 }
 

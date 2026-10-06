@@ -313,6 +313,22 @@ out=$("$AK" plan --issue 831 --issue 832 --issue 833 2>&1)
 assert_contains "$out" 'drop issue=831 reason=protected:docs/adrs/adr-001.md' 'a bare directory entry protects its subpaths'
 assert_contains "$out" 'spawn issue=832' 'a bare directory entry does not match a sibling that shares its prefix'
 assert_contains "$out" 'drop issue=833 reason=protected:.github/workflows/ci.yml' 'a glob entry still matches beside a bare one'
+# An unreadable policy file refuses the plan instead of planning protected issues as free.
+if [[ $(id -u) -eq 0 ]]; then
+    echo "skip: unreadable-policy case needs a non-root user (chmod 000 does not bind root)"
+else
+    fresh
+    printf 'AGENT_PROTECTED_PATHS=.github/**\n' >>"$repo/.agent/config.env"
+    # shellcheck disable=SC2016
+    issue_route 831 'Change `src/a.txt`.'
+    default_routes
+    chmod 000 "$repo/.agent/config.env"
+    out=$(AGENT_REPO_SLUG=acme/widget "$AK" plan --issue 831 2>&1); rc=$?
+    chmod 644 "$repo/.agent/config.env"
+    assert_eq 1 "$rc" 'an unreadable policy file refuses the plan'
+    assert_contains "$out" "ak: cannot read the protected-path policy in $repo/.agent/config.env" 'the plan refusal names the policy file'
+    assert_contains "$out" 'fix: fix the file'"'"'s permissions, then ak plan again' 'the plan refusal says how to fix it'
+fi
 # protected_hit per entry shape: trailing slash and bare entries are prefixes, globs stay globs, `/`, `.`, `./`
 # and an empty item protect nothing, and a leading `./` is stripped like a listed path's.
 ph() {
