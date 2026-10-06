@@ -12,9 +12,11 @@ LINKED_QUERY='query($owner: String!, $name: String!) { repository(owner: $owner,
 NAMED_QUERY='query($owner: String!, $number: Int!) { repositoryOwner(login: $owner) { projectV2(number: $number)
   { number title closed owner { ... on Organization { login } ... on User { login } }
     field(name: "Status") { ... on ProjectV2SingleSelectField { options { name } } } } } }'
-# Open boards as `number<TAB>owner<TAB>title<TAB>status,options`.
+# Open boards as `number<TAB>owner<TAB>title<TAB>status,options`. Title and owner reach lines the root pastes into a
+# shell, so the title keeps plain characters only and an owner that is not a GitHub login shape drops the row.
 BOARD_ROWS='[.. | objects | select(has("number") and has("title"))] | map(select(.closed != true)) | .[] |
-  [.number, .owner.login, .title, ([.field.options[]?.name] | join(","))] | @tsv'
+  select(.owner.login | test("^[A-Za-z0-9-]+$")) |
+  [.number, .owner.login, (.title | gsub("[^A-Za-z0-9 ._-]"; "_") | .[0:60]), ([.field.options[]?.name] | join(","))] | @tsv'
 
 # onboard_set KEY VALUE: queue KEY=VALUE unless the file already has KEY or VALUE is empty.
 onboard_set() {
