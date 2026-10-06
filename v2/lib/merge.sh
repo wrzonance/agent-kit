@@ -10,7 +10,7 @@ source "$AK_HOME/lib/ci.sh"
 source "$AK_HOME/lib/threads.sh"
 
 # merge_checks SLUG SHA: refuse unless every check run on SHA completed as success, neutral or skipped, and every
-# AGENT_REQUIRED_CHECKS name has a completed run (a conflicted stacked PR had only CodeQL and a push lint on its head).
+# AGENT_REQUIRED_CHECKS name has a run that succeeded (a conflicted stacked PR had only CodeQL and a push lint on its head).
 merge_checks() {
     local slug=$1 sha=$2 runs bad missing
     runs=$(gh api --paginate "repos/$slug/commits/$sha/check-runs?per_page=100") ||
@@ -21,7 +21,8 @@ merge_checks() {
         | "\(.name)=\($s)"] | .[:5] | join(" ")' <<<"$runs")
     [[ $(jq -s '[.[].check_runs[]] | length' <<<"$runs") -gt 0 ]] || die "no check runs on $sha yet" "ak ci --once"
     [[ -z $bad ]] || die "checks are not green on $sha: $bad" "ak ci --once"
-    missing=$(ci_missing "$(jq -rs '.[].check_runs[] | select(.conclusion != null or .status == "completed") | .name' <<<"$runs")")
+    missing=$(ci_missing "$(jq -cs '[.[].check_runs[] | {raw: .name, conclusion: .conclusion,
+        done: (.conclusion != null or .status == "completed")}]' <<<"$runs")")
     [[ -z $missing ]] || die "checks are not green on $sha: missing=$missing" "ak ci --once"
 }
 

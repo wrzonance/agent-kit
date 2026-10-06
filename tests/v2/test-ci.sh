@@ -60,6 +60,19 @@ set_checks '{"check_runs":[{"name":"buildtest","status":"completed","conclusion"
 out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" ci --once 2>&1); rc=$?
 assert_eq 3 "$rc" 'a run named buildtest does not satisfy a required build:test'
 assert_contains "$out" 'missing=buildtest' 'the missing list prints the sanitised configured name'
+# A required check needs a run that succeeded: a skipped or neutral one is missing, and a run name holding a newline
+# cannot pose as a required name.
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"skipped"}]}'
+out=$(AGENT_REQUIRED_CHECKS=lint "$AK" ci --once 2>&1); rc=$?
+assert_eq 3 "$rc" 'a required check whose only run was skipped is pending'
+assert_eq 'ci=pending checks=1 failing= missing=lint' "$out" 'a skipped required check is missing'
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"neutral"}]}'
+out=$(AGENT_REQUIRED_CHECKS=lint "$AK" ci --once 2>&1)
+assert_contains "$out" 'missing=lint' 'a neutral required check is missing'
+set_checks '{"check_runs":[{"name":"Unit tests\nbuild:test","status":"completed","conclusion":"success"}]}'
+out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" ci --once 2>&1); rc=$?
+assert_eq 3 "$rc" 'a run name holding a newline does not satisfy a required name'
+assert_contains "$out" 'missing=buildtest' 'the spoofed name is still missing'
 # Check runs are read with --paginate and the pages combined, so a required run past the first page is seen.
 set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}{"check_runs":[{"name":"Installer","status":"completed","conclusion":"success"}]}'
 : >"$FAKE_GH_LOG"
