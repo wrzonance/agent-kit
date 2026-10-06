@@ -148,6 +148,10 @@ ship_protected() {
     IFS=$', \t' read -ra entries <<<"$(cfg AGENT_PROTECTED_PATHS)"
     ((${#entries[@]})) || return 0
     base=$(work_base)
+    # Checked here, before the listing: a failure inside the process substitution below could not stop ship, and a base
+    # origin lacks would drop every committed path from the guard.
+    git rev-parse -q --verify "origin/$base^{commit}" >/dev/null ||
+        die "cannot list this branch's changes against origin/$base" "git fetch origin $base && ak ship --message '<message>'"
     while IFS= read -r -d '' path; do
         [[ -n $path ]] || continue
         for entry in "${entries[@]}"; do
@@ -163,7 +167,7 @@ ship_protected() {
         done
     done < <({
         # Literal NUL-separated paths with no rename pairing: git's quoted form or a rename would hide a protected path.
-        git -c core.quotePath=false diff --name-only -z --no-renames "origin/$base...HEAD" 2>/dev/null || true
+        git -c core.quotePath=false diff --name-only -z --no-renames "origin/$base...HEAD"
         git -c core.quotePath=false diff --name-only -z --no-renames HEAD
         git -c core.quotePath=false ls-files --others --exclude-standard -z
     } | LC_ALL=C sort -z -u)

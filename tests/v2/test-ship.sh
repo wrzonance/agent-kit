@@ -172,6 +172,16 @@ out=$("$AK" ship --message 'docs: move' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a protected file renamed out of its directory is refused'
 assert_contains "$out" 'protected path in this change: docs/adrs/old.md' 'the refusal names the removed protected path'
 git reset -q --hard "$head"
+# A base that origin does not have would drop the committed paths from the listing; the guard fails closed instead.
+printf 'feat/nowhere\n' >.ak/base
+printf 'x\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a base missing from origin is refused, not passed through the guard'
+assert_contains "$out" "ak: cannot list this branch's changes against origin/feat/nowhere" 'the refusal names the base'
+assert_contains "$out" "fix: git fetch origin feat/nowhere && ak ship --message '<message>'" 'the refusal says to fetch it'
+assert_eq "$head" "$(git rev-parse HEAD)" 'an unlistable base commits nothing'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unlistable base pushes nothing'
+rm -f .ak/base && git checkout -q -- src/b.txt
 sed -i '$d' "$repo/.agent/config.env"
 
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
