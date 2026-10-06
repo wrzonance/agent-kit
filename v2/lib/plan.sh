@@ -255,9 +255,12 @@ issue_block() {
     printf -- '----- END UNTRUSTED ISSUE DATA %s -----\n' "$nonce"
 }
 
-# compose_prompt N WORKTREE BASE DIR: the template with every placeholder filled; the issue block goes in last.
+# compose_prompt N WORKTREE BASE DIR [NOTE]: the template with every placeholder filled; the issue block goes in last.
+# NOTE is what an earlier worker parked on: the operator re-planning the issue is the sign it was cleared, and a new
+# worker that does not hear so parks on the same line again (a field worker parked twice on one issue's wording).
 compose_prompt() {
-    local n=$1 text
+    local n=$1 text prior=''
+    [[ -z ${5:-} ]] || prior="An earlier worker parked this issue: $5. The operator cleared that and planned the issue again, so treat it as settled."$'\n\n'
     text=$(<"$TEMPLATE")
     text=${text//"{{ISSUE}}"/"$n"}
     text=${text//"{{TITLE}}"/"$(issue_title "$n")"}
@@ -266,7 +269,7 @@ compose_prompt() {
     text=${text//"{{BASE}}"/"$3"}
     text=${text//"{{SLUG}}"/"$SLUG"}
     text=${text//"{{AK}}"/"$AK_HOME/bin/ak"}
-    text=${text//"{{ISSUE_BLOCK}}"/"$(<"$4/issue.md")"}
+    text=${text//"{{ISSUE_BLOCK}}"/"$prior$(<"$4/issue.md")"}
     printf '%s\n' "$text"
 }
 
@@ -299,7 +302,7 @@ sync_base() {
 
 # spawn_issue N FROM BASE: worktree, pushed branch, .ak files, board move, and the spawn line.
 spawn_issue() {
-    local n=$1 branch="feat/issue-$1" root wt dir stack
+    local n=$1 branch="feat/issue-$1" root wt dir stack prior
     root=$(cfg AGENT_WORKTREE_ROOT .worktrees)
     [[ $root == /* ]] || root="$MAIN/$root"
     wt="$root/$branch"
@@ -315,9 +318,10 @@ spawn_issue() {
     fi
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
+    prior=$(sed -n 's/^note=parked: //p' "$dir/result" 2>/dev/null | head -n 1 | tr -d '\n')
     rm -f -- "$dir/result" "$dir/ci-only"
     issue_block "$n" >"$dir/issue.md"
-    compose_prompt "$n" "$wt" "$3" "$dir" >"$dir/prompt.md"
+    compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"
     SPAWNED+=("$n")
     WORKTREE[$n]=$wt
     emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"

@@ -118,6 +118,9 @@ out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/ci-only ]] && echo yes || echo no)" 're-planning clears the CI-only record of the earlier attempt'
+prompt=$(cat "$repo/.worktrees/feat/issue-671/.ak/prompt.md")
+assert_contains "$prompt" 'An earlier worker parked this issue: protected path. The operator cleared that and planned the issue again, so treat it as settled.' 'the new worker learns what the earlier one parked on'
+assert_eq "$(cat "$repo/.worktrees/feat/issue-671/.ak/issue.md")" "$(sed -n '5,$p' "$repo/.worktrees/feat/issue-671/.ak/prompt.md")" 'the hand-off sits above the issue block, which stays whole'
 
 fresh
 standard_board
