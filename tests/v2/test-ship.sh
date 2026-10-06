@@ -156,6 +156,23 @@ assert_contains "$out" 'protected path in this change: .github/workflows/ci.yml'
 assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the bypassed commit is not pushed'
 git reset -q --hard "$head"
 sed -i '$d' "$repo/.agent/config.env"
+printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+# git's quoted form of a path ("docs/adrs/adr tv\303\245.md") must not slip past the prefix match.
+mkdir -p docs/adrs && printf 'adr\n' >'docs/adrs/adr två.md'
+out=$("$AK" ship --message 'docs: adr' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path with a space and a non-ASCII byte is refused'
+assert_contains "$out" 'protected path in this change: docs/adrs/adr två.md' 'the refusal names the path literally'
+rm -rf docs
+# A protected file renamed away still changes the protected directory; rename pairing would list only the new path.
+mkdir -p "$repo/docs/adrs" && printf 'old\n' >"$repo/docs/adrs/old.md"
+git -C "$repo" add docs && git -C "$repo" commit -q -m adr && git -C "$repo" push -q origin main 2>/dev/null
+git fetch -q origin && git merge -q --no-edit origin/main
+git mv docs/adrs/old.md src/old.md && git commit -q --no-verify -m 'move adr'
+out=$("$AK" ship --message 'docs: move' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected file renamed out of its directory is refused'
+assert_contains "$out" 'protected path in this change: docs/adrs/old.md' 'the refusal names the removed protected path'
+git reset -q --hard "$head"
+sed -i '$d' "$repo/.agent/config.env"
 
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'

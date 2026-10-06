@@ -143,10 +143,12 @@ ship_body() {
 # path under it. Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
 ship_protected() {
     local base entries entry path
+    # cfg reads .agent/config.env from the main checkout (main_root), never this worktree: a worker cannot edit the list
+    # it is guarded by.
     IFS=$', \t' read -ra entries <<<"$(cfg AGENT_PROTECTED_PATHS)"
     ((${#entries[@]})) || return 0
     base=$(work_base)
-    while IFS= read -r path; do
+    while IFS= read -r -d '' path; do
         [[ -n $path ]] || continue
         for entry in "${entries[@]}"; do
             if [[ $entry == *[*?[]* ]]; then
@@ -160,10 +162,11 @@ ship_protected() {
             return 0
         done
     done < <({
-        git diff --name-only "origin/$base...HEAD" 2>/dev/null || true
-        git diff --name-only HEAD
-        git ls-files --others --exclude-standard
-    } | LC_ALL=C sort -u)
+        # Literal NUL-separated paths with no rename pairing: git's quoted form or a rename would hide a protected path.
+        git -c core.quotePath=false diff --name-only -z --no-renames "origin/$base...HEAD" 2>/dev/null || true
+        git -c core.quotePath=false diff --name-only -z --no-renames HEAD
+        git -c core.quotePath=false ls-files --others --exclude-standard -z
+    } | LC_ALL=C sort -z -u)
 }
 
 ship_commit() {
