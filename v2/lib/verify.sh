@@ -66,13 +66,18 @@ verify_skips() {
     (cd -- "$logs" && cat -- "$@") | sed -nE 's/^SKIP ([^ ]+).*/\1/p' | LC_ALL=C sort -u | paste -sd, -
 }
 
-# verify_whole: the repository's whole check, or nothing. Prints "NAME<TAB>COMMAND".
+# verify_whole FULL: the repository's whole check, or nothing. Prints "NAME<TAB>COMMAND". With FULL, AGENT_CMD_TEST
+# comes first: a field repository set VERIFY to its fast check and TEST to the full gate, and --full never ran it.
 verify_whole() {
-    local command
-    if command=$(cfg AGENT_CMD_VERIFY) && [[ -n $command ]]; then
-        printf 'verify\t%s\n' "$command"
-    elif command=$(cfg AGENT_CMD_TEST) && [[ -n $command ]]; then
-        printf 'test\t%s\n' "$command"
+    local full=${1:-0} verify_cmd test_cmd
+    verify_cmd=$(cfg AGENT_CMD_VERIFY)
+    test_cmd=$(cfg AGENT_CMD_TEST)
+    if ((full)) && [[ -n $test_cmd ]]; then
+        printf 'test\t%s\n' "$test_cmd"
+    elif [[ -n $verify_cmd ]]; then
+        printf 'verify\t%s\n' "$verify_cmd"
+    elif [[ -n $test_cmd ]]; then
+        printf 'test\t%s\n' "$test_cmd"
     fi
 }
 
@@ -99,7 +104,7 @@ cmd_main() {
         done
         ((owned)) || uncovered+=("$path")
     done <<<"$changed"
-    whole=$(verify_whole)
+    whole=$(verify_whole "$full")
     areas=$(verify_areas "$changed")
     if [[ -n $whole ]] && ((full || ${#suites[@]} == 0)); then
         if ((!full)) && verify_whole_cached "${whole#*$'\t'}" "$areas"; then

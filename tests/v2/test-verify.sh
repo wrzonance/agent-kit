@@ -27,6 +27,19 @@ assert_not_contains "$out" 'PASS test' 'test does not run when verify is set'
 assert_contains "$out" 'skipped=installer-suites' 'SKIP lines are collected'
 assert_contains "$out" 'oracle=ci' 'a skip makes CI the oracle'
 
+# --full runs AGENT_CMD_TEST when both are set (a field repository set VERIFY to its fast check and TEST to the full
+# gate, and `ak verify --full` never ran the full gate); without --full the fast AGENT_CMD_VERIFY stays first.
+export AGENT_CMD_VERIFY="echo fast >>$WORK/whole" AGENT_CMD_TEST="echo full >>$WORK/whole"
+out=$("$AK" verify --full 2>&1); rc=$?
+assert_eq 0 "$rc" '--full with both commands passes'
+assert_contains "$out" 'PASS test' '--full runs the test command'
+assert_not_contains "$out" 'PASS verify' '--full does not run the verify command when test is set'
+out=$("$AK" verify 2>&1)
+assert_contains "$out" 'PASS verify' 'without --full the verify command runs'
+assert_not_contains "$out" 'PASS test' 'without --full the test command does not run beside verify'
+assert_eq $'full\nfast' "$(cat "$WORK/whole")" 'each run ran only the command it named'
+unset AGENT_CMD_TEST
+
 export AGENT_CMD_VERIFY='echo broken; exit 2'
 out=$("$AK" verify 2>&1); rc=$?
 assert_eq 1 "$rc" 'a failing verify exits 1'
