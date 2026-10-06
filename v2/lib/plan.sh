@@ -105,15 +105,25 @@ excluded_label() {
     return 0
 }
 
-# write_set BODY: repository paths the body names; new files count when their directory exists.
+# write_set BODY: repository paths the body names; new files count when their directory exists. A body with an
+# explicit file list ("- Modify: `src/a.sh`", "- Create: `tests/b.sh`") names its write set itself, and the rest of
+# the body is prose about paths it reads or rules out: a field run of three independent issues shared a contract
+# paragraph naming four such paths, so two of the three were dropped as collisions.
 write_set() {
+    local body listed
+    # A fenced block is a command or an example, never a write.
+    body=$(awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence' <<<"$1")
+    # shellcheck disable=SC2016 # literal backticks in a grep pattern
+    listed=$(grep -E '^[[:space:]]*([-*+][[:space:]]+)?(Modify|Create|Delete|Rename|Test|Edit)[[:space:]]*:' <<<"$body" |
+        grep -oE '`[^` ]+`' | tr -d '`' | grep -E '[/.]' | sed -E 's#^(\./)+##; s#[.,:;)]+$##' | LC_ALL=C sort -u || true)
+    [[ -z $listed ]] || { printf '%s\n' "$listed"; return 0; }
     # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines, "Run/Verify/
     # Execute ..." instruction lines, and any backticked span with a space in it, which is a command
     # (`node test/smoke.mjs`, `scripts/verify.py --fast`); keep backticked paths (`src/store.js`).
     # shellcheck disable=SC2016 # literal backticks in a sed expression
     sed -E -e '/[Ss]till (exits?|pass(es)?|succeeds?|runs?)/d' \
         -e '/^[[:space:]]*([-*+][[:space:]]+)?([Rr]un|[Vv]erify|[Ee]xecute)[[:space:]]/d' \
-        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$1" |
+        -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*##g' <<<"$body" |
         awk -F'`' '{ out = $1; for (i = 2; i <= NF; i++) out = out " " ((i % 2 == 0 && $i ~ / /) ? "" : $i); print out }' |
         grep -oE '[A-Za-z0-9_./@+-]+' |
         awk '
