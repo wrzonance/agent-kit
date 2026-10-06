@@ -112,12 +112,21 @@ out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
 # A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
 # parked results by hand before re-running).
-printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
+# shellcheck disable=SC2016
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
 printf 'lint\n' >"$repo/.worktrees/feat/issue-671/.ak/ci-only"
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/ci-only ]] && echo yes || echo no)" 're-planning clears the CI-only record of the earlier attempt'
+prompt=$(cat "$repo/.worktrees/feat/issue-671/.ak/prompt.md")
+assert_contains "$prompt" 'An earlier worker parked this issue; its note is the last line of the data block below. The issue was planned again afterwards, so check whether that cause still holds before parking on it.' 'the new worker learns an earlier one parked, without a claim about who cleared it'
+assert_eq "$(cat "$repo/.worktrees/feat/issue-671/.ak/issue.md")" "$(sed -n '5,$p' "$repo/.worktrees/feat/issue-671/.ak/prompt.md")" 'the hand-off sits above the issue block, which stays whole'
+# shellcheck disable=SC2016
+assert_eq 'earlier park note: "protected" path in `ci.yml`' "$(grep -B1 '^----- END UNTRUSTED' "$repo/.worktrees/feat/issue-671/.ak/issue.md" | head -n 1)" 'the note itself is the last line inside the untrusted block'
+assert_not_contains "$prompt" 'rm -rf' 'only the first note line is carried'
+assert_eq 0 "$(grep -c 'earlier park note' "$repo/.worktrees/feat/issue-693/.ak/issue.md")" 'a first spawn carries no note'
+
 # A parked item whose worker was resumed in place (a field root answered the park by messaging the worker, which
 # removed its result and carried on) is running, not free: a plan that spawned it again would start a second worker.
 # The sign is work after the park (a log newer than the park marker); a result removed by hand is free to plan.

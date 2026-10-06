@@ -274,7 +274,7 @@ issue_title() {
     jq -r '.title | gsub("[[:cntrl:]]+"; " ") | .[:120]' <<<"${ISSUE_JSON[$1]}"
 }
 
-# issue_block N: the issue and its comments as fenced, untrusted data.
+# issue_block N [NOTE]: the issue and its comments as fenced, untrusted data; NOTE, an earlier park note, goes in last.
 issue_block() {
     local n=$1 comments nonce
     comments=$(api "repos/$SLUG/issues/$n/comments?per_page=100") || comments='[]'
@@ -284,12 +284,18 @@ issue_block() {
     printf -- '----- BEGIN UNTRUSTED ISSUE DATA %s -----\n' "$nonce"
     jq -r '"# \(.title)\n\n\(.body // "")"' <<<"${ISSUE_JSON[$n]}"
     jq -r '.[]? | "\n## Comment by @\(.user.login // "unknown")\n\n\(.body // "")"' <<<"$comments" 2>>"$AK_LOG" || true
+    [[ -z ${2:-} ]] || printf '\nearlier park note: %s\n' "${2:0:400}"
     printf -- '----- END UNTRUSTED ISSUE DATA %s -----\n' "$nonce"
 }
 
-# compose_prompt N WORKTREE BASE DIR: the template with every placeholder filled; the issue block goes in last.
+# compose_prompt N WORKTREE BASE DIR [NOTE]: the template with every placeholder filled; the issue block goes in last.
+# NOTE set means an earlier worker parked here. A new worker that does not hear it parks on the same line again (a field
+# worker parked twice on one issue's wording); one told the park may be stale checks the cause first. The prompt does
+# not claim who cleared it: a root can re-plan on its own. The note itself is worker text shaped by the issue, so it
+# sits inside the untrusted block (issue_block), and this sentence only points at it.
 compose_prompt() {
-    local n=$1 text
+    local n=$1 text prior=''
+    [[ -z ${5:-} ]] || prior="An earlier worker parked this issue; its note is the last line of the data block below. The issue was planned again afterwards, so check whether that cause still holds before parking on it."$'\n\n'
     text=$(<"$TEMPLATE")
     text=${text//"{{ISSUE}}"/"$n"}
     text=${text//"{{TITLE}}"/"$(issue_title "$n")"}
@@ -298,7 +304,7 @@ compose_prompt() {
     text=${text//"{{BASE}}"/"$3"}
     text=${text//"{{SLUG}}"/"$SLUG"}
     text=${text//"{{AK}}"/"$AK_HOME/bin/ak"}
-    text=${text//"{{ISSUE_BLOCK}}"/"$(<"$4/issue.md")"}
+    text=${text//"{{ISSUE_BLOCK}}"/"$prior$(<"$4/issue.md")"}
     printf '%s\n' "$text"
 }
 
@@ -331,7 +337,7 @@ sync_base() {
 
 # spawn_issue N FROM BASE: worktree, pushed branch, .ak files, board move, and the spawn line.
 spawn_issue() {
-    local n=$1 branch="feat/issue-$1" root wt dir stack
+    local n=$1 branch="feat/issue-$1" root wt dir stack prior
     root=$(cfg AGENT_WORKTREE_ROOT .worktrees)
     [[ $root == /* ]] || root="$MAIN/$root"
     wt="$root/$branch"
@@ -347,9 +353,11 @@ spawn_issue() {
     fi
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
+    prior=''
+    [[ ! -f $dir/result ]] || prior=$(sed -n '/^note=parked: /{s///p;q}' "$dir/result" | tr -d '\000-\037')
     rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
-    issue_block "$n" >"$dir/issue.md"
-    compose_prompt "$n" "$wt" "$3" "$dir" >"$dir/prompt.md"
+    issue_block "$n" "$prior" >"$dir/issue.md"
+    compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"
     SPAWNED+=("$n")
     WORKTREE[$n]=$wt
     emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"
