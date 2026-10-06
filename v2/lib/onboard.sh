@@ -9,19 +9,27 @@ LINKED_QUERY='query($owner: String!, $name: String!) { repository(owner: $owner,
   { number title closed owner { ... on Organization { login } ... on User { login } }
     field(name: "Status") { ... on ProjectV2SingleSelectField { options { name } } } } } } }'
 # shellcheck disable=SC2016
-NAMED_QUERY='query($owner: String!, $number: Int!) { repositoryOwner(login: $owner) { projectV2(number: $number)
+NAMED_QUERY='query($owner: String!, $number: Int!) { repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number)
   { number title closed owner { ... on Organization { login } ... on User { login } }
-    field(name: "Status") { ... on ProjectV2SingleSelectField { options { name } } } } } }'
+    field(name: "Status") { ... on ProjectV2SingleSelectField { options { name } } } } } } }'
 # Open boards as `number<TAB>owner<TAB>title<TAB>status,options`. Title and owner reach lines the root pastes into a
 # shell, so the title keeps plain characters only and an owner that is not a GitHub login shape drops the row.
 BOARD_ROWS='[.. | objects | select(has("number") and has("title"))] | map(select(.closed != true)) | .[] |
   select(.owner.login | test("^[A-Za-z0-9-]+$")) |
   [.number, .owner.login, (.title | gsub("[^A-Za-z0-9 ._-]"; "_") | .[0:60]), ([.field.options[]?.name] | join(","))] | @tsv'
 
+onboard_has() { grep -qE "^$1=" "$FILE" 2>/dev/null; }
+
 # onboard_set KEY VALUE: queue KEY=VALUE unless the file already has KEY or VALUE is empty.
 onboard_set() {
     [[ -n $2 ]] || return 0
-    if grep -qE "^$1=" "$FILE" 2>/dev/null; then KEPT=$((KEPT + 1)); else LINES+=("$1=$2"); fi
+    if onboard_has "$1"; then KEPT=$((KEPT + 1)); else LINES+=("$1=$2"); fi
+}
+
+# append_line FILE LINE: add LINE on its own line, even after a last line that has no newline.
+append_line() {
+    [[ ! -s $1 || $(tail -c 1 -- "$1" | od -An -c) == *'\n'* ]] || printf '\n' >>"$1"
+    printf '%s\n' "$2" >>"$1"
 }
 
 # onboard_install DIR: the install command for the toolchain whose marker files sit in DIR, or nothing.
@@ -70,7 +78,7 @@ onboard_suite_dirs() {
 
 # onboard_toolchain: queue SETUP, TEST and one suite per toolchain directory; `none` when nothing was found.
 onboard_toolchain() {
-    local dir name command setup test installs=() found=0 taken=''
+    local dir name command install setup test installs=() found=0 taken=''
     setup=$(onboard_install .)
     test=$(onboard_test .)
     while IFS= read -r dir; do
@@ -83,12 +91,14 @@ onboard_toolchain() {
         # api-v1 and api_v1 both normalise to API_V1: the first keeps the name, the second is named for the operator.
         if [[ ,$taken, == *",$name,"* ]]; then NOTES+=("suite-skipped=$dir (AGENT_CMD_$name is taken; add it by hand)"); continue; fi
         taken+=",$name"
-        onboard_set "AGENT_CMD_$name" "$command"
-        onboard_set "AGENT_RUNDIR_$name" "$dir"
         found=1
         # A directory's install matters only when a suite runs there: a tool's own package.json is not a suite.
-        command=$(onboard_install "$dir")
-        [[ -z $command ]] || installs+=("(cd $dir && $command)")
+        install=$(onboard_install "$dir")
+        [[ -z $install ]] || installs+=("(cd $dir && $install)")
+        # The command and its directory are one declaration: a kept `pytest api/tests` must not gain a directory.
+        if onboard_has "AGENT_CMD_$name" || onboard_has "AGENT_RUNDIR_$name"; then KEPT=$((KEPT + 1)); continue; fi
+        onboard_set "AGENT_CMD_$name" "$command"
+        onboard_set "AGENT_RUNDIR_$name" "$dir"
     done < <(onboard_suite_dirs)
     # The root install first, then each suite's own: ak setup runs the one line before any suite.
     for command in "${installs[@]}"; do setup+="${setup:+ && }$command"; done
@@ -98,8 +108,14 @@ onboard_toolchain() {
 }
 
 # onboard_board [NUMBER OWNER]: read the linked boards (or the named one), queue the owner and number of the one to use.
+# Owner and number are one declaration: a file that already has either is not completed with a discovered half.
 onboard_board() {
     local rows owner count fix
+    if onboard_has AGENT_PROJECT_OWNER && onboard_has AGENT_PROJECT_NUMBER; then
+        KEPT=$((KEPT + 2)); NOTES+=('board=kept (AGENT_PROJECT_OWNER and AGENT_PROJECT_NUMBER are already set)'); return 0
+    elif onboard_has AGENT_PROJECT_OWNER || onboard_has AGENT_PROJECT_NUMBER; then
+        KEPT=$((KEPT + 1)); NOTES+=("board=incomplete; $FILE has one of AGENT_PROJECT_OWNER/AGENT_PROJECT_NUMBER: set both or remove it"); return 0
+    fi
     owner=$(slug); owner=${owner%%/*}
     if [[ -n ${1:-} ]]; then
         rows=$(gh api graphql -f "query=$NAMED_QUERY" -F "owner=$2" -F "number=$1" 2>&1)
@@ -140,7 +156,7 @@ onboard_exclude() {
     ! git ls-files --error-unmatch -- "$FILE" >/dev/null 2>&1 || return 0
     exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
     mkdir -p -- "$(dirname -- "$exclude")"
-    grep -qxF '/.agent/' "$exclude" 2>/dev/null || printf '/.agent/\n' >>"$exclude"
+    grep -qxF '/.agent/' "$exclude" 2>/dev/null || append_line "$exclude" '/.agent/'
 }
 
 cmd_main() {
@@ -158,15 +174,15 @@ cmd_main() {
     [[ ! -L .agent && ! -L $FILE ]] || die "$FILE is behind a symlink, which onboard will not write through" "rm $FILE"
     onboard_set AGENT_REPO_SLUG "$(slug)"
     base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-    [[ -n $base ]] || base=origin/$(gh api "repos/$(slug)" --jq .default_branch 2>/dev/null || echo main)
+    [[ -n $base ]] || base=$(gh api "repos/$(slug)" --jq .default_branch 2>/dev/null || true)
+    # A failed lookup writes nothing: a guessed `main` would survive every later run on a `master` repository.
+    [[ -n $base ]] || NOTES+=('base=unknown; fix: git remote set-head origin -a')
     onboard_set AGENT_BASE_BRANCH "${base#origin/}"
     onboard_board "$project" "$owner"
     onboard_toolchain
     mkdir -p -- .agent
     [[ -f $FILE ]] || printf '# ak reads these KEY=value lines; edit freely. ak onboard adds missing keys and keeps every line here.\n' >"$FILE"
-    # A file whose last line has no newline would swallow the first new key into that line.
-    [[ ! -s $FILE || $(tail -c 1 -- "$FILE" | od -An -c) == *'\n'* ]] || printf '\n' >>"$FILE"
-    ((${#LINES[@]} == 0)) || printf '%s\n' "${LINES[@]}" >>"$FILE"
+    for line in "${LINES[@]}"; do append_line "$FILE" "$line"; done
     onboard_exclude
     printf 'wrote=%s keys=%d kept=%d\n' "$FILE" "${#LINES[@]}" "$KEPT"
     shown=${#LINES[@]}; ((shown <= 14)) || shown=12

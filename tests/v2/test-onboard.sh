@@ -59,6 +59,18 @@ assert_eq 0 "$rc" 'a named board is adopted'
 assert_contains "$out" $'\nAGENT_PROJECT_OWNER=acme\nAGENT_PROJECT_NUMBER=9\n' 'the named board is written'
 assert_contains "$out" 'board=9 "Platform" status=Todo,Ready,In progress,Done' 'the chosen board line names its options'
 assert_contains "$out" $'\nmissing-status=In review (ak board no-ops a move there)' 'a missing canonical column is named, not fatal'
+assert_eq 1 "$(grep -c 'on ProjectV2Owner { projectV2(number' "$FAKE_GH_LOG")" 'the named-board query asks through the ProjectV2Owner fragment (RepositoryOwner has no projectV2)'
+
+# --- a half-declared or whole board in the file is left alone, and asked about nothing ---
+: >"$FAKE_GH_LOG"
+out=$("$AK" onboard 2>&1); rc=$?
+assert_contains "$out" 'board=kept (AGENT_PROJECT_OWNER and AGENT_PROJECT_NUMBER are already set)' 'a declared board is kept without a read'
+assert_eq 0 "$(grep -c 'api graphql' "$FAKE_GH_LOG")" 'a declared board costs no GraphQL'
+sed -i '/^AGENT_PROJECT_NUMBER=/d' .agent/config.env
+out=$("$AK" onboard 2>&1); rc=$?
+assert_eq 0 "$rc" 'a half-declared board exits 0'
+assert_contains "$out" 'board=incomplete; .agent/config.env has one of AGENT_PROJECT_OWNER/AGENT_PROJECT_NUMBER: set both or remove it' 'a half-declared board is named, not completed'
+assert_rc 1 'the discovered number is not paired with a kept owner' -- grep -q '^AGENT_PROJECT_NUMBER=' .agent/config.env
 
 # --- no linked board, no toolchain ---
 rm .agent/config.env package.json package-lock.json
@@ -71,6 +83,18 @@ assert_contains "$out" 'board=none; ak plan reads AGENT_READY_LABEL=<label> inst
 assert_contains "$out" 'commands=none; append AGENT_CMD_TEST=<the command CI runs> to .agent/config.env' 'no toolchain asks for the CI command'
 assert_contains "$out" $'\nnext=ak verify --full' 'with no setup, next is verify alone'
 assert_not_contains "$out" $'\nAGENT_CMD_' 'no command is invented'
+
+# --- no origin/HEAD and no reachable API: the base is not guessed ---
+rm .agent/config.env
+git remote set-head origin -d
+: >"$FAKE_GH_ROUTES"
+linked_route '[]'
+out=$("$AK" onboard 2>&1); rc=$?
+assert_eq 0 "$rc" 'an unknown base exits 0'
+assert_contains "$out" $'\nbase=unknown; fix: git remote set-head origin -a' 'an unknown base is named with its fix'
+assert_rc 1 'no base is guessed into the file' -- grep -q '^AGENT_BASE_BRANCH=' .agent/config.env
+git remote set-head origin main
+rm .agent/config.env
 
 # --- a board read that fails is reported, not fatal ---
 : >"$FAKE_GH_ROUTES"
@@ -90,22 +114,23 @@ printf 'module jobs\n' >services/jobs/go.mod
 mkdir -p tools/site && printf '{"name":"site"}\n' >tools/site/package.json && : >tools/site/package-lock.json
 mkdir -p 'x;id' && printf 'module x\n' >'x;id/go.mod'
 mkdir -p api-v1 api_v1 && printf 'module v1\n' >api-v1/go.mod && printf 'module v1\n' >api_v1/go.mod
-printf 'x' >.agent/config.env   # a hand-written file whose last line has no newline
+printf 'AGENT_CMD_WEB=pytest web/tests\nx' >.agent/config.env   # a hand-written suite, and a last line with no newline
 git add Makefile package.json package-lock.json api web services tools 'x;id' api-v1 api_v1 && git commit -q -m mono
 linked_route '[]'
 out=$("$AK" onboard 2>&1); rc=$?
 assert_eq 0 "$rc" 'a monorepo onboards'
 assert_contains "$out" $'\nAGENT_CMD_TEST=make test\n' 'a Makefile test target is the whole check'
 assert_contains "$out" $'\nAGENT_CMD_API=uv run pytest\nAGENT_RUNDIR_API=api\n' 'a uv project is a suite in its directory'
-assert_contains "$out" $'\nAGENT_CMD_WEB=pnpm test\nAGENT_RUNDIR_WEB=web\n' 'a pnpm project is a suite in its directory'
+assert_not_contains "$out" 'AGENT_RUNDIR_WEB' 'a kept suite command gains no directory'
+assert_eq 'pytest web/tests' "$(sed -n 's/^AGENT_CMD_WEB=//p' .agent/config.env)" 'the hand-written suite command is kept'
 assert_contains "$out" $'\nAGENT_CMD_SERVICES_JOBS=go test ./...\nAGENT_RUNDIR_SERVICES_JOBS=services/jobs\n' 'a nested go module is a suite named by its path'
 assert_contains "$out" $'\nAGENT_CMD_SETUP=npm ci && (cd api && uv sync) && (cd web && pnpm install --frozen-lockfile)\n' 'the root install comes first, then each suite with its own lockfile'
 assert_contains "$out" $'\nsuite-skipped=api_v1 (AGENT_CMD_API_V1 is taken; add it by hand)' 'a second directory with the same normalised name is named, not duplicated'
 assert_eq 'api-v1' "$(sed -n 's/^AGENT_RUNDIR_API_V1=//p' .agent/config.env)" 'the first API_V1 directory keeps the name'
-assert_eq 'x' "$(head -n 1 .agent/config.env)" 'a last line without a newline keeps its own value'
+assert_eq 'x' "$(sed -n 2p .agent/config.env)" 'a last line without a newline keeps its own value'
 assert_not_contains "$out" 'tools/site' 'a package.json with no test script is neither a suite nor an install'
 assert_not_contains "$out" 'x;id' 'a directory name with shell characters never reaches a command'
-assert_eq "$(printf '%s\n' AGENT_BASE_BRANCH AGENT_CMD_API AGENT_CMD_API_V1 AGENT_CMD_SERVICES_JOBS AGENT_CMD_SETUP AGENT_CMD_TEST AGENT_CMD_WEB AGENT_REPO_SLUG AGENT_RUNDIR_API AGENT_RUNDIR_API_V1 AGENT_RUNDIR_SERVICES_JOBS AGENT_RUNDIR_WEB)" \
+assert_eq "$(printf '%s\n' AGENT_BASE_BRANCH AGENT_CMD_API AGENT_CMD_API_V1 AGENT_CMD_SERVICES_JOBS AGENT_CMD_SETUP AGENT_CMD_TEST AGENT_CMD_WEB AGENT_REPO_SLUG AGENT_RUNDIR_API AGENT_RUNDIR_API_V1 AGENT_RUNDIR_SERVICES_JOBS)" \
     "$(grep -oE '^AGENT_[A-Z0-9_]+' .agent/config.env | LC_ALL=C sort)" 'the file holds exactly the discovered keys'
 
 # --- a config behind a symlink is refused ---
@@ -119,6 +144,10 @@ rm .agent/config.env && mv "$WORK/real.env" .agent/config.env
 # --- an untracked config is excluded from git; a tracked one is left alone ---
 assert_rc 0 'an untracked .agent/ is ignored' -- git check-ignore -q .agent/config.env
 rm .gitignore && git rm -q --cached .gitignore && git commit -q -m noignore
+printf '/scratch' >.git/info/exclude   # an exclude whose last rule has no newline
+rm .agent/config.env
+out=$("$AK" onboard 2>&1)
+assert_eq $'/scratch\n/.agent/' "$(cat .git/info/exclude)" 'the exclude rule lands on its own line after a rule with no newline'
 assert_rc 0 '.agent/ stays ignored through info/exclude' -- git check-ignore -q .agent/config.env
 mkdir -p web/.agent && : >web/.agent/x
 assert_rc 1 'the exclude is anchored to the root' -- git check-ignore -q web/.agent/x
