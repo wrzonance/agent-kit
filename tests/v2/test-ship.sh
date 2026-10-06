@@ -223,6 +223,23 @@ head=$(git rev-parse HEAD)
 remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
 sed -i '$d' "$repo/.agent/config.env"
 
+# An unreadable policy file must refuse, never read as "nothing protected".
+if [[ $(id -u) -eq 0 ]]; then
+    echo "skip: unreadable-policy case needs a non-root user (chmod 000 does not bind root)"
+else
+    printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+    chmod 000 "$repo/.agent/config.env"
+    printf 'unreadable\n' >>src/b.txt
+    out=$("$AK" ship --message 'feat: unreadable' 2>&1); rc=$?
+    chmod 644 "$repo/.agent/config.env"
+    assert_eq 1 "$rc" 'an unreadable policy file refuses the ship'
+    assert_contains "$out" "cannot read the protected-path policy in $repo/.agent/config.env" 'the refusal names the policy file'
+    assert_eq "$head" "$(git rev-parse HEAD)" 'an unreadable policy commits nothing'
+    assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an unreadable policy pushes nothing'
+    git checkout -q -- src/b.txt
+    sed -i '$d' "$repo/.agent/config.env"
+fi
+
 out=$(AGENT_BASE_BRANCH=feat/issue-7 "$AK" ship --message 'feat: x' 2>&1); rc=$?
 assert_eq 1 "$rc" 'shipping from the base branch is refused'
 assert_contains "$out" 'base branch' 'the base-branch refusal names the cause'

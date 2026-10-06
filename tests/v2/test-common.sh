@@ -28,6 +28,15 @@ unset AGENT_BASE_BRANCH
 printf 'AGENT_CMD_TEST="make test"\n' >>.agent/config.env
 assert_eq 'make test' "$(cfg AGENT_CMD_TEST)" 'quoted config values are unquoted'
 assert_eq 'dflt' "$(cfg AGENT_MISSING dflt)" 'missing keys use the default'
+if [[ $(id -u) -eq 0 ]]; then
+    echo "skip: unreadable-config case needs a non-root user (chmod 000 does not bind root)"
+else
+    chmod 000 .agent/config.env
+    assert_eq 'dflt' "$(cfg AGENT_CMD_TEST dflt)" 'cfg falls back to the default when the file is unreadable'
+    cfg_file AGENT_CMD_TEST >/dev/null 2>&1; rc=$?
+    chmod 644 .agent/config.env
+    assert_eq 2 "$rc" 'cfg_file propagates an unreadable-file error'
+fi
 
 git worktree add -q -b feat/issue-7 "$WORK/wt" origin/main
 cd "$WORK/wt" || exit 1

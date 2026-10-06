@@ -27,12 +27,15 @@ main_root() {
 }
 
 # cfg_file KEY: the value of KEY in .agent/config.env of the main checkout, or nothing. The file is parsed, never sourced,
-# and the environment is ignored.
+# and the environment is ignored. An absent file or key is empty; any other read failure (an unreadable file) returns
+# grep's status, so a caller guarding on the value can refuse instead of reading "nothing configured".
 cfg_file() {
-    local key=$1 file line value
+    local key=$1 file line value rc=0
     file="$(main_root)/.agent/config.env"
     [[ -f $file ]] || return 0
-    line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+    line=$(grep -E "^${key}=" "$file") || rc=$?
+    ((rc <= 1)) || return "$rc"
+    line=$(tail -n 1 <<<"$line")
     [[ -n $line ]] || return 0
     value=${line#*=}
     value=${value%$'\r'}
@@ -49,7 +52,7 @@ cfg() {
         printf '%s\n' "${!key}"
         return 0
     fi
-    value=$(cfg_file "$key")
+    value=$(cfg_file "$key") || value=""
     printf '%s\n' "${value:-$default}"
 }
 

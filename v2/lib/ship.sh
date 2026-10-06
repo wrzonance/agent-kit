@@ -155,10 +155,11 @@ ship_changed_list() {
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
 ship_protected() {
-    local base entries entry prefix path list fetch found=""
+    local base entries entry prefix path list fetch policy found=""
     # cfg_file reads .agent/config.env from the main checkout (main_root) and ignores the environment: neither a worker
     # editing its worktree nor AGENT_PROTECTED_PATHS=... on the command line can replace the list it is guarded by.
-    IFS=$', \t' read -ra entries <<<"$(cfg_file AGENT_PROTECTED_PATHS)"
+    policy=$(cfg_file AGENT_PROTECTED_PATHS) || return $?
+    IFS=$', \t' read -ra entries <<<"$policy"
     ((${#entries[@]})) || return 0
     base=$(work_base)
     printf -v fetch 'git fetch origin %q && ak ship --message '"'<message>'" "$base"
@@ -241,7 +242,8 @@ cmd_main() {
     base=$(work_base)
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
-    hit=$(ship_protected)
+    hit=$(ship_protected) ||
+        die "cannot read the protected-path policy in $(main_root)/.agent/config.env" "fix the file's permissions, then ak ship --message '<message>'"
     if [[ -n $hit ]]; then
         # The path is attacker-influenced text an agent may copy from the fix line: quote it, and drop control characters.
         hit=$(printf '%s' "$hit" | tr -d '[:cntrl:]')
