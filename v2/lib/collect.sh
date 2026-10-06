@@ -15,15 +15,64 @@ run_update() {
 # result_refresh KIND N: when the PR head moved past the worker's result (a base update, a merge-down), replace the
 # recorded ci with the live checks on the new head. A field root collected a stale ci=red after the head went green.
 result_refresh() {
-    local pr=$2 live runs
+    local pr=$2 live now runs pr_json mergeable ci=${r[ci]:-pending} start moves=0 grace=${AK_CI_GRACE:-180}
     [[ $1 == pr ]] || pr=${r[pr]##*/}
     [[ $pr =~ ^[0-9]+$ && -n ${r[head]:-} ]] || return 0
-    live=$(api "repos/$SLUG/pulls/$pr" | jq -r 'objects | .head.sha // empty' 2>/dev/null) || return 0
-    # A recorded red is read again even at the same head: a re-run check can turn it green without a new commit, and
-    # the successors it holds wait on exactly that.
-    [[ -n $live && ($live != "${r[head]}" || ${r[ci]:-} == red) ]] || return 0
-    runs=$(ci_runs "$live" 2>/dev/null) || return 0
-    r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
+    pr_json=$(api "repos/$SLUG/pulls/$pr" 2>/dev/null) || return 0
+    live=$(jq -r 'objects | .head.sha // empty' <<<"$pr_json" 2>/dev/null) || return 0
+    # A conflicted PR is not green: a stacked child goes dirty when its parent merges, with head and checks unchanged,
+    # and GitHub runs no PR checks on it. Unknown mergeability counts as clean here; the worker's ak ci handles it.
+    mergeable=$(jq -r 'objects | .mergeable_state // empty' <<<"$pr_json" 2>/dev/null) || mergeable=
+    if [[ $mergeable == dirty ]]; then
+        r[ci]=blocked
+        r[note]="PR #$pr conflicts with its base"
+        return 0
+    fi
+    # A recorded red or pending is read again even at the same head: a re-run check can turn red green without a new
+    # commit, and a merge-down worker's receipt can carry ci=pending (a field successor was spawned twice on a parent
+    # whose CI had not concluded). The successors it holds wait on exactly that.
+    [[ -n $live && ($live != "${r[head]}" || $ci == red || $ci == pending) ]] || return 0
+    RESULT_HEAD=$live
+    # Checks still running are waited on here, not handed back as a root turn: ci_wait holds this call until they
+    # conclude or AK_COLLECT_CI_TIMEOUT (default 1800 s) passes. The head is read again after each wait: a PR that
+    # advanced meanwhile has its new checks unread, so the wait moves to the new head (twice at most).
+    while :; do
+        start=$SECONDS
+        if ! runs=$(ci_wait "$live" "${AK_COLLECT_CI_TIMEOUT:-1800}" 0); then
+            # A failed live read keeps no recorded green: the item is held and read again on the next collect.
+            r[ci]=pending
+            r[note]="${r[note]:+${r[note]}; }ci read failed at ${live:0:7}"
+            return 0
+        fi
+        RESULT_WAITED=$((SECONDS - start))
+        pr_json=$(api "repos/$SLUG/pulls/$pr" 2>/dev/null) || pr_json=
+        now=$(jq -r 'objects | .head.sha // empty' <<<"$pr_json" 2>/dev/null) || now=
+        if [[ -z $now ]]; then
+            # An empty reread is not a stable head: the checks read above may belong to a head that has moved on.
+            r[ci]=pending
+            r[note]="${r[note]:+${r[note]}; }head reread failed at ${live:0:7}"
+            return 0
+        fi
+        mergeable=$(jq -r 'objects | .mergeable_state // empty' <<<"$pr_json" 2>/dev/null) || mergeable=
+        if [[ $mergeable == dirty ]]; then
+            r[ci]=blocked
+            r[note]="PR #$pr conflicts with its base"
+            return 0
+        fi
+        [[ $now == "$live" ]] && break
+        live=$now RESULT_HEAD=$now
+        if ((++moves > 2)); then
+            r[ci]=pending
+            r[note]="${r[note]:+${r[note]}; }head moved during the wait"
+            return 0
+        fi
+    done
+    if [[ $runs == '[]' ]] && ((RESULT_WAITED >= grace)); then
+        # No check run after the grace period: a repository without CI, which ak ci also reports as none.
+        r[ci]=none
+    else
+        r[ci]=$(ci_summary "$runs" | sed -E 's/^ci=([a-z]+).*/\1/')
+    fi
     [[ $live != "${r[head]}" ]] || return 0
     # The review stays: the head moves through base merges, not changes to the PR's own diff; the note says so.
     r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
@@ -41,6 +90,7 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
+    RESULT_HEAD=${r[head]:-} RESULT_WAITED=0
     result_refresh "$kind" "$n"
     RESULT_CI=${r[ci]:-}
     if [[ $kind == issue ]]; then
@@ -109,12 +159,31 @@ collect_item() {
     jq -c --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] // empty' "$3"
 }
 
-# collect_next STATE N WORKTREE: the one line that says how a parked or red issue continues. A field operator had to ask
-# for the commands after a park, and the root then finished the parked work itself instead of handing it to a worker.
+# collect_next STATE N WORKTREE: the one line that says how a parked, red or pending issue continues. A field operator
+# had to ask for the commands after a park, and the root then finished the parked work itself instead of handing it to
+# a worker.
 collect_next() {
-    local dirty
-    if [[ $1 == red ]]; then
-        emit "next=issue=$2 has red CI; get its PR green (ak ci in $3 prints the failing lines), then: ak collect --issue $2"
+    local dirty pr
+    if [[ $1 == red || $1 == blocked ]]; then
+        # The red PR goes to a PR worker: a field root told to "get its PR green" rebased and shipped in the worker's
+        # worktree itself. The number comes from the worker-written result and lands in a command the root runs, so
+        # only the digits of a well-formed PR URL reach the line.
+        pr=$(sed -n 's/^pr=//p' "$3/.ak/result" | head -n 1)
+        if [[ $pr =~ ^https?://[^[:space:]]+/([0-9]+)$ ]]; then
+            pr=${BASH_REMATCH[1]}
+            if [[ $1 == blocked ]]; then
+                emit "next=issue=$2 PR $pr conflicts with its base: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
+            else
+                emit "next=issue=$2 has red CI on PR $pr; hand it to a worker: ak pr-plan --pr $pr, spawn what it prints, then ak collect --pr $pr and ak collect --issue $2"
+            fi
+        else
+            local why='has red CI'
+            [[ $1 != blocked ]] || why='PR conflicts with its base'
+            emit "next=issue=$2 $why; hand its PR to a worker: ak pr-plan --pr <its PR number>, spawn what it prints, then ak collect --pr <its PR number> and ak collect --issue $2"
+        fi
+        return 0
+    elif [[ $1 == pending ]]; then
+        emit "next=issue=$2 CI is still pending on ${RESULT_HEAD:0:7} after ${RESULT_WAITED}s; collect again once it concludes"
         return 0
     fi
     dirty=$(git -C "$3" status --porcelain 2>/dev/null | wc -l)
@@ -215,11 +284,15 @@ cmd_main() {
     # (a field chain spawned two workers that only found the parked predecessor missing).
     if [[ $(sed -n 's/^pr=//p' "$worktree/.ak/result" | head -n 1) != http* ]]; then
         state=parked
-    elif [[ $kind == issue && $RESULT_CI == red ]]; then
+    elif [[ $kind == issue && $RESULT_CI =~ ^(red|blocked)$ ]]; then
         # A red predecessor releases nothing either: a field successor was spawned on a red branch, and every PR above
         # it would have inherited the failing check. The item goes back to spawned, so nothing queued counts it as
         # done (even if an earlier collect had) and the next collect reads CI again.
-        state=red
+        state=$RESULT_CI
+    elif [[ $kind == issue && ${RESULT_CI:-pending} == pending ]]; then
+        # A predecessor still pending after the wait is not done either: a merge-down worker's receipt can land before
+        # CI concludes, and a field successor was spawned twice on exactly that.
+        state=pending
     elif merge_up "$worktree"; then
         # Its own base moved while it worked: it goes back to its worker before anything is built on it.
         state=merge-up
@@ -230,7 +303,7 @@ cmd_main() {
         [[ $kind != issue || $state == merge-up ]] || collect_next "$state" "$n" "$worktree"
     fi
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
-        --arg s "$([[ $state == red || $state == merge-up ]] && echo spawned || echo "$state")"
+        --arg s "$([[ $state =~ ^(red|blocked|pending|merge-up)$ ]] && echo spawned || echo "$state")"
     [[ $state != collected ]] || merge_up_children "$worktree"
     [[ $kind != issue || $state != collected ]] || spawn_successors
     printf '%s\n' "${LINES[@]}"
