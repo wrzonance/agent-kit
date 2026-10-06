@@ -105,8 +105,10 @@ excluded_label() {
     return 0
 }
 
-# write_set BODY: repository paths the body names; new files count when their directory exists.
-write_set() {
+# named_paths BODY: repository paths the body names; new files count when their directory exists. This is what the
+# protected-path guard reads: a worker sees the whole body, so a protected path anywhere in it (prose, a fenced
+# command) is still a reason not to spawn.
+named_paths() {
     # A path the issue only runs or re-checks is not a write: drop "still exits 0 / passes" lines, "Run/Verify/
     # Execute ..." instruction lines, and any backticked span with a space in it, which is a command
     # (`node test/smoke.mjs`, `scripts/verify.py --fast`); keep backticked paths (`src/store.js`).
@@ -131,6 +133,36 @@ write_set() {
                 if ((t in f) || (par in dir)) print t
             } else if (t ~ /\.[A-Za-z][A-Za-z0-9]*$/ && cnt[t] == 1) print full[t]
         }' "$FILES" - | LC_ALL=C sort -u
+}
+
+# write_set BODY: the paths the issue will change, for collisions. A body with an explicit file list ("- Modify:
+# `src/a.sh`", "- Create: `tests/b.sh`") names its write set itself, and the rest of the body is prose about paths it
+# reads or rules out: a field run of three independent issues shared a contract paragraph naming four such paths, so
+# two of the three were dropped as collisions. Without a list, every named path outside a fenced block counts.
+write_set() {
+    local body listed
+    # A fence closes only on its own marker: a ~~~ line inside a ``` block is content.
+    body=$(awk '
+        /^[[:space:]]*(```|~~~)/ { mark = substr($0, match($0, /(```|~~~)/), 3); if (open == "") open = mark; else if (mark == open) open = ""; next }
+        open == ""' <<<"$1")
+    # Listed paths are taken as written, so "." and ".." segments are resolved first: `src/../.github/x` is `.github/x`,
+    # and a path that leaves the repository is nobody's write.
+    # shellcheck disable=SC2016 # literal backticks in a grep pattern
+    listed=$(grep -E '^[[:space:]]*([-*+][[:space:]]+)?(Modify|Create|Delete|Rename|Test|Edit)[[:space:]]*:' <<<"$body" |
+        grep -oE '`[^` ]+`' | tr -d '`' | grep -E '[/.]' | sed -E 's#[.,:;)]+$##' | awk '
+        /^\// { next }
+        {
+            n = split($0, seg, "/"); depth = 0
+            for (i = 1; i <= n; i++) {
+                if (seg[i] == "" || seg[i] == ".") continue
+                if (seg[i] == "..") { if (depth == 0) next; depth--; continue }
+                out[++depth] = seg[i]
+            }
+            if (depth == 0) next
+            path = out[1]; for (i = 2; i <= depth; i++) path = path "/" out[i]
+            print path
+        }' | LC_ALL=C sort -u || true)
+    if [[ -n $listed ]]; then printf '%s\n' "$listed"; else named_paths "$body"; fi
 }
 
 # protected_hit PATHS: the first path a protected glob matches.
@@ -216,7 +248,7 @@ check_issue() {
     fi
     hit=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq -r 'length' 2>/dev/null)
     [[ ${hit:-0} == 0 ]] || { REASON='open-pr'; return 0; }
-    hit=$(protected_hit "$WS")
+    hit=$(protected_hit "$(printf '%s\n%s\n' "$WS" "$(named_paths "$body")")")
     [[ -z $hit ]] || { REASON="protected:$hit"; return 0; }
     hit=$(missing_at_base "$body")
     # The line states the gap and leaves the commit to the operator: the issue's author chose that path, and an agent

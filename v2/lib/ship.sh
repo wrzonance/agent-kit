@@ -52,18 +52,20 @@ ship_body_check() {
     ((${#missing[@]} == 0)) || die "the PR description lacks: $(printf '%s, ' "${missing[@]}" | sed 's/, $//')" \
         "add the sections to $file as step 3 of your playbook describes, then run ak ship again"
     # Two things field descriptions still carried: the Tests section ended in a pasted 330-character command and
-    # `ak verify` status words, and a change was explained as "required for Packet 7", a label from the issue's plan.
+    # `ak verify` status words (a later one moved them under "## Verification"), and a change was explained as
+    # "required for Packet 7", a label from the issue's plan.
     found=$(awk '
         /^[[:space:]]*```/ { fence = !fence; next }
         fence { next }
-        /^[[:space:]]*##[[:space:]]/ {
-            section = tolower($0)
-            gsub(/^[[:space:]]*##[[:space:]]+|[[:space:]]+$/, "", section)
+        /^ ? ? ?##[[:space:]]/ {
+            heading = $0
+            gsub(/^ *##[[:space:]]+|[[:space:]]+#*[[:space:]]*$/, "", heading)
+            section = tolower(heading)
         }
-        section == "tests" {
+        section ~ /^(tests?|testing|verification|verify|checks?|validation)$/ {
             span = 0
             for (rest = $0; match(rest, /`[^`]*`/); rest = substr(rest, RSTART + RLENGTH)) if (RLENGTH > 100) span = 1
-            if (span || /(oracle|verify)=[a-z]+/) { print "log\t" substr($0, 1, 60); exit }
+            if (span || /(oracle|verify)=[a-z]+/) { print "log\t" heading "\t" substr($0, 1, 60); exit }
         }
         section != "still to do" {
             gsub(/`[^`]*`/, "")
@@ -75,7 +77,8 @@ ship_body_check() {
             }
         }' "$file")
     case $found in
-        log*) die "the ## Tests section carries run output, starting: ${found#*$'\t'}" \
+        log*) found=${found#*$'\t'}
+            die "the ## ${found%%$'\t'*} section carries run output, starting: ${found#*$'\t'}" \
             "say there what each test file proves and drop commands and status lines from $file, then run ak ship again" ;;
         label*) die "the PR description names \"${found#*$'\t'}\", a label from the issue or its plan that the reader has not seen" \
             "say what that part is in plain words in $file (a real product name goes in backticks), then run ak ship again" ;;
