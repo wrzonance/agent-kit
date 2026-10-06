@@ -21,7 +21,7 @@ runs() { # STATUS:CONCLUSION...
     printf '{"total_count":%d,"check_runs":[%s]}' "$#" "${items%,}"
 }
 green=$(runs 'completed:"success"' 'completed:"skipped"' 'completed:"neutral"')
-route "api $api/commits/*/check-runs?per_page=100" '{"check_runs":[]}'
+route "api $api/commits/*/check-runs?per_page=100 --paginate" '{"check_runs":[]}'
 
 route "api $api/pulls/21" "$(pr_json 21 feat/x main true)"
 route "api --paginate $api/commits/sha21/check-runs*" "$green"
@@ -68,6 +68,40 @@ log=$(cat "$FAKE_GH_LOG")
 assert_contains "$log" 'pr ready 21 --repo acme/widget' 'a draft is marked ready'
 assert_contains "$log" "api -X PUT $api/pulls/21/merge -f merge_method=squash -f sha=sha21" 'the merge is pinned to the checked head'
 assert_contains "$log" "api -X DELETE $api/git/refs/heads/feat/x" 'the head branch is deleted'
+
+# A required check with no completed run on the head refuses the merge (field run 2026-10-05: a conflicted stacked PR
+# got only CodeQL and a push lint on its head, and every reader called it green).
+: >"$FAKE_GH_LOG"
+out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'a missing required check refuses the merge'
+assert_contains "$out" 'checks are not green on sha21: missing=Installer' 'the refusal names the missing check'
+assert_contains "$out" 'fix: ak ci --once' 'the required-check refusal names ak ci --once'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'nothing is merged without the required check'
+out=$(AGENT_REQUIRED_CHECKS='job-completed' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required check that completed on the head merges'
+
+# The first matching route wins, so the punctuated run list goes in front of the shared ones.
+cp "$FAKE_GH_ROUTES" "$WORK/routes.keep"
+: >"$FAKE_GH_ROUTES"
+route "api --paginate $api/commits/sha21/check-runs*" '{"check_runs":[{"name":"build:test","status":"completed","conclusion":"success"}]}'
+cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required name with punctuation matches the run it names'
+# The sanitised spelling of another run does not stand in for the required name.
+: >"$FAKE_GH_ROUTES"
+route "api --paginate $api/commits/sha21/check-runs*" '{"check_runs":[{"name":"buildtest","status":"completed","conclusion":"success"}]}'
+cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'a run named buildtest does not satisfy a required build:test'
+assert_contains "$out" 'missing=buildtest' 'the refusal names the missing check'
+# A skipped run does not satisfy a required name.
+: >"$FAKE_GH_ROUTES"
+route "api --paginate $api/commits/sha21/check-runs*" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"skipped"}]}'
+cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS='lint' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'a skipped run does not satisfy a required check'
+assert_contains "$out" 'missing=lint' 'the refusal names the skipped required check'
+cp "$WORK/routes.keep" "$FAKE_GH_ROUTES"
 
 for n in 22 23 29; do
     : >"$FAKE_GH_LOG"
@@ -145,7 +179,7 @@ assert_eq no "$([[ -d $repo/.ak/locks/merge-24 ]] && echo yes || echo no)" 'a fi
 : >"$FAKE_GH_ROUTES"
 route "api $api/pulls/40" "$(pr_json 40 feat/t main)"
 route "api --paginate $api/commits/sha40/check-runs*" "$green"
-route "api $api/commits/*/check-runs?per_page=100" "$green"
+route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
 route 'api graphql -F owner=acme -F name=widget -F n=40 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"path":"src/a.cs","line":294,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch clause\nmore"}]}},{"id":"T2","isResolved":false,"path":"src/a.cs","line":231,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch"}]}},{"id":"T3","isResolved":true,"path":"src/b.cs","line":1,"comments":{"nodes":[{"author":{"login":"alice"},"body":"done"}]}}]}}}}}'
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
 : >"$FAKE_GH_LOG"
@@ -162,7 +196,7 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=squash' 'nothing is me
 route "api $api/pulls/43" "$(pr_json 43 feat/docs feat/parked)"
 route "api $api/pulls/44" "$(pr_json 44 feat/docs2 feat/empty)"
 route "api --paginate $api/commits/sha4*/check-runs*" "$green"
-route "api $api/commits/*/check-runs?per_page=100" "$green"
+route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
 route "api $api/pulls?state=*" '[]'
 route "api $api/compare/main...feat/parked*" '2'
 route "api $api/compare/main...feat/empty*" '0'
