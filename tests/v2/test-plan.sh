@@ -253,6 +253,16 @@ assert_contains "$out" 'spawn issue=821' 'the first listed issue spawns'
 assert_contains "$out" 'spawn issue=822' 'shared prose and fenced paths outside the list do not collide'
 assert_contains "$out" 'drop issue=823 reason=collides-with-#821' 'a listed path shared with an earlier list still collides'
 assert_contains "$out" 'spawn issue=825' 'without a list, a path inside a fenced block is not a write'
+# The list narrows collisions, never the protected-path guard: a worker reads the whole body.
+fresh
+# shellcheck disable=SC2016
+issue_route 826 "$(printf 'Owned paths:\n\n- Modify: `src/a.txt`\n\nAlso edit .github/workflows/ci.yml to add the step.')"
+# shellcheck disable=SC2016
+issue_route 827 "$(printf 'Change `src/b.txt`.\n\n```\nsed -i s/a/b/ .github/workflows/ci.yml\n```')"
+default_routes
+out=$("$AK" plan --issue 826 --issue 827 2>&1)
+assert_contains "$out" 'drop issue=826 reason=protected:.github/workflows/ci.yml' 'a protected path outside the list still drops'
+assert_contains "$out" 'drop issue=827 reason=protected:.github/workflows/ci.yml' 'a protected path inside a fenced block still drops'
 # shellcheck disable=SC2016
 ws=$(cd "$repo" && bash -c '
     AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
