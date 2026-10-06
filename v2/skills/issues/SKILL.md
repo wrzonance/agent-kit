@@ -15,7 +15,8 @@ Each `ak` command prints what you need next; there is no need to read its script
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
 3. Wait with your harness's native wait, using the longest window it allows. Do not poll or refresh anything
    between waits. A wait that ends with nothing finished needs no words: wait again. A worker's progress
-   messages need no reply, relay or help: it owns its review, CI and threads until it reports.
+   messages need no reply, relay or help: it owns its review, CI and threads until it reports. Answer a
+   worker only when it asks you something.
 4. When a worker finishes, run `ak collect --issue N`. Spawn a worker for every `spawn` line it prints, the same
    way as step 2. A `next=` line from collect is the operator's step for a parked or red issue: put it in the
    report as printed; the command it ends with hands the rest to a worker.
