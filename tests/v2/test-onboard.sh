@@ -86,7 +86,8 @@ printf '[project]\nname="api"\n' >api/pyproject.toml && : >api/uv.lock
 printf '{"scripts":{"test":"vitest"}}\n' >web/package.json && : >web/pnpm-lock.yaml
 printf 'module jobs\n' >services/jobs/go.mod
 mkdir -p tools/site && printf '{"name":"site"}\n' >tools/site/package.json && : >tools/site/package-lock.json
-git add Makefile api web services tools && git commit -q -m mono
+mkdir -p 'x;id' && printf 'module x\n' >'x;id/go.mod'
+git add Makefile api web services tools 'x;id' && git commit -q -m mono
 linked_route '[]'
 out=$("$AK" onboard 2>&1); rc=$?
 assert_eq 0 "$rc" 'a monorepo onboards'
@@ -96,8 +97,17 @@ assert_contains "$out" $'\nAGENT_CMD_WEB=pnpm test\nAGENT_RUNDIR_WEB=web\n' 'a p
 assert_contains "$out" $'\nAGENT_CMD_SERVICES_JOBS=go test ./...\nAGENT_RUNDIR_SERVICES_JOBS=services/jobs\n' 'a nested go module is a suite named by its path'
 assert_contains "$out" $'\nAGENT_CMD_SETUP=(cd api && uv sync) && (cd web && pnpm install --frozen-lockfile)\n' 'suite installs compose the setup when the root has none'
 assert_not_contains "$out" 'tools/site' 'a package.json with no test script is neither a suite nor an install'
+assert_not_contains "$out" 'x;id' 'a directory name with shell characters never reaches a command'
 assert_eq "$(printf '%s\n' AGENT_BASE_BRANCH AGENT_CMD_API AGENT_CMD_SERVICES_JOBS AGENT_CMD_SETUP AGENT_CMD_TEST AGENT_CMD_WEB AGENT_REPO_SLUG AGENT_RUNDIR_API AGENT_RUNDIR_SERVICES_JOBS AGENT_RUNDIR_WEB)" \
     "$(grep -oE '^AGENT_[A-Z_]+' .agent/config.env | LC_ALL=C sort)" 'the file holds exactly the discovered keys'
+
+# --- a config behind a symlink is refused ---
+mv .agent/config.env "$WORK/real.env" && ln -s "$WORK/real.env" .agent/config.env
+out=$("$AK" onboard 2>&1); rc=$?
+assert_eq 1 "$rc" 'a symlinked config exits 1'
+assert_contains "$out" $'behind a symlink, which onboard will not write through\nfix: rm .agent/config.env' 'the refusal names the symlink and the fix'
+assert_eq "$(cat "$WORK/real.env")" "$(cat .agent/config.env)" 'nothing was written through the link'
+rm .agent/config.env && mv "$WORK/real.env" .agent/config.env
 
 # --- an untracked config is excluded from git; a tracked one is left alone ---
 assert_rc 0 'an untracked .agent/ is ignored' -- git check-ignore -q .agent/config.env

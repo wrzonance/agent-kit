@@ -52,7 +52,8 @@ onboard_commands() {
 onboard_suite_dirs() {
     git ls-files -- '*/package.json' '*/pyproject.toml' '*/setup.cfg' '*/setup.py' '*/Cargo.toml' '*/go.mod' \
         '*/Gemfile' '*/Makefile' '*/*.sln' '*/*.csproj' 2>/dev/null |
-        awk -F/ 'NF > 1 && NF <= 3 && $1 !~ /^\./ { NF--; print }' OFS=/ | LC_ALL=C sort -u
+        awk -F/ 'NF > 1 && NF <= 3 && $1 !~ /^\./ { NF--; print }' OFS=/ | LC_ALL=C sort -u |
+        grep -E '^[A-Za-z0-9._][A-Za-z0-9._/-]*$' || true  # the path lands in a command ak setup runs: plain characters only
 }
 
 # onboard_toolchain: queue SETUP, TEST and one suite per toolchain directory; `none` when nothing was found.
@@ -139,6 +140,7 @@ cmd_main() {
     [[ -z $project$owner || ($project =~ ^[0-9]+$ && -n $owner) ]] || usage_die 'usage: ak onboard [--project N --owner O]'
     cd -- "$(main_root)" || exit 1
     FILE=.agent/config.env KEPT=0 LINES=() NOTES=()
+    [[ ! -L .agent && ! -L $FILE ]] || die "$FILE is behind a symlink, which onboard will not write through" "rm $FILE"
     onboard_set AGENT_REPO_SLUG "$(slug)"
     base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
     [[ -n $base ]] || base=origin/$(gh api "repos/$(slug)" --jq .default_branch 2>/dev/null || echo main)
