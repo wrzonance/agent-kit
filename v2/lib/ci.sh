@@ -54,16 +54,22 @@ ci_summary() {
 
 # ci_blocked: refuse while the branch's open PR conflicts with its base. GitHub runs no pull_request workflow on such a
 # PR, so the head's checks are not the PR's (field run 2026-10-05: a parent's squash-merge left its child dirty, the
-# child read as green and the next issue was spawned on it). No open PR, or no answer, is today's path.
+# child read as green and the next issue was spawned on it). No open PR is today's path; so is an API failure, named on
+# stderr so the gap is visible rather than read as "no PR".
 ci_blocked() {
-    local slug n json base
+    local slug list n json base
     slug=$(slug)
-    n=$(gh api "repos/$slug/pulls?head=${slug%%/*}:$(git branch --show-current)&state=open" 2>/dev/null |
-        jq -r '.[0].number // empty' 2>/dev/null) || return 0
-    [[ -n $n ]] || return 0
-    json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) || return 0
+    list=$(gh api "repos/$slug/pulls?head=${slug%%/*}:$(git branch --show-current)&state=open" 2>/dev/null) ||
+        { printf "note=could not list the branch's PR; judging the head's checks alone\n" >&2; return 0; }
+    n=$(jq -r '.[0].number // empty' <<<"$list" 2>/dev/null) || n=''
+    [[ $n =~ ^[0-9]+$ ]] || return 0
+    json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) ||
+        { printf "note=could not read PR #%s state; judging the head's checks alone\n" "$n" >&2; return 0; }
     [[ $(jq -r '.mergeable_state // ""' <<<"$json") == dirty ]] || return 0
-    base=$(jq -r '.base.ref // "main"' <<<"$json")
+    # The base name is PR text on its way into a command the agent runs: an odd one is described, not echoed.
+    base=$(jq -r '.base.ref // ""' <<<"$json")
+    [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
+        die "ci=blocked note=PR #$n conflicts with its base branch, so GitHub runs no PR checks" "git fetch origin && git merge origin/<its base branch>"
     die "ci=blocked note=PR #$n conflicts with $base, so GitHub runs no PR checks" "git fetch origin && git merge origin/$base"
 }
 

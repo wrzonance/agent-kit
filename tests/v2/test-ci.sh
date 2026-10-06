@@ -13,7 +13,8 @@ head=$(git rev-parse HEAD)
 checks="api repos/acme/widget/commits/$head/check-runs?per_page=100"
 export AK_CI_INTERVAL=0
 
-set_checks() { : >"$FAKE_GH_ROUTES"; route "$checks" "$1"; }
+prs='api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open'
+set_checks() { : >"$FAKE_GH_ROUTES"; route "$checks" "$1"; route "$prs" '[]'; }
 
 set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"docs","status":"completed","conclusion":"skipped"}]}'
 out=$("$AK" ci 2>&1); rc=$?
@@ -55,9 +56,8 @@ out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" ci --once 2>&1)
 assert_contains "$out" 'missing=Installer' 'a required check still running has no completed run'
 
 # A PR that conflicts with its base gets no pull_request workflow from GitHub: a green head there is not the PR's green.
-set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
-route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":12}]'
-route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"dirty","base":{"ref":"main"}}'
+set_pr() { : >"$FAKE_GH_ROUTES"; route "$checks" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'; route "$prs" '[{"number":12}]'; route 'api repos/acme/widget/pulls/12' "$1" "${2:-0}"; }
+set_pr '{"number":12,"mergeable_state":"dirty","base":{"ref":"main"}}'
 : >"$FAKE_GH_LOG"
 out=$("$AK" ci 2>&1); rc=$?
 assert_eq 1 "$rc" 'a PR that conflicts with its base is blocked'
@@ -65,12 +65,28 @@ assert_contains "$out" 'ci=blocked note=PR #12 conflicts with main, so GitHub ru
 assert_contains "$out" 'fix: git fetch origin && git merge origin/main' 'the fix merges the base in'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'check-runs' 'no check runs are read for a blocked PR'
 assert_eq 1 "$(grep -c 'pulls/12$' "$FAKE_GH_LOG")" 'the PR is read once'
-set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
-route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":12}]'
-route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"clean","base":{"ref":"main"}}'
+set_pr '{"number":12,"mergeable_state":"clean","base":{"ref":"main"}}'
 out=$("$AK" ci 2>&1); rc=$?
 assert_eq 0 "$rc" 'a mergeable PR takes the usual path'
 assert_eq 'ci=green checks=1 failing=' "$out" 'a mergeable PR prints the summary alone'
+# The base name comes from the PR and lands in a command the agent runs; an odd one is not echoed.
+set_pr '{"number":12,"mergeable_state":"dirty","base":{"ref":"main; rm -rf x"}}'
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 1 "$rc" 'a dirty PR with an odd base name is still blocked'
+assert_contains "$out" 'conflicts with its base branch, so GitHub runs no PR checks' 'the note says its base branch, not the raw value'
+assert_contains "$out" 'fix: git fetch origin && git merge origin/<its base branch>' 'the fix line says its base branch, not the raw value'
+assert_not_contains "$out" 'rm -rf' 'the raw base name is not printed'
+# An API failure must not pass silently as "no PR": the gap is named, then the head's checks are judged as before.
+set_pr '' 1
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 0 "$rc" 'an unreadable PR state still judges the checks'
+assert_contains "$out" "note=could not read PR #12 state; judging the head's checks alone" 'the unreadable PR state is named'
+assert_contains "$out" 'ci=green checks=1 failing=' 'the checks are read after the note'
+: >"$FAKE_GH_ROUTES"
+route "$checks" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 0 "$rc" 'a failed PR listing still judges the checks'
+assert_contains "$out" "note=could not list the branch's PR; judging the head's checks alone" 'the failed listing is named'
 
 # ak ci from the main checkout read main's head and told the root to ak ship (field run 2026-10-05).
 out=$(cd "$repo" && "$AK" ci --once 2>&1); rc=$?
