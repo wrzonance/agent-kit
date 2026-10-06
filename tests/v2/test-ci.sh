@@ -38,6 +38,48 @@ set_checks '{"check_runs":[{"name":"test","status":"in_progress","conclusion":"s
 out=$("$AK" ci --once 2>&1); rc=$?
 assert_eq 0 "$rc" 'a conclusion counts as completed even when status lags'
 
+# A required check with no completed run keeps the head pending (field run 2026-10-05: a stacked PR went dirty when its
+# parent squash-merged, GitHub ran no pull_request workflow, and CodeQL plus a push lint read as ci=green).
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" ci --once 2>&1); rc=$?
+assert_eq 3 "$rc" 'a missing required check is pending'
+assert_eq 'ci=pending checks=1 failing= missing=Installer' "$out" 'the summary names the missing check'
+out=$(AGENT_REQUIRED_CHECKS='lint, Installer' "$AK" ci --timeout 0 2>&1); rc=$?
+assert_eq 3 "$rc" 'the wait ends pending while a required check is missing'
+assert_contains "$out" 'missing=Installer' 'a comma list names only the absent check'
+out=$(AGENT_REQUIRED_CHECKS=lint "$AK" ci --once 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required check that completed is green'
+assert_eq 'ci=green checks=1 failing=' "$out" 'a satisfied requirement adds nothing to the line'
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"Installer","status":"in_progress","conclusion":null}]}'
+out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" ci --once 2>&1)
+assert_contains "$out" 'missing=Installer' 'a required check still running has no completed run'
+
+# A PR that conflicts with its base gets no pull_request workflow from GitHub: a green head there is not the PR's green.
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":12}]'
+route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"dirty","base":{"ref":"main"}}'
+: >"$FAKE_GH_LOG"
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 1 "$rc" 'a PR that conflicts with its base is blocked'
+assert_contains "$out" 'ci=blocked note=PR #12 conflicts with main, so GitHub runs no PR checks' 'blocked names the PR and its base'
+assert_contains "$out" 'fix: git fetch origin && git merge origin/main' 'the fix merges the base in'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'check-runs' 'no check runs are read for a blocked PR'
+assert_eq 1 "$(grep -c 'pulls/12$' "$FAKE_GH_LOG")" 'the PR is read once'
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":12}]'
+route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"clean","base":{"ref":"main"}}'
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 0 "$rc" 'a mergeable PR takes the usual path'
+assert_eq 'ci=green checks=1 failing=' "$out" 'a mergeable PR prints the summary alone'
+
+# ak ci from the main checkout read main's head and told the root to ak ship (field run 2026-10-05).
+out=$(cd "$repo" && "$AK" ci --once 2>&1); rc=$?
+assert_eq 1 "$rc" 'ak ci on the base branch is refused'
+assert_contains "$out" "ak ci runs in the PR's worktree" 'the refusal says where ak ci runs'
+assert_contains "$out" "fix: cd $repo/.worktrees/<branch> && ak ci" 'the fix names the worktree'
+out=$(cd "$repo" && AGENT_WORKTREE_ROOT=wt "$AK" ci --once 2>&1)
+assert_contains "$out" "fix: cd $repo/wt/<branch> && ak ci" 'the worktree root comes from config'
+
 log=$'2026-09-30T10:00:00.0000000Z \033[31mERROR one\033[0m\nnoise\n'
 for i in 2 3 4 5 6 7 8 9 10 11; do log+="##[error]line $i"$'\n'; done
 set_checks '{"check_runs":[{"name":"test","status":"completed","conclusion":"failure","details_url":"https://github.com/acme/widget/actions/runs/5/job/77"},{"name":"ext","status":"completed","conclusion":"failure","html_url":"https://example.invalid/x"},{"name":"ok","status":"completed","conclusion":"success"}]}'

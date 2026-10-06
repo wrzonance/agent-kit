@@ -8,6 +8,9 @@ ci_head() {
     local head branch remote
     head=$(git rev-parse HEAD)
     branch=$(git branch --show-current)
+    # From the main checkout it read main's head and sent the root to ak ship (field run 2026-10-05).
+    [[ $branch != "$(base_branch)" ]] ||
+        die "ak ci runs in the PR's worktree" "cd $(main_root)/$(cfg AGENT_WORKTREE_ROOT .worktrees)/<branch> && ak ci"
     remote=$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)
     [[ $remote == "$head" ]] ||
         die "HEAD ${head:0:12} is not pushed to origin/$branch" "ak ship --message '<conventional commit>'"
@@ -27,11 +30,41 @@ ci_runs() {
         url: (.details_url // .html_url // "")}]' <<<"$json"
 }
 
-# ci_summary RUNS: "ci=STATE checks=N failing=a,b". No runs yet counts as pending.
+# ci_missing DONE: the AGENT_REQUIRED_CHECKS names (comma/space list) without a completed run in DONE (one name per
+# line), comma-joined. A stacked PR that conflicted with its base got no pull_request workflow, and its head read as
+# green on CodeQL and a push lint alone (field run 2026-10-05).
+ci_missing() {
+    local names name out=''
+    IFS=', ' read -ra names <<<"$(cfg AGENT_REQUIRED_CHECKS)"
+    for name in "${names[@]}"; do
+        [[ -z $name ]] || grep -qxF -- "$name" <<<"$1" || out+="${out:+,}$name"
+    done
+    printf '%s\n' "$out"
+}
+
+# ci_summary RUNS: "ci=STATE checks=N failing=a,b [missing=c]". No runs yet, or a required check without a completed
+# run, counts as pending.
 ci_summary() {
-    jq -r '(length) as $n | (map(select(.done and .bad) | .name) | join(",")) as $f
-        | (if $n == 0 or any(.[]; .done | not) then "pending" elif $f != "" then "red" else "green" end) as $s
-        | "ci=\($s) checks=\($n) failing=\($f)"' <<<"$1"
+    local missing
+    missing=$(ci_missing "$(jq -r '.[] | select(.done) | .name' <<<"$1")")
+    jq -r --arg m "$missing" '(length) as $n | (map(select(.done and .bad) | .name) | join(",")) as $f
+        | (if $n == 0 or $m != "" or any(.[]; .done | not) then "pending" elif $f != "" then "red" else "green" end) as $s
+        | "ci=\($s) checks=\($n) failing=\($f)" + (if $m == "" then "" else " missing=\($m)" end)' <<<"$1"
+}
+
+# ci_blocked: refuse while the branch's open PR conflicts with its base. GitHub runs no pull_request workflow on such a
+# PR, so the head's checks are not the PR's (field run 2026-10-05: a parent's squash-merge left its child dirty, the
+# child read as green and the next issue was spawned on it). No open PR, or no answer, is today's path.
+ci_blocked() {
+    local slug n json base
+    slug=$(slug)
+    n=$(gh api "repos/$slug/pulls?head=${slug%%/*}:$(git branch --show-current)&state=open" 2>/dev/null |
+        jq -r '.[0].number // empty' 2>/dev/null) || return 0
+    [[ -n $n ]] || return 0
+    json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) || return 0
+    [[ $(jq -r '.mergeable_state // ""' <<<"$json") == dirty ]] || return 0
+    base=$(jq -r '.base.ref // "main"' <<<"$json")
+    die "ci=blocked note=PR #$n conflicts with $base, so GitHub runs no PR checks" "git fetch origin && git merge origin/$base"
 }
 
 # ci_wait SHA TIMEOUT ONCE: prints the final RUNS array after polling.
@@ -150,6 +183,7 @@ cmd_main() {
     [[ $timeout =~ ^[0-9]+$ ]] || usage_die "--timeout must be whole seconds"
     cd -- "$(worktree_root)" || exit 1
     sha=$(ci_head)
+    ci_blocked
     runs=$(ci_wait "$sha" "$timeout" "$once")
     line=$(ci_summary "$runs")
     if [[ $runs == '[]' && $once == 0 ]]; then

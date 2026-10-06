@@ -69,6 +69,17 @@ assert_contains "$log" 'pr ready 21 --repo acme/widget' 'a draft is marked ready
 assert_contains "$log" "api -X PUT $api/pulls/21/merge -f merge_method=squash -f sha=sha21" 'the merge is pinned to the checked head'
 assert_contains "$log" "api -X DELETE $api/git/refs/heads/feat/x" 'the head branch is deleted'
 
+# A required check with no completed run on the head refuses the merge (field run 2026-10-05: a conflicted stacked PR
+# got only CodeQL and a push lint on its head, and every reader called it green).
+: >"$FAKE_GH_LOG"
+out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 1 "$rc" 'a missing required check refuses the merge'
+assert_contains "$out" 'checks are not green on sha21: missing=Installer' 'the refusal names the missing check'
+assert_contains "$out" 'fix: ak ci --once' 'the required-check refusal names ak ci --once'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'nothing is merged without the required check'
+out=$(AGENT_REQUIRED_CHECKS='job-completed' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required check that completed on the head merges'
+
 for n in 22 23 29; do
     : >"$FAKE_GH_LOG"
     out=$("$AK" merge --pr "$n" 2>&1); rc=$?
