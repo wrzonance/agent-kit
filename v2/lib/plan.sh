@@ -141,10 +141,27 @@ named_paths() {
 # two of the three were dropped as collisions. Without a list, every named path outside a fenced block counts.
 write_set() {
     local body listed
-    body=$(awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence' <<<"$1")
+    # A fence closes only on its own marker: a ~~~ line inside a ``` block is content.
+    body=$(awk '
+        /^[[:space:]]*(```|~~~)/ { mark = substr($0, match($0, /(```|~~~)/), 3); if (open == "") open = mark; else if (mark == open) open = ""; next }
+        open == ""' <<<"$1")
+    # Listed paths are taken as written, so "." and ".." segments are resolved first: `src/../.github/x` is `.github/x`,
+    # and a path that leaves the repository is nobody's write.
     # shellcheck disable=SC2016 # literal backticks in a grep pattern
     listed=$(grep -E '^[[:space:]]*([-*+][[:space:]]+)?(Modify|Create|Delete|Rename|Test|Edit)[[:space:]]*:' <<<"$body" |
-        grep -oE '`[^` ]+`' | tr -d '`' | grep -E '[/.]' | sed -E 's#^(\./)+##; s#[.,:;)]+$##' | LC_ALL=C sort -u || true)
+        grep -oE '`[^` ]+`' | tr -d '`' | grep -E '[/.]' | sed -E 's#[.,:;)]+$##' | awk '
+        /^\// { next }
+        {
+            n = split($0, seg, "/"); depth = 0
+            for (i = 1; i <= n; i++) {
+                if (seg[i] == "" || seg[i] == ".") continue
+                if (seg[i] == "..") { if (depth == 0) next; depth--; continue }
+                out[++depth] = seg[i]
+            }
+            if (depth == 0) next
+            path = out[1]; for (i = 2; i <= depth; i++) path = path "/" out[i]
+            print path
+        }' | LC_ALL=C sort -u || true)
     if [[ -n $listed ]]; then printf '%s\n' "$listed"; else named_paths "$body"; fi
 }
 

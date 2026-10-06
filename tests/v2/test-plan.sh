@@ -269,6 +269,12 @@ ws=$(cd "$repo" && bash -c '
     FILES=$(mktemp); git ls-files >"$FILES"
     write_set "$2"' _ "$REPO/v2" "$(printf -- '- Modify: `src/a.txt`, `./src/b.txt`.\n- Create: `deploy/native/lock.json`\n- Test: `tests/t.sh`\nAlso see lib/core.sh.')")
 assert_eq $'deploy/native/lock.json\nsrc/a.txt\nsrc/b.txt\ntests/t.sh' "$ws" 'listed paths are taken as written, new directories included, and prose paths are left out'
+# shellcheck disable=SC2016
+ws=$(cd "$repo" && bash -c '
+    AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    FILES=$(mktemp); git ls-files >"$FILES"
+    write_set "$2"' _ "$REPO/v2" "$(printf -- '- Modify: `src/../.github/workflows/ci.yml`, `lib/./core.sh`, `../outside.txt`, `/etc/passwd`\n```sh\n~~~\n```\n- Create: `src/c.txt`')")
+assert_eq $'.github/workflows/ci.yml\nlib/core.sh\nsrc/c.txt' "$ws" 'listed paths are normalised, paths that leave the repository are dropped, and a ~~~ inside a backtick fence does not close it'
 
 # A spawn whose worker never started does not block re-planning once the grace has passed (field run: a lost plan
 # output left five never-started spawns that every later plan skipped as running); a started worker still does.
