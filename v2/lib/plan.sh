@@ -166,10 +166,13 @@ write_set() {
 }
 
 # protected_hit PATHS: the first path a protected entry matches. An entry with no glob character is a directory
-# prefix with or without its trailing slash (a field run shipped two ADR edits past `docs/adrs`).
+# prefix with or without its trailing slash (a field run shipped two ADR edits past `docs/adrs`); `/`, `.`, `./` and
+# an empty item protect nothing rather than everything.
 protected_hit() {
     local path glob prefix
     while IFS= read -r glob; do
+        glob=${glob#./}
+        [[ -n $glob && $glob != / && $glob != . ]] || continue
         prefix=${glob%/}/
         [[ $glob == *[*?[]* ]] && prefix=
         while IFS= read -r path; do

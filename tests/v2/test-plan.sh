@@ -312,6 +312,26 @@ out=$("$AK" plan --issue 831 --issue 832 --issue 833 2>&1)
 assert_contains "$out" 'drop issue=831 reason=protected:docs/adrs/adr-001.md' 'a bare directory entry protects its subpaths'
 assert_contains "$out" 'spawn issue=832' 'a bare directory entry does not match a sibling that shares its prefix'
 assert_contains "$out" 'drop issue=833 reason=protected:.github/workflows/ci.yml' 'a glob entry still matches beside a bare one'
+# protected_hit per entry shape: trailing slash and bare entries are prefixes, globs stay globs, `/`, `.`, `./`
+# and an empty item protect nothing, and a leading `./` is stripped like a listed path's.
+ph() {
+    AGENT_PROTECTED_PATHS=$1 bash -c 'AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"; protected_hit "$2"' _ "$REPO/v2" "$2"
+}
+assert_eq 'docs/adrs/x.md' "$(ph 'docs/adrs/' 'docs/adrs/x.md')" 'a trailing-slash entry protects its subpaths'
+assert_eq '' "$(ph 'docs/adrs/' 'docs/adrs-old/x.md')" 'a trailing-slash entry does not match a sibling prefix'
+assert_eq 'docs/adrs' "$(ph 'docs/adrs' 'docs/adrs')" 'a bare entry protects the exact path'
+assert_eq 'docs/adrs/x.md' "$(ph 'docs/adrs' 'docs/adrs/x.md')" 'a bare entry protects its subpaths'
+assert_eq '' "$(ph 'docs/adrs' $'docs/adrsx\ndocs/adrsx/y')" 'a bare entry does not match a sibling prefix'
+assert_eq '.github/workflows/ci.yml' "$(ph '.github/**' '.github/workflows/ci.yml')" 'a ** glob still matches'
+assert_eq '' "$(ph '.github/**' $'.github\n.githubx/y')" 'a ** glob is not a prefix'
+assert_eq 'src/a.sh' "$(ph 'src/*.sh' $'src/a.txt\nsrc/a.sh')" 'a * glob still matches'
+assert_eq '' "$(ph 'src/*.sh' $'src\nlib/a.sh')" 'a * glob is not a prefix'
+for entry in '/' '.' './' '' '.github/**,,docs/adrs' ' , '; do
+    assert_eq '' "$(ph "$entry" $'src/a.txt\n.\n/')" "entry '$entry' protects nothing"
+done
+assert_eq 'docs/adrs/x.md' "$(ph './docs/adrs' 'docs/adrs/x.md')" 'a leading ./ is stripped from a bare entry'
+assert_eq 'docs/adrs/x.md' "$(ph './docs/adrs/' 'docs/adrs/x.md')" 'a leading ./ is stripped from a trailing-slash entry'
+assert_eq 'src/a.sh' "$(ph './src/*.sh' 'src/a.sh')" 'a leading ./ is stripped from a glob entry'
 # shellcheck disable=SC2016
 ws=$(cd "$repo" && bash -c '
     AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
