@@ -249,6 +249,77 @@ assert_contains "$out" 'merge-up issue=680 ' 'a child that reports on a stale ba
 assert_not_contains "$out" 'next=' 'a merge-up is not an operator step'
 assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and counts as running, so nothing is built on it'
 
+# CI states that are not plain red or green. Each case starts from a shipped 671 with 680 queued behind it.
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671"
+base_routes=$(cat "$FAKE_GH_ROUTES")
+printf 'x\n' >"$wt/src/a.txt"
+git -C "$wt" commit -qam work && git -C "$wt" push -q
+sha=$(git -C "$wt" rev-parse HEAD)
+printf '[]' >"$WORK/none.json"
+# case_routes PR_FILE RUNS_SHA RUNS_FILE: the routes one case answers with.
+case_routes() {
+    printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\napi repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t%s\t0\n%s\n' \
+        "$1" "$2" "$3" "$WORK/none.json" "$base_routes" >"$FAKE_GH_ROUTES"
+}
+write_result() { printf 'pr=https://github.com/acme/widget/pull/9\nci=%s\nreview=done\nhead=%s\nnote=n\n' "$1" "$sha" >"$wt/.ak/result"; }
+
+# A conflicted PR is not green: a stacked child goes dirty when its parent merges, head and checks unchanged.
+write_result green
+printf '{"number":9,"mergeable_state":"dirty","head":{"sha":"%s"}}' "$sha" >"$WORK/pr9-dirty.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-ok.json"
+case_routes "$WORK/pr9-dirty.json" "$sha" "$WORK/runs-ok.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=blocked' 'a dirty PR reports ci=blocked'
+assert_contains "$out" 'note=PR #9 conflicts with its base' 'and says why'
+assert_contains "$out" 'after issue=680 reason=waits-on-blocked-#671' 'a conflicted PR holds its successor'
+assert_not_contains "$out" 'spawn issue=680' 'a conflicted PR spawns no successor'
+assert_contains "$out" 'next=issue=671 PR 9 conflicts with its base: ak pr-plan --pr 9, spawn what it prints, then ak collect --pr 9 and ak collect --issue 671' 'a conflict hands the PR to a worker'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'a conflicted issue goes back to spawned'
+
+# Unknown mergeability counts as not dirty.
+printf '{"number":9,"mergeable_state":"unknown","head":{"sha":"%s"}}' "$sha" >"$WORK/pr9-unknown.json"
+case_routes "$WORK/pr9-unknown.json" "$sha" "$WORK/runs-ok.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'blocked' 'unknown mergeability is not a conflict'
+
+# A repository without CI never registers a run: after the grace period that is ci=none, not a hold.
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+write_result pending
+printf '{"number":9,"head":{"sha":"%s"}}' "$sha" >"$WORK/pr9-same.json"
+printf '{"check_runs":[]}' >"$WORK/runs-none.json"
+case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-none.json"
+out=$(AK_CI_GRACE=0 "$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=none' 'a repository without checks reads as ci=none'
+assert_not_contains "$out" 'waits-on-pending' 'ci=none holds no successor'
+assert_contains "$out" 'spawn issue=680' 'ci=none releases the successor'
+assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'and the issue is collected'
+
+# The head is read again after the wait: a PR that advanced from A to B while A was polled is judged at B.
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+write_result pending
+printf '{"check_runs":[{"name":"lint","status":"in_progress","conclusion":null}]}' >"$WORK/runs-a.json"
+printf '{"number":9,"head":{"sha":"newhead1"}}' >"$WORK/pr9-b.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}' >"$WORK/runs-b.json"
+case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-a.json"
+printf 'api repos/acme/widget/commits/newhead1/check-runs*\t%s\t0\n%s\n' "$WORK/runs-b.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\n%s\n' "$WORK/pr9-b.json" "$(cat "$FAKE_GH_ROUTES")" >"$WORK/routes-b"
+( sleep 1; cp -- "$WORK/routes-b" "$FAKE_GH_ROUTES" ) &
+swap=$!
+out=$(AK_CI_INTERVAL=1 AK_COLLECT_CI_TIMEOUT=2 "$AK" collect --issue 671 2>&1)
+wait "$swap"
+assert_contains "$out" 'ci read live at newhead' 'a head that moved during the wait is read at its new value'
+assert_contains "$out" 'ci=red' 'the new head is judged by its own checks, not the old head'"'"'s'
+assert_not_contains "$out" 'spawn issue=680' 'the moved head is not collected on the old head'"'"'s runs'
+# The hold after three moving heads (note "head moved during the wait") needs a PR route that changes on every read;
+# the stub answers from static files, so that branch is not asserted here.
+
 # A re-planned park releases the successors the earlier run still holds: after `ak plan --issue N` makes a new run for
 # the parked issue, collecting it there also walks the earlier run (a field operator re-planned the whole list by
 # hand to keep the chain alive).
