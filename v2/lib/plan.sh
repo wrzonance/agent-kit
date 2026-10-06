@@ -165,14 +165,17 @@ write_set() {
     if [[ -n $listed ]]; then printf '%s\n' "$listed"; else named_paths "$body"; fi
 }
 
-# protected_hit PATHS: the first path a protected glob matches.
+# protected_hit PATHS: the first path a protected entry matches. An entry with no glob character is a directory
+# prefix with or without its trailing slash (a field run shipped two ADR edits past `docs/adrs`).
 protected_hit() {
-    local path glob
+    local path glob prefix
     while IFS= read -r glob; do
+        prefix=${glob%/}/
+        [[ $glob == *[*?[]* ]] && prefix=
         while IFS= read -r path; do
             [[ -n $path ]] || continue
             # shellcheck disable=SC2053
-            [[ $path == $glob || ($glob == */ && $path == "$glob"*) ]] && { printf '%s\n' "$path"; return 0; }
+            [[ $path == $glob || (-n $prefix && $path == "$prefix"*) ]] && { printf '%s\n' "$path"; return 0; }
         done <<<"$1"
     done < <(split_list "$(cfg AGENT_PROTECTED_PATHS)")
     return 0

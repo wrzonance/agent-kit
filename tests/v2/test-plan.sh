@@ -296,6 +296,22 @@ default_routes
 out=$("$AK" plan --issue 826 --issue 827 2>&1)
 assert_contains "$out" 'drop issue=826 reason=protected:.github/workflows/ci.yml' 'a protected path outside the list still drops'
 assert_contains "$out" 'drop issue=827 reason=protected:.github/workflows/ci.yml' 'a protected path inside a fenced block still drops'
+# A protected entry without a trailing slash or glob is a prefix (field run: `docs/adrs` let two ADR edits ship).
+fresh
+(cd "$repo" && mkdir -p docs/adrs docs/adrs-old && printf 'x\n' >docs/adrs/adr-001.md && printf 'x\n' >docs/adrs-old/x.md &&
+    git add . && git commit -q -m docs && git push -q origin main)
+printf 'AGENT_PROTECTED_PATHS=.github/**,docs/adrs\n' >>"$repo/.agent/config.env"
+# shellcheck disable=SC2016
+issue_route 831 "$(printf 'Owned paths:\n\n- Modify: `docs/adrs/adr-001.md`')"
+# shellcheck disable=SC2016
+issue_route 832 "$(printf 'Owned paths:\n\n- Modify: `docs/adrs-old/x.md`')"
+# shellcheck disable=SC2016
+issue_route 833 "$(printf 'Owned paths:\n\n- Modify: `.github/workflows/ci.yml`')"
+default_routes
+out=$("$AK" plan --issue 831 --issue 832 --issue 833 2>&1)
+assert_contains "$out" 'drop issue=831 reason=protected:docs/adrs/adr-001.md' 'a bare directory entry protects its subpaths'
+assert_contains "$out" 'spawn issue=832' 'a bare directory entry does not match a sibling that shares its prefix'
+assert_contains "$out" 'drop issue=833 reason=protected:.github/workflows/ci.yml' 'a glob entry still matches beside a bare one'
 # shellcheck disable=SC2016
 ws=$(cd "$repo" && bash -c '
     AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
