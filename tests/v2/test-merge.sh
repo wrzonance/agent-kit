@@ -45,6 +45,10 @@ route "api $api/pulls?state=open&head=acme:feat/a*" '[{"number":24}]'
 route "api $api/pulls?state=open&head=acme:*" '[]'
 route "api $api/pulls?state=closed&head=acme:feat/gone*" '[{"number":20,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
 route "api $api/pulls?state=closed&head=acme:*" '[]'
+route "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=1" '[{"number":25,"head":{"ref":"feat/b"}}]'
+route "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=1" '[{"number":40}]'
+route "api -X GET $api/pulls -f state=open -f base=feat/w -F per_page=1" '[{"number":41}]'
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=1" '[]'
 route "api $api/pulls?state=open&base=feat/a*" '[{"number":25,"head":{"ref":"feat/b"}}]'
 route "api $api/merges -f base=feat/b -f head=feat/a*" '{"sha":"mergedown"}'
 route "api -X PATCH $api/pulls/25 -f base=main" '{}'
@@ -108,7 +112,7 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" 'pr ready' 'a non-draft is not flipp
 # A stack's parent merges as a merge commit so main carries the commits its child already has (field run 2026-10-05:
 # every child went dirty the moment its parent squash-merged, costing a resolve worker and a second CI round per link).
 assert_contains "$log" "api -X PUT $api/pulls/24/merge -f merge_method=merge -f sha=sha24" 'a PR with an open dependent merges as a merge commit'
-assert_contains "$log" "api $api/pulls?state=open&base=feat/a&per_page=1" 'the dependent check is one single-item list call'
+assert_contains "$log" "api -X GET $api/pulls -f state=open -f base=feat/a -F per_page=1" 'the dependent check is one single-item list call with the ref as an encoded field'
 : >"$FAKE_GH_LOG"
 out=$(AGENT_MERGE_METHOD=squash "$AK" merge --pr 24 2>&1); rc=$?
 assert_eq 0 "$rc" 'AGENT_MERGE_METHOD=squash still merges'
@@ -147,15 +151,22 @@ assert_eq 'merged pr=27 sha=merged123 method=squash branch=kept (fork)' "$(tail 
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/27/merge -f merge_method=squash -f sha=sha27" 'a fork PR squashes'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'base=feat/y' 'a fork PR gets no dependent lookup'
 
-# A head branch name that cannot go into a query string squashes with a note instead of listing dependents.
-route "api $api/pulls/19" "$(pr_json 19 'feat/x&base=main' main)"
+# A branch name with query-string characters is a valid Git ref: it is passed as an encoded field, never refused.
+route "api $api/pulls/19" "$(pr_json 19 'feat/x&y' main)"
 route "api --paginate $api/commits/sha19/check-runs*" "$green"
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 19 2>&1); rc=$?
-assert_eq 0 "$rc" 'an unlistable head branch name still merges'
-assert_contains "$out" 'note=head branch name not listable; squashing' 'the odd name is noted'
-assert_contains "$out" 'merged pr=19 sha=merged123 method=squash' 'the odd name squashes'
-assert_eq 0 "$(grep -cxF "api $api/pulls?state=open&base=feat/x&base=main&per_page=1" "$FAKE_GH_LOG")" 'the odd name never reaches the dependent lookup'
+assert_eq 0 "$rc" 'a head branch with an ampersand still merges'
+assert_contains "$out" 'merged pr=19 sha=merged123 method=merge' 'a dependent on an odd-named parent makes it a merge commit'
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X GET $api/pulls -f state=open -f base=feat/x&y -F per_page=1" 'the odd name goes in as an encoded field'
+
+# Repository identity is case-insensitive: GitHub may report the owner or name in another case than the slug.
+route "api $api/pulls/18" "$(pr_json 18 feat/w main false ACME/Widget)"
+route "api --paginate $api/commits/sha18/check-runs*" "$green"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 18 2>&1); rc=$?
+assert_eq 0 "$rc" 'a same-repository PR reported in another case merges'
+assert_contains "$out" 'merged pr=18 sha=merged123 method=merge' 'it is not misread as a fork'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 28 2>&1); rc=$?

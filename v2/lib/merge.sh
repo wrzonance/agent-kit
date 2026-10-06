@@ -147,21 +147,23 @@ merge_branch() {
 # merge_method SLUG JSON: `merge` while an open PR is based on the PR's head branch, so the base carries the commits
 # the child already has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a
 # resolve worker and a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one
-# method everywhere. A fork's head is not a branch here, and a name that cannot go into a query string is not listed.
+# method everywhere. A fork's head is not a branch here; the ref goes in as an encoded field, so any valid branch name lists.
 merge_method() {
-    local slug=$1 json=$2 forced ref dep
+    local slug=$1 json=$2 forced ref dep repo
     forced=$(cfg AGENT_MERGE_METHOD '')
     case $forced in
         squash | merge) printf '%s\n' "$forced"; return 0 ;;
         '') ;;
         *) die "AGENT_MERGE_METHOD=$forced is not squash or merge" "unset AGENT_MERGE_METHOD or set it to squash or merge" ;;
     esac
-    [[ $(jq -r '.head.repo.full_name // ""' <<<"$json") == "$slug" ]] || { printf 'squash\n'; return 0; }
+    repo=$(jq -r '.head.repo.full_name // ""' <<<"$json")
+    [[ ${repo,,} == "${slug,,}" ]] || { printf 'squash\n'; return 0; }
     ref=$(jq -r .head.ref <<<"$json")
-    [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
-        { printf 'note=head branch name not listable; squashing\n' >&2; printf 'squash\n'; return 0; }
-    dep=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=1" | jq -r '.[0].number // empty') ||
-        die "cannot list PRs based on $ref" "gh api 'repos/$slug/pulls?state=open&base=$ref&per_page=1'"
+    if ! dep=$(gh api -X GET "repos/$slug/pulls" -f state=open -f "base=$ref" -F per_page=1 2>/dev/null | jq -r '.[0].number // empty'); then
+        printf 'note=cannot list PRs based on %s; squashing\n' "$ref" >&2
+        printf 'squash\n'
+        return 0
+    fi
     if [[ -n $dep ]]; then printf 'merge\n'; else printf 'squash\n'; fi
 }
 
