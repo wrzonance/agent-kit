@@ -19,29 +19,30 @@ ci_head() {
     printf '%s\n' "$head"
 }
 
-# ci_runs SHA: one compact JSON array of {name, done, bad, url}. A conclusion means done, whatever status says.
+# ci_runs SHA: one compact JSON array of {name, raw, done, bad, url}. name is the sanitised text ak prints; raw is the
+# check's own name, the identity a required check is compared by. A conclusion means done, whatever status says.
 ci_runs() {
     local json
-    json=$(gh api "repos/$(slug)/commits/$1/check-runs?per_page=100") ||
+    json=$(gh api "repos/$(slug)/commits/$1/check-runs?per_page=100" --paginate) ||
         die "could not read check runs for ${1:0:12}" "gh auth status"
     # A check name is text from the repository's workflows that ak prints for an agent to read: keep plain name
     # characters only, 60 at most.
-    jq -c '[.check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'),
+    jq -cs '[.[].check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'), raw: .name,
         done: (.conclusion != null or .status == "completed"),
         bad: ((.conclusion // "success") | IN("success", "neutral", "skipped") | not),
         url: (.details_url // .html_url // "")}]' <<<"$json"
 }
 
 # ci_missing DONE: the AGENT_REQUIRED_CHECKS names (comma list, names may hold spaces) without a completed run in DONE
-# (one sanitised name per line), comma-joined. Configured names get the sanitising ci_runs applies, so `build:test`
-# matches the run it names. A stacked PR that conflicted with its base got no pull_request workflow, and its head read
+# (one raw run name per line), comma-joined. Names match exactly, so `buildtest` never stands in for `build:test`; only
+# the printed list is sanitised. A stacked PR that conflicted with its base got no pull_request workflow, and its head read
 # as green on CodeQL and a push lint alone (field run 2026-10-05).
 ci_missing() {
     local name out=''
     while IFS= read -r name; do
-        [[ -z $name ]] || grep -qxF -- "$name" <<<"$1" || out+="${out:+,}$name"
-    done < <(tr ',' '\n' <<<"$(cfg AGENT_REQUIRED_CHECKS)" | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' |
-        jq -R "$CI_NAME_FILTER" -r | grep -v '^$' || true)
+        [[ -z $name ]] || grep -qxF -- "$name" <<<"$1" ||
+            out+="${out:+,}$(jq -nr --arg n "$name" "\$n | $CI_NAME_FILTER")"
+    done < <(tr ',' '\n' <<<"$(cfg AGENT_REQUIRED_CHECKS)" | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
     printf '%s\n' "$out"
 }
 
@@ -49,7 +50,7 @@ ci_missing() {
 # run, counts as pending.
 ci_summary() {
     local missing
-    missing=$(ci_missing "$(jq -r '.[] | select(.done) | .name' <<<"$1")")
+    missing=$(ci_missing "$(jq -r '.[] | select(.done) | .raw' <<<"$1")")
     jq -r --arg m "$missing" '(length) as $n | (map(select(.done and .bad) | .name) | join(",")) as $f
         | (if $n == 0 or $m != "" or any(.[]; .done | not) then "pending" elif $f != "" then "red" else "green" end) as $s
         | "ci=\($s) checks=\($n) failing=\($f)" + (if $m == "" then "" else " missing=\($m)" end)' <<<"$1"
@@ -57,18 +58,19 @@ ci_summary() {
 
 # ci_blocked: refuse while the branch's open PR conflicts with its base. GitHub runs no pull_request workflow on such a
 # PR, so the head's checks are not the PR's (field run 2026-10-05: a parent's squash-merge left its child dirty, the
-# child read as green and the next issue was spawned on it). No open PR is today's path; so is an API failure, named on
-# stderr so the gap is visible rather than read as "no PR".
+# child read as green and the next issue was spawned on it). No open PR is today's path. An API failure fails closed
+# (pending, exit 3) so the head's checks are never read as green for a PR whose state is unknown.
 ci_blocked() {
     local slug list n json base state deadline=$((SECONDS + ${AK_CI_MERGEABLE_WAIT:-60}))
     slug=$(slug)
-    list=$(gh api "repos/$slug/pulls?head=${slug%%/*}:$(git branch --show-current)&state=open" 2>/dev/null) ||
-        { printf "note=could not list the branch's PR; judging the head's checks alone\n" >&2; return 0; }
+    # gh encodes the -f values: a branch name holding & or # would break a hand-built query string.
+    list=$(gh api -X GET "repos/$slug/pulls" -f "head=${slug%%/*}:$(git branch --show-current)" -f state=open 2>/dev/null) ||
+        { printf "ci=pending note=could not list the branch's PR; run ak ci again\n"; exit 3; }
     n=$(jq -r '.[0].number // empty' <<<"$list" 2>/dev/null) || n=''
     [[ $n =~ ^[0-9]+$ ]] || return 0
     while :; do
         json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) ||
-            { printf "note=could not read PR #%s state; judging the head's checks alone\n" "$n" >&2; return 0; }
+            { printf 'ci=pending note=could not read PR #%s state; run ak ci again\n' "$n"; exit 3; }
         state=$(jq -r '.mergeable_state // ""' <<<"$json")
         # GitHub answers unknown while it computes mergeability; that is not safe to read as clean.
         [[ $state != unknown ]] || ((SECONDS < deadline)) || break

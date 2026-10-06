@@ -10,10 +10,10 @@ cd "$WORK/wt" || exit 1
 printf 'two\n' >src/b.txt
 git add src && git commit -q -m 'add b' && git push -q -u origin HEAD 2>/dev/null
 head=$(git rev-parse HEAD)
-checks="api repos/acme/widget/commits/$head/check-runs?per_page=100"
+checks="api repos/acme/widget/commits/$head/check-runs?per_page=100 --paginate"
 export AK_CI_INTERVAL=0
 
-prs='api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open'
+prs='api -X GET repos/acme/widget/pulls -f head=acme:feat/issue-7 -f state=open'
 set_checks() { : >"$FAKE_GH_ROUTES"; route "$checks" "$1"; route "$prs" '[]'; }
 
 set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"docs","status":"completed","conclusion":"skipped"}]}'
@@ -54,6 +54,19 @@ assert_eq 'ci=green checks=1 failing=' "$out" 'a satisfied requirement adds noth
 set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"Installer","status":"in_progress","conclusion":null}]}'
 out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" ci --once 2>&1)
 assert_contains "$out" 'missing=Installer' 'a required check still running has no completed run'
+
+# A required name is matched exactly: the sanitised spelling of another run (buildtest for build:test) does not satisfy it.
+set_checks '{"check_runs":[{"name":"buildtest","status":"completed","conclusion":"success"}]}'
+out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" ci --once 2>&1); rc=$?
+assert_eq 3 "$rc" 'a run named buildtest does not satisfy a required build:test'
+assert_contains "$out" 'missing=buildtest' 'the missing list prints the sanitised configured name'
+# Check runs are read with --paginate and the pages combined, so a required run past the first page is seen.
+set_checks '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}{"check_runs":[{"name":"Installer","status":"completed","conclusion":"success"}]}'
+: >"$FAKE_GH_LOG"
+out=$(AGENT_REQUIRED_CHECKS=Installer "$AK" ci --once 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required check on a later page is seen'
+assert_eq 'ci=green checks=2 failing=' "$out" 'two pages read as one run list'
+assert_contains "$(cat "$FAKE_GH_LOG")" 'check-runs?per_page=100 --paginate' 'check runs are read with --paginate'
 
 # A PR that conflicts with its base gets no pull_request workflow from GitHub: a green head there is not the PR's green.
 set_pr() { : >"$FAKE_GH_ROUTES"; route "$checks" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'; route "$prs" '[{"number":12}]'; route 'api repos/acme/widget/pulls/12' "$1" "${2:-0}"; }
@@ -116,14 +129,14 @@ assert_not_contains "$out" 'rm -rf' 'the raw base name is not printed'
 # An API failure must not pass silently as "no PR": the gap is named, then the head's checks are judged as before.
 set_pr '' 1
 out=$("$AK" ci 2>&1); rc=$?
-assert_eq 0 "$rc" 'an unreadable PR state still judges the checks'
-assert_contains "$out" "note=could not read PR #12 state; judging the head's checks alone" 'the unreadable PR state is named'
-assert_contains "$out" 'ci=green checks=1 failing=' 'the checks are read after the note'
+assert_eq 3 "$rc" 'an unreadable PR state is pending'
+assert_contains "$out" 'ci=pending note=could not read PR #12 state; run ak ci again' 'the unreadable PR state is named'
+assert_not_contains "$out" 'ci=green' 'the head is not read as green'
 : >"$FAKE_GH_ROUTES"
 route "$checks" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
 out=$("$AK" ci 2>&1); rc=$?
-assert_eq 0 "$rc" 'a failed PR listing still judges the checks'
-assert_contains "$out" "note=could not list the branch's PR; judging the head's checks alone" 'the failed listing is named'
+assert_eq 3 "$rc" 'a failed PR listing is pending'
+assert_contains "$out" "ci=pending note=could not list the branch's PR; run ak ci again" 'the failed listing is named'
 
 # ak ci from the main checkout read main's head and told the root to ak ship (field run 2026-10-05).
 out=$(cd "$repo" && "$AK" ci --once 2>&1); rc=$?
@@ -167,7 +180,7 @@ out=$("$AK" ci --once 2>&1)
 assert_not_contains "$out" 'inherited=' 'a branch on the default base reports nothing inherited'
 printf 'feat/parent\n' >.ak/base
 rm -f .ak/ci-only
-route "api repos/acme/widget/commits/$parent/check-runs?per_page=100" \
+route "api repos/acme/widget/commits/$parent/check-runs?per_page=100 --paginate" \
     '{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"success"}]}'
 out=$("$AK" ci --once 2>&1); rc=$?
 assert_eq 1 "$rc" 'an inherited failure is still red'
@@ -191,5 +204,18 @@ git add src && git commit -q -m 'add c'
 out=$("$AK" ci --once 2>&1); rc=$?
 assert_eq 1 "$rc" 'an unpushed head is refused'
 assert_contains "$out" 'fix: ak ship' 'the refusal points at ak ship'
+
+# gh encodes the branch in the PR lookup: a name holding & stays one head value, and a conflicted PR is still refused.
+git checkout -q -b 'feat/x&y' && git push -q -u origin 'feat/x&y' 2>/dev/null
+ampsha=$(git rev-parse HEAD)
+: >"$FAKE_GH_ROUTES"
+route "api repos/acme/widget/commits/$ampsha/check-runs?per_page=100 --paginate" '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+route 'api -X GET repos/acme/widget/pulls -f head=acme:feat/x&y -f state=open' '[{"number":14}]'
+route 'api repos/acme/widget/pulls/14' '{"number":14,"mergeable_state":"dirty","base":{"ref":"main"}}'
+: >"$FAKE_GH_LOG"
+out=$("$AK" ci 2>&1); rc=$?
+assert_eq 1 "$rc" 'a conflicted PR on a branch with an ampersand is blocked'
+assert_contains "$out" 'ci=blocked note=PR #14 conflicts with main' 'the ampersand branch finds its PR'
+assert_contains "$(cat "$FAKE_GH_LOG")" '-f head=acme:feat/x&y -f state=open' 'the head filter is passed as a -f field'
 
 finish
