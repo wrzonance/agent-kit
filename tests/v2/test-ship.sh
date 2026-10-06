@@ -77,6 +77,16 @@ assert_contains "$out" 'names "Packet 7"' 'only the exact Still to do heading ex
 printf "$ok_body\n## Verification\nThe builder ran. \`ak verify\` reported \`verify=pass\`, \`oracle=ci\`.\n" 'x' 'y' >"$WORK/body.md"
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
 assert_contains "$out" 'the ## Verification section carries run output, starting: The builder ran.' 'a status line under Verification refuses and the refusal names that section'
+# Markdown rules for the heading itself: closing hashes are decoration, and four spaces of indent make a code block.
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body\n## Verification ##\n\`ak verify\` reported \`verify=pass\`.\n" 'x' 'y' >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_contains "$out" 'the ## Verification section carries run output' 'closing hashes on the heading do not hide the section'
+# shellcheck disable=SC2059,SC2016
+printf "$ok_body" "$(printf 'x\n\n    ## Verification\n    verify=pass')" "$long." >"$WORK/body.md"
+out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)
+assert_not_contains "$out" 'run output' 'an indented block is code, not a heading'
+assert_contains "$out" 'a sentence over 45 words' 'that description reaches the next check'
 # shellcheck disable=SC2059
 printf "$ok_body\n## Packet 7\nMore.\n" 'x' 'y' >"$WORK/body.md"
 out=$("$AK" ship --message 'feat: add b' --body-file "$WORK/body.md" 2>&1)

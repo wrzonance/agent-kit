@@ -57,9 +57,9 @@ ship_body_check() {
     found=$(awk '
         /^[[:space:]]*```/ { fence = !fence; next }
         fence { next }
-        /^[[:space:]]*##[[:space:]]/ {
+        /^ ? ? ?##[[:space:]]/ {
             heading = $0
-            gsub(/^[[:space:]]*##[[:space:]]+|[[:space:]]+$/, "", heading)
+            gsub(/^ *##[[:space:]]+|[[:space:]]+#*[[:space:]]*$/, "", heading)
             section = tolower(heading)
         }
         section ~ /^(tests?|testing|verification|verify|checks?|validation)$/ {
