@@ -248,7 +248,8 @@ release_other_runs() {
             and (.items | any(.kind == "issue" and .state == "queued" and (.needs | index($n))))' "$file" >/dev/null 2>&1 || continue
         RUNFILE=$file
         run_update '(.items[] | select(.kind == "issue" and .n == $n)) |= (.state = "collected" | .worktree = $wt)' \
-            --argjson n "$n" --arg wt "$wt"
+            --argjson n "$n" --arg wt "$wt" \
+            || { emit "note=could not update run $(basename -- "$file" .json) for issue $n; its successors wait"; continue; }
         spawn_successors
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     RUNFILE=$own

@@ -352,6 +352,13 @@ printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success
 printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
     "$WORK/pr9-head.json" "$head" "$WORK/runs-head.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=%s\nnote=n\n' "$head" >"$wt/.ak/result"
+# An earlier run file that cannot be rewritten (its temp path is blocked) keeps its item and spawns nothing from it.
+mkdir -- "$run_a.tmp"
+out=$("$AK" collect --issue 671 2>&1)
+rmdir -- "$run_a.tmp"
+assert_contains "$out" "note=could not update run $(basename -- "$run_a" .json) for issue 671; its successors wait" 'a failed update of the earlier run says so'
+assert_not_contains "$out" 'spawn issue=680' 'and spawns no successor from that run'
+assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the earlier run is left as it was'
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collecting the re-planned issue exits 0'
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green' 'the re-planned issue reports its result'
