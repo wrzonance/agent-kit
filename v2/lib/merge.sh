@@ -144,17 +144,22 @@ merge_branch() {
     fi
 }
 
-# merge_method SLUG REF: `merge` while an open PR is based on REF, so the base carries the commits the child already
-# has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a resolve worker and
-# a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one method everywhere.
+# merge_method SLUG JSON: `merge` while an open PR is based on the PR's head branch, so the base carries the commits
+# the child already has (field run 2026-10-05: every child went dirty the moment its parent squash-merged, costing a
+# resolve worker and a second CI round per link); `squash` otherwise. AGENT_MERGE_METHOD=squash|merge forces one
+# method everywhere. A fork's head is not a branch here, and a name that cannot go into a query string is not listed.
 merge_method() {
-    local slug=$1 ref=$2 forced dep
+    local slug=$1 json=$2 forced ref dep
     forced=$(cfg AGENT_MERGE_METHOD '')
     case $forced in
         squash | merge) printf '%s\n' "$forced"; return 0 ;;
         '') ;;
         *) die "AGENT_MERGE_METHOD=$forced is not squash or merge" "unset AGENT_MERGE_METHOD or set it to squash or merge" ;;
     esac
+    [[ $(jq -r '.head.repo.full_name // ""' <<<"$json") == "$slug" ]] || { printf 'squash\n'; return 0; }
+    ref=$(jq -r .head.ref <<<"$json")
+    [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
+        { printf 'note=head branch name not listable; squashing\n' >&2; printf 'squash\n'; return 0; }
     dep=$(gh api "repos/$slug/pulls?state=open&base=$ref&per_page=1" | jq -r '.[0].number // empty') ||
         die "cannot list PRs based on $ref" "gh api 'repos/$slug/pulls?state=open&base=$ref&per_page=1'"
     if [[ -n $dep ]]; then printf 'merge\n'; else printf 'squash\n'; fi
@@ -205,7 +210,7 @@ cmd_main() {
     if [[ $(jq -r .draft <<<"$json") == true ]]; then
         gh pr ready "$n" --repo "$slug" >/dev/null || die "cannot mark PR #$n ready" "gh pr ready $n --repo $slug"
     fi
-    method=$(merge_method "$slug" "$(jq -r .head.ref <<<"$json")") || exit $?
+    method=$(merge_method "$slug" "$json") || exit $?
     merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f "merge_method=$method" -f "sha=$sha" | jq -r '.sha // empty') ||
         die "GitHub refused to merge PR #$n at $sha" "gh api repos/$slug/pulls/$n --jq .mergeable_state"
     [[ -n $merged ]] || die "the merge of PR #$n returned no sha" "gh api repos/$slug/pulls/$n --jq .merge_commit_sha"

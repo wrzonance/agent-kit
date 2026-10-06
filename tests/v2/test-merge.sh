@@ -140,8 +140,22 @@ assert_eq yes "$( [[ -n $first && -n $patch && $first -lt $patch ]] && echo yes 
 assert_contains "$out" 'merged pr=26' 'then merged'
 assert_contains "$(cat "$FAKE_GH_LOG")" "api -X DELETE $api/git/refs/heads/feat/gone" "the merged parent's branch is deleted once its last child moves off it"
 
+: >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 27 2>&1)
 assert_eq 'merged pr=27 sha=merged123 method=squash branch=kept (fork)' "$(tail -n 1 <<<"$out")" 'a fork branch is never deleted'
+# A fork's head.ref is not a branch here: a same-named branch of this repository must not read as a dependent.
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/27/merge -f merge_method=squash -f sha=sha27" 'a fork PR squashes'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'base=feat/y' 'a fork PR gets no dependent lookup'
+
+# A head branch name that cannot go into a query string squashes with a note instead of listing dependents.
+route "api $api/pulls/19" "$(pr_json 19 'feat/x&base=main' main)"
+route "api --paginate $api/commits/sha19/check-runs*" "$green"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 19 2>&1); rc=$?
+assert_eq 0 "$rc" 'an unlistable head branch name still merges'
+assert_contains "$out" 'note=head branch name not listable; squashing' 'the odd name is noted'
+assert_contains "$out" 'merged pr=19 sha=merged123 method=squash' 'the odd name squashes'
+assert_eq 0 "$(grep -cxF "api $api/pulls?state=open&base=feat/x&base=main&per_page=1" "$FAKE_GH_LOG")" 'the odd name never reaches the dependent lookup'
 
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 28 2>&1); rc=$?
