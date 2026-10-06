@@ -2,6 +2,8 @@
 # ak ci: wait for the check runs on the pushed head; on red, print each failing job's error lines.
 
 CI_MAX_LINES=20
+# The plain name characters a check name keeps, 60 at most (jq filter shared by ci_runs and merge_checks).
+CI_NAME_FILTER='gsub("[^A-Za-z0-9 _.()/-]"; "") | .[0:60]'
 
 # The local head, refused unless origin's branch already points at it.
 ci_head() {
@@ -24,21 +26,22 @@ ci_runs() {
         die "could not read check runs for ${1:0:12}" "gh auth status"
     # A check name is text from the repository's workflows that ak prints for an agent to read: keep plain name
     # characters only, 60 at most.
-    jq -c '[.check_runs[] | {name: (.name | gsub("[^A-Za-z0-9 _.()/-]"; "") | .[0:60]),
+    jq -c '[.check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'),
         done: (.conclusion != null or .status == "completed"),
         bad: ((.conclusion // "success") | IN("success", "neutral", "skipped") | not),
         url: (.details_url // .html_url // "")}]' <<<"$json"
 }
 
-# ci_missing DONE: the AGENT_REQUIRED_CHECKS names (comma/space list) without a completed run in DONE (one name per
-# line), comma-joined. A stacked PR that conflicted with its base got no pull_request workflow, and its head read as
-# green on CodeQL and a push lint alone (field run 2026-10-05).
+# ci_missing DONE: the AGENT_REQUIRED_CHECKS names (comma list, names may hold spaces) without a completed run in DONE
+# (one sanitised name per line), comma-joined. Configured names get the sanitising ci_runs applies, so `build:test`
+# matches the run it names. A stacked PR that conflicted with its base got no pull_request workflow, and its head read
+# as green on CodeQL and a push lint alone (field run 2026-10-05).
 ci_missing() {
-    local names name out=''
-    IFS=', ' read -ra names <<<"$(cfg AGENT_REQUIRED_CHECKS)"
-    for name in "${names[@]}"; do
+    local name out=''
+    while IFS= read -r name; do
         [[ -z $name ]] || grep -qxF -- "$name" <<<"$1" || out+="${out:+,}$name"
-    done
+    done < <(tr ',' '\n' <<<"$(cfg AGENT_REQUIRED_CHECKS)" | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' |
+        jq -R "$CI_NAME_FILTER" -r | grep -v '^$' || true)
     printf '%s\n' "$out"
 }
 
@@ -57,15 +60,26 @@ ci_summary() {
 # child read as green and the next issue was spawned on it). No open PR is today's path; so is an API failure, named on
 # stderr so the gap is visible rather than read as "no PR".
 ci_blocked() {
-    local slug list n json base
+    local slug list n json base state deadline=$((SECONDS + ${AK_CI_MERGEABLE_WAIT:-60}))
     slug=$(slug)
     list=$(gh api "repos/$slug/pulls?head=${slug%%/*}:$(git branch --show-current)&state=open" 2>/dev/null) ||
         { printf "note=could not list the branch's PR; judging the head's checks alone\n" >&2; return 0; }
     n=$(jq -r '.[0].number // empty' <<<"$list" 2>/dev/null) || n=''
     [[ $n =~ ^[0-9]+$ ]] || return 0
-    json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) ||
-        { printf "note=could not read PR #%s state; judging the head's checks alone\n" "$n" >&2; return 0; }
-    [[ $(jq -r '.mergeable_state // ""' <<<"$json") == dirty ]] || return 0
+    while :; do
+        json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) ||
+            { printf "note=could not read PR #%s state; judging the head's checks alone\n" "$n" >&2; return 0; }
+        state=$(jq -r '.mergeable_state // ""' <<<"$json")
+        # GitHub answers unknown while it computes mergeability; that is not safe to read as clean.
+        [[ $state != unknown ]] || ((SECONDS < deadline)) || break
+        [[ $state == unknown ]] || break
+        sleep 5
+    done
+    if [[ $state == unknown ]]; then
+        printf 'ci=pending note=mergeability of PR #%s still unknown\n' "$n"
+        exit 3
+    fi
+    [[ $state == dirty ]] || return 0
     # The base name is PR text on its way into a command the agent runs: an odd one is described, not echoed.
     base=$(jq -r '.base.ref // ""' <<<"$json")
     [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ||
@@ -191,8 +205,10 @@ cmd_main() {
     sha=$(ci_head)
     ci_blocked
     runs=$(ci_wait "$sha" "$timeout" "$once")
+    # A parent may have merged during the wait, leaving the PR conflicted with its checks unchanged.
+    ci_blocked
     line=$(ci_summary "$runs")
-    if [[ $runs == '[]' && $once == 0 ]]; then
+    if [[ $runs == '[]' && $once == 0 && -z $(ci_missing '') ]]; then
         printf 'ci=none checks=0 note=no check runs registered; local verify is the oracle\n'
         return 0
     fi

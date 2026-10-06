@@ -69,6 +69,43 @@ set_pr '{"number":12,"mergeable_state":"clean","base":{"ref":"main"}}'
 out=$("$AK" ci 2>&1); rc=$?
 assert_eq 0 "$rc" 'a mergeable PR takes the usual path'
 assert_eq 'ci=green checks=1 failing=' "$out" 'a mergeable PR prints the summary alone'
+# GitHub answers unknown while it computes mergeability: that is pending, not clean.
+set_pr '{"number":12,"mergeable_state":"unknown","base":{"ref":"main"}}'
+out=$(AK_CI_MERGEABLE_WAIT=0 "$AK" ci 2>&1); rc=$?
+assert_eq 3 "$rc" 'an unknown mergeability exits 3'
+assert_eq 'ci=pending note=mergeability of PR #12 still unknown' "$out" 'unknown mergeability prints the pending line'
+# A parent merging during the wait can make the PR dirty with its checks unchanged: the state is read again after it.
+# The routes the swap installs: dirty, with the checks done.
+: >"$WORK/routes.new"
+saved=$FAKE_GH_ROUTES
+FAKE_GH_ROUTES="$WORK/routes.new"
+route "$checks" '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'
+route "$prs" '[{"number":12}]'
+route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"dirty","base":{"ref":"main"}}'
+FAKE_GH_ROUTES=$saved
+# The first route set answers pending and clean; it is swapped for the dirty one while ak ci sleeps between polls.
+: >"$FAKE_GH_ROUTES"
+route "$checks" '{"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}'
+route "$prs" '[{"number":12}]'
+route 'api repos/acme/widget/pulls/12' '{"number":12,"mergeable_state":"clean","base":{"ref":"main"}}'
+(sleep 0.5 && mv -f "$WORK/routes.new" "$FAKE_GH_ROUTES") &
+out=$(AK_CI_INTERVAL=1 "$AK" ci 2>&1); rc=$?
+wait
+assert_eq 1 "$rc" 'a PR that turned dirty during the wait is blocked'
+assert_contains "$out" 'ci=blocked note=PR #12 conflicts with main' 'the post-wait check names the conflict'
+# With required checks configured, an empty run list is pending, not "no CI".
+set_checks '{"check_runs":[]}'
+out=$(AGENT_REQUIRED_CHECKS='Unit tests' AK_CI_GRACE=0 "$AK" ci 2>&1); rc=$?
+assert_eq 3 "$rc" 'no runs with a required check is pending'
+assert_contains "$out" 'ci=pending checks=0 failing= missing=Unit tests' 'the pending line names the missing required check'
+# Names keep their spaces and punctuation: split on commas only, sanitised like the run names.
+set_checks '{"check_runs":[{"name":"Unit tests","status":"completed","conclusion":"success"},{"name":"build:test","status":"completed","conclusion":"success"}]}'
+out=$(AGENT_REQUIRED_CHECKS='Unit tests, build:test' "$AK" ci --once 2>&1); rc=$?
+assert_eq 0 "$rc" 'required names with a space and a colon are satisfied by their runs'
+assert_eq 'ci=green checks=2 failing=' "$out" 'a satisfied spaced name adds nothing'
+set_checks '{"check_runs":[{"name":"Installer suites (Windows PowerShell 5.1 and pwsh)","status":"completed","conclusion":"success"}]}'
+out=$(AGENT_REQUIRED_CHECKS='Installer suites (Windows PowerShell 5.1 and pwsh)' "$AK" ci --once 2>&1); rc=$?
+assert_eq 0 "$rc" 'a parenthesised required name is satisfied'
 # The base name comes from the PR and lands in a command the agent runs; an odd one is not echoed.
 set_pr '{"number":12,"mergeable_state":"dirty","base":{"ref":"main; rm -rf x"}}'
 out=$("$AK" ci 2>&1); rc=$?

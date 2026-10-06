@@ -80,6 +80,15 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'nothing is merged without 
 out=$(AGENT_REQUIRED_CHECKS='job-completed' "$AK" merge --pr 21 2>&1); rc=$?
 assert_eq 0 "$rc" 'a required check that completed on the head merges'
 
+# The first matching route wins, so the punctuated run list goes in front of the shared ones.
+cp "$FAKE_GH_ROUTES" "$WORK/routes.keep"
+: >"$FAKE_GH_ROUTES"
+route "api --paginate $api/commits/sha21/check-runs*" '{"check_runs":[{"name":"build:test","status":"completed","conclusion":"success"}]}'
+cat "$WORK/routes.keep" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS='build:test' "$AK" merge --pr 21 2>&1); rc=$?
+assert_eq 0 "$rc" 'a required name with punctuation matches the run it names'
+cp "$WORK/routes.keep" "$FAKE_GH_ROUTES"
+
 for n in 22 23 29; do
     : >"$FAKE_GH_LOG"
     out=$("$AK" merge --pr "$n" 2>&1); rc=$?

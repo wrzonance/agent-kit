@@ -20,7 +20,7 @@ merge_checks() {
         | "\(.name)=\($s)"] | .[:5] | join(" ")' <<<"$runs")
     [[ $(jq -s '[.[].check_runs[]] | length' <<<"$runs") -gt 0 ]] || die "no check runs on $sha yet" "ak ci --once"
     [[ -z $bad ]] || die "checks are not green on $sha: $bad" "ak ci --once"
-    missing=$(ci_missing "$(jq -rs '.[].check_runs[] | select(.conclusion != null or .status == "completed") | .name' <<<"$runs")")
+    missing=$(ci_missing "$(jq -rs '.[].check_runs[] | select(.conclusion != null or .status == "completed") | .name | '"$CI_NAME_FILTER" <<<"$runs")")
     [[ -z $missing ]] || die "checks are not green on $sha: missing=$missing" "ak ci --once"
 }
 
