@@ -9,7 +9,8 @@ source "$AK_HOME/lib/common.sh"
 usage() {
     cat <<'USAGE'
 usage: ak <command> [args]
-  root:   plan [--limit N] [--yolo] [--serialize] [--new] collect (--issue N | --pr N)
+  root:   onboard [--project N [--owner O]]        plan [--limit N] [--yolo] [--serialize] [--new]
+          collect (--issue N | --pr N)
           pr-plan --pr N [--pr N]...                merge --pr N
   worker: setup   verify   ship --message M [--body-file F]   review
           ci [--timeout S] [--once]   threads [--resolve ID --note T]   receipt --findings F [--remaining T]
