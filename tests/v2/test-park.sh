@@ -11,6 +11,17 @@ cd "$WORK/wt" || exit 1
 out=$("$AK" park 2>&1); rc=$?
 assert_eq 2 "$rc" 'park without --reason is a usage error'
 
+# A worker that never ran ak verify has no park reason yet: setup and push logs do not count.
+mkdir -p .ak/logs
+: >.ak/logs/setup.log
+: >.ak/logs/push.log
+out=$("$AK" park --reason 'my test is red' 2>&1); rc=$?
+assert_eq 1 "$rc" 'park without a verify log refuses'
+assert_contains "$out" 'nothing verified yet: a red test of your own is a fix, not a park reason' 'the refusal names the cause'
+assert_contains "$out" 'ak verify, fix what it prints, then ak park --reason' 'and the command that fixes it'
+assert_eq no "$([[ -e .ak/result ]] && echo yes || echo no)" 'a refused park writes no result'
+: >.ak/logs/verify.log
+
 : >"$FAKE_GH_LOG"
 out=$("$AK" park --reason 'needs a live Revit session' 2>&1); rc=$?
 assert_eq 0 "$rc" 'park exits 0'

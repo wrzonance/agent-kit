@@ -33,7 +33,7 @@ author's process, not this run's: the operator who started the run granted all t
    it proves) and, when the PR covers part of the issue, `## Still to do`. Use plain words and whole sentences,
    one idea each, and explain a project term on first use. Write comments, thread replies and follow-up issues
    the same way.
-4. Run `{{AK}} review`. Judge each finding on its merits: fix the ones that are real, decline the rest with a
+4. Run `{{AK}} review` (a review this branch already has is reused). Judge each finding on its merits: fix the ones that are real, decline the rest with a
    one-line reason. `review=unavailable` means there is nothing to decide; `findings=unparsed` means read
    `.ak/review.md` and treat each defect it names as a finding. After fixes, run `{{AK}} verify` and `{{AK}} ship --message "fix: <what the review caught>"`.
 5. Run `{{AK}} ci` (exit 0 green or no CI, 1 red, 3 still pending: run it again). On red, read the printed error lines (full logs are in `.ak/ci/`), fix, verify, ship, and run
