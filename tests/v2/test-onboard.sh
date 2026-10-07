@@ -72,6 +72,16 @@ assert_eq 0 "$rc" 'a half-declared board exits 0'
 assert_contains "$out" 'board=incomplete; .agent/config.env has one of AGENT_PROJECT_OWNER/AGENT_PROJECT_NUMBER: set both or remove it' 'a half-declared board is named, not completed'
 assert_rc 1 'the discovered number is not paired with a kept owner' -- grep -q '^AGENT_PROJECT_NUMBER=' .agent/config.env
 
+# --- --project alone asks the repository's own owner ---
+printf 'AGENT_REPO_SLUG=acme/widget\n' >.agent/config.env
+: >"$FAKE_GH_LOG"
+out=$("$AK" onboard --project 9 2>&1); rc=$?
+assert_eq 0 "$rc" '--project without --owner is accepted'
+assert_eq 1 "$(grep -c -- '-F owner=acme -F number=9' "$FAKE_GH_LOG")" 'the owner defaults to the repository owner'
+assert_contains "$out" $'\nAGENT_PROJECT_OWNER=acme\nAGENT_PROJECT_NUMBER=9\n' 'the board named by number alone is written'
+out=$("$AK" onboard --owner acme 2>&1); rc=$?
+assert_eq 2 "$rc" '--owner without --project is a usage error'
+
 # --- no linked board, no toolchain ---
 rm .agent/config.env package.json package-lock.json
 git rm -q package.json package-lock.json && git commit -q -m bare

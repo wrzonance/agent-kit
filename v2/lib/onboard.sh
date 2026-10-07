@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# ak onboard [--project N --owner O]: write the .agent/config.env keys ak reads from what the repository already
+# ak onboard [--project N [--owner O]]: write the .agent/config.env keys ak reads from what the repository already
 # says: slug and base from git, the linked project board and its Status options from one GraphQL read, and the
 # setup/test commands from marker files. Keys already in the file are kept; a re-run changes nothing.
 
@@ -118,14 +118,14 @@ onboard_board() {
     fi
     owner=$(slug); owner=${owner%%/*}
     if [[ -n ${1:-} ]]; then
-        rows=$(gh api graphql -f "query=$NAMED_QUERY" -F "owner=$2" -F "number=$1" 2>&1)
+        rows=$(gh api graphql -f "query=$NAMED_QUERY" -F "owner=${2:-$owner}" -F "number=$1" 2>&1)
     else
         rows=$(gh api graphql -f "query=$LINKED_QUERY" -F "owner=$owner" -F "name=$(slug | cut -d/ -f2)" 2>&1)
     fi || { NOTES+=("board=unavailable ($rows); fix: gh auth status"); return 0; }
     rows=$(jq -r "$BOARD_ROWS" <<<"$rows" 2>/dev/null) || { NOTES+=("board=unavailable (unreadable reply); fix: gh auth status"); return 0; }
     count=$(grep -c . <<<"$rows" || true)
     if ((count == 0)); then
-        [[ -n ${1:-} ]] && fix="board=none; $2 has no open project $1" ||
+        [[ -n ${1:-} ]] && fix="board=none; ${2:-$owner} has no open project $1" ||
             fix='board=none; ak plan reads AGENT_READY_LABEL=<label> instead, or name one: ak onboard --project N --owner O'
         NOTES+=("$fix")
     elif ((count > 1)); then
@@ -168,7 +168,7 @@ cmd_main() {
             *) usage_die "ak onboard: unknown argument: $1" ;;
         esac
     done
-    [[ -z $project$owner || ($project =~ ^[0-9]+$ && -n $owner) ]] || usage_die 'usage: ak onboard [--project N --owner O]'
+    [[ -z $project$owner || $project =~ ^[0-9]+$ ]] || usage_die 'usage: ak onboard [--project N [--owner O]]'
     cd -- "$(main_root)" || exit 1
     FILE=.agent/config.env KEPT=0 LINES=() NOTES=()
     [[ ! -L .agent && ! -L $FILE ]] || die "$FILE is behind a symlink, which onboard will not write through" "rm $FILE"

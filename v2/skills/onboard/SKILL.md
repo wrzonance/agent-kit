@@ -6,7 +6,7 @@ description: Set up a repository for ak by writing .agent/config.env from what t
 # onboard
 
 `ak` is `<this skill's directory>/../../bin/ak`, run from the repository root. Pass the operator's flags
-(`--project N --owner O`) straight through. `.agent/config.env` is plain `KEY=value` lines; `ak onboard` adds the
+(`--project N [--owner O]`; the owner defaults to the repository's) straight through. `.agent/config.env` is plain `KEY=value` lines; `ak onboard` adds the
 keys it discovers and keeps every line already there, so running it again is safe.
 
 1. Run `ak onboard [flags]`. It prints each key it wrote, a `board=` line and a `next=` line.
