@@ -241,6 +241,24 @@ git rm -q docs/adrs/op.md
 out=$("$AK" ship --message 'docs: drop' 2>&1); rc=$?
 assert_eq 1 "$rc" 'deleting the pushed protected file is refused'
 git reset -q --hard "$head"
+# What is pushed is asked of origin itself: the local tracking ref is state the worktree's own agent can move.
+printf 'forged\n' >docs/adrs/forged.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed'
+git update-ref refs/remotes/origin/feat/issue-7 HEAD
+out=$("$AK" ship --message 'docs: forged' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected commit that only the local tracking ref calls pushed is refused'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the forged-ref commit is not pushed'
+git update-ref refs/remotes/origin/feat/issue-7 "$head"
+git reset -q --hard "$head"
+# A local branch named like the tracking ref must not stand in for it.
+printf 'again\n' >>docs/adrs/op.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed again'
+git branch -q origin/feat/issue-7 HEAD
+out=$("$AK" ship --message 'docs: ambiguous' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a local branch named origin/<branch> does not make a protected commit read as pushed'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" refs/heads/feat/issue-7)" 'the commit behind the look-alike branch is not pushed'
+git branch -q -D origin/feat/issue-7
+git reset -q --hard "$head"
 # Every protected path is named at once: one park and one operator commit, not a round trip per file.
 printf 'a\n' >docs/adrs/a.md && printf 'b\n' >docs/adrs/b.md
 out=$("$AK" ship --message 'docs: two' 2>&1); rc=$?
