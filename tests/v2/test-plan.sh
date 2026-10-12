@@ -614,6 +614,20 @@ route 'api repos/acme/widget/issues?state=open&per_page=100' "$(jq -nc '[range(1
 default_routes
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'on the board (or Done there): #101,#102,#103,#104,#105,#106,#107,#108,#109,#110 (+2)' 'a long list shows ten and counts the rest'
+# An open issue the board holds as Done is named too, as the line says (a board read without the Done filter lists it).
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 280 Done)]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' '[{"number":69},{"number":280}]'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'on the board (or Done there): #280' 'an open issue the board holds as Done is named'
+# One page is read. When it is full the count says so instead of reading as the whole repository.
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]')]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' "$(jq -nc '[range(101; 201) | {number: .}]')"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" '#109,#110 (+90 of the first 100 open issues)' 'a full page is named as a page, not as every open issue'
 fresh
 board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]')]}"
 default_routes

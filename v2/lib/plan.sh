@@ -657,18 +657,21 @@ print_lines() {
 
 # off_board: "; open but not on the board (or Done there): #a,#b (+N)" for a board plan that started nothing, or
 # nothing. A field plan printed 20 drop lines and no word about seven open issues the board did not list, two of them
-# the only work ready to build. One read, on this path only; ten numbers, then a count. A failed read adds nothing.
+# the only work ready to build. One read, on this path only; ten numbers, then a count. A full page says it is a page,
+# so its count does not read as the whole repository. A failed read adds nothing.
 off_board() {
     local list
     [[ -n ${BOARD_ITEMS:-} ]] || return 0
     list=$(api "repos/$SLUG/issues?state=open&per_page=100") || return 0
-    # The board goes in as a file: a large one does not fit an argument.
+    # The board goes in as a file: a large one does not fit an argument. A board read without the Done filter lists
+    # Done items too; an open issue there is still off the board's working columns.
     jq -r --arg slug "$SLUG" --slurpfile board <(printf '%s' "$BOARD_ITEMS") '
-        [$board[0].items[]? | select(.content.type == "Issue") |
+        [$board[0].items[]? | select(.content.type == "Issue" and ((.status // "") | ascii_downcase) != "done") |
             select((.content.repository // "") as $r | $r == $slug or ($r | endswith("/" + $slug))) | .content.number] as $on |
+        (if length >= 100 then " of the first \(length) open issues" else "" end) as $page |
         [.[] | select(has("pull_request") | not) | .number | select(. as $n | $on | index($n) | not)] | sort |
         if length == 0 then empty else "; open but not on the board (or Done there): " + (.[:10] | map("#\(.)") | join(","))
-            + (if length > 10 then " (+\(length - 10))" else "" end) end' <<<"$list" 2>>"$AK_LOG" || true
+            + (if length > 10 then " (+\(length - 10)\($page))" elif $page != "" then " (\($page | ltrimstr(" of ")) read)" else "" end) end' <<<"$list" 2>>"$AK_LOG" || true
 }
 
 # plan_next YOLO NAMED: when nothing starts or queues, the one line that says how to get work. A field operator re-ran
