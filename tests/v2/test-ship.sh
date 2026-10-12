@@ -219,8 +219,36 @@ sed -i '$d' "$repo/.agent/config.env"
 printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
 out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
 assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
+sed -i '$d' "$repo/.agent/config.env"
+# A protected change that is already on the pushed branch is not this ship's to refuse (field run: an issue needed a
+# migration; once the operator had committed and pushed it, every later ship still refused the branch, so the kit
+# could open no PR and push no fix). Touching the file again is a new change and refuses again.
+printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
+printf 'operator\n' >docs/adrs/op.md
+git add docs && git commit -q --no-verify -m 'docs: the adr only the operator commits' && git push -q origin HEAD 2>/dev/null
+printf 'rest\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a protected path already on the pushed branch does not refuse the rest'
+assert_eq "$(git rev-parse HEAD)" "$(git ls-remote "$WORK/origin.git" feat/issue-7 | cut -f1)" 'the rest is pushed'
 head=$(git rev-parse HEAD)
 remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+printf 'edited\n' >>docs/adrs/op.md
+out=$("$AK" ship --message 'docs: edit' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a further edit to the pushed protected file is refused'
+assert_contains "$out" 'ak: protected path in this change: docs/adrs/op.md' 'the refusal names the edited file'
+git checkout -q -- docs/adrs/op.md
+git rm -q docs/adrs/op.md
+out=$("$AK" ship --message 'docs: drop' 2>&1); rc=$?
+assert_eq 1 "$rc" 'deleting the pushed protected file is refused'
+git reset -q --hard "$head"
+# Every protected path is named at once: one park and one operator commit, not a round trip per file.
+printf 'a\n' >docs/adrs/a.md && printf 'b\n' >docs/adrs/b.md
+out=$("$AK" ship --message 'docs: two' 2>&1); rc=$?
+assert_eq 1 "$rc" 'two protected paths are refused'
+assert_contains "$out" 'ak: protected paths in this change: docs/adrs/a.md, docs/adrs/b.md' 'the refusal names both paths'
+assert_contains "$out" "fix: ak park --reason \"protected paths docs/adrs/a.md docs/adrs/b.md need the operator's commit\"" 'the park line names both paths'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the refused change pushes nothing'
+rm -f docs/adrs/a.md docs/adrs/b.md
 sed -i '$d' "$repo/.agent/config.env"
 
 # An unreadable policy file must refuse, never read as "nothing protected".

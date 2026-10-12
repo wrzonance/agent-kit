@@ -150,18 +150,33 @@ ship_changed_list() {
     )
 }
 
-# ship_protected: the first path changed against origin/<base> (committed, staged, or untracked) that
+# ship_pushed PATH BASE BRANCH: is PATH a change origin/BRANCH already carries against BASE, with the worktree's copy
+# still that pushed copy? The pushed branch must change PATH itself: a file the base gained after the last push is
+# absent there without anyone having decided so.
+ship_pushed() {
+    local rc=0
+    git rev-parse -q --verify "refs/remotes/origin/$3" >/dev/null || return 1
+    git diff --quiet "origin/$2...origin/$3" -- ":(literal)$1" 2>/dev/null || rc=$?
+    ((rc == 1)) || return 1
+    git diff --quiet "origin/$3" -- ":(literal)$1" 2>/dev/null
+}
+
+# ship_protected: fills PROTECTED with the paths changed against origin/<base> (committed, staged, or untracked) that
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
+# ship guards what it would push: a protected change already on origin/<branch> is left out (ship_pushed). A field
+# issue needed a migration; after the operator committed and pushed it, every later ship still refused the branch.
 ship_protected() {
-    local base entries entry prefix path list fetch policy found=""
+    local base branch entries entry prefix path list fetch policy
+    PROTECTED=()
     # cfg_file reads .agent/config.env from the main checkout (main_root) and ignores the environment: neither a worker
     # editing its worktree nor AGENT_PROTECTED_PATHS=... on the command line can replace the list it is guarded by.
     policy=$(cfg_file AGENT_PROTECTED_PATHS) || return $?
     IFS=$', \t' read -ra entries <<<"$policy"
     ((${#entries[@]})) || return 0
     base=$(work_base)
+    branch=$(git branch --show-current)
     printf -v fetch 'git fetch origin %q && ak ship --message '"'<message>'" "$base"
     list=$(mktemp) || die "cannot create a temporary file" "check TMPDIR"
     # Literal NUL-separated paths with no rename pairing: git's quoted form or a rename would hide a protected path.
@@ -179,12 +194,26 @@ ship_protected() {
             [[ $entry == *[*?[]* ]] && prefix=
             # shellcheck disable=SC2053
             [[ $path == $entry || (-n $prefix && $path == "$prefix"*) ]] || continue
-            found=$path
-            break 2
+            ship_pushed "$path" "$base" "$branch" || PROTECTED+=("$path")
+            break
         done
     done <"$list"
     rm -f -- "$list"
-    [[ -z $found ]] || printf '%s\n' "$found"
+}
+
+# ship_refuse_protected: the refusal for PROTECTED, naming every path (five at most) so one park and one operator
+# commit cover them all. A path is attacker-influenced text an agent may copy from the fix line: control characters
+# are dropped, and the fix line carries each path shell-quoted.
+ship_refuse_protected() {
+    local path clean quoted names='' args='' more=$((${#PROTECTED[@]} - 5)) one='path' needs='needs'
+    ((${#PROTECTED[@]} == 1)) || { one='paths' needs='need'; }
+    for path in "${PROTECTED[@]:0:5}"; do
+        clean=$(printf '%s' "$path" | tr -d '[:cntrl:]')
+        printf -v quoted '%q' "$clean"
+        names+="${names:+, }$clean" args+="${args:+ }$quoted"
+    done
+    ((more <= 0)) || { names+=" (+$more more)"; args+=" and $more more"; }
+    die "protected $one in this change: $names" "ak park --reason \"protected $one $args $needs the operator's commit\""
 }
 
 ship_commit() {
@@ -225,7 +254,7 @@ ship_resolved() {
 }
 
 cmd_main() {
-    local message="" body_file="" branch base pr body board="" hit quoted
+    local message="" body_file="" branch base pr body board=""
     while (($#)); do
         case $1 in
             --message) message=${2:-}; shift 2 || usage_die "--message needs a value" ;;
@@ -242,14 +271,9 @@ cmd_main() {
     base=$(work_base)
     [[ -n $branch && $branch != "$base" ]] ||
         die "refusing to ship from the base branch ${branch:-(detached)}" "git checkout -b feat/issue-N"
-    hit=$(ship_protected) ||
+    ship_protected ||
         die "cannot read the protected-path policy in $(main_root)/.agent/config.env" "fix the file's permissions, then ak ship --message '<message>'"
-    if [[ -n $hit ]]; then
-        # The path is attacker-influenced text an agent may copy from the fix line: quote it, and drop control characters.
-        hit=$(printf '%s' "$hit" | tr -d '[:cntrl:]')
-        printf -v quoted '%q' "$hit"
-        die "protected path in this change: $hit" "ak park --reason \"protected path $quoted needs the operator's commit\""
-    fi
+    ((${#PROTECTED[@]} == 0)) || ship_refuse_protected
     ship_commit "$message"
     ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||
