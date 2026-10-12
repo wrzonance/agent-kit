@@ -360,11 +360,13 @@ spawn_issue() {
     if [[ -n $stack && "feat/issue-$stack" != "$3" ]] && git -C "$MAIN" fetch -q origin "feat/issue-$stack" >>"$AK_LOG" 2>&1; then
         sync_base "$wt" "origin/feat/issue-$stack" "$dir"
     fi
-    hand_over "$wt" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
     prior=''
     [[ ! -f $dir/result ]] || prior=$(sed -n '/^note=parked: /{s///p;q}' "$dir/result" | tr -d '\000-\037')
+    # A park planned again hands the worktree over as it stands (hand_over). A first spawn records nothing, and
+    # neither does a re-spawn nobody parked: a commit a stopped worker left there is still that worker's.
+    [[ -z $prior ]] || hand_over "$wt" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
     rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     issue_block "$n" "$prior" >"$dir/issue.md"
     compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"

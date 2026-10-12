@@ -150,11 +150,13 @@ ship_changed_list() {
     )
 }
 
-# ship_handed: the commit this worktree held when the root handed it to its worker (hand_over), when that commit is
-# below HEAD; else nothing. The record is in the main checkout, where the root's commands write it.
+# ship_handed: the commit this worktree held when the root planned its park again (hand_over), when that commit is
+# below HEAD; else nothing. The record is a regular file in the main checkout, where the root's commands write it.
 ship_handed() {
-    local sha
-    sha=$(head -n 1 -- "$(handed_file "$(git branch --show-current)")" 2>/dev/null) || return 0
+    local file sha
+    file=$(handed_file "$(worktree_root)") || return 0
+    [[ -f $file && ! -L $file ]] || return 0
+    sha=$(head -n 1 -- "$file" 2>/dev/null) || return 0
     [[ $sha =~ ^[0-9a-f]{40,64}$ ]] && git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || return 0
     printf '%s\n' "$sha"
 }
@@ -175,9 +177,9 @@ ship_kept() {
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
-# The guard is on what this worker changed: a protected change that came with the worktree is left out (ship_kept).
-# A field issue needed a migration; after the operator committed it and planned the issue again, every later ship
-# still refused the branch. Being on origin does not count: a worker can push by hand.
+# The guard is on what this worker changed: a protected change that came with a park the root planned again is left
+# out (ship_kept). A field issue needed a migration; after the operator committed it and planned the issue again,
+# every later ship still refused the branch. Being on origin does not count: a worker can push by hand.
 ship_protected() {
     local base entries entry prefix path list fetch policy handed
     PROTECTED=()

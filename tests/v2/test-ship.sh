@@ -220,17 +220,20 @@ printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
 out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
 assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
 sed -i '$d' "$repo/.agent/config.env"
-# A protected change the root handed over with the worktree is not this ship's to refuse (field run: an issue needed
-# a migration; once the operator had committed it and planned the issue again, every later ship still refused the
-# branch, so the kit could open no PR and push no fix). ak plan and ak pr-plan record the handed-over commit in the main
-# checkout; here the record is written the way they write it. Touching the file again is a new change and refuses.
+# A protected change that came with a parked worktree the root planned again is not this ship's to refuse (field run:
+# an issue needed a migration; once the operator had committed it and planned the issue again, every later ship still
+# refused the branch, so the kit could open no PR and push no fix). ak plan and ak pr-plan record that commit in the
+# main checkout; `hand` writes the record the way they do. Touching the file again is a new change and refuses.
+hand() { bash -c 'source "$1/lib/common.sh"; hand_over "$2"' _ "$REPO/v2" "$PWD"; }
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$PWD")
+assert_contains "$record" "$repo/.ak/handed/" 'the record sits in the main checkout, outside the worktree'
 printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
 printf 'operator\n' >docs/adrs/op.md
 git add docs && git commit -q --no-verify -m 'docs: the adr only the operator commits'
 printf 'rest\n' >>src/b.txt
 out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 1 "$rc" 'without a hand-over record a committed protected path refuses'
-mkdir -p "$repo/.ak/handed" && git rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
+hand
 out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a protected path the root handed over does not refuse the rest'
 assert_eq "$(git rev-parse HEAD)" "$(git ls-remote "$WORK/origin.git" refs/heads/feat/issue-7 | cut -f1)" 'the rest is pushed'
@@ -255,15 +258,31 @@ assert_contains "$out" 'ak: protected path in this change: docs/adrs/mine.md' 't
 git push -q -f origin "$head:refs/heads/feat/issue-7" 2>/dev/null
 git reset -q --hard "$head"
 # A record that does not name a commit below HEAD exempts nothing.
-printf 'not-a-commit\n' >"$repo/.ak/handed/feat__issue-7"
+printf 'not-a-commit\n' >"$record"
 printf 'more\n' >>src/b.txt
 out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
 assert_eq 1 "$rc" 'an unreadable hand-over record exempts nothing'
-git -C "$repo" rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
+git -C "$repo" rev-parse HEAD >"$record"
 out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a recorded commit that is not below HEAD exempts nothing'
+# The record is a regular file the root wrote: a link in its place exempts nothing and is never written through.
+git rev-parse HEAD >"$WORK/elsewhere" && rm -f -- "$record" && ln -s "$WORK/elsewhere" "$record"
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a record that is a link exempts nothing'
+printf 'victim\n' >"$WORK/elsewhere"
+hand
+assert_eq victim "$(cat "$WORK/elsewhere")" 'the record is written fresh, never through a link left in its place'
+assert_eq "$(git rev-parse HEAD)" "$(cat "$record")" 'and holds the commit handed over'
 git checkout -q -- src/b.txt
-git rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
+# The record follows the worktree, not the branch name, which a worker can change.
+git branch -q -m feat/issue-7 feat/renamed
+printf 'renamed\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: renamed' 2>&1); rc=$?
+git branch -q -m feat/renamed feat/issue-7
+git reset -q --hard "$head" && git push -q -f origin "$head:refs/heads/feat/issue-7" 2>/dev/null
+git push -q origin --delete feat/renamed 2>/dev/null
+assert_not_contains "$out" 'protected path' 'a renamed branch still reads its own worktree record'
+hand
 # Every protected path is named at once: one park and one operator commit, not a round trip per file.
 printf 'a\n' >docs/adrs/a.md && printf 'b\n' >docs/adrs/b.md
 out=$("$AK" ship --message 'docs: two' 2>&1); rc=$?

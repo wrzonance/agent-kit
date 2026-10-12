@@ -50,7 +50,7 @@ assert_contains "$prompt" 'please hurry' 'comments are included'
 assert_contains "$prompt" 'AGENTS.md {{BRANCH}}' 'issue text is not itself substituted'
 assert_eq "$(cat "$wt/.ak/issue.md")" "$(sed -n '3,$p' "$wt/.ak/prompt.md")" 'the prompt block is .ak/issue.md'
 assert_eq '' "$(git -C "$wt" status --porcelain)" 'the worktree stays clean'
-assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(cat "$repo/.ak/handed/feat__issue-671")" 'the commit handed to the worker is recorded outside its worktree'
+assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a first spawn records no hand-over: nothing came with the worktree'
 assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
@@ -97,6 +97,22 @@ printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9' 'and opens the PR'
+# Only a park planned again hands a worktree over. A worker that committed a protected path and stopped without a
+# result is spawned again on the same worktree, and its commit is still refused.
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}'
+"$AK" plan --issue 671 >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+mkdir -p "$wt/.github/workflows" && printf 'new\n' >"$wt/.github/workflows/x.yml"
+git -C "$wt" add -A && git -C "$wt" commit -q --no-verify -m 'ci: bypassed'
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a worktree whose worker left no result is spawned again'
+printf 'more\n' >>"$wt/src/a.txt"
+out=$(cd "$wt" && "$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected commit nobody parked is not exempted by the re-spawn'
+assert_contains "$out" 'protected path in this change: .github/workflows/x.yml' 'the refusal names it'
 
 fresh
 standard_board

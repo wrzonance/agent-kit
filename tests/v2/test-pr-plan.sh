@@ -44,7 +44,7 @@ assert_contains "$out" 'drop pr=15 reason=fork' 'a fork PR is dropped'
 assert_eq feat/b "$(git -C "$wt" branch --show-current)" 'the worktree is on the PR branch'
 assert_eq origin/feat/b "$(git -C "$wt" rev-parse --abbrev-ref '@{u}')" 'the branch tracks origin'
 assert_eq 12 "$(cat "$wt/.ak/pr")" '.ak/pr holds the number'
-assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(cat "$repo/.ak/handed/feat__b")" 'the commit handed to the PR worker is recorded outside its worktree'
+assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a PR planned for the first time records no hand-over'
 assert_eq feat/a "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted verbatim'
@@ -85,5 +85,11 @@ assert_contains "$out" 'spawn pr=12' 'a PR with open review threads gets a worke
 printf 'pr=12\nci=green\nreview=done\nhead=old\n' >"$wt/.ak/result"
 out=$("$AK" pr-plan --pr 12 2>&1)
 assert_contains "$out" 'spawn pr=12' 'a result for an older head respawns the worker'
+
+# A parked PR the root plans again is handed over as it stands, so ak ship can tell what came with it.
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$repo/.worktrees/feat/b/.ak/result"
+"$AK" pr-plan --pr 12 >/dev/null 2>&1
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$repo/.worktrees/feat/b")
+assert_eq "$(git -C "$repo/.worktrees/feat/b" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning a parked PR again records the commit handed over'
 
 finish

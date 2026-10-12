@@ -99,22 +99,23 @@ trailer() {
     esac
 }
 
-# handed_file BRANCH: where the main checkout keeps the commit BRANCH's worktree held when the root last handed it to a
-# worker. It sits outside every worktree: what a worktree's own .ak files say is its worker's writing.
+# handed_file WORKTREE: where the main checkout keeps the commit WORKTREE held when the root planned its park again.
+# It sits outside every worktree (a worktree's own .ak files are its worker's writing) and is named by the worktree's
+# real path, which its worker cannot change the way it can rename a branch.
 handed_file() {
-    printf '%s/.ak/handed/%s\n' "$(main_root)" "${1//\//__}"
+    local path
+    path=$(cd -- "$1" && pwd -P) || return 1
+    printf '%s/.ak/handed/%s\n' "$(main_root)" "$(printf '%s' "$path" | git hash-object --stdin)"
 }
 
-# hand_over WORKTREE: record the commit WORKTREE holds as the root hands it to a worker (ak plan, ak collect and
-# ak pr-plan call this). ak ship reads it to tell a protected path that came with the worktree, such as the commit an
-# operator made to answer a park, from one the worker changed.
+# hand_over WORKTREE: record the commit WORKTREE holds. ak plan and ak pr-plan call this when they plan a parked
+# worktree again: the park asked the operator for something, and what was committed there since is not the next
+# worker's change. ak ship reads the record to leave such a protected path out of its refusal. The file is written
+# fresh, never through a link left in its place.
 hand_over() {
-    (
-        cd -- "$1" || exit 1
-        file=$(handed_file "$(git branch --show-current)")
-        mkdir -p -- "$(dirname -- "$file")"
-        git rev-parse HEAD >"$file"
-    )
+    local file
+    file=$(cd -- "$1" && handed_file "$1") || return 1
+    mkdir -p -- "$(dirname -- "$file")" && rm -f -- "$file" && git -C "$1" rev-parse HEAD >"$file"
 }
 
 # The per-worktree state directory, kept out of git through the shared info/exclude.
