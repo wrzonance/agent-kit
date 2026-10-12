@@ -91,13 +91,19 @@ receipt_part_of() {
 
 # receipt_post PR FILE HEAD: post the comment, or update the receipt this PR already carries for HEAD. A second
 # receipt on one head used to add a second comment (a field PR carried two, 32 s apart), and one run again after CI
-# concluded left the earlier ci=pending receipt standing. Only a comment that opens as a receipt for this head counts,
-# so one that quotes it is never edited; a failed lookup or a refused update posts a new comment, as before.
+# concluded left the earlier ci=pending receipt standing. Only a comment that opens as a receipt for this head and
+# was written by this account counts: a quote of one is never edited, and a look-alike someone else posted is never
+# taken over (a token with admin rights could edit it, and its author could then rewrite the receipt). A failed
+# lookup or a refused update posts a new comment, as before.
 receipt_post() {
-    local pr=$1 file=$2 mark id body
+    local pr=$1 file=$2 mark found id='' me body
     mark="$BANNER"$'\n\n'"**ak receipt** for head \`$3\`"
-    id=$(gh api --paginate "repos/$(slug)/issues/$pr/comments?per_page=100" 2>/dev/null |
-        jq -rs --arg mark "$mark" '[.[][] | select((.body // "") | startswith($mark)) | .id] | last // empty' 2>/dev/null) || id=''
+    found=$(gh api --paginate "repos/$(slug)/issues/$pr/comments?per_page=100" 2>/dev/null |
+        jq -rs --arg mark "$mark" '.[][] | select((.body // "") | startswith($mark)) | "\(.id) \(.user.login // "")"' 2>/dev/null) || found=''
+    # The account is asked for only when a candidate exists.
+    if [[ -n $found ]] && me=$(gh api user --jq .login 2>/dev/null) && [[ -n $me ]]; then
+        id=$(awk -v me="$me" '$2 == me { id = $1 } END { print id }' <<<"$found")
+    fi
     if [[ $id =~ ^[0-9]+$ ]] && body=$(gh api -X PATCH "repos/$(slug)/issues/comments/$id" -F "body=@$file" 2>/dev/null); then
         printf '%s\n' "$body"
         return 0

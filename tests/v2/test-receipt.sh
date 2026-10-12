@@ -50,10 +50,13 @@ assert_not_contains "$result" 'base-red' 'a green PR names no base-red check'
 # run again after CI concluded left the earlier ci=pending one standing). Only a comment that is a receipt for this
 # head counts: one that quotes it, or a receipt for another head, is left alone.
 routes=$(cat "$FAKE_GH_ROUTES")
-jq -n --arg h "$head" '[{id: 54, body: "> This was written agentically; verify its assertions:\n>\n> **ak receipt** for head `\($h)`"},
-    {id: 55, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`\n\n- CI: pending"},
-    {id: 56, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `0000000`"}]' >"$WORK/comments.json"
+jq -n --arg h "$head" '[{id: 54, user: {login: "me"}, body: "> This was written agentically; verify its assertions:\n>\n> **ak receipt** for head `\($h)`"},
+    {id: 55, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`\n\n- CI: pending"},
+    {id: 56, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `0000000`"},
+    {id: 58, user: {login: "someone-else"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`\n\n- CI: green"}]' >"$WORK/comments.json"
 printf 'api --paginate repos/acme/widget/issues/9/comments?per_page=100\t%s\t0\n%s\n' "$WORK/comments.json" "$routes" >"$FAKE_GH_ROUTES"
+route 'api user --jq .login' 'me'
+route 'api -X PATCH repos/acme/widget/issues/comments/58 *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-58"}'
 route 'api -X PATCH repos/acme/widget/issues/comments/55 *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-55"}'
 : >"$FAKE_GH_LOG"
 out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
@@ -65,9 +68,9 @@ jq 'map(select(.id != 55))' "$WORK/comments.json" >"$WORK/comments.tmp" && mv -f
 : >"$FAKE_GH_LOG"
 out=$("$AK" receipt --findings "$WORK/findings" 2>&1)
 assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9#issuecomment-1' 'a head with no receipt of its own gets a new comment'
-assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PATCH' 'a quoted receipt and a receipt for another head are not edited'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PATCH' 'a quoted receipt, a receipt for another head and a look-alike from another account are not edited'
 # An update GitHub refuses still leaves a receipt: it is posted as a new comment.
-jq -n --arg h "$head" '[{id: 57, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`"}]' >"$WORK/comments.json"
+jq -n --arg h "$head" '[{id: 57, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`"}]' >"$WORK/comments.json"
 out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
 assert_eq 0 "$rc" 'a refused update is not a failed receipt'
 assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9#issuecomment-1' 'the receipt is posted instead'
