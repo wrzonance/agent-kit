@@ -164,9 +164,10 @@ ship_handed() {
     done <"$file"
 }
 
-# ship_kept PATH PAIRS: did someone other than the worker commit PATH as it now stands? True when PATH changed between
-# a park and the plan that followed it, and the worktree's copy is still the one that plan found. Commit ids and a
-# literal pathspec, so no ref of a similar name and no pattern in a file name is read instead.
+# ship_kept PATH PAIRS: did someone other than the worker commit PATH as it now stands? The newest pair that changed
+# PATH between a collected park and the plan that followed decides: true when the worktree's copy is still the one
+# that plan found. An older approved copy does not count, so rolling the file back is a change like any other. Commit
+# ids and a literal pathspec, so no ref of a similar name and no pattern in a file name is read instead.
 ship_kept() {
     local parked handed rc
     while read -r parked handed; do
@@ -174,8 +175,9 @@ ship_kept() {
         rc=0
         git diff --quiet "$parked" "$handed" -- ":(literal)$1" 2>/dev/null || rc=$?
         ((rc == 1)) || continue
-        ! git diff --quiet "$handed" -- ":(literal)$1" 2>/dev/null || return 0
-    done <<<"$2"
+        git diff --quiet "$handed" -- ":(literal)$1" 2>/dev/null
+        return
+    done < <(tac <<<"$2")
     return 1
 }
 
@@ -183,10 +185,10 @@ ship_kept() {
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
-# The guard is on what the worker changed: a protected path committed between a park and the plan that followed it
-# is the operator's answer to that park and is left out (ship_kept). A field issue needed a migration; after the
+# The guard is on what the worker changed: a protected path committed between a collected park and the plan that
+# followed it is the operator's answer to that park and is left out (ship_kept). A field issue needed a migration; after the
 # operator committed it and planned the issue again, every later ship still refused the branch. Being on origin does
-# not count (a worker can push by hand), and neither does what the worker committed before it parked.
+# not count (a worker can push by hand), and neither does what the worker committed before its park was collected.
 ship_protected() {
     local base entries entry prefix path list fetch policy handed
     PROTECTED=()

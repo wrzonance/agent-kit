@@ -91,6 +91,7 @@ assert_contains "$out" 'spawn pr=12' 'a result for an older head respawns the wo
 prwt="$repo/.worktrees/feat/b"
 mkdir -p "$prwt/.ak/logs" && : >"$prwt/.ak/logs/verify.log"
 (cd "$prwt" && "$AK" park --reason 'protected path needs the operator' >/dev/null)
+"$AK" collect --pr 12 >/dev/null 2>&1
 parked=$(git -C "$prwt" rev-parse HEAD)
 git -C "$prwt" commit -q --allow-empty -m 'the operator answers the park'
 "$AK" pr-plan --pr 12 >/dev/null 2>&1

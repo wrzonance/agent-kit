@@ -100,32 +100,35 @@ trailer() {
 }
 
 # handed_file WORKTREE: the main checkout's record of what was committed in WORKTREE by someone other than its worker:
-# one "PARKED HEAD" line per park the root planned again. It sits outside every worktree (a worktree's own .ak files
-# are its worker's writing) and is named by the worktree's real path, which its worker cannot change the way it can
-# rename a branch. FILE.parked beside it holds the commit the worker last parked at.
+# one "PARKED HEAD" line per park the root collected and then planned again. It sits outside every worktree (a
+# worktree's own .ak files are its worker's writing) and is named by the worktree's real path, which its worker
+# cannot change the way it can rename a branch. FILE.parked beside it holds the commit the worker had stopped at.
 handed_file() {
     local path
     path=$(cd -- "$1" && pwd -P) || return 1
     printf '%s/.ak/handed/%s\n' "$(main_root)" "$(printf '%s' "$path" | git hash-object --stdin)"
 }
 
-# park_mark WORKTREE: note the commit WORKTREE holds as its worker parks (ak park calls this). What is committed there
-# afterwards is not that worker's doing: it is the operator's answer to the park.
+# park_mark WORKTREE: note the commit WORKTREE holds when the root collects its park (ak collect calls this). The
+# worker has ended by then, so whatever it committed, before or after running ak park, is below the note; what is
+# committed afterwards is the operator's answer. One note per park: collecting the same park again leaves it alone,
+# and a newer park result replaces it.
 park_mark() {
     local file
     file=$(cd -- "$1" && handed_file "$1") || return 1
+    [[ ! -f $file.parked || -L $file.parked || $1/.ak/result -nt $file.parked ]] || return 0
     mkdir -p -- "$(dirname -- "$file")" && rm -f -- "$file.parked" && git -C "$1" rev-parse HEAD >"$file.parked"
 }
 
 # hand_over WORKTREE: when the root plans a parked worktree again (ak plan, ak pr-plan), record the commits made
-# there since the park as "PARKED HEAD". ak ship reads the record to leave a protected path the operator committed
-# out of its refusal; what the worker committed before it parked is on the other side of PARKED and stays refused.
-# Without a park note, or with nothing committed since, nothing is recorded. Both files are written fresh, never
-# through a link left in their place.
+# there since its park was collected as "PARKED HEAD". ak ship reads the record to leave a protected path the
+# operator committed out of its refusal; what the worker committed is below PARKED and stays refused. A park the
+# root never collected (no note, or a result newer than the note) records nothing, and neither does a park with
+# nothing committed since. Both files are written fresh, never through a link left in their place.
 hand_over() {
     local file parked head
     file=$(cd -- "$1" && handed_file "$1") || return 1
-    [[ -f $file.parked && ! -L $file.parked ]] || { rm -f -- "$file.parked"; return 0; }
+    [[ -f $file.parked && ! -L $file.parked && ! $1/.ak/result -nt $file.parked ]] || { rm -f -- "$file.parked"; return 0; }
     parked=$(head -n 1 -- "$file.parked")
     rm -f -- "$file.parked"
     head=$(git -C "$1" rev-parse HEAD) || return 1

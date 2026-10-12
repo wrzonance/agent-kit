@@ -92,8 +92,15 @@ out=$(cd "$wt" && "$AK" ship --message 'feat: needs a workflow' 2>&1); rc=$?
 assert_eq 1 "$rc" 'ship refuses the protected path the worker wrote'
 mkdir -p "$wt/.ak/logs" && : >"$wt/.ak/logs/verify.log"
 (cd "$wt" && "$AK" park --reason 'protected path .github/workflows/x.yml needs the operator' >/dev/null)
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$wt")
+"$AK" collect --issue 671 >/dev/null 2>&1
+stopped=$(git -C "$wt" rev-parse HEAD)
+assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting a park notes, outside the worktree, where the worker stopped'
 git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
+"$AK" collect --issue 671 >/dev/null 2>&1
+assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting the same park again does not move the note'
 "$AK" plan --new --issue 671 >/dev/null 2>&1
+assert_eq "$stopped $(git -C "$wt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning the park again records what was committed since'
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'
@@ -108,6 +115,7 @@ wt="$repo/.worktrees/feat/issue-671"
 mkdir -p "$wt/.github/workflows" "$wt/.ak/logs" && printf 'new\n' >"$wt/.github/workflows/x.yml" && : >"$wt/.ak/logs/verify.log"
 git -C "$wt" add -A && git -C "$wt" commit -q --no-verify -m 'ci: bypassed'
 (cd "$wt" && "$AK" park --reason 'parked after its own protected commit' >/dev/null)
+"$AK" collect --issue 671 >/dev/null 2>&1
 "$AK" plan --new --issue 671 >/dev/null 2>&1
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: more' 2>&1); rc=$?
