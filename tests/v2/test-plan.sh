@@ -50,6 +50,7 @@ assert_contains "$prompt" 'please hurry' 'comments are included'
 assert_contains "$prompt" 'AGENTS.md {{BRANCH}}' 'issue text is not itself substituted'
 assert_eq "$(cat "$wt/.ak/issue.md")" "$(sed -n '3,$p' "$wt/.ak/prompt.md")" 'the prompt block is .ak/issue.md'
 assert_eq '' "$(git -C "$wt" status --porcelain)" 'the worktree stays clean'
+assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(cat "$repo/.ak/handed/feat__issue-671")" 'the commit handed to the worker is recorded outside its worktree'
 assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
@@ -76,6 +77,26 @@ fresh_plan=$("$AK" plan 2>&1)
 assert_not_contains "$fresh_plan" 'resumed' 'a run whose workers all reported is not resumed'
 forced=$("$AK" plan --new 2>&1)
 assert_not_contains "$forced" 'resumed' '--new always plans fresh'
+
+# An issue that needs a protected path finishes through the kit: ship refuses the worker's change, the operator commits
+# it, and the planned-again worktree ships (field run: the branch stayed unshippable after the operator's commit).
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-671&state=open' '[]'
+route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}'
+"$AK" plan --issue 671 >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+mkdir -p "$wt/.github/workflows" && printf 'new\n' >"$wt/.github/workflows/x.yml" && printf 'work\n' >"$wt/src/a.txt"
+out=$(cd "$wt" && "$AK" ship --message 'feat: needs a workflow' 2>&1); rc=$?
+assert_eq 1 "$rc" 'ship refuses the protected path the worker wrote'
+git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$wt/.ak/result"
+"$AK" plan --new --issue 671 >/dev/null 2>&1
+printf 'more\n' >>"$wt/src/a.txt"
+out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
+assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'
+assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9' 'and opens the PR'
 
 fresh
 standard_board

@@ -99,6 +99,24 @@ trailer() {
     esac
 }
 
+# handed_file BRANCH: where the main checkout keeps the commit BRANCH's worktree held when the root last handed it to a
+# worker. It sits outside every worktree: what a worktree's own .ak files say is its worker's writing.
+handed_file() {
+    printf '%s/.ak/handed/%s\n' "$(main_root)" "${1//\//__}"
+}
+
+# hand_over WORKTREE: record the commit WORKTREE holds as the root hands it to a worker (ak plan, ak collect and
+# ak pr-plan call this). ak ship reads it to tell a protected path that came with the worktree, such as the commit an
+# operator made to answer a park, from one the worker changed.
+hand_over() {
+    (
+        cd -- "$1" || exit 1
+        file=$(handed_file "$(git branch --show-current)")
+        mkdir -p -- "$(dirname -- "$file")"
+        git rev-parse HEAD >"$file"
+    )
+}
+
 # The per-worktree state directory, kept out of git through the shared info/exclude.
 ak_dir() {
     local root dir exclude

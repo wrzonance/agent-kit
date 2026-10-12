@@ -220,45 +220,50 @@ printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
 out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
 assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
 sed -i '$d' "$repo/.agent/config.env"
-# A protected change that is already on the pushed branch is not this ship's to refuse (field run: an issue needed a
-# migration; once the operator had committed and pushed it, every later ship still refused the branch, so the kit
-# could open no PR and push no fix). Touching the file again is a new change and refuses again.
+# A protected change the root handed over with the worktree is not this ship's to refuse (field run: an issue needed
+# a migration; once the operator had committed it and planned the issue again, every later ship still refused the
+# branch, so the kit could open no PR and push no fix). ak plan and ak pr-plan record the handed-over commit in the main
+# checkout; here the record is written the way they write it. Touching the file again is a new change and refuses.
 printf 'AGENT_PROTECTED_PATHS=docs/adrs\n' >>"$repo/.agent/config.env"
 printf 'operator\n' >docs/adrs/op.md
-git add docs && git commit -q --no-verify -m 'docs: the adr only the operator commits' && git push -q origin HEAD 2>/dev/null
+git add docs && git commit -q --no-verify -m 'docs: the adr only the operator commits'
 printf 'rest\n' >>src/b.txt
 out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
-assert_eq 0 "$rc" 'a protected path already on the pushed branch does not refuse the rest'
-assert_eq "$(git rev-parse HEAD)" "$(git ls-remote "$WORK/origin.git" feat/issue-7 | cut -f1)" 'the rest is pushed'
+assert_eq 1 "$rc" 'without a hand-over record a committed protected path refuses'
+mkdir -p "$repo/.ak/handed" && git rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
+out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a protected path the root handed over does not refuse the rest'
+assert_eq "$(git rev-parse HEAD)" "$(git ls-remote "$WORK/origin.git" refs/heads/feat/issue-7 | cut -f1)" 'the rest is pushed'
 head=$(git rev-parse HEAD)
 remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
 printf 'edited\n' >>docs/adrs/op.md
 out=$("$AK" ship --message 'docs: edit' 2>&1); rc=$?
-assert_eq 1 "$rc" 'a further edit to the pushed protected file is refused'
+assert_eq 1 "$rc" 'a further edit to the handed-over protected file is refused'
 assert_contains "$out" 'ak: protected path in this change: docs/adrs/op.md' 'the refusal names the edited file'
 git checkout -q -- docs/adrs/op.md
 git rm -q docs/adrs/op.md
 out=$("$AK" ship --message 'docs: drop' 2>&1); rc=$?
-assert_eq 1 "$rc" 'deleting the pushed protected file is refused'
+assert_eq 1 "$rc" 'deleting the handed-over protected file is refused'
 git reset -q --hard "$head"
-# What is pushed is asked of origin itself: the local tracking ref is state the worktree's own agent can move.
-printf 'forged\n' >docs/adrs/forged.md
-git add docs && git commit -q --no-verify -m 'docs: bypassed'
-git update-ref refs/remotes/origin/feat/issue-7 HEAD
-out=$("$AK" ship --message 'docs: forged' 2>&1); rc=$?
-assert_eq 1 "$rc" 'a protected commit that only the local tracking ref calls pushed is refused'
-assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the forged-ref commit is not pushed'
-git update-ref refs/remotes/origin/feat/issue-7 "$head"
+# Being on origin proves nothing about who put it there: a worker that commits and pushes by habit before ak ship is
+# refused like one that only committed.
+printf 'mine\n' >docs/adrs/mine.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed' && git push -q origin HEAD 2>/dev/null
+out=$("$AK" ship --message 'docs: pushed by hand' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected commit the worker pushed itself is still refused'
+assert_contains "$out" 'ak: protected path in this change: docs/adrs/mine.md' 'the refusal names the path the worker pushed'
+git push -q -f origin "$head:refs/heads/feat/issue-7" 2>/dev/null
 git reset -q --hard "$head"
-# A local branch named like the tracking ref must not stand in for it.
-printf 'again\n' >>docs/adrs/op.md
-git add docs && git commit -q --no-verify -m 'docs: bypassed again'
-git branch -q origin/feat/issue-7 HEAD
-out=$("$AK" ship --message 'docs: ambiguous' 2>&1); rc=$?
-assert_eq 1 "$rc" 'a local branch named origin/<branch> does not make a protected commit read as pushed'
-assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" refs/heads/feat/issue-7)" 'the commit behind the look-alike branch is not pushed'
-git branch -q -D origin/feat/issue-7
-git reset -q --hard "$head"
+# A record that does not name a commit below HEAD exempts nothing.
+printf 'not-a-commit\n' >"$repo/.ak/handed/feat__issue-7"
+printf 'more\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an unreadable hand-over record exempts nothing'
+git -C "$repo" rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a recorded commit that is not below HEAD exempts nothing'
+git checkout -q -- src/b.txt
+git rev-parse HEAD >"$repo/.ak/handed/feat__issue-7"
 # Every protected path is named at once: one park and one operator commit, not a round trip per file.
 printf 'a\n' >docs/adrs/a.md && printf 'b\n' >docs/adrs/b.md
 out=$("$AK" ship --message 'docs: two' 2>&1); rc=$?

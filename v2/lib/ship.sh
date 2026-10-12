@@ -150,20 +150,20 @@ ship_changed_list() {
     )
 }
 
-# ship_pushed_head BRANCH: the commit origin's BRANCH points at, when this clone has it; else nothing. It is asked of
-# origin itself: the local tracking ref is state the worktree's own agent can move without pushing anything.
-ship_pushed_head() {
+# ship_handed: the commit this worktree held when the root handed it to its worker (hand_over), when that commit is
+# below HEAD; else nothing. The record is in the main checkout, where the root's commands write it.
+ship_handed() {
     local sha
-    sha=$(git ls-remote origin "refs/heads/$1" 2>/dev/null | awk -v ref="refs/heads/$1" '$2 == ref { print $1; exit }')
-    [[ $sha =~ ^[0-9a-f]{40,64}$ ]] && git cat-file -e "$sha^{commit}" 2>/dev/null || return 0
+    sha=$(head -n 1 -- "$(handed_file "$(git branch --show-current)")" 2>/dev/null) || return 0
+    [[ $sha =~ ^[0-9a-f]{40,64}$ ]] && git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || return 0
     printf '%s\n' "$sha"
 }
 
-# ship_pushed PATH BASE PUSHED: is PATH a change the pushed commit PUSHED already carries against BASE, with the
-# worktree's copy still that pushed copy? The pushed branch must change PATH itself: a file the base gained after the
-# last push is absent there without anyone having decided so. Full ref names and a commit id, so no other ref of a
-# similar name is read instead.
-ship_pushed() {
+# ship_kept PATH BASE HANDED: is PATH a change the handed-over commit already carries against BASE, with the
+# worktree's copy still that copy? The handed-over commit must change PATH itself: a file the base gained later is
+# absent there without anyone having decided so. Full ref names and a commit id, so no other ref of a similar name is
+# read instead.
+ship_kept() {
     local rc=0
     [[ -n $3 ]] || return 1
     git diff --quiet "refs/remotes/origin/$2...$3" -- ":(literal)$1" 2>/dev/null || rc=$?
@@ -175,10 +175,11 @@ ship_pushed() {
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
-# ship guards what it would push: a protected change already on origin's branch is left out (ship_pushed). A field
-# issue needed a migration; after the operator committed and pushed it, every later ship still refused the branch.
+# The guard is on what this worker changed: a protected change that came with the worktree is left out (ship_kept).
+# A field issue needed a migration; after the operator committed it and planned the issue again, every later ship
+# still refused the branch. Being on origin does not count: a worker can push by hand.
 ship_protected() {
-    local base entries entry prefix path list fetch policy pushed
+    local base entries entry prefix path list fetch policy handed
     PROTECTED=()
     # cfg_file reads .agent/config.env from the main checkout (main_root) and ignores the environment: neither a worker
     # editing its worktree nor AGENT_PROTECTED_PATHS=... on the command line can replace the list it is guarded by.
@@ -203,9 +204,8 @@ ship_protected() {
             [[ $entry == *[*?[]* ]] && prefix=
             # shellcheck disable=SC2053
             [[ $path == $entry || (-n $prefix && $path == "$prefix"*) ]] || continue
-            # origin is asked once, and only when the change holds a protected path at all.
-            [[ -n ${pushed+set} ]] || pushed=$(ship_pushed_head "$(git branch --show-current)")
-            ship_pushed "$path" "$base" "$pushed" || PROTECTED+=("$path")
+            [[ -n ${handed+set} ]] || handed=$(ship_handed)
+            ship_kept "$path" "$base" "$handed" || PROTECTED+=("$path")
             break
         done
     done <"$list"

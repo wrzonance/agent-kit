@@ -360,6 +360,7 @@ spawn_issue() {
     if [[ -n $stack && "feat/issue-$stack" != "$3" ]] && git -C "$MAIN" fetch -q origin "feat/issue-$stack" >>"$AK_LOG" 2>&1; then
         sync_base "$wt" "origin/feat/issue-$stack" "$dir"
     fi
+    hand_over "$wt" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
     printf '%s\n' "$n" >"$dir/issue"
     printf '%s\n' "$3" >"$dir/base"
     prior=''

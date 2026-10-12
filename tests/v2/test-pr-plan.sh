@@ -44,6 +44,7 @@ assert_contains "$out" 'drop pr=15 reason=fork' 'a fork PR is dropped'
 assert_eq feat/b "$(git -C "$wt" branch --show-current)" 'the worktree is on the PR branch'
 assert_eq origin/feat/b "$(git -C "$wt" rev-parse --abbrev-ref '@{u}')" 'the branch tracks origin'
 assert_eq 12 "$(cat "$wt/.ak/pr")" '.ak/pr holds the number'
+assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(cat "$repo/.ak/handed/feat__b")" 'the commit handed to the PR worker is recorded outside its worktree'
 assert_eq feat/a "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted verbatim'

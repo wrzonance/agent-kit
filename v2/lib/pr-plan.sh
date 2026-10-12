@@ -49,6 +49,7 @@ pr_plan_prompt() {
     mkdir -p -- "$wt/.ak"
     printf '%s\n' "$n" >"$wt/.ak/pr"
     printf '%s\n' "$base" >"$wt/.ak/base"
+    hand_over "$wt" || die "cannot record the commit handed over in $wt" "git -C $wt status"
     rm -f -- "$wt/.ak/result"
     text=$(<"$AK_HOME/templates/pr-worker.md")
     text=${text//'{{PR}}'/"$n"}
