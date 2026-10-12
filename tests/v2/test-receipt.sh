@@ -87,6 +87,12 @@ printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\
 assert_contains "$(cat .ak/result)" 'ci=red' 'a red head is recorded as red'
 assert_contains "$(cat .ak/result)" '; base-red: t (also red on main)' 'the result note names the check the base branch fails too'
 assert_not_contains "$(cat .ak/result)" 'base-red: t,own' 'a failure of its own is not called base-red'
+# Any valid base name is reported: one with characters outside the plain set (release/c++) used to drop the note.
+git push -q origin "$main:refs/heads/release/c++" 2>/dev/null
+printf 'release/c++\n' >.ak/base
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_contains "$(cat .ak/result)" '; base-red: t (also red on release/c++)' 'a base named release/c++ is still reported'
+rm -f .ak/base
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 # Checks only CI caught reach the operator through the result note (a field repo paid a CI round per PR for a type check).

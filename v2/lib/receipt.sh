@@ -112,7 +112,7 @@ receipt_post() {
 }
 
 cmd_main() {
-    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open inherited
+    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open inherited base
     while (($#)); do
         case $1 in
             --findings) file=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
@@ -152,8 +152,10 @@ cmd_main() {
     note="findings=$count fixed=$fixed declined=$declined"
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
     # Red checks the base branch fails too: the collect line then shows the operator that the base is red, not this PR.
-    if [[ $ci == red ]] && inherited=$(ci_inherited "$runs") && [[ $inherited =~ ^inherited=(.+)\ from=([A-Za-z0-9._/-]+)\ note= ]]; then
-        note+="; base-red: ${BASH_REMATCH[1]} (also red on ${BASH_REMATCH[2]})"
+    # The base name is on its way to a line the root reads, so it is reduced to ref-name characters, never dropped.
+    if [[ $ci == red ]] && inherited=$(ci_inherited "$runs") && [[ $inherited =~ ^inherited=(.+)\ from=([^ ]+)\ note= ]]; then
+        base=${BASH_REMATCH[2]//[^A-Za-z0-9._\/+@-]/}
+        note+="; base-red: ${BASH_REMATCH[1]} (also red on ${base:-the base branch})"
     fi
     # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
     ! ci_only_trusted "$dir/ci-only" ||
