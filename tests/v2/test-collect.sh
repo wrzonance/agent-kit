@@ -29,7 +29,31 @@ out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'after issue=680 reason=waits-on-parked-#671' 'a parked issue holds its successor'
 assert_not_contains "$out" 'spawn issue=680' 'a parked issue spawns no successor'
 assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run records the park and the held successor'
-assert_contains "$out" "next=issue=671 is parked in $wt (uncommitted paths: 0); clear what its note names, commit and push there what only you may commit, then: ak plan --issue 671" 'a park says where the work waits and the command that continues it'
+# The park line is the operator's: a field root read "clear what its note names ... then: ak plan --issue N" as its
+# own next step, planned the issue again at once, and a second worker parked on the same line.
+assert_contains "$out" "next=operator: issue 671 is parked in $wt (uncommitted paths: 0). Do what its note asks, commit there what only you may commit, then run: ak plan --issue 671" 'a park says where the work waits and the command that continues it'
+# A park does not outlive its PR. When the branch got a PR after the park (opened outside ak), that PR is the result
+# (field run: collect kept printing the park and held the successor while plan said open-pr in the same minute).
+routes=$(cat "$FAKE_GH_ROUTES")
+parked_head=$(git -C "$wt" rev-parse HEAD)
+printf '[{"number":77,"html_url":"https://github.com/acme/widget/pull/77","head":{"sha":"%s"}}]' "$parked_head" >"$WORK/open-77.json"
+printf '{"number":77,"state":"open","head":{"sha":"%s"}}' "$parked_head" >"$WORK/pr77.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}' >"$WORK/runs-77.json"
+printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-671*\t%s\t0\napi repos/acme/widget/pulls/77\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+    "$WORK/open-77.json" "$WORK/pr77.json" "$parked_head" "$WORK/runs-77.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/77 ci=red review=skipped note=PR opened after the park; parked: protected path' 'a park whose branch has an open PR collects as that PR, with CI read live'
+assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'its successor waits on the PR, not on the park'
+assert_contains "$out" 'next=issue=671 has red CI on PR 77; hand it to a worker: ak pr-plan --pr 77' 'the next line names the PR found, not the park'
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-77.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/77 ci=green' 'once that PR is green the issue collects'
+assert_contains "$out" 'spawn issue=680 ' 'and its successor is released'
+assert_not_contains "$out" 'parked in' 'no park line is printed for it'
+# Put the run back as the cases below expect it: 671 out, 680 queued behind it.
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+git -C "$repo" worktree remove --force "$repo/.worktrees/feat/issue-680" && git -C "$repo" branch -q -D feat/issue-680
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)) |= (.state = "queued" | .worktree = "")' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 # A red predecessor holds its successor too, and stays collectable (a field successor was spawned on a red branch).
 printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
 out=$("$AK" collect --issue 671 2>&1)
@@ -435,5 +459,13 @@ printf 'api repos/acme/widget/pulls/10\t%s\t0\napi repos/acme/widget/commits/%s/
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$run_b")" 'the new run records the collection'
 assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the first run keeps its queued item queued'
 assert_eq queued "$(jq -r '.items[] | select(.n == 693) | .state' "$run_a")" 'and spawns no descendant from it'
+
+# A PR that no run holds is planned by ak pr-plan; the fix line used to plan an issue with the PR's number.
+out=$("$AK" collect --pr 842 2>&1); rc=$?
+assert_eq 1 "$rc" 'a PR no run holds is refused'
+assert_contains "$out" 'ak: pr 842 is not in any run' 'the refusal names the PR'
+assert_contains "$out" 'fix: ak pr-plan --pr 842' 'the fix line plans the PR, not an issue of that number'
+out=$("$AK" collect --issue 842 2>&1)
+assert_contains "$out" 'fix: ak plan --issue 842' 'an issue no run holds is still planned by ak plan'
 
 finish
