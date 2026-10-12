@@ -51,7 +51,7 @@ pr_plan_prompt() {
     printf '%s\n' "$base" >"$wt/.ak/base"
     # A parked PR planned again records what was committed there since the park, like a parked issue (hand_over).
     ! grep -q '^note=parked: ' "$wt/.ak/result" 2>/dev/null || hand_over "$wt" ||
-        die "cannot record the commit handed over in $wt" "git -C $wt status"
+        die "cannot record what was committed in $wt since its park" "git -C $wt status"
     rm -f -- "$wt/.ak/result"
     text=$(<"$AK_HOME/templates/pr-worker.md")
     text=${text//'{{PR}}'/"$n"}

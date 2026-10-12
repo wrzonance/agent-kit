@@ -169,16 +169,17 @@ ship_handed() {
 # that plan found. An older approved copy does not count, so rolling the file back is a change like any other. Commit
 # ids and a literal pathspec, so no ref of a similar name and no pattern in a file name is read instead.
 ship_kept() {
-    local parked handed rc
+    local parked handed rc kept=1
+    # Pairs come oldest first, so the last one that changed PATH is the one left standing.
     while read -r parked handed; do
         [[ -n $handed ]] || continue
         rc=0
         git diff --quiet "$parked" "$handed" -- ":(literal)$1" 2>/dev/null || rc=$?
         ((rc == 1)) || continue
-        git diff --quiet "$handed" -- ":(literal)$1" 2>/dev/null
-        return
-    done < <(tac <<<"$2")
-    return 1
+        kept=1
+        ! git diff --quiet "$handed" -- ":(literal)$1" 2>/dev/null || kept=0
+    done <<<"$2"
+    return "$kept"
 }
 
 # ship_protected: fills PROTECTED with the paths changed against origin/<base> (committed, staged, or untracked) that
@@ -186,9 +187,10 @@ ship_kept() {
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
 # The guard is on what the worker changed: a protected path committed between a collected park and the plan that
-# followed it is the operator's answer to that park and is left out (ship_kept). A field issue needed a migration; after the
-# operator committed it and planned the issue again, every later ship still refused the branch. Being on origin does
-# not count (a worker can push by hand), and neither does what the worker committed before its park was collected.
+# followed it is the operator's answer to that park and is left out (ship_kept). A field issue needed a migration;
+# after the operator committed it and planned the issue again, every later ship still refused the branch. Being on
+# origin does not count (a worker can push by hand), and neither does what the worker committed before its park was
+# collected.
 ship_protected() {
     local base entries entry prefix path list fetch policy handed
     PROTECTED=()
