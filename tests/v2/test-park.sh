@@ -33,4 +33,8 @@ assert_contains "$result" "head=$(git rev-parse HEAD)" 'the head is recorded'
 assert_eq 1 "$(wc -l <<<"$out")" 'park prints one line'
 assert_eq '' "$(cat "$FAKE_GH_LOG")" 'park makes no GitHub calls'
 
+# The park notes, in the main checkout, where the worker stopped: what is committed there afterwards is not its work.
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$PWD")
+assert_eq "$(git rev-parse HEAD)" "$(cat "$record.parked" 2>/dev/null)" 'ak park notes the commit the worker stopped at, outside its worktree'
+
 finish

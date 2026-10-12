@@ -90,13 +90,29 @@ wt="$repo/.worktrees/feat/issue-671"
 mkdir -p "$wt/.github/workflows" && printf 'new\n' >"$wt/.github/workflows/x.yml" && printf 'work\n' >"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: needs a workflow' 2>&1); rc=$?
 assert_eq 1 "$rc" 'ship refuses the protected path the worker wrote'
+mkdir -p "$wt/.ak/logs" && : >"$wt/.ak/logs/verify.log"
+(cd "$wt" && "$AK" park --reason 'protected path .github/workflows/x.yml needs the operator' >/dev/null)
 git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
-printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: protected path\n' >"$wt/.ak/result"
 "$AK" plan --new --issue 671 >/dev/null 2>&1
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/9' 'and opens the PR'
+# What the worker committed before it parked stays the worker's when the park is planned again.
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}'
+"$AK" plan --issue 671 >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+mkdir -p "$wt/.github/workflows" "$wt/.ak/logs" && printf 'new\n' >"$wt/.github/workflows/x.yml" && : >"$wt/.ak/logs/verify.log"
+git -C "$wt" add -A && git -C "$wt" commit -q --no-verify -m 'ci: bypassed'
+(cd "$wt" && "$AK" park --reason 'parked after its own protected commit' >/dev/null)
+"$AK" plan --new --issue 671 >/dev/null 2>&1
+printf 'more\n' >>"$wt/src/a.txt"
+out=$(cd "$wt" && "$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path the worker committed before parking is refused after the new plan'
+assert_contains "$out" 'protected path in this change: .github/workflows/x.yml' 'the refusal names it'
 # Only a park planned again hands a worktree over. A worker that committed a protected path and stopped without a
 # result is spawned again on the same worktree, and its commit is still refused.
 fresh

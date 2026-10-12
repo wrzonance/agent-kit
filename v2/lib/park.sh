@@ -13,5 +13,7 @@ cmd_main() {
     printf 'pr=none\nci=none\nreview=skipped\nhead=%s\nnote=parked: %s\n' "$(git rev-parse HEAD)" "$reason" >"$dir/result"
     # The marker keeps the park time after a worker resumed in place removes the result (ak plan reads it).
     : >"$dir/parked"
+    # Where the worker stopped, noted in the main checkout: ak ship later tells the operator's commits from the worker's.
+    park_mark "$(worktree_root)" || true
     paste -sd' ' "$dir/result"
 }

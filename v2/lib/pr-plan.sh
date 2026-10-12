@@ -49,7 +49,7 @@ pr_plan_prompt() {
     mkdir -p -- "$wt/.ak"
     printf '%s\n' "$n" >"$wt/.ak/pr"
     printf '%s\n' "$base" >"$wt/.ak/base"
-    # A parked PR planned again is handed over as it stands, like a parked issue (hand_over).
+    # A parked PR planned again records what was committed there since the park, like a parked issue (hand_over).
     ! grep -q '^note=parked: ' "$wt/.ak/result" 2>/dev/null || hand_over "$wt" ||
         die "cannot record the commit handed over in $wt" "git -C $wt status"
     rm -f -- "$wt/.ak/result"

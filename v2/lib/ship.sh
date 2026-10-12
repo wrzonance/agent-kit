@@ -150,36 +150,43 @@ ship_changed_list() {
     )
 }
 
-# ship_handed: the commit this worktree held when the root planned its park again (hand_over), when that commit is
-# below HEAD; else nothing. The record is a regular file in the main checkout, where the root's commands write it.
+# ship_handed: the "PARKED HEAD" pairs recorded for this worktree (hand_over) that lie below this HEAD, one per line.
+# The record is a regular file in the main checkout, where the root's commands write it.
 ship_handed() {
-    local file sha
+    local file parked handed
     file=$(handed_file "$(worktree_root)") || return 0
     [[ -f $file && ! -L $file ]] || return 0
-    sha=$(head -n 1 -- "$file" 2>/dev/null) || return 0
-    [[ $sha =~ ^[0-9a-f]{40,64}$ ]] && git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || return 0
-    printf '%s\n' "$sha"
+    while read -r parked handed _ || [[ -n $parked ]]; do
+        [[ $parked =~ ^[0-9a-f]{40,64}$ && $handed =~ ^[0-9a-f]{40,64}$ ]] || continue
+        git merge-base --is-ancestor "$parked" "$handed" 2>/dev/null || continue
+        git merge-base --is-ancestor "$handed" HEAD 2>/dev/null || continue
+        printf '%s %s\n' "$parked" "$handed"
+    done <"$file"
 }
 
-# ship_kept PATH BASE HANDED: is PATH a change the handed-over commit already carries against BASE, with the
-# worktree's copy still that copy? The handed-over commit must change PATH itself: a file the base gained later is
-# absent there without anyone having decided so. Full ref names and a commit id, so no other ref of a similar name is
-# read instead.
+# ship_kept PATH PAIRS: did someone other than the worker commit PATH as it now stands? True when PATH changed between
+# a park and the plan that followed it, and the worktree's copy is still the one that plan found. Commit ids and a
+# literal pathspec, so no ref of a similar name and no pattern in a file name is read instead.
 ship_kept() {
-    local rc=0
-    [[ -n $3 ]] || return 1
-    git diff --quiet "refs/remotes/origin/$2...$3" -- ":(literal)$1" 2>/dev/null || rc=$?
-    ((rc == 1)) || return 1
-    git diff --quiet "$3" -- ":(literal)$1" 2>/dev/null
+    local parked handed rc
+    while read -r parked handed; do
+        [[ -n $handed ]] || continue
+        rc=0
+        git diff --quiet "$parked" "$handed" -- ":(literal)$1" 2>/dev/null || rc=$?
+        ((rc == 1)) || continue
+        ! git diff --quiet "$handed" -- ":(literal)$1" 2>/dev/null || return 0
+    done <<<"$2"
+    return 1
 }
 
 # ship_protected: fills PROTECTED with the paths changed against origin/<base> (committed, staged, or untracked) that
 # AGENT_PROTECTED_PATHS names, read as ak plan reads it: an entry with a glob character is a pattern; any other entry
 # matches itself and every path under it; a leading ./ is dropped; `/`, `.`, `./` and an empty item protect nothing.
 # Field workers committed .github/ and docs/adrs/ changes with --no-verify, and ship pushed them.
-# The guard is on what this worker changed: a protected change that came with a park the root planned again is left
-# out (ship_kept). A field issue needed a migration; after the operator committed it and planned the issue again,
-# every later ship still refused the branch. Being on origin does not count: a worker can push by hand.
+# The guard is on what the worker changed: a protected path committed between a park and the plan that followed it
+# is the operator's answer to that park and is left out (ship_kept). A field issue needed a migration; after the
+# operator committed it and planned the issue again, every later ship still refused the branch. Being on origin does
+# not count (a worker can push by hand), and neither does what the worker committed before it parked.
 ship_protected() {
     local base entries entry prefix path list fetch policy handed
     PROTECTED=()
@@ -207,7 +214,7 @@ ship_protected() {
             # shellcheck disable=SC2053
             [[ $path == $entry || (-n $prefix && $path == "$prefix"*) ]] || continue
             [[ -n ${handed+set} ]] || handed=$(ship_handed)
-            ship_kept "$path" "$base" "$handed" || PROTECTED+=("$path")
+            ship_kept "$path" "$handed" || PROTECTED+=("$path")
             break
         done
     done <"$list"

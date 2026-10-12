@@ -364,8 +364,9 @@ spawn_issue() {
     printf '%s\n' "$3" >"$dir/base"
     prior=''
     [[ ! -f $dir/result ]] || prior=$(sed -n '/^note=parked: /{s///p;q}' "$dir/result" | tr -d '\000-\037')
-    # A park planned again hands the worktree over as it stands (hand_over). A first spawn records nothing, and
-    # neither does a re-spawn nobody parked: a commit a stopped worker left there is still that worker's.
+    # A park planned again records what was committed in the worktree since the park (hand_over): the operator's
+    # answer, which ak ship then does not hold against the next worker. A first spawn has no park, and neither has a
+    # re-spawn nobody parked, so a commit a stopped worker left there is still that worker's.
     [[ -z $prior ]] || hand_over "$wt" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
     rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     issue_block "$n" "$prior" >"$dir/issue.md"
