@@ -66,6 +66,19 @@ out=$("$AK" review --again 2>&1)
 assert_contains "$out" 'review=done findings=21' 'all findings are counted'
 assert_eq 20 "$(wc -l <<<"$out")" 'output is capped at 20 lines'
 
+# The real codex -o file has no final newline, and the last finding sat on that line: one finding printed
+# findings=unparsed, two printed findings=1 (seen on three of four reviews of this repository's own PRs).
+export CLAUDECODE=1 FAKE_REVIEW_NO_NEWLINE=1 FAKE_REVIEW_OUT='P1: only one — src/a.txt:1 — why'
+out=$("$AK" review --again 2>&1)
+assert_eq $'review=done findings=1\nP1: only one' "$out" 'a single finding without a final newline is counted and listed'
+export FAKE_REVIEW_OUT=$'P1: first — a:1 — x\nP2: last — b:2 — y'
+out=$("$AK" review --again 2>&1)
+assert_eq $'review=done findings=2\nP1: first\nP2: last' "$out" 'the last of two findings is not dropped'
+export FAKE_REVIEW_OUT='NO FINDINGS'
+out=$("$AK" review --again 2>&1)
+assert_eq 'review=done findings=0' "$out" 'NO FINDINGS without a final newline still counts zero'
+unset CLAUDECODE FAKE_REVIEW_NO_NEWLINE
+
 export FAKE_REVIEW_OUT='this looks fine to me'
 out=$("$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" 'an unparsed review exits 0'
