@@ -78,14 +78,18 @@ result_refresh() {
     r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
 }
 
-# park_superseded N: when a parked issue's branch has an open PR, make that PR the result: its URL and head, CI to be
-# read live. A field branch got its PR outside ak after a park; collect kept printing the park and held the successor
-# while ak plan said open-pr in the same minute. The URL and head are GitHub's, and only well-formed ones are taken.
+# park_superseded N WORKTREE: when a parked issue's branch has an open PR that holds everything the parked worktree
+# does, make that PR the result: its URL and head, CI to be read live. A field branch got its PR outside ak after a
+# park; collect kept printing the park and held the successor while ak plan said open-pr in the same minute. The PR
+# must be the worktree as it stands (nothing uncommitted, the same head): otherwise the parked work would be left
+# behind while the issue collected and its successor started without it. The URL and head are GitHub's, and only
+# well-formed ones are taken.
 park_superseded() {
     local open
     open=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$1&per_page=1" |
         jq -r '.[0] // empty | "\(.html_url // "") \(.head.sha // "")"' 2>>"$AK_LOG") || return 0
-    [[ $open =~ ^(https://[^[:space:]]+/pull/[0-9]+)\ ([0-9a-f]{7,64})$ ]] || return 0
+    [[ $open =~ ^(https://[^[:space:]]+/pull/[0-9]+)\ ([0-9a-f]{40,64})$ ]] || return 0
+    [[ $(git -C "$2" rev-parse HEAD 2>/dev/null) == "${BASH_REMATCH[2]}" && -z $(git -C "$2" status --porcelain 2>/dev/null) ]] || return 0
     r[pr]=${BASH_REMATCH[1]} r[head]=${BASH_REMATCH[2]} r[ci]=pending
     r[note]="PR opened after the park; ${r[note]:-}"
 }
@@ -103,7 +107,7 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
-    [[ $kind != issue || ${r[pr]:-} == http* ]] || park_superseded "$n"
+    [[ $kind != issue || ${r[pr]:-} == http* ]] || park_superseded "$n" "$3"
     RESULT_HEAD=${r[head]:-} RESULT_WAITED=0
     result_refresh "$kind" "$n"
     RESULT_CI=${r[ci]:-} RESULT_PR=${r[pr]:-}

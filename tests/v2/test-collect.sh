@@ -41,6 +41,17 @@ printf '{"number":77,"state":"open","head":{"sha":"%s"}}' "$parked_head" >"$WORK
 printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}' >"$WORK/runs-77.json"
 printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-671*\t%s\t0\napi repos/acme/widget/pulls/77\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
     "$WORK/open-77.json" "$WORK/pr77.json" "$parked_head" "$WORK/runs-77.json" "$routes" >"$FAKE_GH_ROUTES"
+# The PR stands in for the park only when it holds everything the parked worktree does: uncommitted work, or a
+# commit the PR head lacks, would be left behind while the issue collected and its successor started without it.
+printf 'left behind\n' >>"$wt/src/a.txt"
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=none ci=none review=skipped note=parked: protected path' 'a park with uncommitted work is not replaced by an open PR'
+assert_contains "$out" 'after issue=680 reason=waits-on-parked-#671' 'and still holds its successor'
+git -C "$wt" checkout -q -- src/a.txt
+git -C "$wt" commit -q --allow-empty -m 'not in the PR'
+out=$("$AK" collect --issue 671 2>&1)
+assert_contains "$out" 'issue=671 pr=none ' 'a park whose head the PR lacks is not replaced either'
+git -C "$wt" reset -q --hard "$parked_head"
 out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/77 ci=red review=skipped note=PR opened after the park; parked: protected path' 'a park whose branch has an open PR collects as that PR, with CI read live'
 assert_contains "$out" 'after issue=680 reason=waits-on-red-#671' 'its successor waits on the PR, not on the park'
