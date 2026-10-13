@@ -96,9 +96,12 @@ candidates() {
     fi
 }
 
-# excluded_label CSV: the first label of CSV that the config excludes.
+# excluded_label CSV: the first label of CSV that the config excludes. Labels sort the board's candidates; an issue the
+# operator named is planned whatever it carries (a field operator named an issue labelled needs:brainstorm, had made
+# that decision already, and could only get it planned by deleting the label).
 excluded_label() {
     local label
+    ((${NAMED:-0} == 0)) || return 0
     while IFS= read -r label; do
         [[ ,$1, == *",$label,"* ]] && { printf '%s\n' "$label"; return 0; }
     done < <(split_list "$(cfg AGENT_EXCLUDE_LABELS 'tier:human-only,needs:brainstorm,blocked')")
@@ -243,6 +246,10 @@ check_issue() {
     json=$(api "repos/$SLUG/issues/$n") || { REASON=unreadable; return 0; }
     jq -e 'has("pull_request") | not' <<<"$json" >/dev/null || { REASON=not-an-issue; return 0; }
     [[ $(jq -r .state <<<"$json") == open ]] || { REASON=closed; return 0; }
+    # A parent's sub-issues are its work: a field plan's only spawn was an epic with 14 of 16 sub-issues closed, and
+    # its worker found nothing to build. The count rides on the issue read; naming the parent is the operator's call.
+    hit=$(jq -r '.sub_issues_summary // {} | select((.total // 0) > 0) | "\(.completed // 0)/\(.total)"' <<<"$json")
+    [[ -z $hit || ${NAMED:-0} != 0 ]] || { REASON="has-sub-issues:$hit-closed"; return 0; }
     body=$(jq -r '.body // ""' <<<"$json")
     WS=$(write_set "$body")
     hit=$(excluded_label "$(jq -r '[.labels[]?.name] | join(",")' <<<"$json")")
@@ -304,7 +311,11 @@ issue_block() {
 # sits inside the untrusted block (issue_block), and this sentence only points at it.
 compose_prompt() {
     local n=$1 text prior=''
-    [[ -z ${5:-} ]] || prior="An earlier worker parked this issue; its note is the last line of the data block below. The issue was planned again afterwards, so check whether that cause still holds before parking on it."$'\n\n'
+    [[ -z ${5:-} ]] || prior="An earlier worker parked this issue; its note is the last line of the data block below. The issue was planned again afterwards, so check whether that cause still holds before parking on it."
+    # A new worker that is not told would start over beside the work already there, or discard it.
+    [[ -z $prior || -z $(git -C "$2" status --porcelain 2>>"$AK_LOG") ]] ||
+        prior+=" The worktree still holds that worker's uncommitted changes: read \`git status\` and \`git diff\`, and carry on from them."
+    prior+=${prior:+$'\n\n'}
     text=$(<"$TEMPLATE")
     text=${text//"{{ISSUE}}"/"$n"}
     text=${text//"{{TITLE}}"/"$(issue_title "$n")"}
@@ -317,11 +328,14 @@ compose_prompt() {
     printf '%s\n' "$text"
 }
 
-# add_worktree BRANCH WORKTREE FROM: reuse a clean worktree or branch, else branch from FROM.
+# add_worktree BRANCH WORKTREE FROM: reuse a clean worktree or branch, else branch from FROM. A worktree whose worker
+# parked is reused with the uncommitted work that worker left: a field park said to commit what only the operator may
+# commit and plan again, the operator committed that one file, and the plan dropped the issue as worktree-unusable
+# over the worker's other 17 paths.
 add_worktree() {
     local branch=$1 wt=$2
     if [[ -d $wt ]]; then
-        [[ -z $(git -C "$wt" status --porcelain 2>>"$AK_LOG") ]]
+        [[ -z $(git -C "$wt" status --porcelain 2>>"$AK_LOG") ]] || grep -q '^note=parked: ' "$wt/.ak/result" 2>/dev/null
     elif git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch"; then
         git -C "$MAIN" worktree add -q "$wt" "$branch" >>"$AK_LOG" 2>&1
     else
@@ -335,6 +349,9 @@ add_worktree() {
 sync_base() {
     local wt=$1 from=$2
     git -C "$wt" merge-base --is-ancestor "$from" HEAD 2>/dev/null && return 0
+    # Uncommitted work (a parked worktree handed on as it stands) is not merged over: a conflict with the moved base
+    # shows at ak ci, which names the merge to run once that work is committed.
+    [[ -z $(git -C "$wt" status --porcelain 2>>"$AK_LOG") ]] || return 0
     if [[ -z $(git -C "$wt" rev-list "$from..HEAD" 2>/dev/null) ]]; then
         git -C "$wt" merge -q --ff-only "$from" >>"$AK_LOG" 2>&1 && return 0
     elif git -C "$wt" merge -q --no-edit "$from" >>"$AK_LOG" 2>&1; then
@@ -535,6 +552,7 @@ unblock() {
 
 pick() {
     local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=() rows=() i=0 ahead=0 batch
+    NAMED=$named
     mapfile -t -u 3 rows
     while ((spawned < limit && i < ${#rows[@]})); do
         # Read ahead in batches of at most eight. The first is no wider than the limit: when the top of the board is
@@ -637,17 +655,42 @@ print_lines() {
     ((hidden == 0)) || printf 'drop more=%d log=%s\n' "$hidden" "$AK_LOG"
 }
 
-# plan_next YOLO: when nothing starts or queues, the one line that says how to get work. A field operator re-ran an
-# empty plan twice: Ready held only dropped issues, and nothing said that Backlog needs --yolo.
+# off_board: "; open but not on the board (or Done there): #a,#b (+N)" for a board plan that started nothing, or
+# nothing. A field plan printed 20 drop lines and no word about seven open issues the board did not list, two of them
+# the only work ready to build. One read, on this path only; ten numbers, then a count. A full page says it is a page,
+# so its count does not read as the whole repository. A failed read adds nothing.
+off_board() {
+    local list
+    [[ -n ${BOARD_ITEMS:-} ]] || return 0
+    list=$(api "repos/$SLUG/issues?state=open&per_page=100") || return 0
+    # The board goes in as a file: a large one does not fit an argument. A board read without the Done filter lists
+    # Done items too; an open issue there is still off the board's working columns.
+    jq -r --arg slug "$SLUG" --slurpfile board <(printf '%s' "$BOARD_ITEMS") '
+        [$board[0].items[]? | select(.content.type == "Issue" and ((.status // "") | ascii_downcase) != "done") |
+            select((.content.repository // "") as $r | $r == $slug or ($r | endswith("/" + $slug))) | .content.number] as $on |
+        (if length >= 100 then " of the first \(length) open issues" else "" end) as $page |
+        [.[] | select(has("pull_request") | not) | .number | select(. as $n | $on | index($n) | not)] | sort |
+        if length == 0 then empty else "; open but not on the board (or Done there): " + (.[:10] | map("#\(.)") | join(","))
+            + (if length > 10 then " (+\(length - 10)\($page))" elif $page != "" then " (\($page | ltrimstr(" of ")) read)" else "" end) end' <<<"$list" 2>>"$AK_LOG" || true
+}
+
+# plan_next YOLO NAMED: when nothing starts or queues, the one line that says how to get work. A field operator re-ran
+# an empty plan twice: Ready held only dropped issues, and nothing said that Backlog needs --yolo. An operator who
+# named the issues is not told to name issues: the lines above already say why each one did not start.
 plan_next() {
-    local backlog
+    local backlog extra
     printf '%s\n' "${LINES[@]}" | grep -qE '^(spawn|after) ' && return 0
+    if (($2)); then
+        printf 'next=none of the named issues can start; each line above says why\n'
+        return 0
+    fi
+    extra=$(off_board)
     backlog=$([[ $1 == false && -n ${BOARD_ITEMS:-} ]] && jq '[.items[]? | select(.content.type == "Issue" and
         ((.status // "") | ascii_downcase) == "backlog")] | length' <<<"$BOARD_ITEMS" || echo 0)
     if ((backlog > 0)); then
-        printf 'next=nothing workable in Ready; --yolo adds %d Backlog issues, or name issues with --issue N\n' "$backlog"
+        printf 'next=nothing workable in Ready; --yolo adds %d Backlog issues, or name issues with --issue N%s\n' "$backlog" "$extra"
     else
-        printf 'next=nothing workable; name issues with --issue N\n'
+        printf 'next=nothing workable; name issues with --issue N%s\n' "$extra"
     fi
 }
 
@@ -691,5 +734,5 @@ cmd_main() {
     write_run "$run"
     printf 'run=%s\n' "$run"
     print_lines
-    plan_next "$yolo"
+    plan_next "$yolo" "${#issues[@]}"
 }
