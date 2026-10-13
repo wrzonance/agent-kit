@@ -18,6 +18,11 @@ assert_contains "$out" 'unknown command: nope' 'unknown command is named'
 out=$("$AK" ../common 2>&1); rc=$?
 assert_eq 2 "$rc" 'a path-shaped command is refused'
 
+# A root reached for `ak plan --help` before its first plan and got "unknown argument" (field run).
+out=$("$AK" plan --help 2>&1); rc=$?
+assert_eq 0 "$rc" 'a command asked for --help prints usage and exits 0'
+assert_contains "$out" 'plan [--limit N] [--yolo] [--serialize] [--new] [--issue N]...' 'usage names every plan flag'
+
 # shellcheck source=../../v2/lib/common.sh
 source "$REPO/v2/lib/common.sh"
 assert_eq 'acme/widget' "$(slug)" 'slug comes from config.env'

@@ -186,6 +186,7 @@ assert_eq "$(cat "$repo/.worktrees/feat/issue-671/.ak/issue.md")" "$(sed -n '5,$
 # shellcheck disable=SC2016
 assert_eq 'earlier park note: "protected" path in `ci.yml`' "$(grep -B1 '^----- END UNTRUSTED' "$repo/.worktrees/feat/issue-671/.ak/issue.md" | head -n 1)" 'the note itself is the last line inside the untrusted block'
 assert_not_contains "$prompt" 'rm -rf' 'only the first note line is carried'
+assert_not_contains "$prompt" 'uncommitted changes' 'a clean parked worktree is not described as holding work'
 assert_eq 0 "$(grep -c 'earlier park note' "$repo/.worktrees/feat/issue-693/.ak/issue.md")" 'a first spawn carries no note'
 
 # A parked item whose worker was resumed in place (a field root answered the park by messaging the worker, which
@@ -255,7 +256,8 @@ default_routes
 out=$("$AK" plan 2>&1)
 assert_contains "$out" 'next=nothing workable in Ready; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
 out=$("$AK" plan --issue 69 2>&1)
-assert_contains "$out" 'next=nothing workable; name issues with --issue N' 'an empty named plan says so'
+assert_contains "$out" 'next=none of the named issues can start; each line above says why' 'an empty named plan does not ask for names again'
+assert_not_contains "$out" 'name issues with --issue N' 'the operator who named issues is not told to name issues'
 fresh
 standard_board
 out=$("$AK" plan 2>&1)
@@ -322,7 +324,7 @@ out=$("$AK" plan --issue 811 --issue 812 2>&1)
 assert_contains "$out" 'spawn issue=811' 'a path run with flags is not a write'
 assert_contains "$out" 'spawn issue=812' 'a Run instruction line is not a write'
 ws=$(cd "$repo" && bash -c '
-    source "$1/lib/common.sh"; source "$1/lib/plan.sh"
+    AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"
     FILES=$(mktemp); git ls-files >"$FILES"
     write_set "Make \`src/a.txt\` export \`buildIt()\` and keep \`node x --y\` green."' _ "$REPO/v2")
 assert_eq 'src/a.txt' "$ws" 'dropping a command span never glues its neighbours into a path'
@@ -462,7 +464,7 @@ printf 'a\n' >"$sb/f" && git -C "$sb" add f && git -C "$sb" commit -q -m base
 git -C "$sb" checkout -q -b pred && printf 'pred\n' >"$sb/p" && git -C "$sb" add p && git -C "$sb" commit -q -m pred
 git -C "$sb" checkout -q -b own main && printf 'own\n' >"$sb/o" && git -C "$sb" add o && git -C "$sb" commit -q -m own
 mkdir -p "$sb/.akd"
-run_sync() { bash -c 'AK_LOG=/dev/null; source "$1/lib/common.sh"; source "$1/lib/plan.sh"; sync_base "$2" "$3" "$4"' _ "$REPO/v2" "$@"; }
+run_sync() { bash -c 'AK_LOG=/dev/null; AK_HOME=$1; source "$1/lib/common.sh"; source "$1/lib/plan.sh"; sync_base "$2" "$3" "$4"' _ "$REPO/v2" "$@"; }
 run_sync "$sb" pred "$sb/.akd"
 assert_rc 0 'a worktree with its own commits gets the new base merged in' -- git -C "$sb" merge-base --is-ancestor pred HEAD
 assert_eq no "$([[ -e $sb/.akd/resolve ]] && echo yes || echo no)" 'a clean merge leaves no resolve marker'
@@ -513,10 +515,11 @@ rm -f "$repo/up"
 # plan output and could not get it back: the dropped issue made the re-run a new plan that skipped everything).
 fresh
 issue_route 810 'Edit src/a.txt'
-route 'api repos/acme/widget/issues/811' '{"number":811,"title":"T","state":"open","body":"x","labels":[{"name":"needs:brainstorm"}]}'
+issue_route 811 'x'
+route 'api repos/acme/widget/issues/811/dependencies/blocked_by*' '[{"number":1,"state":"open"}]'
 default_routes
 first=$("$AK" plan --issue 810 --issue 811 2>&1)
-assert_contains "$first" 'drop issue=811 reason=label:needs:brainstorm' 'the labelled issue drops'
+assert_contains "$first" 'drop issue=811 reason=blocked-by:#1' 'the blocked issue drops'
 again=$("$AK" plan --issue 810 --issue 811 2>&1)
 assert_eq "$(sed -n 1p <<<"$first") resumed" "$(sed -n 1p <<<"$again")" 'the identical re-run resumes the run'
 assert_eq "$(sed 1d <<<"$first")" "$(sed 1d <<<"$again")" 'the resume prints the same spawn and drop lines'
@@ -627,6 +630,91 @@ printf 'pr=https://github.com/acme/widget/pull/52\nci=green\nreview=done\nhead=a
 out=$("$AK" collect --issue 831 2>&1)
 assert_contains "$out" 'spawn issue=832' 'collecting the in-run blocker releases it'
 assert_rc 0 'the spawned successor contains the shipped blocker branch' -- git -C "$repo/.worktrees/feat/issue-832" merge-base --is-ancestor origin/feat/issue-830 HEAD
+
+# A named issue is the operator's request: an exclude label does not drop it (field run: the operator named an issue
+# labelled needs:brainstorm, had already made that decision, and could only get it planned by deleting the label).
+labelled='{"number":680,"title":"Title 680","state":"open","body":"Do src/a.txt","labels":[{"name":"needs:brainstorm"}]}'
+fresh
+route 'api repos/acme/widget/issues/680' "$labelled"
+default_routes
+out=$("$AK" plan --yolo --serialize --issue 680 2>&1)
+assert_contains "$out" 'spawn issue=680 ' 'a named issue is planned whatever labels it carries'
+fresh
+board_route 5 "{\"items\":[$(board_item 680 Ready)]}"
+route 'api repos/acme/widget/issues/680' "$labelled"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'drop issue=680 reason=label:needs:brainstorm' 'a board candidate with an exclude label still drops'
+
+# A parent issue's sub-issues are its work (field run: the only spawn was an epic with 14 of its 16 sub-issues closed;
+# its worker found nothing to build and parked). Naming the parent is the operator's call.
+fresh
+board_route 5 "{\"items\":[$(board_item 575 Ready),$(board_item 671 Ready)]}"
+route 'api repos/acme/widget/issues/575' '{"number":575,"title":"Epic","state":"open","body":"Tracking.","labels":[],"sub_issues_summary":{"total":16,"completed":14,"percent_completed":87}}'
+issue_route 671 'Fix src/a.txt'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'drop issue=575 reason=has-sub-issues:14/16-closed' 'a parent issue is not spawned'
+assert_contains "$out" 'spawn issue=671 ' 'the next candidate takes its slot'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues?state=open&per_page=100' 'a plan that starts work does not list open issues'
+out=$("$AK" plan --new --issue 575 2>&1)
+assert_contains "$out" 'spawn issue=575 ' 'a named parent issue is planned'
+
+# An empty board plan names the open issues the board does not list (field run: 20 drop lines and no word about seven
+# open issues off the board, two of them the only work ready to build).
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 70 'In progress')]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' '[{"number":281},{"number":69},{"number":70},{"number":280},{"number":9,"pull_request":{}}]'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'next=nothing workable; name issues with --issue N; open but not on the board (or Done there): #280,#281' 'an empty plan names the open issues off the board'
+assert_eq 1 "$(grep -c 'issues?state=open&per_page=100' "$FAKE_GH_LOG")" 'the open issues are read once'
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]')]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' "$(jq -nc '[range(101; 113) | {number: .}]')"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'on the board (or Done there): #101,#102,#103,#104,#105,#106,#107,#108,#109,#110 (+2)' 'a long list shows ten and counts the rest'
+# An open issue the board holds as Done is named too, as the line says (a board read without the Done filter lists it).
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 280 Done)]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' '[{"number":69},{"number":280}]'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'on the board (or Done there): #280' 'an open issue the board holds as Done is named'
+# One page is read. When it is full the count says so instead of reading as the whole repository.
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]')]}"
+route 'api repos/acme/widget/issues?state=open&per_page=100' "$(jq -nc '[range(101; 201) | {number: .}]')"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" '#109,#110 (+90 of the first 100 open issues)' 'a full page is named as a page, not as every open issue'
+fresh
+board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]')]}"
+default_routes
+out=$("$AK" plan 2>&1)
+assert_eq 'next=nothing workable; name issues with --issue N' "$(grep '^next=' <<<"$out")" 'a failed open-issue read leaves the line as it was'
+
+# A parked worktree is handed on with the uncommitted work its worker left (field run: the park's next= said to commit
+# what only the operator may commit and plan again; the operator committed the one protected file, and the plan dropped
+# the issue as worktree-unusable because the worker's other paths were still uncommitted).
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+"$AK" plan --issue 671 >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671"
+parked=$(git -C "$wt" rev-parse HEAD)
+printf 'work\n' >"$wt/src/a.txt"
+printf 'pr=none\nci=none\nreview=skipped\nhead=%s\nnote=parked: protected path needs the operator\n' "$parked" >"$wt/.ak/result"
+printf 'moved\n' >lib/core.sh && git commit -q -am 'main moves' && git push -q origin main
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree with uncommitted work is planned again'
+assert_eq ' M src/a.txt' "$(git -C "$wt" status --porcelain)" 'the uncommitted work is still there'
+assert_eq "$parked" "$(git -C "$wt" rev-parse HEAD)" 'a moved base is not merged over uncommitted work'
+assert_eq no "$([[ -e $wt/.ak/resolve ]] && echo yes || echo no)" 'and it is not turned into a merge-down'
+assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree still holds that worker's uncommitted changes: read \`git status\` and \`git diff\`, and carry on from them." 'the new worker is told to carry on from the uncommitted work'
+out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" "drop issue=671 reason=worktree-unusable:$wt" 'uncommitted work nobody parked still makes a worktree unusable'
 
 fresh
 standard_board

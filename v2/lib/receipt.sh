@@ -89,8 +89,30 @@ receipt_part_of() {
         die "could not change \"Closes #$n\" to \"Part of #$n\" on PR #$pr" "gh auth status"
 }
 
+# receipt_post PR FILE HEAD: post the comment, or update the receipt this PR already carries for HEAD. A second
+# receipt on one head used to add a second comment (a field PR carried two, 32 s apart), and one run again after CI
+# concluded left the earlier ci=pending receipt standing. Only a comment that opens as a receipt for this head and
+# was written by this account counts: a quote of one is never edited, and a look-alike someone else posted is never
+# taken over (a token with admin rights could edit it, and its author could then rewrite the receipt). A failed
+# lookup or a refused update posts a new comment, as before.
+receipt_post() {
+    local pr=$1 file=$2 mark found id='' me body
+    mark="$BANNER"$'\n\n'"**ak receipt** for head \`$3\`"
+    found=$(gh api --paginate "repos/$(slug)/issues/$pr/comments?per_page=100" 2>/dev/null |
+        jq -rs --arg mark "$mark" '.[][] | select((.body // "") | startswith($mark)) | "\(.id) \(.user.login // "")"' 2>/dev/null) || found=''
+    # The account is asked for only when a candidate exists.
+    if [[ -n $found ]] && me=$(gh api user --jq .login 2>/dev/null) && [[ -n $me ]]; then
+        id=$(awk -v me="$me" '$2 == me { id = $1 } END { print id }' <<<"$found")
+    fi
+    if [[ $id =~ ^[0-9]+$ ]] && body=$(gh api -X PATCH "repos/$(slug)/issues/comments/$id" -F "body=@$file" 2>/dev/null); then
+        printf '%s\n' "$body"
+        return 0
+    fi
+    gh api -X POST "repos/$(slug)/issues/$pr/comments" -F "body=@$file"
+}
+
 cmd_main() {
-    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open
+    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open inherited base
     while (($#)); do
         case $1 in
             --findings) file=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
@@ -121,7 +143,7 @@ cmd_main() {
     [[ -z $open ]] || die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" "ak threads"
     [[ -z $remaining ]] || receipt_part_of "${pr%% *}"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
-    body=$(gh api -X POST "repos/$(slug)/issues/${pr%% *}/comments" -F "body=@$dir/receipt.md") ||
+    body=$(receipt_post "${pr%% *}" "$dir/receipt.md" "$head") ||
         die "could not post the receipt comment" "gh auth status"
     url=$(jq -r '.html_url' <<<"$body")
     count=$(grep -c . <<<"$findings" || true)
@@ -129,6 +151,12 @@ cmd_main() {
     declined=$(grep -c ' | declined: ' <<<"$findings" || true)
     note="findings=$count fixed=$fixed declined=$declined"
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
+    # Red checks the base branch fails too: the collect line then shows the operator that the base is red, not this PR.
+    # The base name is on its way to a line the root reads, so it is reduced to ref-name characters, never dropped.
+    if [[ $ci == red ]] && inherited=$(ci_inherited "$runs") && [[ $inherited =~ ^inherited=(.+)\ from=([^ ]+)\ note= ]]; then
+        base=${BASH_REMATCH[2]//[^A-Za-z0-9._\/+@-]/}
+        note+="; base-red: ${BASH_REMATCH[1]} (also red on ${base:-the base branch})"
+    fi
     # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
     ! ci_only_trusted "$dir/ci-only" ||
         note+="; ci-only: $(LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' <"$dir/ci-only" | cut -c1-60 | head -n 20 | paste -sd, -)"

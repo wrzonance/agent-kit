@@ -9,8 +9,8 @@ source "$AK_HOME/lib/common.sh"
 usage() {
     cat <<'USAGE'
 usage: ak <command> [args]
-  root:   onboard [--project N [--owner O]]        plan [--limit N] [--yolo] [--serialize] [--new]
-          collect (--issue N | --pr N)
+  root:   onboard [--project N [--owner O]]        collect (--issue N | --pr N)
+          plan [--limit N] [--yolo] [--serialize] [--new] [--issue N]...
           pr-plan --pr N [--pr N]...                merge --pr N
   worker: setup   verify   ship --message M [--body-file F]   review
           ci [--timeout S] [--once]   threads [--resolve ID --note T]   receipt --findings F [--remaining T]
@@ -22,6 +22,8 @@ cmd=${1:-}
 [[ -n $cmd && $cmd != -h && $cmd != --help ]] || { usage; exit 0; }
 shift
 [[ $cmd =~ ^[a-z][a-z-]*$ && -f $AK_HOME/lib/$cmd.sh ]] || { usage >&2; usage_die "unknown command: $cmd"; }
+# `ak plan --help` used to answer "unknown argument"; a root asked exactly that before its first plan.
+[[ ${1:-} != --help && ${1:-} != -h ]] || { usage; exit 0; }
 # shellcheck source=/dev/null
 source "$AK_HOME/lib/$cmd.sh"
 cmd_main "$@"
