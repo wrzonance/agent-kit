@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fake reviewer CLI for the v2 suites (installed as both claude and codex). It records argv, cwd and
 # stdin under $FAKE_REVIEW_LOG, sleeps $FAKE_REVIEW_SLEEP, prints $FAKE_REVIEW_OUT (to the codex -o file
-# when given, else stdout) and exits $FAKE_REVIEW_RC.
+# when given, else stdout) and exits $FAKE_REVIEW_RC. $FAKE_REVIEW_NO_NEWLINE leaves the output without a final
+# newline, the way the real codex -o file ends.
 set -uo pipefail
 log=${FAKE_REVIEW_LOG:-/dev/null}
 out=''
@@ -17,9 +18,11 @@ done
     cat
 } >>"$log"
 sleep "${FAKE_REVIEW_SLEEP:-0}"
+end=$'\n'
+[[ -z ${FAKE_REVIEW_NO_NEWLINE:-} ]] || end=''
 if [[ -n $out ]]; then
-    printf '%s\n' "${FAKE_REVIEW_OUT:-NO FINDINGS}" >"$out"
+    printf '%s%s' "${FAKE_REVIEW_OUT:-NO FINDINGS}" "$end" >"$out"
 else
-    printf '%s\n' "${FAKE_REVIEW_OUT:-NO FINDINGS}"
+    printf '%s%s' "${FAKE_REVIEW_OUT:-NO FINDINGS}" "$end"
 fi
 exit "${FAKE_REVIEW_RC:-0}"
