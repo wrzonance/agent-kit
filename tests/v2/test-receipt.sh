@@ -45,6 +45,56 @@ assert_contains "$result" 'review=done' 'result has the review status'
 assert_contains "$result" "head=$head" 'result has the head'
 assert_contains "$result" 'note=findings=2 fixed=1 declined=1' 'result notes the dispositions'
 assert_not_contains "$result" 'ci-only' 'a PR whose CI never failed names no CI-only check'
+assert_not_contains "$result" 'base-red' 'a green PR names no base-red check'
+# A second receipt on one head updates the first comment (a field PR carried two receipts 32 s apart, and a receipt
+# run again after CI concluded left the earlier ci=pending one standing). Only a comment that is a receipt for this
+# head counts: one that quotes it, or a receipt for another head, is left alone.
+routes=$(cat "$FAKE_GH_ROUTES")
+jq -n --arg h "$head" '[{id: 54, user: {login: "me"}, body: "> This was written agentically; verify its assertions:\n>\n> **ak receipt** for head `\($h)`"},
+    {id: 55, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`\n\n- CI: pending"},
+    {id: 56, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `0000000`"},
+    {id: 58, user: {login: "someone-else"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`\n\n- CI: green"}]' >"$WORK/comments.json"
+printf 'api --paginate repos/acme/widget/issues/9/comments?per_page=100\t%s\t0\n%s\n' "$WORK/comments.json" "$routes" >"$FAKE_GH_ROUTES"
+route 'api user --jq .login' 'me'
+route 'api -X PATCH repos/acme/widget/issues/comments/58 *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-58"}'
+route 'api -X PATCH repos/acme/widget/issues/comments/55 *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-55"}'
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'a second receipt on the same head succeeds'
+assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9#issuecomment-55' 'it names the comment it updated'
+assert_contains "$(cat "$FAKE_GH_LOG")" 'api -X PATCH repos/acme/widget/issues/comments/55 -F body=@' 'the receipt for this head is updated in place'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/issues/9/comments' 'no second comment is posted for the head'
+jq 'map(select(.id != 55))' "$WORK/comments.json" >"$WORK/comments.tmp" && mv -f "$WORK/comments.tmp" "$WORK/comments.json"
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1)
+assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9#issuecomment-1' 'a head with no receipt of its own gets a new comment'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PATCH' 'a quoted receipt, a receipt for another head and a look-alike from another account are not edited'
+# An update GitHub refuses still leaves a receipt: it is posted as a new comment.
+jq -n --arg h "$head" '[{id: 57, user: {login: "me"}, body: "This was written agentically; verify its assertions:\n\n**ak receipt** for head `\($h)`"}]' >"$WORK/comments.json"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'a refused update is not a failed receipt'
+assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9#issuecomment-1' 'the receipt is posted instead'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+# A check the base branch fails too is named in the result note, so the collect line shows that the base is red
+# (field run: the receipt called a check that was red on the default branch CI-only, and the root kept waiting).
+main=$(git ls-remote origin refs/heads/main | cut -f1)
+red='{"check_runs":[{"name":"t","status":"completed","conclusion":"failure"},{"name":"own","status":"completed","conclusion":"failure"}]}'
+printf '%s' "$red" >"$WORK/red-head.json"
+printf '{"check_runs":[{"name":"t","status":"completed","conclusion":"failure"}]}' >"$WORK/red-main.json"
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
+    "$head" "$WORK/red-head.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_contains "$(cat .ak/result)" 'ci=red' 'a red head is recorded as red'
+assert_contains "$(cat .ak/result)" '; base-red: t (also red on main)' 'the result note names the check the base branch fails too'
+assert_not_contains "$(cat .ak/result)" 'base-red: t,own' 'a failure of its own is not called base-red'
+# Any valid base name is reported: one with characters outside the plain set (release/c++) used to drop the note.
+git push -q origin "$main:refs/heads/release/c++" 2>/dev/null
+printf 'release/c++\n' >.ak/base
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_contains "$(cat .ak/result)" '; base-red: t (also red on release/c++)' 'a base named release/c++ is still reported'
+rm -f .ak/base
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 # Checks only CI caught reach the operator through the result note (a field repo paid a CI round per PR for a type check).
 printf 'lint\nmypy\n' >.ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
@@ -117,7 +167,7 @@ assert_eq 0 "$rc" 'a receipt that decides every finding is accepted'
 # Comments on the PR from review bots and people are findings too (a field root went to merge a PR carrying two
 # unresolved code-quality threads): the receipt refuses while any thread is open.
 route 'api graphql -F owner=acme -F name=widget -F n=9 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"path":"src/a.cs","line":294,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch clause\nmore"}]}},{"id":"T2","isResolved":false,"path":"src/a.cs","line":231,"comments":{"nodes":[{"author":{"login":"github-code-quality"},"body":"Generic catch"}]}},{"id":"T3","isResolved":true,"path":"src/b.cs","line":1,"comments":{"nodes":[{"author":{"login":"alice"},"body":"done"}]}}]}}}}}'
-mv "$FAKE_GH_ROUTES" "$WORK/routes" && { tail -n 1 "$WORK/routes"; head -n -1 "$WORK/routes"; } >"$FAKE_GH_ROUTES"
+mv "$FAKE_GH_ROUTES" "$WORK/routes.old" && { tail -n 1 "$WORK/routes.old"; head -n -1 "$WORK/routes.old"; } >"$FAKE_GH_ROUTES"
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 1 "$rc" 'a receipt with open review threads is refused'
 assert_contains "$out" 'PR #9 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the open threads by author'

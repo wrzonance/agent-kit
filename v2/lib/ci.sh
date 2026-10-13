@@ -127,12 +127,13 @@ ci_job_errors() {
     grep -E '[Ee]rror|ERROR|FAIL|Exception' -- "$log" | cut -c1-200 | head -n "$((budget - 1 < 8 ? budget - 1 : 8))" || true
 }
 
-# ci_inherited RUNS: on a stacked branch, the failing checks that also fail on the base branch's own head. A field
-# worker spent its turns grepping its tree for a failure that came from the PR below it.
+# ci_inherited RUNS: the failing checks that also fail on the base branch's own head, whether the base is another PR's
+# branch or the default branch. A field worker spent its turns grepping its tree for a failure that came from the PR
+# below it; another stopped at a red that a stale test on the default branch gave every PR, and its receipt called the
+# check CI-only. One more read of check runs, and only when CI is red.
 ci_inherited() {
     local base sha names
     base=$(work_base)
-    [[ $base != "$(base_branch)" ]] || return 0
     sha=$(git ls-remote origin "refs/heads/$base" 2>/dev/null | cut -f1)
     [[ -n $sha ]] || return 0
     names=$(LC_ALL=C comm -12 <(jq -r '.[] | select(.done and .bad) | .name' <<<"$1" | LC_ALL=C sort -u) \

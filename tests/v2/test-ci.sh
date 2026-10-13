@@ -183,14 +183,23 @@ assert_eq 2 "$(wc -l <.ak/ci-only)" 'a second red run records each check once'
 assert_rc 0 'the full log is saved' -- test -f .ak/ci/77.log
 assert_not_contains "$(cat .ak/ci/77.log)" $'\033' 'the saved log is stripped'
 
-# On a stacked branch, a failure the base branch's own head also has is named as inherited (field run: a worker grepped
-# its tree for a failure that came from the PR below it).
+# A failure the base branch's own head also has is named as inherited, whether the base is the default branch or
+# another PR's branch (field runs: a worker stopped at a red that a stale test on the default branch gave every PR, and
+# its receipt called the check CI-only; another grepped its tree for a failure that came from the PR below it).
 git push -q origin origin/main:refs/heads/feat/parent 2>/dev/null
 parent=$(git rev-parse origin/main)
 own='{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"failure"}]}'
 set_checks "$own"
 out=$("$AK" ci --once 2>&1)
-assert_not_contains "$out" 'inherited=' 'a branch on the default base reports nothing inherited'
+assert_not_contains "$out" 'inherited=' 'a base whose checks cannot be read reports nothing inherited'
+route "api repos/acme/widget/commits/$(git ls-remote origin refs/heads/main | cut -f1)/check-runs?per_page=100 --paginate" \
+    '{"check_runs":[{"name":"installer","status":"completed","conclusion":"failure"},{"name":"lint","status":"completed","conclusion":"success"}]}'
+rm -f .ak/ci-only
+out=$("$AK" ci --once 2>&1); rc=$?
+assert_eq 1 "$rc" 'a failure the default branch shares is still red'
+assert_contains "$out" 'inherited=installer from=main' 'a failure the default branch shares is named as inherited'
+assert_contains "$out" 'ci-only=lint note=' 'only the failure the default branch does not share counts as CI-only'
+assert_not_contains "$(cat .ak/ci-only)" 'installer' 'a failure the default branch shares is not recorded as CI-only'
 printf 'feat/parent\n' >.ak/base
 rm -f .ak/ci-only
 route "api repos/acme/widget/commits/$parent/check-runs?per_page=100 --paginate" \
