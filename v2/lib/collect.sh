@@ -78,7 +78,24 @@ result_refresh() {
     r[note]="${r[note]:+${r[note]}; }ci read live at ${live:0:7}; review covers ${r[head]:0:7}"
 }
 
-# result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result.
+# park_superseded N WORKTREE: when a parked issue's branch has an open PR that holds everything the parked worktree
+# does, make that PR the result: its URL and head, CI to be read live. A field branch got its PR outside ak after a
+# park; collect kept printing the park and held the successor while ak plan said open-pr in the same minute. The PR
+# must be the worktree as it stands (nothing uncommitted, the same head): otherwise the parked work would be left
+# behind while the issue collected and its successor started without it. The URL and head are GitHub's, and only
+# well-formed ones are taken.
+park_superseded() {
+    local open
+    open=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$1&per_page=1" |
+        jq -r '.[0] // empty | "\(.html_url // "") \(.head.sha // "")"' 2>>"$AK_LOG") || return 0
+    [[ $open =~ ^(https://[^[:space:]]+/pull/[0-9]+)\ ([0-9a-f]{40,64})$ ]] || return 0
+    [[ $(git -C "$2" rev-parse HEAD 2>/dev/null) == "${BASH_REMATCH[2]}" && -z $(git -C "$2" status --porcelain 2>/dev/null) ]] || return 0
+    r[pr]=${BASH_REMATCH[1]} r[head]=${BASH_REMATCH[2]} r[ci]=pending
+    r[note]="PR opened after the park; ${r[note]:-}"
+}
+
+# result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result. RESULT_PR is the PR the line
+# names, which a superseded park takes from GitHub, not from the worker's file.
 result_line() {
     local kind=$1 n=$2 file="$3/.ak/result" key value
     local -A r=()
@@ -90,9 +107,10 @@ result_line() {
     while IFS='=' read -r key value; do
         [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
     done <"$file"
+    [[ $kind != issue || ${r[pr]:-} == http* ]] || park_superseded "$n" "$3"
     RESULT_HEAD=${r[head]:-} RESULT_WAITED=0
     result_refresh "$kind" "$n"
-    RESULT_CI=${r[ci]:-}
+    RESULT_CI=${r[ci]:-} RESULT_PR=${r[pr]:-}
     if [[ $kind == issue ]]; then
         emit "issue=$n pr=${r[pr]:-} ci=${r[ci]:-} review=${r[review]:-} note=${r[note]:-}"
     else
@@ -161,14 +179,15 @@ collect_item() {
 
 # collect_next STATE N WORKTREE: the one line that says how a parked, red or pending issue continues. A field operator
 # had to ask for the commands after a park, and the root then finished the parked work itself instead of handing it to
-# a worker.
+# a worker. The park line is addressed to the operator: a field root read its "clear ..., then: ak plan" as its own
+# next step, planned the issue again at once, and a second worker parked on the same line.
 collect_next() {
     local dirty pr
     if [[ $1 == red || $1 == blocked ]]; then
         # The red PR goes to a PR worker: a field root told to "get its PR green" rebased and shipped in the worker's
         # worktree itself. The number comes from the worker-written result and lands in a command the root runs, so
         # only the digits of a well-formed PR URL reach the line.
-        pr=$(sed -n 's/^pr=//p' "$3/.ak/result" | head -n 1)
+        pr=${RESULT_PR:-}
         if [[ $pr =~ ^https?://[^[:space:]]+/([0-9]+)$ ]]; then
             pr=${BASH_REMATCH[1]}
             if [[ $1 == blocked ]]; then
@@ -187,7 +206,7 @@ collect_next() {
         return 0
     fi
     dirty=$(git -C "$3" status --porcelain 2>/dev/null | wc -l)
-    emit "next=issue=$2 is parked in $3 (uncommitted paths: $((dirty))); clear what its note names, commit and push there what only you may commit, then: ak plan --issue $2"
+    emit "next=operator: issue $2 is parked in $3 (uncommitted paths: $((dirty))). Do what its note asks, commit there what only you may commit, then run: ak plan --issue $2"
 }
 
 # merge_up WORKTREE: when the branch a shipped worktree is stacked on has a newer finished head than the one it holds,
@@ -292,7 +311,7 @@ cmd_main() {
             [[ -z $item ]] || { RUNFILE=$other; break; }
         done
     fi
-    [[ -n $item ]] || die "$kind $n is not in any run" "ak plan --issue $n"
+    [[ -n $item ]] || die "$kind $n is not in any run" "$([[ $kind == pr ]] && echo "ak pr-plan --pr $n" || echo "ak plan --issue $n")"
     worktree=$(jq -r '.worktree // ""' <<<"$item")
     if ! result_line "$kind" "$n" "$worktree"; then
         cross_write
@@ -302,7 +321,7 @@ cmd_main() {
     cross_write
     # A parked issue shipped nothing, so it releases nothing: its successors would start without its work and park too
     # (a field chain spawned two workers that only found the parked predecessor missing).
-    if [[ $(sed -n 's/^pr=//p' "$worktree/.ak/result" | head -n 1) != http* ]]; then
+    if [[ ${RESULT_PR:-} != http* ]]; then
         state=parked
     elif [[ $kind == issue && $RESULT_CI =~ ^(red|blocked)$ ]]; then
         # A red predecessor releases nothing either: a field successor was spawned on a red branch, and every PR above
