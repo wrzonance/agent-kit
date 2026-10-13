@@ -76,10 +76,11 @@ review_run() {
     return 1
 }
 
-# review_titles FILE: `P1: title` for every finding line, the location and reasoning dropped.
+# review_titles FILE: `P1: title` for every finding line, the location and reasoning dropped. The last line counts
+# without a final newline: the codex -o file ends that way, and the last finding used to be dropped with it.
 review_titles() {
     local line re='^[[:space:]*-]*(P[12]):[[:space:]]*(.*)$'
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n $line ]]; do
         [[ $line =~ $re ]] || continue
         printf '%s: %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%% — *}"
     done <"$1"
