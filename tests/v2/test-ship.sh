@@ -219,8 +219,132 @@ sed -i '$d' "$repo/.agent/config.env"
 printf 'AGENT_PROTECTED_PATHS=/,.\n' >>"$repo/.agent/config.env"
 out=$("$AK" ship --message 'docs: x' 2>&1); rc=$?
 assert_eq 0 "$rc" 'the entries / and . protect nothing rather than everything'
+sed -i '$d' "$repo/.agent/config.env"
+# A protected path the operator committed to answer a park is not this ship's to refuse (field run: an issue needed a
+# migration; once the operator had committed it and planned the issue again, every later ship still refused the
+# branch, so the kit could open no PR and push no fix). The root's ak collect notes where the parked worker stopped,
+# and the plan that follows records what was committed since, both in the main checkout; `mark` and `hand` are those
+# two steps. Touching the file again is a new change and refuses.
+mark() { bash -c 'source "$1/lib/common.sh"; park_mark "$2"' _ "$REPO/v2" "$PWD"; }
+hand() { bash -c 'source "$1/lib/common.sh"; hand_over "$2"' _ "$REPO/v2" "$PWD"; }
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$PWD")
+assert_contains "$record" "$repo/.ak/handed/" 'the record sits in the main checkout, outside the worktree'
+printf 'AGENT_PROTECTED_PATHS=docs/decisions\n' >>"$repo/.agent/config.env"
+mkdir -p .ak/logs docs/decisions && : >.ak/logs/verify.log
+"$AK" park --reason 'protected path docs/decisions/op.md needs the operator' >/dev/null
+assert_eq no "$([[ -e $record.parked ]] && echo yes || echo no)" 'the worker parking notes nothing: the note is written by the root'
+mark
+parked=$(git rev-parse HEAD)
+assert_eq "$parked" "$(cat "$record.parked")" 'collecting the park notes where the worker stopped'
+printf 'operator\n' >docs/decisions/op.md
+git add docs && git commit -q --no-verify -m 'docs: the adr only the operator commits'
+mark
+assert_eq "$parked" "$(cat "$record.parked")" 'collecting the same park again does not move the note'
+hand
+assert_eq "$parked $(git rev-parse HEAD)" "$(cat "$record")" 'planning the park again records what was committed since'
+assert_eq no "$([[ -e $record.parked ]] && echo yes || echo no)" 'and the park note is used up'
+printf 'rest\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: the rest' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a protected path committed after the park does not refuse the rest'
+assert_eq "$(git rev-parse HEAD)" "$(git ls-remote "$WORK/origin.git" refs/heads/feat/issue-7 | cut -f1)" 'the rest is pushed'
 head=$(git rev-parse HEAD)
 remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+printf 'edited\n' >>docs/decisions/op.md
+out=$("$AK" ship --message 'docs: edit' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a further edit to that protected file is refused'
+assert_contains "$out" 'ak: protected path in this change: docs/decisions/op.md' 'the refusal names the edited file'
+git checkout -q -- docs/decisions/op.md
+git rm -q docs/decisions/op.md
+out=$("$AK" ship --message 'docs: drop' 2>&1); rc=$?
+assert_eq 1 "$rc" 'deleting that protected file is refused'
+git reset -q --hard "$head"
+# What the worker committed before the root collected its park is the worker's, whether it committed before running
+# ak park or after: planning the park again does not exempt it.
+"$AK" park --reason 'parks, then commits a protected path anyway' >/dev/null
+printf 'mine\n' >docs/decisions/mine.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed after parking'
+mark
+git commit -q --allow-empty -m 'the operator commits something else'
+hand
+printf 'x\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: x' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected path the worker committed around its park is still refused after a new plan'
+assert_contains "$out" 'ak: protected path in this change: docs/decisions/mine.md' 'the refusal names the path the worker committed'
+git reset -q --hard "$head"
+# A park result newer than the note is a park the root never collected: planning it records nothing.
+mark
+sleep 1
+"$AK" park --reason 'parked again; nobody collected this one' >/dev/null
+printf 'late\n' >docs/decisions/late.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed'
+before=$(cat "$record")
+hand
+assert_eq "$before" "$(cat "$record")" 'a park the root never collected records nothing when planned'
+git reset -q --hard "$head"
+# Only the newest approved copy counts: going back to an older one is a change to the protected file.
+"$AK" park --reason 'needs the operator again' >/dev/null
+mark
+printf 'second\n' >>docs/decisions/op.md
+git add docs && git commit -q --no-verify -m 'docs: the operator revises the adr'
+hand
+revised=$(git rev-parse HEAD)
+git checkout -q "$head" -- docs/decisions/op.md
+out=$("$AK" ship --message 'docs: roll back' 2>&1); rc=$?
+assert_eq 1 "$rc" 'rolling a protected file back to an older approved copy is refused'
+git checkout -q "$revised" -- docs/decisions/op.md
+printf 'y\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: y' 2>&1); rc=$?
+assert_eq 0 "$rc" 'the newest approved copy still ships'
+head=$(git rev-parse HEAD)
+remote=$(git ls-remote "$WORK/origin.git" feat/issue-7)
+# Being on origin proves nothing about who put it there: a worker that commits and pushes by habit before ak ship is
+# refused like one that only committed.
+printf 'mine\n' >docs/decisions/mine.md
+git add docs && git commit -q --no-verify -m 'docs: bypassed' && git push -q origin HEAD 2>/dev/null
+out=$("$AK" ship --message 'docs: pushed by hand' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a protected commit the worker pushed itself is still refused'
+assert_contains "$out" 'ak: protected path in this change: docs/decisions/mine.md' 'the refusal names the path the worker pushed'
+git push -q -f origin "$head:refs/heads/feat/issue-7" 2>/dev/null
+git reset -q --hard "$head"
+# The record follows the worktree, not the branch name, which a worker can change.
+git branch -q -m feat/issue-7 feat/renamed
+printf 'renamed\n' >>src/b.txt
+out=$("$AK" ship --message 'feat: renamed' 2>&1); rc=$?
+git branch -q -m feat/renamed feat/issue-7
+git reset -q --hard "$head" && git push -q -f origin "$head:refs/heads/feat/issue-7" 2>/dev/null
+git push -q origin --delete feat/renamed 2>/dev/null
+assert_not_contains "$out" 'protected path' 'a renamed branch still reads its own worktree record'
+# A record that names no commits below HEAD exempts nothing, and neither does a link left in its place.
+saved=$(cat "$record")
+printf 'more\n' >>src/b.txt
+printf 'not-a-commit\n' >"$record"
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an unreadable record exempts nothing'
+printf '%s %s\n' "$(git -C "$repo" rev-parse HEAD~1)" "$(git -C "$repo" rev-parse HEAD)" >"$record"
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'recorded commits that are not below HEAD exempt nothing'
+printf '%s\n' "$saved" >"$WORK/elsewhere" && rm -f -- "$record" && ln -s "$WORK/elsewhere" "$record"
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a record that is a link exempts nothing'
+git checkout -q -- src/b.txt
+# The record and the park note are written fresh, never through a link left in their place.
+printf 'victim\n' >"$WORK/elsewhere" && ln -s "$WORK/elsewhere" "$record.parked"
+"$AK" park --reason 'again' >/dev/null
+mark
+git commit -q --allow-empty -m 'the operator answers the park'
+hand
+assert_eq victim "$(cat "$WORK/elsewhere")" 'neither file is written through a link'
+assert_eq "$head $(git rev-parse HEAD)" "$(cat "$record")" 'the record is a new regular file with what was committed since the park'
+git reset -q --hard "$head"
+printf '%s\n' "$saved" >"$record"
+# Every protected path is named at once: one park and one operator commit, not a round trip per file.
+printf 'a\n' >docs/decisions/a.md && printf 'b\n' >docs/decisions/b.md
+out=$("$AK" ship --message 'docs: two' 2>&1); rc=$?
+assert_eq 1 "$rc" 'two protected paths are refused'
+assert_contains "$out" 'ak: protected paths in this change: docs/decisions/a.md, docs/decisions/b.md' 'the refusal names both paths'
+assert_contains "$out" "fix: ak park --reason \"protected paths docs/decisions/a.md docs/decisions/b.md need the operator's commit\"" 'the park line names both paths'
+assert_eq "$remote" "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'the refused change pushes nothing'
+rm -f docs/decisions/a.md docs/decisions/b.md
 sed -i '$d' "$repo/.agent/config.env"
 
 # An unreadable policy file must refuse, never read as "nothing protected".

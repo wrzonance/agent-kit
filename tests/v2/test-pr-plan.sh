@@ -44,6 +44,7 @@ assert_contains "$out" 'drop pr=15 reason=fork' 'a fork PR is dropped'
 assert_eq feat/b "$(git -C "$wt" branch --show-current)" 'the worktree is on the PR branch'
 assert_eq origin/feat/b "$(git -C "$wt" rev-parse --abbrev-ref '@{u}')" 'the branch tracks origin'
 assert_eq 12 "$(cat "$wt/.ak/pr")" '.ak/pr holds the number'
+assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a PR planned for the first time records no hand-over'
 assert_eq feat/a "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted verbatim'
@@ -84,5 +85,17 @@ assert_contains "$out" 'spawn pr=12' 'a PR with open review threads gets a worke
 printf 'pr=12\nci=green\nreview=done\nhead=old\n' >"$wt/.ak/result"
 out=$("$AK" pr-plan --pr 12 2>&1)
 assert_contains "$out" 'spawn pr=12' 'a result for an older head respawns the worker'
+
+# A parked PR the root plans again records what was committed there since the park, so ak ship can tell the
+# operator's answer from the worker's own changes.
+prwt="$repo/.worktrees/feat/b"
+mkdir -p "$prwt/.ak/logs" && : >"$prwt/.ak/logs/verify.log"
+(cd "$prwt" && "$AK" park --reason 'protected path needs the operator' >/dev/null)
+"$AK" collect --pr 12 >/dev/null 2>&1
+parked=$(git -C "$prwt" rev-parse HEAD)
+git -C "$prwt" commit -q --allow-empty -m 'the operator answers the park'
+"$AK" pr-plan --pr 12 >/dev/null 2>&1
+record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$prwt")
+assert_eq "$parked $(git -C "$prwt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning a parked PR again records what was committed since the park'
 
 finish

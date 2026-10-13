@@ -341,6 +341,8 @@ cmd_main() {
             '.items[] | select(.kind == "issue" and .state == "queued" and (.needs | index($n))) | .n' "$RUNFILE")
         [[ $kind != issue || $state == merge-up ]] || collect_next "$state" "$n" "$worktree"
     fi
+    # A collected park notes where its worker stopped (park_mark); ak ship later tells the operator's commits from it.
+    [[ $state != parked ]] || park_mark "$worktree" || true
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
         --arg s "$([[ $state =~ ^(red|blocked|pending|merge-up)$ ]] && echo spawned || echo "$state")"
     [[ $state != collected ]] || merge_up_children "$worktree"
