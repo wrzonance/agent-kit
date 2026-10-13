@@ -22,7 +22,7 @@ concurrency:
 jobs:
   gates:
     name: static gates
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Check out
@@ -99,7 +99,7 @@ jobs:
 
   suites:
     name: suite shard ${{ matrix.shard }}/4
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -158,7 +158,7 @@ jobs:
     # push cancelled this run: a superseded run is not a red check on main.
     if: ${{ !cancelled() }}
     needs: [gates, suites]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Require every gate and shard
