@@ -8,7 +8,11 @@ source "$AK_HOME/lib/collect.sh"
 source "$AK_HOME/lib/transcript.sh"
 
 WAIT_NAMED=()   # "kind:N" per item named for a correction round
-CALL_REF=''     # the item's correction-round stamp (set per item in item_state); only activity newer than it counts
+ROUND_AT=0      # when the item's correction round was called (set per item in item_state); 0 outside a round
+SEEN_RES=''     # the identity of the item's result, and of its transcript, at its last settle: a round counts only what differs
+SEEN_TR=''
+RUN_ID=''       # the run this ak wait captured at start; its marker and summary belong to it
+SUMMARY=''      # the settled wave's lines, built by settle_line
 
 # proc_start PID: an id of the process's start time, so a reused pid does not look like the watcher.
 proc_start() {
@@ -36,16 +40,29 @@ marker_live() {
 
 # marker_take: write the marker, atomically and only when none exists; false when another watcher won.
 marker_take() {
-    local tmp="$MARKER.$$" session=${CLAUDE_CODE_SESSION_ID:-}
-    [[ $(harness) != codex ]] || session=${CODEX_THREAD_ID:-}
+    local tmp="$MARKER.$$" session
+    session=$(my_session)
     {
-        printf 'pid=%s\nstart=%s\nsession=%s\n' "$$" "$(proc_start "$$")" "$session"
+        printf 'pid=%s\nstart=%s\nsession=%s\nrun=%s\n' "$$" "$(proc_start "$$")" "$session" "$RUN_ID"
         [[ -n $session ]] || printf 'cwd=%s\n' "$PWD"
     } >"$tmp"
     ln -- "$tmp" "$MARKER" 2>/dev/null
     local rc=$?
     rm -f -- "$tmp"
     return "$rc"
+}
+
+# my_session: the harness session id this ak wait runs under.
+my_session() {
+    if [[ $(harness) == codex ]]; then printf '%s\n' "${CODEX_THREAD_ID:-}"; else printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}"; fi
+}
+
+# marker_mine: the live marker was written by a watcher of this run and session (or, with no session, this cwd).
+marker_mine() {
+    local session
+    session=$(my_session)
+    [[ $(marker_get run) == "$RUN_ID" && $(marker_get session) == "$session" ]] &&
+        { [[ -n $session ]] || [[ $(marker_get cwd) == "$PWD" ]]; }
 }
 
 marker_drop() { [[ $(marker_get pid) != "$$" ]] || rm -f -- "$MARKER"; }
@@ -74,30 +91,60 @@ spawn_since() {
     printf '%s\n' "$since"
 }
 
-# round_stamp KIND N: the file whose mtime is when this item's correction round was called. It persists across ak wait
-# calls (--check and the blocking wait share it) until the item settles.
-round_stamp() { printf '%s/.ak/round.%s-%s\n' "$MAIN" "$1" "$2"; }
+# ident_result WORKTREE: the identity of the worker's result file: its content and its time. Empty without one.
+ident_result() {
+    local file=$1/.ak/result
+    if [[ -f $file ]]; then printf '%s:%s\n' "$(cksum <"$file" | cut -d' ' -f1)" "$(file_mtime "$file")"; fi
+}
 
-# fresh PATH: true when a correction round may count PATH: always outside one, else only when written after the call.
-fresh() { [[ -z $CALL_REF || $1 -nt $CALL_REF ]]; }
+# ident_transcript PATH: the identity of a transcript and its meta file, which change whenever the worker works again.
+ident_transcript() {
+    local meta=${1%.jsonl}.meta.json m=0
+    [[ ! -e $meta ]] || m=$(file_mtime "$meta")
+    printf '%s:%s:%s\n' "$1" "$(file_mtime "$1")" "$m"
+}
+
+# item_idents KIND N WORKTREE SPAWNED_AT: "RESULT-IDENT US TRANSCRIPT-IDENT", where US is the unit separator.
+item_idents() {
+    local transcript='' tr_id=''
+    if [[ -n $3 ]]; then
+        transcript=$(transcript_find "$3" "$1-$2" "$(spawn_since "$3" "${4:-0}")")
+        [[ -z $transcript ]] || tr_id=$(ident_transcript "$transcript")
+        printf '%s\037%s\n' "$(ident_result "$3")" "$tr_id"
+    else
+        printf '\037\n'
+    fi
+}
+
+# fresh IDENT SEEN: true when a correction round may count what IDENT names: always outside a round, else only when it
+# differs from what the last settle saw. The comparison needs no clock, so a correction that finishes before the first
+# --check (a Codex root checks only after the child's notice) still counts.
+fresh() { ((ROUND_AT == 0)) || [[ $1 != "$2" ]]; }
 
 # quiet_s SECONDS: how long a worker has been quiet; a correction round counts from its call at the earliest.
 quiet_s() {
     local call
-    if [[ -n $CALL_REF ]]; then
-        call=$(($(date +%s) - $(file_mtime "$CALL_REF")))
+    if ((ROUND_AT > 0)); then
+        call=$(($(date +%s) - ROUND_AT))
         (($1 <= call)) || { printf '%d\n' "$call"; return 0; }
     fi
     printf '%d\n' "$1"
 }
 
+# item_meta KIND N: the round and the last-settle identities of the item, into ROUND_AT, SEEN_RES and SEEN_TR.
+item_meta() {
+    local row
+    row=$(jq -r --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] |
+        [(.round_at // 0), (.seen.result // ""), (.seen.transcript // "")] | map(tostring) | join("\u001f")' "$RUNFILE")
+    IFS=$'\037' read -r ROUND_AT SEEN_RES SEEN_TR <<<"$row"
+}
+
 # item_state KIND N WORKTREE SPAWNED_AT: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
-# A correction round resumes the same worker: its result counts when newer than the call, and an end record or hang is
-# judged from activity after the call only.
+# A correction round resumes the same worker: its result counts when it differs from the one the last settle saw, and an
+# end record likewise; a hang is judged from the call at the earliest.
 item_state() {
     local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript
-    CALL_REF=$(round_stamp "$kind" "$n")
-    [[ -e $CALL_REF ]] || CALL_REF=''
+    item_meta "$kind" "$n"
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
         if (($(quiet_s $(($(date +%s) - $(file_mtime "$RUNFILE")))) >= hang)); then
@@ -107,12 +154,12 @@ item_state() {
         fi
         return 0
     fi
-    if [[ -f $wt/.ak/result ]] && fresh "$wt/.ak/result"; then echo reported; return 0; fi
+    if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
     transcript=$(transcript_find "$wt" "$kind-$n" "$(spawn_since "$wt" "${4:-0}")")
     if [[ -n $transcript ]]; then
         case $(transcript_state "$transcript") in
             ended | errored)
-                if fresh "$transcript" || fresh "${transcript%.jsonl}.meta.json"; then echo ended-without-result; return 0; fi ;;
+                if fresh "$(ident_transcript "$transcript")" "$SEEN_TR"; then echo ended-without-result; return 0; fi ;;
         esac
         if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; else echo running; fi
         return 0
@@ -124,14 +171,15 @@ item_state() {
     fi
 }
 
-# watched: "KIND N WORKTREE" per item to watch: the named ones, else the open wave's items still out.
+# watched: "KIND N WORKTREE" per item to watch: the named ones, else every item still out in the open wave or an
+# earlier one (a release can pass a wave whose blocker shipped while another of its workers is live).
 watched() {
     local named
     named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R 'select(. != "")' | jq -sc .)
     jq -r --argjson named "$named" '(.open_wave // 1) as $w | .items[] |
         select((.state | IN("spawned", "pending", "merge-up")) as $out |
                if ($named | length) > 0 then ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and ($out or (.worktree // "") != "")
-               else (.wave // 1) == $w and $out end) |
+               else (.wave // 1) <= $w and $out end) |
         [.kind, .n, .worktree // "", .spawned_at // 0] | map(tostring) | join("\u001f")' "$RUNFILE"
 }
 
@@ -169,36 +217,61 @@ next_step() {
     printf '%s%s\n' "$stop" "$plan"
 }
 
-# settle_line LINE: the summary lines of one watched item. A reported worker is collected here, inside the wait, so the
-# CI wait happens in the silence and the root's one wake already carries the final state.
+# item_settled KIND N ENDED: record what this settle saw: the identities a later correction round compares against, and,
+# for a worker that did not report, its terminal state, so ak plan may replace it. Closes the item's round.
+item_settled() {
+    local row wt at idents
+    row=$(jq -r --arg k "$1" --argjson n "$2" '[.items[] | select(.kind == $k and .n == $n)][0] |
+        [(.worktree // ""), (.spawned_at // 0)] | map(tostring) | join("\u001f")' "$RUNFILE")
+    IFS=$'\037' read -r wt at <<<"$row"
+    idents=$(item_idents "$1" "$2" "$wt" "$at")
+    run_update '(.items[] | select(.kind == $k and .n == $n)) |= (.seen = {result: $r, transcript: $t} | .round_at = null |
+        if $e == "" then del(.ended) else .ended = $e end)' --arg k "$1" --argjson n "$2" --arg e "$3" \
+        --arg r "${idents%%$'\037'*}" --arg t "${idents#*$'\037'}"
+}
+
+# settle_line LINE: add the summary lines of one watched item to SUMMARY. A reported worker is collected here, inside the
+# wait, so the CI wait happens in the silence and the root's one wake already carries the final state. Not run in a command
+# substitution: a failed run file write must stop the wait, not end up in a summary that says settled.
 settle_line() {
-    local id=${1%% *} kind n state=${1#* state=}
+    local id=${1%% *} kind n state=${1#* state=} own=$RUNFILE
     kind=${id%%=*} n=${id#*=}
-    rm -f -- "$(round_stamp "$kind" "$n")"
     if [[ ${state%% *} != reported ]]; then
-        printf '%s next=%s\n' "$1" "$(next_step "$kind" "$n" "${state%% *}")"
+        run_lock wait
+        item_settled "$kind" "$n" "${state%% *}"
+        run_unlock
+        RUN_LOCK=''
+        SUMMARY+="$1 next=$(next_step "$kind" "$n" "${state%% *}")"$'\n'
         return 0
     fi
     LINES=()
     run_lock wait
     collect_one "$kind" "$n"
+    if [[ $COLLECT_STATE == collected ]]; then
+        item_settled "$kind" "$n" ''
+        # The same reconciliation ak collect --issue runs: a run that held this issue as parked or red releases its dependents.
+        [[ $kind != issue ]] || release_other_runs "$n" "$COLLECT_WORKTREE"
+    fi
+    RUNFILE=$own
     run_unlock
-    if ((${#LINES[@]})); then printf '%s\n' "${LINES[@]}"; else printf '%s\n' "$1"; fi
+    RUN_LOCK=''
+    if ((${#LINES[@]})); then SUMMARY+=$(printf '%s\n' "${LINES[@]}")$'\n'; else SUMMARY+="$1"$'\n'; fi
 }
 
 # settle STATES: print the summary of a settled wave and write it beside the run file. The marker goes only afterwards.
 settle() {
-    local line out='' total=0 w file
+    local line total=0 w file
     w=$(wave_number)
-    file="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").wave$w.summary"
+    file="$MAIN/.ak/runs/$RUN_ID.wave$w.summary"
+    SUMMARY=''
     while IFS= read -r line; do
         [[ -n $line ]] || continue
         total=$((total + 1))
-        out+=$(settle_line "$line")$'\n'
+        settle_line "$line"
     done <<<"$1"
-    out+="wave=$w settled=$total/$total summary=$file"
-    printf '%s\n' "$out" >"$file"
-    printf '%s\n' "$out"
+    SUMMARY+="wave=$w settled=$total/$total summary=$file"
+    printf '%s\n' "$SUMMARY" >"$file"
+    printf '%s\n' "$SUMMARY"
 }
 
 # wait_loop: poll until nothing is running; settle once. With nothing out and a summary already written for the wave
@@ -210,7 +283,7 @@ wait_loop() {
         ! grep -q 'state=running' <<<"$states" && break
         sleep "${AK_WAIT_POLL_S:-15}"
     done
-    file="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").wave$(wave_number).summary"
+    file="$MAIN/.ak/runs/$RUN_ID.wave$(wave_number).summary"
     if [[ -z $states && ${#WAIT_NAMED[@]} -eq 0 && -f $file ]]; then cat -- "$file"; return 0; fi
     settle "$states"
 }
@@ -220,23 +293,27 @@ attach() {
     while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
 }
 
-# open_corrections: a correction round adds each named item without an open round to the open wave (so the hook marker and
-# collect --wave see it) and stamps the call time. An item already out with a stamp is in a round: the stamp is reused.
+# open_corrections: a correction round adds each named item that is not out to the open wave (so the hook marker and
+# collect --wave see it) and stamps the call time in the item. An item already out is in a round: it is left alone. The
+# identities its last settle saw are kept; an item no settle saw (collected by hand) is compared with what is there now.
 open_corrections() {
-    local id kind n state fresh_ids=()
+    local id kind n row wt at idents
     for id in "${WAIT_NAMED[@]}"; do
         kind=${id%%:*} n=${id#*:}
-        state=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n and (.worktree // "") != "")][0].state // "none"' "$RUNFILE")
-        [[ $state != none ]] || continue
-        if [[ $state =~ ^(spawned|pending|merge-up)$ && -e $(round_stamp "$kind" "$n") ]]; then continue; fi
-        : >"$(round_stamp "$kind" "$n")"
-        fresh_ids+=("$id")
+        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n and (.worktree // "") != "")][0] //
+            {state: "none"} | [.state, .worktree, (.spawned_at // 0), ((.seen // null) != null)] | map(tostring) | join("\u001f")' "$RUNFILE")
+        IFS=$'\037' read -r state wt at seen <<<"$row"
+        [[ $state != none && ! $state =~ ^(spawned|pending|merge-up)$ ]] || continue
+        idents=''
+        [[ $seen == true ]] || idents=$(item_idents "$kind" "$n" "$wt" "$at")
+        run_lock wait
+        run_update '(.open_wave // 1) as $w | (.items[] | select(.kind == $k and .n == $n and (.worktree // "") != "")) |=
+            (.wave = $w | .state = "spawned" | .round_at = $now | del(.ended) |
+             if .seen == null then .seen = {result: $r, transcript: $t} else . end)' --arg k "$kind" --argjson n "$n" \
+            --argjson now "$(date +%s)" --arg r "${idents%%$'\037'*}" --arg t "${idents#*$'\037'}"
+        run_unlock
+        RUN_LOCK=''
     done
-    ((${#fresh_ids[@]})) || return 0
-    run_lock wait
-    run_update '(.open_wave // 1) as $w | (.items[] | select(((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and (.worktree // "") != "")) |=
-        (.wave = $w | .state = "spawned")' --argjson named "$(printf '%s\n' "${fresh_ids[@]}" | jq -R . | jq -sc .)"
-    run_unlock
 }
 
 # next_wait: the command that settles the wave once --check reports none running, with the same named items.
@@ -258,7 +335,8 @@ cmd_main() {
     MAIN=$(main_root)
     MARKER="$MAIN/.ak/wave.open"
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
-    RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
+    RUN_ID=$(<"$MAIN/.ak/runs/current")
+    RUNFILE="$MAIN/.ak/runs/$RUN_ID.json"
     jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
     if ((check)); then
         open_corrections
@@ -268,10 +346,13 @@ cmd_main() {
     fi
     plan_context wait
     open_corrections
+    # Attach only to a watcher of this very run and session; another's marker is left alone and this wait runs unmarked.
     until marker_take; do
-        if marker_live; then attach; else rm -f -- "$MARKER"; fi
+        if ! marker_live; then rm -f -- "$MARKER"; continue; fi
+        marker_mine || break
+        attach
     done
-    trap marker_drop EXIT
+    trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT
     wait_loop
 }

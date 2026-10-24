@@ -442,6 +442,12 @@ out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=running' 'a started worker still blocks re-planning'
 out=$("$AK" plan --new --issue 693 2>&1)
 assert_contains "$out" 'skip issue=693 reason=running' 'a fresh spawn inside the grace still counts as running'
+# A worker ak wait recorded as ended (or stopped, or hung) is replaced by the plan it prints.
+for cur in "$repo"/.ak/runs/*.json; do
+    jq '(.items[] | select(.n == 671)).ended = "ended-without-result"' "$cur" >"$cur.tmp" && mv "$cur.tmp" "$cur"
+done
+out=$("$AK" plan --new --issue 671 2>&1)
+assert_contains "$out" 'spawn issue=671 ' 'a worker recorded as ended is planned again'
 
 # One plan at a time: a live lock holder makes a second plan wait, then refuse; a dead holder's lock is taken over.
 sleep 30 &

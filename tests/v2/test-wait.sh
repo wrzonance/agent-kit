@@ -247,7 +247,7 @@ wait "$c1"; rc=$?
 assert_eq 0 "$rc" 'a newer result settles the round'
 assert_contains "$(cat "$WORK/c1.out")" 'issue=12 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=fixed' 'with the new collect line'
 assert_contains "$(tail -n 1 "$WORK/c1.out")" 'wave=1 settled=1/1 summary=' 'and the closing count'
-assert_eq no "$([[ -e $repo/.ak/round.issue-12 ]] && echo yes || echo no)" 'the round stamp is gone once the item settles'
+assert_eq null "$(jq -r '.items[0].round_at' "$repo/.ak/runs/r1.json")" 'the round is closed once the item settles'
 
 # --check in a correction round shares the stamp: the old result and end record never settle it.
 set_run 13
@@ -261,12 +261,88 @@ assert_eq 3 "$rc" '--check --issue N keeps running past an old result and end re
 assert_eq $'issue=13 state=running\nwave=1 settled=0/1' "$out" 'and prints the item running'
 "$AK" wait --check --issue 13 >/dev/null 2>&1; rc=$?
 assert_eq 3 "$rc" 'a second --check reuses the stamp and still runs'
-assert_eq yes "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the round stamp persists between calls'
+assert_eq true "$(jq -r '.items[0].round_at > 0' "$repo/.ak/runs/r1.json")" 'the round persists between calls'
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=fixed\n' >"$WORK/wt/13/.ak/result"
 out=$("$AK" wait --check --issue 13 2>&1); rc=$?
 assert_eq 0 "$rc" 'a newer result settles --check'
 assert_eq $'issue=13 state=reported\nwave=1 settled=1/1\nnext=ak wait --issue 13' "$out" 'with the item reported, and the command that settles it'
 "$AK" wait --issue 13 >/dev/null 2>&1; rc=$?
 assert_eq 0 "$rc" 'the blocking wait shares the stamp and settles on the same result'
-assert_eq no "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the stamp is gone after the settle, so the next round starts fresh'
+assert_eq null "$(jq -r '.items[0].round_at' "$repo/.ak/runs/r1.json")" 'the round is closed after the settle, so the next round starts fresh'
+
+# A correction that finishes before the first --check still counts: a Codex root checks only after the child's notice,
+# so no clock set at the check can predate the new result. The last settle's identities are the baseline.
+set_run 14
+rm -rf "$subdir"
+green_result >"$WORK/wt/14/.ak/result"
+"$AK" wait >/dev/null 2>&1
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=fixed-early\n' >"$WORK/wt/14/.ak/result"
+out=$("$AK" wait --check --issue 14 2>&1); rc=$?
+assert_eq 0 "$rc" 'a result written before the first --check settles the round'
+assert_contains "$out" 'issue=14 state=reported' 'and reads reported'
+set_run 15
+rm -rf "$subdir"
+claude_agent a15 15 true
+"$AK" wait >/dev/null 2>&1
+touch -d '+5 seconds' "$subdir/agent-a15.jsonl" "$subdir/agent-a15.meta.json"
+out=$("$AK" wait --check --issue 15 2>&1); rc=$?
+assert_eq 0 "$rc" 'an end record written before the first --check settles the round'
+assert_contains "$out" 'issue=15 state=ended-without-result' 'and reads ended'
+out=$("$AK" wait --check --issue 15 2>&1)
+assert_contains "$out" 'issue=15 state=ended-without-result' 'a second --check reads the same'
+
+# A worker that did not report is recorded terminal in the run, so ak plan may replace it.
+set_run 16
+rm -rf "$subdir"
+claude_agent a16 16 true
+"$AK" wait >/dev/null 2>&1
+assert_eq ended-without-result "$(jq -r '.items[0].ended' "$repo/.ak/runs/r1.json")" 'an ended worker is recorded in the run item'
+
+# Every in-flight item up to the open wave is watched, not only the newest wave.
+printf '{"run":"r1","open_wave":2,"items":[{"kind":"issue","n":5,"worktree":"%s","wave":1,"state":"spawned","needs":[]},{"kind":"issue","n":6,"worktree":"%s","wave":2,"state":"spawned","needs":[]}]}\n' "$WORK/wt/5" "$WORK/wt/6" >"$repo/.ak/runs/r1.json"
+rm -rf "$subdir"
+mkdir -p "$WORK/wt/6/.ak"
+rm -f "$WORK/wt/5/.ak/result" "$WORK/wt/6/.ak/result"
+green_result >"$WORK/wt/6/.ak/result"
+touch "$WORK/wt/5/.ak"
+out=$("$AK" wait --check 2>&1); rc=$?
+assert_eq $'issue=5 state=running\nissue=6 state=reported\nwave=2 settled=1/2' "$out" 'a wave-1 worker still out is watched while wave 2 is open'
+assert_eq 3 "$rc" 'and keeps --check at 3'
+
+# The marker and the summary belong to the run and session that started the wait.
+set_run 5
+rm -rf "$subdir"
+claude_agent a5 5 false
+export AK_WAIT_HANG_S=60
+"$AK" wait >"$WORK/w1.out" 2>&1 &
+w1=$!
+sleep 1
+assert_contains "$(cat "$marker")" 'run=r1' 'the marker names the run'
+printf '{"run":"r2","open_wave":1,"items":[{"kind":"issue","n":6,"worktree":"%s","wave":1,"state":"spawned","needs":[]}]}\n' "$WORK/wt/6" >"$repo/.ak/runs/r2.json"
+printf 'r2\n' >"$repo/.ak/runs/current"
+rm -f "$WORK/wt/6/.ak/result"
+green_result >"$WORK/wt/6/.ak/result"
+out=$(CLAUDE_CODE_SESSION_ID=sess-2 timeout 20 "$AK" wait 2>&1)
+assert_contains "$out" 'wave=1 settled=1/1 summary=' 'a wait for another run and session settles on its own'
+assert_eq "$w1" "$(sed -n 's/^pid=//p' "$marker")" 'and leaves the first watcher marker alone'
+assert_eq yes "$([[ -f $repo/.ak/runs/r2.wave1.summary ]] && echo yes || echo no)" 'its summary is under its own run'
+green_result >"$WORK/wt/5/.ak/result"
+wait "$w1"
+assert_eq yes "$([[ -f $repo/.ak/runs/r1.wave1.summary ]] && echo yes || echo no)" 'the first watcher wrote its summary under the run it captured'
+assert_contains "$(cat "$repo/.ak/runs/r1.wave1.summary")" 'issue=5 pr=' 'with its own worker'
+printf 'r1\n' >"$repo/.ak/runs/current"
+export AK_WAIT_HANG_S=3
+
+# A run file that cannot be rewritten stops the wait: the summary never says settled over an unchanged run.
+set_run 5
+rm -rf "$subdir" "$sum1"
+green_result >"$WORK/wt/5/.ak/result"
+mkdir -- "$repo/.ak/runs/r1.json.tmp"
+out=$("$AK" wait 2>&1); rc=$?
+rmdir -- "$repo/.ak/runs/r1.json.tmp"
+assert_eq 1 "$([[ $rc -ne 0 ]] && echo 1 || echo 0)" 'a failed run file write exits nonzero'
+assert_not_contains "$out" 'settled=1/1' 'and prints no settled summary'
+assert_eq no "$([[ -e $sum1 ]] && echo yes || echo no)" 'and writes none'
+assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'and drops the marker'
+assert_eq no "$([[ -e $repo/.ak/locks/run ]] && echo yes || echo no)" 'and the run lock'
 finish

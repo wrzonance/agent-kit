@@ -258,7 +258,7 @@ merge_up() {
 # collect then reaches the next level, so a stack follows its base one finished link at a time.
 merge_up_children() {
     local branch wt file kind n
-    branch=$(git -C "$1" branch --show-current 2>/dev/null)
+    branch=$(git -C "$1" branch --show-current 2>/dev/null) || branch=
     [[ -n $branch ]] || return 0
     while IFS= read -r wt; do
         [[ $wt != "$1" && $(head -n 1 -- "$wt/.ak/base" 2>/dev/null) == "$branch" ]] || continue

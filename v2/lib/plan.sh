@@ -423,16 +423,17 @@ spawn_flush() {
 # had queued, and a later collect re-spawned an issue that had already shipped. Only a run with a worker still out
 # (spawned, no result) and touched within a day counts, so an abandoned run never blocks new work.
 issue_active() {
-    local n=$1 skip=${2:-} file item state wt needs
+    local n=$1 skip=${2:-} file item state wt needs ended
     while IFS= read -r file; do
         [[ $file != "$skip" ]] || continue
         run_live "$file" || continue
         item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
-            [.state, .worktree // "", (.needs | map("#" + tostring) | join(","))] | join("|")' "$file")
-        IFS='|' read -r state wt needs <<<"$item"
+            [.state, .worktree // "", (.needs | map("#" + tostring) | join(",")), (.ended // "")] | join("|")' "$file")
+        IFS='|' read -r state wt needs ended <<<"$item"
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            spawned | red | blocked) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
+            # A worker ak wait recorded as ended, stopped or hung is gone: the item may be planned again.
+            spawned | red | blocked) [[ -n $ended ]] || ! worker_out "$wt" "$file" || { printf 'running\n'; return 0; } ;;
             parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
@@ -470,7 +471,7 @@ run_live() {
     local wt state
     while IFS=$'\t' read -r state wt; do
         if [[ $state == parked ]]; then resumed_park "$wt" && return 0; else worker_out "$wt" "$1" && return 0; fi
-    done < <(jq -r '.items[] | select(.state | IN("spawned", "red", "blocked", "parked")) | [.state, .worktree // ""] | @tsv' "$1")
+    done < <(jq -r '.items[] | select((.state | IN("spawned", "red", "blocked", "parked")) and ((.ended // "") == "")) | [.state, .worktree // ""] | @tsv' "$1")
     return 1
 }
 
@@ -639,7 +640,7 @@ resume_run() {
         # A worker that already started is not offered again: the same lines twice would start a second one.
         [[ ! -e $wt/.ak/logs && ! -e $wt/.ak/setup.ok ]] || { running+=("skip issue=$n reason=running"); continue; }
         lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT name=issue-$n")
-    done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned") | [.n, .worktree] | @tsv' "$file")
+    done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned" and ((.ended // "") == "")) | [.n, .worktree] | @tsv' "$file")
     ((${#lines[@]})) || return 1
     printf 'run=%s resumed\n' "$current"
     printf '%s\n' "${lines[@]}" "${running[@]}"
