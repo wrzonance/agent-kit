@@ -56,7 +56,7 @@ worktree_idle_s() {
     gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=''
     for file in "$1/.ak" "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD"; do
         [[ -e $file ]] || continue
-        m=$(stat -c %Y -- "$file")
+        m=$(file_mtime "$file")
         ((m <= newest)) || newest=$m
     done
     printf '%d\n' $(($(date +%s) - newest))
@@ -68,7 +68,7 @@ spawn_since() {
     local since=${2:-0} file m
     for file in "$1/.ak/prompt.md" "$1/.ak/resolve"; do
         [[ -e $file ]] || continue
-        m=$(stat -c %Y -- "$file")
+        m=$(file_mtime "$file")
         ((m <= since)) || since=$m
     done
     printf '%s\n' "$since"
@@ -85,7 +85,7 @@ fresh() { [[ -z $CALL_REF || $1 -nt $CALL_REF ]]; }
 quiet_s() {
     local call
     if [[ -n $CALL_REF ]]; then
-        call=$(($(date +%s) - $(stat -c %Y -- "$CALL_REF")))
+        call=$(($(date +%s) - $(file_mtime "$CALL_REF")))
         (($1 <= call)) || { printf '%d\n' "$call"; return 0; }
     fi
     printf '%d\n' "$1"
@@ -100,7 +100,7 @@ item_state() {
     [[ -e $CALL_REF ]] || CALL_REF=''
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
-        if (($(quiet_s $(($(date +%s) - $(stat -c %Y -- "$RUNFILE")))) >= hang)); then
+        if (($(quiet_s $(($(date +%s) - $(file_mtime "$RUNFILE")))) >= hang)); then
             echo 'unwatched note=no worktree recorded for this item'
         else
             echo running

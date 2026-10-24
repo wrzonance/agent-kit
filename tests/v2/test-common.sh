@@ -80,4 +80,17 @@ export CODEX_THREAD_ID=t1
 assert_eq 'codex' "$(harness)" 'a Codex shell launched from a Claude session is codex'
 unset CLAUDECODE CODEX_THREAD_ID
 
+# Timestamps read through one helper that works with GNU (stat -c) and BSD/macOS (stat -f) stat.
+mkdir -p "$WORK/bsd"
+cat >"$WORK/bsd/stat" <<'STUB'
+#!/usr/bin/env bash
+[[ $1 != -c ]] || { echo "stat: illegal option -- c" >&2; exit 1; }
+case $2 in %m) echo 111 ;; %B) echo 222 ;; *) exit 1 ;; esac
+STUB
+chmod +x "$WORK/bsd/stat"
+assert_eq '111 222' "$(PATH="$WORK/bsd:$PATH" bash -c 'source "$1"; echo "$(file_mtime x) $(file_birth x)"' _ "$REPO/v2/lib/common.sh")" 'file_mtime and file_birth fall back to BSD stat -f'
+touch -d '@1000' "$WORK/gnu-file"
+assert_eq 1000 "$(file_mtime "$WORK/gnu-file")" 'file_mtime reads GNU stat'
+assert_eq 'no' "$(grep -rl 'stat -c' "$REPO/v2/lib" "$REPO/v2/hooks" | grep -v common.sh >/dev/null && echo yes || echo no)" 'no other v2 script calls stat -c directly'
+
 finish

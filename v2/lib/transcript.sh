@@ -3,12 +3,7 @@
 # Facts: docs/superpowers/specs/2026-10-23-ak-wave-wait-spikes.md (S1, S3, Ruling 17).
 
 # transcript_born PATH: when the transcript file was created (its birth, else its last write), in epoch seconds.
-transcript_born() {
-    local born
-    born=$(stat -c %W -- "$1" 2>/dev/null) || born=0
-    ((born > 0)) || born=$(stat -c %Y -- "$1")
-    printf '%s\n' "$born"
-}
+transcript_born() { file_birth "$1"; }
 
 # path_named PATH: true when the first line on stdin names exactly PATH (not a longer path that starts with it).
 path_named() {
@@ -72,5 +67,5 @@ transcript_state() {
 
 # transcript_age PATH: seconds since the transcript last grew.
 transcript_age() {
-    printf '%d\n' $(($(date +%s) - $(stat -c %Y -- "$1")))
+    printf '%d\n' $(($(date +%s) - $(file_mtime "$1")))
 }

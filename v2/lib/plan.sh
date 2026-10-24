@@ -451,7 +451,7 @@ worker_out() {
     local wt=$1 age
     [[ -n $wt && ! -f $wt/.ak/result ]] || return 1
     [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] && return 0
-    age=$(( $(date +%s) - $(stat -c %Y -- "$2") ))
+    age=$(( $(date +%s) - $(file_mtime "$2") ))
     ((age < ${AK_SPAWN_GRACE:-600}))
 }
 
@@ -631,7 +631,7 @@ resume_run() {
     for n in "$@"; do
         jq -e --argjson n "$n" 'any(.items[], (.others // [])[]; (.kind // "issue") == "issue" and .n == $n)' "$file" >/dev/null || return 1
     done
-    age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
+    age=$(( $(date +%s) - $(file_mtime "$file") ))
     ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
     local lines=() running=()
     while IFS=$'\t' read -r n wt; do
