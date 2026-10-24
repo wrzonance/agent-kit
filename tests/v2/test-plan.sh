@@ -454,12 +454,11 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 out=$("$AK" plan --new --issue 700 2>&1); rc=$?
 assert_eq 0 "$rc" "a dead holder's lock is taken over"
 assert_eq no "$([[ -e $repo/.ak/locks/run ]] && echo yes || echo no)" 'a finished plan releases its lock'
-# A plan that outlives an agent's shell yield says to wait rather than re-run (a field root re-ran a yielded plan).
-out=$(AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
-assert_contains "$out" 'ak plan: still working; wait for this call to finish. If its output is lost, run the same ak plan again' 'a slow plan says to wait, and how to get lost output back'
-assert_not_contains "$out" 'do not re-run' 'the notice never forbids the re-run that recovers a lost plan (a field root stopped for good on it)'
-out=$("$AK" plan --new --issue 700 2>&1)
-assert_not_contains "$out" 'still working' 'a fast plan prints no notice'
+# Neither harness gets a "still working" notice: a Codex root waits with wait_agent, a Claude root in the background.
+out=$(CLAUDECODE=1 AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
+assert_not_contains "$out" 'still working' 'a slow plan prints no notice under Claude'
+out=$(env -u CLAUDECODE CODEX_THREAD_ID=t1 AK_SLOW_NOTICE=0 "$AK" plan --new --issue 700 2>&1)
+assert_not_contains "$out" 'still working' 'a slow plan prints no notice under Codex'
 
 # sync_base: a reused worktree with commits of its own merges the new base; on conflict it leaves .ak/resolve.
 sb=$(mktemp -d)

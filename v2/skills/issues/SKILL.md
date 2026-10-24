@@ -9,15 +9,20 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
-2. For each `spawn issue=N cwd=… prompt=… model=… effort=…` line, spawn one worker with exactly that model
-   and effort (and that cwd, if your spawn tool takes one), and the content of the prompt file as its task.
+2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue-N` line, spawn one worker with exactly that
+   model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
+   `spawn_agent` `task_name`; `ak wait` finds Codex workers by it), and the content of the prompt file as its task.
    Spawn them all now, before waiting: `--serialize` only turns overlapping issues into `after` lines, which
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
-3. Wait with your harness's native wait, using the longest window it allows. Do not poll or refresh anything
-   between waits. A wait that ends with nothing finished needs no words: wait again. A worker's progress
-   messages need no reply, relay or help: it owns its review, CI and threads until it reports. Answer a
-   worker only when it asks you something.
-4. When a worker finishes, run `ak collect --issue N`. Spawn a worker for every `spawn` line it prints, the same
-   way as step 2. A `next=` line from collect is the operator's step for a parked or red issue: put it in the
-   report as printed. The operator runs the command it ends with, which hands the rest to a worker.
-5. When no workers remain, print every collect line as the report and stop.
+3. Wait once for the whole wave. Claude: run `ak wait` as ONE background shell task and end the turn with no words;
+   a hook holds worker notices, so your next wake is that command's exit. Codex: call `wait_agent` with
+   `timeout_ms=3600000`; on each return run `ak wait --check`; exit 3 means wait again with no words, exit 0 means
+   run the `next=` command it printed. `ak wait` settles every worker and prints one summary line each.
+   While a wave is open, spawn nothing else and send nothing: no progress replies, no relays, no polling.
+4. On the wake, review every worker's line. A worker that is wrong or unfinished gets its correction handed back
+   (Claude `SendMessage`, Codex `followup_task`); then wait on exactly those workers with `ak wait --issue N…`,
+   the same way as step 3. A `next=` line is the operator's step for a parked, hung or red issue: put it in the
+   report as printed.
+5. When satisfied, run `ak collect --wave`. Spawn a worker for every `spawn` line it prints, as in step 2, and
+   wait again as in step 3. Repeat until it prints `wave=done`.
+6. Then print every summary line as the report and stop.

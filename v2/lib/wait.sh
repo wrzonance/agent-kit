@@ -239,6 +239,13 @@ open_corrections() {
     run_unlock
 }
 
+# next_wait: the command that settles the wave once --check reports none running, with the same named items.
+next_wait() {
+    local id out='next=ak wait'
+    for id in "${WAIT_NAMED[@]}"; do out+=" --${id%%:*} ${id#*:}"; done
+    printf '%s\n' "$out"
+}
+
 cmd_main() {
     local check=0 usage='usage: ak wait [--issue N | --pr N]... [--check]'
     while (($#)); do
@@ -256,6 +263,7 @@ cmd_main() {
     if ((check)); then
         open_corrections
         report "$(wave_state)" || exit 3
+        next_wait
         return 0
     fi
     plan_context wait

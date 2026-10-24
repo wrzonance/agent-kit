@@ -197,8 +197,10 @@ assert_contains "$out" 'spawn issue=692' 'the successor of two collected issues 
 assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-692/.ak/base")" 'its base is the predecessor latest in run order (a PR item sharing the number does not count), not the last listed need'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
-out=$(AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
-assert_contains "$out" 'ak collect: still working; wait for this call to finish' 'a slow collect says to wait for it'
+out=$(CLAUDECODE=1 AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
+assert_not_contains "$out" 'still working' 'a slow collect prints no notice under Claude'
+out=$(env -u CLAUDECODE CODEX_THREAD_ID=t1 AK_SLOW_NOTICE=0 "$AK" collect --pr 9 2>&1)
+assert_not_contains "$out" 'still working' 'a slow collect prints no notice under Codex'
 out=$("$AK" collect --issue 12345 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue outside the run refuses'
 assert_contains "$out" 'fix: ' 'the refusal names the fix'

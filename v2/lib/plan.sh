@@ -474,10 +474,10 @@ run_live() {
     return 1
 }
 
-# run_lock NAME: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
+# run_lock [NAME]: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
 # later a collect, whose first call had not returned yet; the second call now waits, then reports the first's work.
 run_lock() {
-    local name=$1 dir="$MAIN/.ak/locks/run" waited=0 lost=''
+    local dir="$MAIN/.ak/locks/run" waited=0
     mkdir -p -- "$MAIN/.ak/locks"
     until mkdir -- "$dir" 2>/dev/null; do
         # A lock whose owner died is free.
@@ -488,17 +488,10 @@ run_lock() {
     done
     printf '%s\n' "$$" >"$dir/pid"
     RUN_LOCK=$dir
-    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead. A
-    # field root that then lost the plan's output stopped for good on "do not re-run it", so say what recovers it.
-    [[ $name != plan ]] || lost='. If its output is lost, run the same ak plan again: it prints the same lines'
-    { sleep "${AK_SLOW_NOTICE:-3}" >/dev/null 2>&1 &&
-            printf 'ak %s: still working; wait for this call to finish%s\n' "$name" "$lost" >&2; } </dev/null &
-    SLOW_NOTICE=$!
 }
 
-# run_unlock: release the run lock and silence the slow-call notice.
+# run_unlock: release the run lock.
 run_unlock() {
-    kill "${SLOW_NOTICE:-0}" 2>/dev/null || true
     rm -rf -- "${RUN_LOCK:-/nonexistent}"
 }
 

@@ -3,6 +3,7 @@
 Repo `{{SLUG}}`, base `{{BASE}}`, branch `{{BRANCH}}`, worktree `{{WORKTREE}}`.
 You own this issue end to end: implement it, ship a draft PR, review it, get CI green, post the receipt.
 Work only in `{{WORKTREE}}` and run every command below from there.
+Never message the root: when you cannot proceed, run `{{AK}} park --reason "<why>"` and end with its line.
 When the issue asks for more than one PR, or part of it needs something this worktree can't do (an area the
 issue keeps separate, a live app session, an operator step), do the part that fits as this PR and name the rest
 with `--remaining` in step 6. Only when nothing fits, run `{{AK}} park --reason "<why>"` and end with its line.

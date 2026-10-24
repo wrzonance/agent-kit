@@ -67,8 +67,9 @@ out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 3 "$rc" '--check exits 3 while a worker runs'
 assert_eq $'issue=5 state=running\nwave=1 settled=0/1' "$out" '--check prints the running state'
 green_result >"$WORK/wt/5/.ak/result"
-"$AK" wait --check >/dev/null 2>&1; rc=$?
+out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 0 "$rc" '--check exits 0 once the result is there'
+assert_eq 'next=ak wait' "$(tail -n 1 <<<"$out")" '--check at exit 0 ends with the command that settles the wave'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" '--check leaves no marker'
 
 # Codex: children are matched by parent thread and agent_path, and end on task_complete.
@@ -170,7 +171,7 @@ touch -d '10 seconds ago' "$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=7 state=unwatched note=no worktree recorded' 'past the threshold it is unwatched, naming why'
 out=$("$AK" wait --issue 8 --check 2>&1)
-assert_eq 'wave=1 settled=0/0' "$out" 'naming a queued item without a worktree watches nothing'
+assert_eq $'wave=1 settled=0/0\nnext=ak wait --issue 8' "$out" 'naming a queued item without a worktree watches nothing'
 
 # A watcher that dies leaves the wait to the attached ak wait, which becomes the watcher.
 set_run 5
@@ -264,7 +265,7 @@ assert_eq yes "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the
 printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=fixed\n' >"$WORK/wt/13/.ak/result"
 out=$("$AK" wait --check --issue 13 2>&1); rc=$?
 assert_eq 0 "$rc" 'a newer result settles --check'
-assert_eq $'issue=13 state=reported\nwave=1 settled=1/1' "$out" 'with the item reported'
+assert_eq $'issue=13 state=reported\nwave=1 settled=1/1\nnext=ak wait --issue 13' "$out" 'with the item reported, and the command that settles it'
 "$AK" wait --issue 13 >/dev/null 2>&1; rc=$?
 assert_eq 0 "$rc" 'the blocking wait shares the stamp and settles on the same result'
 assert_eq no "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the stamp is gone after the settle, so the next round starts fresh'
