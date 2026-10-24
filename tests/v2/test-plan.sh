@@ -54,7 +54,7 @@ assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a first spawn records no
 assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
-assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","state":"spawned","needs":[]}' \
+assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","needs":[]}' \
     "$(jq -c '.items[0]' "$runfile")" 'the run file records the spawned item'
 assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
 assert_eq 1 "$(grep -c 'issues/693/dependencies' "$FAKE_GH_LOG")" 'one deps read per candidate'
@@ -147,7 +147,7 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/680' '--limit stops checking
 fresh
 standard_board
 out=$("$AK" plan --serialize 2>&1)
-assert_contains "$out" 'after issue=680 needs=671' '--serialize chains the colliding issue'
+assert_contains "$out" 'after issue=680 needs=671 wave=2' '--serialize chains the colliding issue'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680 ]] && echo yes || echo no)" 'a queued issue gets no worktree'
 runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
 assert_eq 'queued [671]' "$(jq -r '.items[] | select(.n == 680) | "\(.state) \(.needs | tojson)"' "$runfile")" 'the queued item records its needs'
@@ -226,7 +226,7 @@ fresh
 route 'api repos/acme/widget/issues/693/dependencies/blocked_by*' '[{"number":671,"state":"open"}]'
 standard_board
 out=$("$AK" plan 2>&1)
-assert_contains "$out" 'after issue=693 needs=671' 'an issue blocked by a chosen issue queues behind it'
+assert_contains "$out" 'after issue=693 needs=671 wave=2' 'an issue blocked by a chosen issue queues behind it'
 assert_not_contains "$out" 'drop issue=693' 'an issue blocked by a chosen issue is not dropped'
 assert_contains "$out" 'drop issue=690 reason=blocked-by:#1' 'a blocker outside the run still drops'
 
@@ -549,9 +549,10 @@ default_routes
 out=$("$AK" plan --serialize --issue 821 --issue 822 --issue 823 --issue 824 2>&1)
 wt821="$repo/.worktrees/feat/issue-821"
 assert_contains "$out" "spawn issue=821 cwd=$wt821" 'an issue blocked only by a shipped issue spawns'
+assert_eq 1 "$(jq -r '.items[] | select(.n == 821) | .wave' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'an issue stacked on a shipped blocker outside the run is wave 1'
 assert_eq 'feat/issue-820' "$(cat "$wt821/.ak/base")" 'its PR base is the shipped blocker branch'
 assert_eq "$(git rev-parse origin/feat/issue-820)" "$(git -C "$wt821" rev-parse HEAD)" 'its worktree starts from that branch'
-assert_contains "$out" 'after issue=822 needs=821' 'the next link queues behind it'
+assert_contains "$out" 'after issue=822 needs=821 wave=2' 'the next link queues behind it'
 assert_contains "$out" 'drop issue=823 reason=blocked-by:#1' 'a blocker with no PR still drops'
 assert_contains "$out" 'drop issue=824 reason=needs-dropped-#823' 'a named issue that overlaps a dropped one is dropped with it, not spawned'
 # An issue with an open PR, and one whose worktree cannot be reused, hold the named issues that overlap them too.
@@ -583,11 +584,13 @@ route 'api repos/acme/widget/issues/853/dependencies/blocked_by*' '[{"number":1,
 default_routes
 out=$("$AK" plan --limit 5 2>&1)
 assert_contains "$out" 'spawn issue=850' 'the blocker spawns'
-assert_contains "$out" 'after issue=851 needs=850' 'the issue listed above its blocker queues behind it'
-assert_contains "$out" 'after issue=852 needs=851' 'and the issue behind that one follows'
+assert_contains "$out" 'after issue=851 needs=850 wave=2' 'the issue listed above its blocker queues behind it'
+assert_contains "$out" 'after issue=852 needs=851 wave=3' 'and the issue behind that one follows'
 assert_not_contains "$out" 'drop issue=851' 'its earlier drop line is withdrawn'
 assert_contains "$out" 'drop issue=853 reason=blocked-by:#1' 'a blocker outside the run still drops'
 assert_eq '850 851 852' "$(jq -r '[.items[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'the run file holds the chain in dependency order'
+assert_eq '1 2 3' "$(jq -r '[.items[].wave] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'each item is tagged with its wave'
+assert_eq 1 "$(jq -r '.open_wave' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'the run opens at wave 1'
 assert_eq '853' "$(jq -r '[.others[].n] | join(" ")' "$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json")" 'only the real drop is stored'
 assert_eq 1 "$(grep -c 'issues/851/dependencies' "$FAKE_GH_LOG")" 'the second look at a dropped issue reads GitHub no further'
 assert_eq origin/feat/issue-850 "$(git -C "$repo/.worktrees/feat/issue-850" rev-parse --abbrev-ref '@{u}' 2>&1)" 'the spawned branch is pushed and tracked'
@@ -622,7 +625,7 @@ route 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-830*' '[{"num
 default_routes
 out=$("$AK" plan --issue 831 --issue 832 --issue 833 --issue 834 2>&1)
 runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
-assert_contains "$out" 'after issue=832 needs=831' 'an issue with an in-run and a shipped blocker queues behind the in-run one'
+assert_contains "$out" 'after issue=832 needs=831 wave=2' 'an issue with an in-run and a shipped blocker queues behind the in-run one'
 assert_eq 830 "$(jq -r '.items[] | select(.n == 832) | .stack' "$runfile")" 'the run records the shipped blocker it also needs'
 assert_contains "$out" 'drop issue=833 reason=collides-with-#831' 'without --serialize a collision drops'
 assert_contains "$out" 'drop issue=834 reason=needs-dropped-#833' 'what overlaps a collision drop is held with it'

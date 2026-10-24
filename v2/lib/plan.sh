@@ -7,6 +7,7 @@ LINES=()               # output lines, in order
 declare -A ISSUE_JSON  # issue number -> REST issue JSON
 declare -A WRITES      # chosen issue number -> write set, one path per line
 CHOSEN=()              # spawned and queued issue numbers, in order
+declare -A WAVE        # chosen issue number -> wave: 1 + the deepest wave among its in-run predecessors
 declare -A NEEDS       # queued issue number -> comma-separated predecessors
 declare -A WORKTREE    # spawned issue number -> worktree path
 declare -A OTHERS      # dropped or skipped issue number -> its output line
@@ -507,6 +508,14 @@ other() {
     emit "$2"
 }
 
+# wave_of NEEDS: the wave of an issue that needs these (comma-separated): 1 + the deepest wave among the
+# predecessors chosen in this run. A predecessor outside the run (a shipped blocker) adds none.
+wave_of() {
+    local h max=0
+    for h in ${1//,/ }; do ((${WAVE[$h]:-0} <= max)) || max=${WAVE[$h]}; done
+    echo $((max + 1))
+}
+
 # choose N SERIALIZE: place an issue that passed check_issue: drop on a collision, queue it, or spawn it.
 # Returns 0 when it spawned.
 choose() {
@@ -518,10 +527,11 @@ choose() {
         other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
     elif [[ -n $hits ]]; then
         WRITES[$n]=$WS NEEDS[$n]=$hits STACKS[$n]=$STACK
+        WAVE[$n]=$(wave_of "$hits")
         CHOSEN+=("$n")
-        emit "after issue=$n needs=$hits"
+        emit "after issue=$n needs=$hits wave=${WAVE[$n]}"
     elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
-        WRITES[$n]=$WS
+        WRITES[$n]=$WS WAVE[$n]=1
         CHOSEN+=("$n")
         return 0
     else
@@ -601,8 +611,8 @@ pick() {
 write_run() {
     local n items='[]' others='[]'
     for n in "${CHOSEN[@]}"; do
-        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" \
-            '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)",
+        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" \
+            '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)", wave: $wave,
                    state: (if $needs == "" then "spawned" else "queued" end),
                    needs: ($needs | split(",") | map(select(. != "") | tonumber))}
                   + (if $stack == "" then {} else {stack: ($stack | tonumber)} end)]' <<<"$items")
@@ -611,7 +621,7 @@ write_run() {
         others=$(jq -c --argjson n "$n" --arg line "${OTHERS[$n]}" '. + [{n: $n, line: $line}]' <<<"$others")
     done
     jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" --argjson others "$others" \
-        '{run: $run, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
+        '{run: $run, open_wave: 1, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
@@ -640,7 +650,7 @@ resume_run() {
     ((${#lines[@]})) || return 1
     printf 'run=%s resumed\n' "$current"
     printf '%s\n' "${lines[@]}" "${running[@]}"
-    jq -r '(.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(","))"),
+    jq -r '(.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(",")) wave=\(.wave // 1)"),
         ((.others // [])[] | .line)' "$file"
 }
 
