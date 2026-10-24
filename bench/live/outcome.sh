@@ -11,6 +11,10 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 accept="$(dirname -- "$here")/accept/run-accept.sh"
 repo=$1 clone=$2 wanted=$3 rc=$4 elapsed=$5
 
+# Issues 11-14 are the separate fixture tally-waves-v1 with its own hidden suites.
+accept_set=(--set frozen)
+[[ " $wanted " =~ \ 1[1-4]\  ]] && accept_set=(--set waves)
+
 prs='[]' passed='{}'
 for id in $wanted; do passed=$(jq --arg id "tally-$id" '. + {($id): false}' <<<"$passed"); done
 
@@ -24,7 +28,7 @@ while IFS=$'\t' read -r number sha draft; do
     tree=$(mktemp -d)
     git -C "$clone" fetch -q origin "pull/$number/head"
     git -C "$clone" archive "$sha" | tar -x -C "$tree"
-    vector=$("$accept" "$tree" 2>/dev/null || printf '{"results":{}}')
+    vector=$("$accept" "${accept_set[@]}" "$tree" 2>/dev/null || printf '{"results":{}}')
     rm -rf -- "$tree"
     passed=$(jq --argjson v "$vector" 'with_entries(.value = (.value or ($v.results[.key] == "pass")))' <<<"$passed")
     prs=$(jq --arg n "$number" --arg sha "$sha" --arg ci "$ci" --argjson draft "$draft" --argjson v "$vector" \

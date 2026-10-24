@@ -24,7 +24,7 @@ state="$here/sandbox.json"
 source "$here/trial-lib.sh"
 
 harness='' ref='' issues='11 12 13 14' model='' effort='' timeout_s=5400 trial='' dry=0
-worker_model=gpt-5.6-luna worker_effort=medium
+worker_model='' worker_effort=high
 while (($#)); do
     case $1 in
         --harness) harness=$2; shift 2 ;;
@@ -40,7 +40,13 @@ while (($#)); do
 done
 [[ $harness == codex || $harness == claude ]] || { printf 'trial-tui: --harness codex|claude is required\n' >&2; exit 2; }
 [[ -n $ref ]] || { printf 'trial-tui: --ref is required\n' >&2; exit 2; }
-if [[ $harness == codex ]]; then model=${model:-gpt-6-luna} effort=${effort:-high}; else model=${model:-claude-sonnet-5-5} effort=${effort:-high}; fi
+# Workers use a model of the arm's own harness: AGENT_WORKER_MODELS names it for the kit, and Codex also reads it
+# from its config.
+if [[ $harness == codex ]]; then
+    model=${model:-gpt-6-luna} effort=${effort:-high} worker_model=gpt-6-luna
+else
+    model=${model:-claude-sonnet-5-5} effort=${effort:-high} worker_model=sonnet
+fi
 if ((dry)); then repo=dry/run; else
     [[ -f $state ]] || { printf 'trial-tui: no %s; run bench/live/sandbox.sh create\n' "$state" >&2; exit 2; }
     repo=$(jq -r .repo "$state")
@@ -83,6 +89,10 @@ if ((dry)); then :; else
     git clone -q "https://github.com/$repo.git" "$dir/repo"
 fi
 write_bench_config "$dir/repo"
+# Codex records folder trust per project in its config; Claude's trust dialog is answered below when it shows.
+if [[ $harness == codex ]]; then
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$(cd -- "$dir/repo" && pwd -P)" >>"$CODEX_HOME/config.toml"
+fi
 
 mkdir -p "$dir/bin"
 ln -sf "$here/gh-shim" "$dir/bin/gh"
@@ -104,11 +114,35 @@ envs+=("PATH=$dir/bin:$PATH" "AK_BENCH_REAL_GH=$real_gh" "AK_BENCH_GH_LOG=$log_g
 printf -v command_line '%q ' env "${scrub[@]}" "${envs[@]}" "${cli[@]}"
 
 tmux_run() { env "${scrub[@]}" tmux "$@"; }
+
+# wait_for_prompt: read the pane (never type) until the CLI shows its input prompt. A folder-trust or bypass
+# dialog that appears first is answered with its documented accept key; that answers the CLI, it does not
+# instruct the agent. The invocation stays the only instruction typed.
+wait_for_prompt() {
+    local pane waited=0 trust_re bypass_re ready_re
+    trust_re='[Dd]o you trust|trust the (files|contents)|trust this (folder|directory)'
+    bypass_re='Bypass Permissions mode|Yes, I accept'
+    if [[ $harness == codex ]]; then ready_re='›|% context left'; else ready_re='❯|\? for shortcuts'; fi
+    while ((waited < ${AK_BENCH_TUI_READY_TIMEOUT:-120})); do
+        pane=$(tmux_run capture-pane -p -t "$session" 2>/dev/null || true)
+        if grep -Eq "$trust_re" <<<"$pane"; then
+            tmux_run send-keys -t "$session" Enter
+        elif grep -Eq "$bypass_re" <<<"$pane"; then
+            tmux_run send-keys -t "$session" 2 Enter
+        elif grep -Eq "$ready_re" <<<"$pane"; then
+            return 0
+        fi
+        sleep "${AK_BENCH_TUI_READY_POLL:-1}"
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 tmux_run kill-session -t "$session" 2>/dev/null || true
 log "start $harness in tmux session $session (model=$model effort=$effort timeout=${timeout_s}s)"
 started=$(date -u +%s)
 tmux_run new-session -d -s "$session" -x 220 -y 50 -c "$dir/repo" "$command_line"
-sleep "${AK_BENCH_TUI_BOOT:-20}"
+wait_for_prompt || { log "no input prompt within ${AK_BENCH_TUI_READY_TIMEOUT:-120}s; nothing was typed"; tmux_run kill-session -t "$session" 2>/dev/null || true; exit 1; }
 # The one line the operator would type. Nothing else is typed until the exit below.
 tmux_run send-keys -t "$session" "$invocation" Enter
 
@@ -164,7 +198,7 @@ outcome="$dir/outcome.json"
     jq --argjson calls "$("$here/gh-calls.py" "$log_gh")" '. + {github: $calls}' >"$outcome"
 
 row="$dir/row.json"
-fixture_label="ak-bench:$(jq -r .tag "$state"):$issues"
+fixture_label="tally-waves-v1:$(jq -r .tag "$state"):$issues"
 if [[ -n $root ]]; then
     "$here/score.py" "$root" --sessions "$sessions" --harness "$harness" --outcome "$outcome" \
         --label kit=v2 --label mode=tui --label harness="$harness" --label ref="$sha" --label fixture="$fixture_label" \

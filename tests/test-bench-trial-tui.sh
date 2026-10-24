@@ -17,6 +17,15 @@ mkdir -p "$tmp/stubs"
 cat >"$tmp/stubs/tmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $1 == capture-pane ]]; then
+    # Replay one scripted pane per call; once the script runs out the CLI shows its input prompt.
+    if [[ -s ${STUB_PANES:-/nonexistent} ]]; then
+        head -n 1 "$STUB_PANES"
+        sed -i 1d "$STUB_PANES"
+    else
+        printf '❯ \n? for shortcuts › 90%% context left\n'
+    fi
+fi
 env | grep -E '^(CLAUDE|CODEX_THREAD_ID|CODEX_SESSION_ID|CODEX_CI)' >>"$STUB_ENV" || true
 STUB
 cat >"$tmp/stubs/codex" <<'STUB'
@@ -38,7 +47,7 @@ run_arm() {
     local harness=$1
     : >"$tmp/log" && : >"$tmp/env"
     RUN_OUT=$(STUB_LOG="$tmp/log" STUB_ENV="$tmp/env" PATH="$tmp/stubs:$PATH" AK_BENCH_WORK="$tmp/work" \
-        AK_BENCH_CODEX_AUTH="$tmp/auth.json" AK_BENCH_TUI_BOOT=0 \
+        AK_BENCH_CODEX_AUTH="$tmp/auth.json" AK_BENCH_TUI_READY_POLL=0 STUB_PANES="${PANES:-}" AK_BENCH_TUI_READY_TIMEOUT="${AK_BENCH_TUI_READY_TIMEOUT:-120}" \
         CLAUDE_CODE_LEAK=1 CODEX_THREAD_ID=leak \
         "$trial_tui" --harness "$harness" --ref HEAD --dry-run --trial "t-$harness" 2>&1)
     RUN_RC=$?
@@ -51,7 +60,7 @@ for harness in codex claude; do
     assert_eq 0 "$RUN_RC" "$harness: dry-run exits 0"
     mapfile -t calls <"$tmp/log"
     tmux_calls=()
-    for line in "${calls[@]}"; do [[ $line == codex* || $line == claude* || $line == gh* ]] || tmux_calls+=("$line"); done
+    for line in "${calls[@]}"; do [[ $line == codex* || $line == claude* || $line == gh* || $line == capture-pane* ]] || tmux_calls+=("$line"); done
     sends=$(printf '%s\n' "${tmux_calls[@]}" | grep -c '^send-keys' || true)
     assert_eq 1 "$sends" "$harness: exactly one send-keys in a dry run"
     assert_contains "${tmux_calls[0]}" 'kill-session' "$harness: a stale session is cleared first"
@@ -63,6 +72,33 @@ for harness in codex claude; do
     assert_contains "${tmux_calls[1]}" '-u CLAUDE_CODE_LEAK' "$harness: the CLI command line unsets the leaked variable"
     assert_contains "${tmux_calls[1]}" '-u CODEX_THREAD_ID' "$harness: the CLI command line unsets CODEX_THREAD_ID"
 done
+
+# Worker models belong to the arm's own harness.
+run_arm codex
+assert_contains "$(cat "$tmp/work/t-codex/repo/.agent/config.env")" 'AGENT_WORKER_MODELS=gpt-6-luna' 'codex: kit workers use gpt-6-luna'
+assert_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'default_subagent_model = "gpt-6-luna"' 'codex: Codex sub-agents use gpt-6-luna'
+assert_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'trust_level = "trusted"' 'codex: the clone dir is pre-trusted in the private home'
+assert_not_contains "$(cat "$tmp/work/t-codex/repo/.agent/config.env")" 'gpt-5.6' 'codex: no retired model id'
+run_arm claude
+assert_contains "$(cat "$tmp/work/t-claude/repo/.agent/config.env")" 'AGENT_WORKER_MODELS=sonnet' 'claude: kit workers use sonnet'
+assert_contains "$(cat "$tmp/work/t-claude/repo/.agent/config.env")" 'AGENT_WORKER_EFFORT=high' 'claude: worker effort is high'
+assert_not_contains "$(cat "$tmp/work/t-claude/repo/.agent/config.env")" 'gpt' 'claude: no Codex model in the Claude arm'
+
+# Readiness: the pane is read until the prompt shows; a trust dialog is answered with its accept key first,
+# and the invocation is the only thing typed after that.
+PANES="$tmp/panes"
+printf 'loading\nDo you trust the files in this folder?\n' >"$PANES"
+run_arm claude
+mapfile -t calls <"$tmp/log"
+seq=$(printf '%s\n' "${calls[@]}" | grep -E '^(capture-pane|send-keys)' | cut -d' ' -f1 | tr '\n' ' ')
+assert_eq 'capture-pane capture-pane send-keys capture-pane send-keys ' "$seq" 'claude: read, read the trust dialog, accept it, read the prompt, then type the invocation'
+assert_contains "$(grep '^send-keys' "$tmp/log" | head -n 1)" 'Enter' 'claude: the trust dialog is accepted with Enter'
+assert_contains "$(grep '^send-keys' "$tmp/log" | tail -n 1)" '/ak:issues' 'claude: the invocation is typed last'
+printf 'booting\nbooting\nbooting\nbooting\nbooting\n' >"$PANES"
+AK_BENCH_TUI_READY_TIMEOUT=3 run_arm claude
+assert_eq 1 "$RUN_RC" 'a CLI that never shows a prompt fails the trial'
+assert_eq 0 "$(grep -c '^send-keys' "$tmp/log")" 'nothing is typed when the prompt never appears'
+PANES=''
 
 run_arm codex
 # shellcheck disable=SC2016 # the dollar is the Codex skill sigil

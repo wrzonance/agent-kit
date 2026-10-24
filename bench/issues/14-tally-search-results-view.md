@@ -3,6 +3,7 @@ id: tally-14
 conflict_group: none
 files: src/results.js, test/results.smoke.mjs
 blocked_by: tally-13
+status: Backlog
 ---
 
 # tally: render search results

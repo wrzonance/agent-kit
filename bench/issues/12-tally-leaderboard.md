@@ -3,6 +3,7 @@ id: tally-12
 conflict_group: none
 files: src/leaderboard.js, test/leaderboard.smoke.mjs
 blocked_by: tally-11
+status: Backlog
 ---
 
 # tally: leaderboard of the top items

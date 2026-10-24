@@ -30,6 +30,18 @@ wait_graphql_budget() {
     done
 }
 
+# ready_count "11 12 13 14": how many of these issues the reset puts in Ready; a `status: Backlog` issue
+# (a blocked wave-fixture dependent) waits in Backlog, so the board wait does not count it.
+ready_count() {
+    local id file status n=0
+    for id in $1; do
+        file=$(ls "$bench"/issues/"$id"-*.md)
+        status=$(sed -n 's/^status: *//p' "$file" | head -n 1)
+        [[ ${status:-Ready} != Ready ]] || n=$((n + 1))
+    done
+    printf '%s\n' "$n"
+}
+
 # reset_sandbox_ready "01 03": reset the sandbox with these issues, then wait until the board shows them Ready.
 # Needs: repo, dir (the trial's work dir, for trial.log).
 reset_sandbox_ready() {
@@ -42,7 +54,7 @@ reset_sandbox_ready() {
         "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
     }
     # GitHub's project listing lags fresh items; a run that starts before they show sees a different board.
-    expect=$(wc -w <<<"$issues")
+    expect=$(ready_count "$issues")
     for _ in $(seq 1 30); do
         seen=$(gh project item-list "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --format json --limit 100 |
             jq --argjson want "$(jq -c '[.[]]' "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json")" \
