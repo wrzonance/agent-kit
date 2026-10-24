@@ -55,7 +55,8 @@ assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spaw
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
 assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","needs":[]}' \
-    "$(jq -c '.items[0]' "$runfile")" 'the run file records the spawned item'
+    "$(jq -c '.items[0] | del(.spawned_at)' "$runfile")" 'the run file records the spawned item'
+assert_eq number "$(jq -r '.items[0].spawned_at | type' "$runfile")" 'and its spawn time, which ak wait uses to ignore older transcripts'
 assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
 assert_eq 1 "$(grep -c 'issues/693/dependencies' "$FAKE_GH_LOG")" 'one deps read per candidate'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/69/' 'a label drop costs no REST call'

@@ -2,23 +2,41 @@
 # Per-harness worker transcripts for ak wait: find one, say whether it ended, say how long it has been quiet.
 # Facts: docs/superpowers/specs/2026-10-23-ak-wave-wait-spikes.md (S1, S3, Ruling 17).
 
-# transcript_claude WORKTREE: the newest sub-agent transcript of this root session whose first line names WORKTREE.
+# transcript_born PATH: when the transcript file was created (its birth, else its last write), in epoch seconds.
+transcript_born() {
+    local born
+    born=$(stat -c %W -- "$1" 2>/dev/null) || born=0
+    ((born > 0)) || born=$(stat -c %Y -- "$1")
+    printf '%s\n' "$born"
+}
+
+# path_named PATH: true when the first line on stdin names exactly PATH (not a longer path that starts with it).
+path_named() {
+    local esc
+    esc=${1//[^A-Za-z0-9_\/-]/\\&}
+    head -n 1 | grep -qE -- "(^|[^A-Za-z0-9._/-])${esc}([^A-Za-z0-9_/-]|\$)"
+}
+
+# transcript_claude WORKTREE SINCE: the newest sub-agent transcript of this root session, created at or after SINCE,
+# whose first line names WORKTREE exactly.
 transcript_claude() {
     local base file best=''
     base="$HOME/.claude/projects/$(main_root | tr -c 'a-zA-Z0-9\n' '-')"
     while IFS= read -r file; do
-        head -n 1 -- "$file" | grep -qF -- "$1" || continue
+        path_named "$1" <"$file" || continue
+        (($(transcript_born "$file") >= ${2:-0})) || continue
         [[ -z $best || $file -nt $best ]] && best=$file
     done < <(find "$base" -path "$base/${CLAUDE_CODE_SESSION_ID:-*}/subagents/agent-*.jsonl" 2>/dev/null)
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 
-# transcript_codex NAME: the newest child rollout of this root thread whose agent_path is /root/NAME. Codex lowercases and
+# transcript_codex NAME SINCE: the newest child rollout of this root thread whose agent_path is /root/NAME. Codex lowercases and
 # underscores task names, so issue-5 is also looked for as issue_5. Spawn prompts are encrypted: never match on them.
 transcript_codex() {
     local file best=''
     [[ -n ${CODEX_THREAD_ID:-} && -n $1 ]] || return 0
     while IFS= read -r file; do
+        (($(transcript_born "$file") >= ${2:-0})) || continue
         head -n 1 -- "$file" | grep -qF -- "$CODEX_THREAD_ID" || continue
         head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg a "/root/$1" --arg b "/root/${1//-/_}" \
             '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and (.agent_path | IN($a, $b))' \
@@ -28,9 +46,10 @@ transcript_codex() {
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 
-# transcript_find WORKTREE [NAME]: the worker's transcript path, or nothing.
+# transcript_find WORKTREE [NAME [SINCE]]: the transcript of the worker spawned at or after SINCE, or nothing. An older
+# transcript of the same worktree belongs to the worker this one replaced.
 transcript_find() {
-    if [[ $(harness) == codex ]]; then transcript_codex "${2:-}"; else transcript_claude "$1"; fi
+    if [[ $(harness) == codex ]]; then transcript_codex "${2:-}" "${3:-0}"; else transcript_claude "$1" "${3:-0}"; fi
 }
 
 # transcript_state PATH: running, ended or errored. Claude marks an ended agent in its .meta.json (a stopped one has no

@@ -613,7 +613,7 @@ write_run() {
     for n in "${CHOSEN[@]}"; do
         items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" \
             '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)", wave: $wave,
-                   state: (if $needs == "" then "spawned" else "queued" end),
+                   spawned_at: (now | floor), state: (if $needs == "" then "spawned" else "queued" end),
                    needs: ($needs | split(",") | map(select(. != "") | tonumber))}
                   + (if $stack == "" then {} else {stack: ($stack | tonumber)} end)]' <<<"$items")
     done

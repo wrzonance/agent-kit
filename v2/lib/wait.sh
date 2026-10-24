@@ -51,7 +51,7 @@ marker_drop() { [[ $(marker_get pid) != "$$" ]] || rm -f -- "$MARKER"; }
 worktree_idle_s() {
     local newest=0 file m gitdir
     gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=''
-    for file in "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD"; do
+    for file in "$1/.ak" "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD"; do
         [[ -e $file ]] || continue
         m=$(stat -c %Y -- "$file")
         ((m <= newest)) || newest=$m
@@ -59,11 +59,32 @@ worktree_idle_s() {
     printf '%d\n' $(($(date +%s) - newest))
 }
 
-# item_state KIND N WORKTREE: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
+# spawn_since WORKTREE SPAWNED_AT: when the item's current worker was spawned: the later of the run file's spawned_at and
+# the worktree's prompt or resolve file (rewritten at every spawn, re-spawn and merge-down).
+spawn_since() {
+    local since=${2:-0} file m
+    for file in "$1/.ak/prompt.md" "$1/.ak/resolve"; do
+        [[ -e $file ]] || continue
+        m=$(stat -c %Y -- "$file")
+        ((m <= since)) || since=$m
+    done
+    printf '%s\n' "$since"
+}
+
+# item_state KIND N WORKTREE SPAWNED_AT: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
 item_state() {
     local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript
+    if [[ -z $wt ]]; then
+        # Nothing to look at: running until the run file itself has been quiet for the threshold.
+        if (($(date +%s) - $(stat -c %Y -- "$RUNFILE") >= hang)); then
+            echo 'unwatched note=no worktree recorded for this item'
+        else
+            echo running
+        fi
+        return 0
+    fi
     if [[ -f $wt/.ak/result ]]; then echo reported; return 0; fi
-    transcript=$(transcript_find "$wt" "$kind-$n")
+    transcript=$(transcript_find "$wt" "$kind-$n" "$(spawn_since "$wt" "${4:-0}")")
     if [[ -n $transcript ]]; then
         case $(transcript_state "$transcript") in
             ended | errored) echo ended-without-result; return 0 ;;
@@ -83,43 +104,47 @@ watched() {
     local named
     named=$(printf '%s\n' "${WAIT_ISSUES[@]}" | jq -R 'select(. != "") | tonumber' | jq -sc .)
     jq -r --argjson named "$named" '(.open_wave // 1) as $w | .items[] |
-        select(if ($named | length) > 0 then (.n as $n | $named | index($n)) != null
-               else (.wave // 1) == $w and (.state | IN("spawned", "pending", "merge-up")) end) |
-        [.kind, .n, .worktree // ""] | @tsv' "$RUNFILE"
+        select((.state | IN("spawned", "pending", "merge-up")) as $out |
+               if ($named | length) > 0 then (.n as $n | $named | index($n)) != null and ($out or (.worktree // "") != "")
+               else (.wave // 1) == $w and $out end) |
+        [.kind, .n, .worktree // "", .spawned_at // 0] | map(tostring) | join("\u001f")' "$RUNFILE"
 }
 
 # wave_state: one line per watched item.
 wave_state() {
-    local kind n wt
-    while IFS=$'\t' read -r kind n wt; do
-        printf '%s=%s state=%s\n' "$kind" "$n" "$(item_state "$kind" "$n" "$wt")"
+    local kind n wt at
+    while IFS=$'\037' read -r kind n wt at; do
+        printf '%s=%s state=%s\n' "$kind" "$n" "$(item_state "$kind" "$n" "$wt" "$at")"
     done < <(watched)
 }
 
 # report STATES: print the lines and the closing count; return 0 when none is still running.
 report() {
     local total settled
-    total=$(grep -c . <<<"$1" || true)
-    settled=$(grep -vc 'state=running' <<<"$1" || true)
+    total=0 settled=0
+    if [[ -n $1 ]]; then
+        total=$(grep -c . <<<"$1" || true)
+        settled=$(grep -vc 'state=running' <<<"$1" || true)
+    fi
     [[ -z $1 ]] || printf '%s\n' "$1"
     printf 'wave=%s settled=%s/%s\n' "$(jq -r '.open_wave // 1' "$RUNFILE")" "$settled" "$total"
     ((settled == total))
 }
 
-# wait_loop: poll until nothing is running (or, attached, until the marker clears); print once, settled.
+# wait_loop: poll until nothing is running; print once, settled.
 wait_loop() {
-    local states poll=${AK_WAIT_POLL_S:-15}
+    local states
     while :; do
         states=$(wave_state)
-        if [[ $1 == own ]]; then
-            ! grep -q 'state=running' <<<"$states" && break
-        else
-            marker_live || break
-        fi
-        sleep "$poll"
+        ! grep -q 'state=running' <<<"$states" && break
+        sleep "${AK_WAIT_POLL_S:-15}"
     done
-    [[ $1 == own ]] || states=$(wave_state)
     report "$states" || true
+}
+
+# attach: a watcher is live; wait for its marker to clear. The caller then takes over if workers are still out.
+attach() {
+    while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
 }
 
 cmd_main() {
@@ -142,10 +167,9 @@ cmd_main() {
     fi
     mkdir -p -- "$MAIN/.ak"
     until marker_take; do
-        if marker_live; then wait_loop attach; return 0; fi
-        rm -f -- "$MARKER"
+        if marker_live; then attach; else rm -f -- "$MARKER"; fi
     done
     trap marker_drop EXIT
     trap 'exit 143' TERM INT
-    wait_loop own
+    wait_loop
 }

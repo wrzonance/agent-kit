@@ -18,7 +18,7 @@ set_run() {
     local items='' n
     for n in "$@"; do
         mkdir -p "$WORK/wt/$n/.ak"
-        items+="${items:+,}{\"kind\":\"issue\",\"n\":$n,\"worktree\":\"$WORK/wt/$n\",\"wave\":1,\"state\":\"spawned\",\"needs\":[]}"
+        items+="${items:+,}{\"kind\":\"issue\",\"n\":$n,\"worktree\":\"$WORK/wt/$n\",\"spawned_at\":${SPAWNED_AT:-0},\"wave\":1,\"state\":\"spawned\",\"needs\":[]}"
     done
     printf '{"run":"r1","open_wave":1,"items":[%s]}\n' "$items" >"$repo/.ak/runs/r1.json"
     printf 'r1\n' >"$repo/.ak/runs/current"
@@ -90,6 +90,7 @@ assert_not_contains "$out" 'ended-without-result' 'a child of another root threa
 unset CODEX_THREAD_ID CODEX_HOME
 export CLAUDE_CODE_SESSION_ID=sess-1
 
+export AK_WAIT_HANG_S=60
 # The marker: a live pid with the wrong start time is stale and replaced.
 set_run 5
 claude_agent a5 5 false
@@ -112,6 +113,7 @@ assert_eq $'issue=5 state=reported\nwave=1 settled=1/1' "$(cat "$WORK/w1.out")" 
 assert_eq "$(cat "$WORK/w1.out")" "$(cat "$WORK/w2.out")" 'the attached ak wait prints the same summary'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is cleared when the watcher exits'
 
+export AK_WAIT_HANG_S=3
 # Without a session id the marker records the cwd.
 unset CLAUDE_CODE_SESSION_ID
 rm -f "$WORK/wt/5/.ak/result"
@@ -124,6 +126,69 @@ assert_contains "$(cat "$marker")" 'session=' 'and an empty session line'
 kill "$w1"
 wait "$w1" 2>/dev/null
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker goes when the watcher is terminated'
+
+# A worktree path that is a prefix of another's must not take the other worker's transcript.
+set_run 5 50
+rm -rf "$subdir"
+claude_agent a50 50 true
+claude_agent a5 5 false
+out=$("$AK" wait --check 2>&1)
+assert_eq $'issue=5 state=running\nissue=50 state=ended-without-result\nwave=1 settled=1/2' "$out" 'wt/5 does not match the transcript of wt/50'
+rm -rf "$subdir"
+claude_agent a50 50 true
+touch "$WORK/wt/5/.ak"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=running' 'wt/5 with only the wt/50 transcript has no worker of its own'
+
+# A finished transcript from an earlier spawn of the same worktree is not this worker's.
+rm -rf "$subdir"
+claude_agent old 5 true
+SPAWNED_AT=$(($(date +%s) + 60)) set_run 5
+touch "$WORK/wt/5/.ak"
+out=$("$AK" wait --check 2>&1)
+assert_eq $'issue=5 state=running\nwave=1 settled=0/1' "$out" 'an older finished transcript never reads as ended-without-result'
+SPAWNED_AT=0 set_run 5
+printf 'x\n' >"$WORK/wt/5/.ak/prompt.md"
+touch -d '+60 seconds' "$WORK/wt/5/.ak/prompt.md"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=running' 'a prompt rewritten after the transcript was created also retires it'
+rm -f "$WORK/wt/5/.ak/prompt.md"
+
+# An item with no worktree is not watchable.
+printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":7,"worktree":"","wave":1,"state":"pending","needs":[]},{"kind":"issue","n":8,"worktree":"","wave":1,"state":"queued","needs":[]}]}\n' >"$repo/.ak/runs/r1.json"
+out=$("$AK" wait --check 2>&1); rc=$?
+assert_eq $'issue=7 state=running\nwave=1 settled=0/1' "$out" 'a pending item without a worktree reads running, a queued one is not watched'
+assert_eq 3 "$rc" 'and keeps --check at 3'
+touch -d '10 seconds ago' "$repo/.ak/runs/r1.json"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=7 state=unwatched note=no worktree recorded' 'past the threshold it is unwatched, naming why'
+out=$("$AK" wait --issue 8 --check 2>&1)
+assert_eq 'wave=1 settled=0/0' "$out" 'naming a queued item without a worktree watches nothing'
+
+# A watcher that dies leaves the wait to the attached ak wait, which becomes the watcher.
+set_run 5
+rm -rf "$subdir"
+claude_agent a5 5 false
+export AK_WAIT_HANG_S=60
+"$AK" wait >"$WORK/w1.out" 2>&1 &
+w1=$!
+sleep 1
+"$AK" wait >"$WORK/w2.out" 2>&1 &
+w2=$!
+sleep 1
+kill -9 "$w1"
+wait "$w1" 2>/dev/null
+sleep 3
+assert_eq "$w2" "$(sed -n 's/^pid=//p' "$marker")" 'the attached ak wait takes the marker when the watcher dies'
+assert_eq 1 "$(grep -c '^pid=' "$marker")" 'and keeps exactly one marker'
+kill -0 "$w2" 2>/dev/null && alive=yes || alive=no
+assert_eq yes "$alive" 'it keeps waiting while the worker runs'
+printf 'pr=none\n' >"$WORK/wt/5/.ak/result"
+wait "$w2"; rc=$?
+assert_eq 0 "$rc" 'and exits 0 once settled'
+assert_eq $'issue=5 state=reported\nwave=1 settled=1/1' "$(cat "$WORK/w2.out")" 'with the summary'
+assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'and clears the marker'
+export AK_WAIT_HANG_S=3
 
 # An unreadable run is exit 1 and leaves no marker.
 printf 'not json' >"$repo/.ak/runs/r1.json"

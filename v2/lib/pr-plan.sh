@@ -130,7 +130,7 @@ cmd_main() {
         fi
         pr_plan_prompt "$json" "$wt" "$slug"
         items=$(jq -c --argjson n "$n" --arg wt "$wt" --arg br "$(jq -r .head.ref <<<"$json")" \
-            '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "spawned", needs: []}]' <<<"$items")
+            '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "spawned", spawned_at: (now | floor), needs: []}]' <<<"$items")
         spawns+="spawn pr=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$model effort=$effort name=pr-$n"$'\n'
     done
     run=$(pr_plan_run_id "$runs")
