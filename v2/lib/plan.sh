@@ -419,6 +419,14 @@ spawn_flush() {
 }
 
 # pick LIMIT SERIALIZE: walk candidates on fd 3, choosing up to LIMIT spawns.
+# issue_worktree N: where issue N's worktree lives.
+issue_worktree() {
+    local wt
+    wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$1"
+    [[ $wt == /* ]] || wt="$MAIN/$wt"
+    printf '%s\n' "$wt"
+}
+
 # issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. A field run planned an issue another run still
 # had queued, and a later collect re-spawned an issue that had already shipped. Only a run with a worker still out
 # (spawned, no result) and touched within a day counts, so an abandoned run never blocks new work.
@@ -437,8 +445,7 @@ issue_active() {
             parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
-    wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
-    [[ $wt == /* ]] || wt="$MAIN/$wt"
+    wt=$(issue_worktree "$n")
     # A parked result (pr=none) is not shipped: once the operator unblocks it, re-running the issue plans it again.
     [[ ! -f $wt/.ak/result ]] || needs=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
     [[ ${needs:-} != http* ]] || printf 'shipped:%s\n' "$needs"

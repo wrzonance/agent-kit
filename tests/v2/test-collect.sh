@@ -137,6 +137,24 @@ printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n
 out=$(wave_go)
 assert_contains "$out" 'after issue=680 note=open-PR lookup failed; collect again' 'a failed PR lookup is reported'
 assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a failed PR lookup leaves the successor queued'
+# An open PR is not a finished predecessor: with red checks the successor stays queued and says why; green releases it.
+printf '[{"number":55,"html_url":"https://github.com/acme/widget/pull/55","head":{"sha":"abc"}}]' >"$WORK/open-55.json"
+printf '{"number":55,"head":{"sha":"abc"}}' >"$WORK/pr55.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}' >"$WORK/runs-55-red.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-55-green.json"
+open_routes() {
+    printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t%s\t0\napi repos/acme/widget/pulls/55\t%s\t0\napi repos/acme/widget/commits/abc/check-runs*\t%s\t0\n%s\n' \
+        "$WORK/open-55.json" "$WORK/pr55.json" "$1" "$routes" >"$FAKE_GH_ROUTES"
+}
+open_routes "$WORK/runs-55-red.json"
+out=$(wave_go)
+assert_contains "$out" 'after issue=680 reason=open-pr-not-green' 'an open PR with red checks keeps the successor queued and says why'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and the item stays queued'
+open_routes "$WORK/runs-55-green.json"
+out=$(wave_go)
+assert_contains "$out" 'skip issue=680 reason=open-pr' 'an open PR with green checks counts as finished'
+assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and the item is collected'
+jq '(.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 # A successor's worktree left by an earlier run is reused, and still starts from the predecessor branch (a field
 # successor reused one that never got its predecessor's work, and parked).
@@ -456,6 +474,33 @@ assert_eq "$wt2" "$(jq -r '.items[] | select(.n == 680) | .worktree' "$run_a")" 
 assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$run_b")" 'the new run records the collection too'
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'spawn' 'a second collect spawns nothing more'
+
+# ak wait collects a re-planned park the same way: the dependent held in the earlier run is released by the wait.
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+run_a="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671" wt2="$repo/.worktrees/feat/issue-680" wt3="$repo/.worktrees/feat/issue-693"
+printf 'x\n' >"$wt/src/a.txt"
+git -C "$wt" commit -qam work && git -C "$wt" push -q
+printf 'pr=none\nci=none\nreview=skipped\nhead=abc\nnote=parked: protected path\n' >"$wt/.ak/result"
+"$AK" collect --issue 671 >/dev/null 2>&1
+printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=%s\nnote=n\n' "$(git -C "$wt3" rev-parse HEAD)" >"$wt3/.ak/result"
+"$AK" collect --issue 693 >/dev/null 2>&1
+"$AK" plan --issue 671 >/dev/null 2>&1
+head=$(git -C "$wt" rev-parse HEAD)
+printf '{"number":9,"state":"open","head":{"sha":"%s"}}' "$head" >"$WORK/pr9-head.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-head.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+    "$WORK/pr9-head.json" "$head" "$WORK/runs-head.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=%s\nnote=n\n' "$head" >"$wt/.ak/result"
+out=$("$AK" wait 2>&1); rc=$?
+assert_eq 0 "$rc" 'ak wait settles the re-planned issue'
+assert_contains "$out" "spawn issue=680 cwd=$wt2 " 'the wait releases the dependent the earlier run holds'
+assert_eq 'collected spawned' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the earlier run records the collection and the spawn'
 
 # A queued item is not released: 680 waited behind 671 in run A, 671 parked, and `ak plan --issue 680` started 680 in a
 # new run from the default branch. Its branch never held 671's work, so run A must not count it done or build on it.

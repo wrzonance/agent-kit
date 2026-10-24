@@ -94,19 +94,34 @@ park_superseded() {
     r[note]="PR opened after the park; ${r[note]:-}"
 }
 
+# result_read FILE: the worker's result lines into the caller's r array.
+result_read() {
+    local key value
+    while IFS='=' read -r key value; do
+        [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
+    done <"$1"
+}
+
+# successor_green N PR HEAD CI: a queued issue counts as finished elsewhere only when its PR's CI is green, or the
+# repository has none, read live through the same refresh a collect uses. A draft, unfinished or red PR is not done.
+successor_green() {
+    local -A r=([pr]=$2 [head]=$3 [ci]=${4:-pending})
+    RESULT_HEAD=$3 RESULT_WAITED=0
+    result_refresh issue "$1"
+    [[ ${r[ci]} =~ ^(green|none)$ ]]
+}
+
 # result_line KIND N WORKTREE: the result line; returns 1 when the worker left no result. RESULT_PR is the PR the line
 # names, which a superseded park takes from GitHub, not from the worker's file.
 result_line() {
-    local kind=$1 n=$2 file="$3/.ak/result" key value
+    local kind=$1 n=$2 file="$3/.ak/result"
     local -A r=()
     if [[ ! -f $file ]]; then
         # No result is not "ended": a field root collected 10 s after the spawn and read this as a dead worker.
         emit "$kind=$n state=pending note=no .ak/result yet; collect again once the worker reports"
         return 1
     fi
-    while IFS='=' read -r key value; do
-        [[ $key =~ ^[a-z]+$ ]] && r[$key]=$value
-    done <"$file"
+    result_read "$file"
     [[ $kind != issue || ${r[pr]:-} == http* ]] || park_superseded "$n" "$3"
     RESULT_HEAD=${r[head]:-} RESULT_WAITED=0
     result_refresh "$kind" "$n"
@@ -130,7 +145,8 @@ cross_write() {
 # predecessor in run order. A field successor needed [its blocker, then two colliding issues]; taking the last of that list based it on a
 # branch below the blocker's, without the blocker's work.
 spawn_successors() {
-    local n pred from ready active open again=0
+    local n pred from ready active open again=0 pr_url pr_head pr_ci
+    local -A r=()
     ready=$(jq -r --argjson w "$1" '[.items[] | select(.kind == "issue" and .state == "collected") | .n] as $done |
         [.items[] | select(.kind == "issue") | .n] as $order |
         .items[] | select(.kind == "issue" and .state == "queued" and (.wave // 1) <= $w and ((.needs - $done) | length) == 0) |
@@ -142,15 +158,26 @@ spawn_successors() {
     EFFORT=$(cfg AGENT_WORKER_EFFORT medium)
     while IFS=$'\t' read -r -u 3 n pred; do
         active=$(issue_active "$n" "$RUNFILE")
+        pr_url='' pr_head='' pr_ci=''
         if [[ -z $active ]]; then
-            open=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" | jq 'length') || open=''
+            open=$(api "repos/$SLUG/pulls?state=open&head=${SLUG%%/*}:feat/issue-$n&per_page=1" |
+                jq -r '[length, (.[0].html_url // ""), (.[0].head.sha // "")] | @tsv') || open=''
+            IFS=$'\t' read -r open pr_url pr_head <<<"$open" || true
             [[ $open =~ ^[0-9]+$ ]] || { emit "after issue=$n note=open-PR lookup failed; collect again"; continue; }
             ((open == 0)) || active="open-pr"
+        elif [[ $active == shipped:* ]]; then
+            r=()
+            result_read "$(issue_worktree "$n")/.ak/result"
+            pr_url=${r[pr]:-} pr_head=${r[head]:-} pr_ci=${r[ci]:-}
         fi
         case $active in
             '') ;;
             shipped:* | open-pr)
-                # Shipped elsewhere counts as done, so the issues queued behind it still unblock.
+                # Shipped elsewhere counts as done, so the issues queued behind it still unblock, once its CI says so.
+                if ! successor_green "$n" "$pr_url" "$pr_head" "$pr_ci"; then
+                    emit "after issue=$n reason=$active-not-green note=its PR has no green CI; ak pr-plan --pr ${pr_url##*/}, then ak collect --issue $n"
+                    continue
+                fi
                 emit "skip issue=$n reason=$active"
                 run_update '(.items[] | select(.kind == "issue" and .n == $n)).state = "collected"' --argjson n "$n"
                 again=1

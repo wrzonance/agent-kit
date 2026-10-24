@@ -162,15 +162,20 @@ assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is
 jq '.items += [{kind: "issue", n: 700, wave: 3, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
 mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
-printf 'pr=https://github.com/acme/widget/pull/77\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
+printf 'pr=https://github.com/acme/widget/pull/77\nci=red\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
 printf 'pr=https://github.com/acme/widget/pull/78\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
 "$AK" collect --issue 671 >/dev/null 2>&1
 jq '(.items[] | select(.kind == "issue" and (.wave // 1) == 1)).state = "collected"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 basename -- "$runfile" .json >"$repo/.ak/runs/current"
 out=$("$AK" collect --wave 2>&1)
+assert_contains "$out" 'after issue=680 reason=shipped:https://github.com/acme/widget/pull/77-not-green' 'a shipped successor with red CI is held, not counted done'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'and stays queued'
+assert_not_contains "$out" 'spawn issue=700' 'its dependent does not spawn from the red branch'
+printf 'pr=https://github.com/acme/widget/pull/77\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
+out=$("$AK" collect --wave 2>&1)
 assert_contains "$out" 'skip issue=680 reason=shipped:https://github.com/acme/widget/pull/77' 'collect does not re-spawn a successor that shipped'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
-assert_eq 'pr=https://github.com/acme/widget/pull/77' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
+assert_contains "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'pr=https://github.com/acme/widget/pull/77' 'the shipped result survives'
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a shipped successor counts as done'
 assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
