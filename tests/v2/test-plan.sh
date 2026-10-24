@@ -158,12 +158,15 @@ out=$("$AK" plan --new --issue 680 2>&1)
 assert_contains "$out" 'skip issue=680 reason=queued-after-#671' 'an issue queued in a live run is not planned again'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=running' 'an issue whose worker is still out is not planned again'
-jq '.items += [{kind: "issue", n: 700, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '.items += [{kind: "issue", n: 700, wave: 3, state: "queued", needs: [680]}]' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 git -C "$repo" push -q origin HEAD:refs/heads/feat/issue-680
 mkdir -p "$repo/.worktrees/feat/issue-680/.ak"
 printf 'pr=https://github.com/acme/widget/pull/77\n' >"$repo/.worktrees/feat/issue-680/.ak/result"
 printf 'pr=https://github.com/acme/widget/pull/78\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
-out=$("$AK" collect --issue 671 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+jq '(.items[] | select(.kind == "issue" and (.wave // 1) == 1)).state = "collected"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+basename -- "$runfile" .json >"$repo/.ak/runs/current"
+out=$("$AK" collect --wave 2>&1)
 assert_contains "$out" 'skip issue=680 reason=shipped:https://github.com/acme/widget/pull/77' 'collect does not re-spawn a successor that shipped'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-680/.ak/prompt.md ]] && echo yes || echo no)" 'the shipped worktree is untouched'
 assert_eq 'pr=https://github.com/acme/widget/pull/77' "$(cat "$repo/.worktrees/feat/issue-680/.ak/result")" 'the shipped result survives'
@@ -630,7 +633,8 @@ assert_eq 830 "$(jq -r '.items[] | select(.n == 832) | .stack' "$runfile")" 'the
 assert_contains "$out" 'drop issue=833 reason=collides-with-#831' 'without --serialize a collision drops'
 assert_contains "$out" 'drop issue=834 reason=needs-dropped-#833' 'what overlaps a collision drop is held with it'
 printf 'pr=https://github.com/acme/widget/pull/52\nci=green\nreview=done\nhead=a\nnote=n\n' >"$repo/.worktrees/feat/issue-831/.ak/result"
-out=$("$AK" collect --issue 831 2>&1)
+"$AK" collect --issue 831 >/dev/null 2>&1
+out=$("$AK" collect --wave 2>&1)
 assert_contains "$out" 'spawn issue=832' 'collecting the in-run blocker releases it'
 assert_rc 0 'the spawned successor contains the shipped blocker branch' -- git -C "$repo/.worktrees/feat/issue-832" merge-base --is-ancestor origin/feat/issue-830 HEAD
 

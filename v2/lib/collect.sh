@@ -126,14 +126,14 @@ cross_write() {
     [[ -z $paths ]] || emit "cross-write=$paths"
 }
 
-# spawn_successors: queued issues whose needs are all collected, each from the branch of its latest predecessor in run
-# order. A field successor needed [its blocker, then two colliding issues]; taking the last of that list based it on a
+# spawn_successors WAVE: queued issues up to that wave whose needs are all collected, each from the branch of its latest
+# predecessor in run order. A field successor needed [its blocker, then two colliding issues]; taking the last of that list based it on a
 # branch below the blocker's, without the blocker's work.
 spawn_successors() {
     local n pred from ready active open again=0
-    ready=$(jq -r '[.items[] | select(.kind == "issue" and .state == "collected") | .n] as $done |
+    ready=$(jq -r --argjson w "$1" '[.items[] | select(.kind == "issue" and .state == "collected") | .n] as $done |
         [.items[] | select(.kind == "issue") | .n] as $order |
-        .items[] | select(.kind == "issue" and .state == "queued" and ((.needs - $done) | length) == 0) |
+        .items[] | select(.kind == "issue" and .state == "queued" and (.wave // 1) <= $w and ((.needs - $done) | length) == 0) |
         "\(.n)\t\(.needs | max_by(. as $x | $order | index($x) // -1))"' "$RUNFILE")
     [[ -n $ready ]] || return 0
     TEMPLATE="$AK_HOME/templates/issue-worker.md"
@@ -169,7 +169,7 @@ spawn_successors() {
         fi
     done 3<<<"$ready"
     spawn_flush
-    ((again == 0)) || spawn_successors
+    ((again == 0)) || spawn_successors "$(($1 + 1))"
 }
 
 # collect_item KIND N FILE: the run item for KIND N in FILE, or nothing.
@@ -270,7 +270,8 @@ merge_up_children() {
 }
 
 # release_other_runs N WORKTREE: every run of the last day that holds N as parked or spawned (a prior attempt that
-# owned the issue) with a successor queued behind it records N as collected and spawns from there. After a park,
+# owned the issue) with a successor queued behind it records N as collected and, once its open wave is in, releases
+# the next wave there. After a park,
 # `ak plan --issue N` makes a new run holding only N; a field operator re-planned the whole list by hand to keep the
 # earlier run's chain alive. A queued N is left alone: it waited on a predecessor that never finished there, so the
 # branch collected elsewhere does not hold that predecessor's work.
@@ -284,23 +285,52 @@ release_other_runs() {
         run_update '(.items[] | select(.kind == "issue" and .n == $n)) |= (.state = "collected" | .worktree = $wt)' \
             --argjson n "$n" --arg wt "$wt" \
             || { emit "note=could not update run $(basename -- "$file" .json) for issue $n; its successors wait"; continue; }
-        spawn_successors
+        [[ -n $(wave_open) ]] || release_wave
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
     RUNFILE=$own
 }
 
-cmd_main() {
-    local kind='' n='' item worktree state=collected m
-    case ${1:-} in
-        --issue | --pr) kind=${1#--}; n=${2:-} ;;
-    esac
-    [[ -n $kind && $n =~ ^[0-9]+$ && $# -eq 2 ]] || usage_die 'usage: ak collect (--issue N | --pr N)'
-    plan_context collect
-    run_lock collect
-    trap 'run_unlock' EXIT
-    [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
-    RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
-    [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
+# wave_open: the issues of the open wave, or an earlier one, that still have a worker out, comma-separated.
+wave_open() {
+    jq -r '(.open_wave // 1) as $w | [.items[] | select(.kind == "issue" and (.wave // 1) <= $w and .state == "spawned") | .n] | join(",")' "$RUNFILE"
+}
+
+# wave_hold: queued issues behind a parked, red, blocked, dropped or held need become held, transitively.
+wave_hold() {
+    local rows n state m
+    while :; do
+        rows=$(jq -r '[.items[] | select(.kind == "issue")] as $is | $is[] | select(.state == "queued") | .n as $n |
+            [.needs[] as $m | $is[] | select(.n == $m and (.state | IN("parked", "red", "blocked", "dropped", "held")))][0] // empty |
+            "\($n)\t\(.state)\t\(.n)"' "$RUNFILE")
+        [[ -n $rows ]] || return 0
+        while IFS=$'\t' read -r n state m; do
+            emit "held issue=$n reason=waits-on-$state-#$m"
+            run_update '(.items[] | select(.kind == "issue" and .n == $n)).state = "held"' --argjson n "$n"
+        done <<<"$rows"
+    done
+}
+
+# release_wave [LOUD]: the open wave is in. Hold what waits on a failed item, spawn the next wave, and open it. With
+# LOUD, "wave=done" says no later wave remains. A successor that could not start (a failed lookup) stays queued and is
+# retried by the next release, so it is never stranded behind the open wave.
+release_wave() {
+    local w
+    w=$(jq -r '.open_wave // 1' "$RUNFILE")
+    wave_hold
+    if [[ -z $(jq -r --argjson w "$w" '.items[] | select(.kind == "issue" and .state == "queued" and (.wave // 1) >= $w) | .n' "$RUNFILE") ]]; then
+        [[ -z ${1:-} ]] || emit "wave=done"
+        return 0
+    fi
+    spawn_successors "$((w + 1))"
+    # A queued issue behind one that shipped elsewhere starts in the same release, so the open wave is the latest out.
+    run_update '.open_wave = ([.items[] | select(.kind == "issue" and .state == "spawned") | .wave // 1] + [$w] | max)' \
+        --argjson w "$((w + 1))"
+}
+
+# collect_one KIND N: read the worker's result and record the item's state, releasing nothing. Sets LINES and RESULT_*;
+# returns 1 when the worker left no result yet. COLLECT_STATE is the state the result decided.
+collect_one() {
+    local kind=$1 n=$2 item worktree state=collected m
     item=$(collect_item "$kind" "$n" "$RUNFILE")
     if [[ -z $item ]]; then
         # A later plan may have made another run current; the item's own run still owns it.
@@ -315,8 +345,7 @@ cmd_main() {
     worktree=$(jq -r '.worktree // ""' <<<"$item")
     if ! result_line "$kind" "$n" "$worktree"; then
         cross_write
-        printf '%s\n' "${LINES[@]}"
-        return 0
+        return 1
     fi
     cross_write
     # A parked issue shipped nothing, so it releases nothing: its successors would start without its work and park too
@@ -346,6 +375,34 @@ cmd_main() {
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
         --arg s "$([[ $state =~ ^(red|blocked|pending|merge-up)$ ]] && echo spawned || echo "$state")"
     [[ $state != collected ]] || merge_up_children "$worktree"
-    [[ $kind != issue || $state != collected ]] || { spawn_successors; release_other_runs "$n" "$worktree"; }
+    COLLECT_STATE=$state COLLECT_WORKTREE=$worktree
+}
+
+# cmd_wave: the open wave must be in; then the next wave is released.
+cmd_wave() {
+    local open
+    open=$(wave_open)
+    [[ -z $open ]] || die "wave $(jq -r '.open_wave // 1' "$RUNFILE") is still open: $open" 'ak wait'
+    release_wave loud
+    printf '%s\n' "${LINES[@]}"
+}
+
+cmd_main() {
+    local kind='' n=''
+    case ${1:-} in
+        --issue | --pr) kind=${1#--}; n=${2:-} ;;
+        --wave) [[ $# -eq 1 ]] && kind=wave ;;
+    esac
+    [[ $kind == wave || ($kind =~ ^(issue|pr)$ && $n =~ ^[0-9]+$ && $# -eq 2) ]] || usage_die 'usage: ak collect (--issue N | --pr N | --wave)'
+    plan_context collect
+    run_lock collect
+    trap 'run_unlock' EXIT
+    [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
+    RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
+    [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
+    [[ $kind != wave ]] || { cmd_wave; return 0; }
+    if collect_one "$kind" "$n"; then
+        [[ $kind != issue || $COLLECT_STATE != collected ]] || release_other_runs "$n" "$COLLECT_WORKTREE"
+    fi
     printf '%s\n' "${LINES[@]}"
 }

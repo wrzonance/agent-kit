@@ -13,6 +13,14 @@ standard_board
 "$AK" plan --serialize >/dev/null 2>&1
 wt="$repo/.worktrees/feat/issue-671"
 runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+# wave_go: release the next wave of the current run. 693 shares wave 1 with 671 and never reports in these cases, so it
+# counts as collected here; collect --wave refuses while a wave-1 worker is out.
+wave_go() {
+    local run
+    run="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+    jq '(.items[] | select(.n == 693 and .state == "spawned")).state = "collected"' "$run" >"$run.tmp" && mv "$run.tmp" "$run"
+    "$AK" collect --wave 2>&1
+}
 
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'a missing result is not a failure'
@@ -59,12 +67,15 @@ assert_contains "$out" 'next=issue=671 has red CI on PR 77; hand it to a worker:
 printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-77.json"
 out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/77 ci=green' 'once that PR is green the issue collects'
-assert_contains "$out" 'spawn issue=680 ' 'and its successor is released'
+assert_not_contains "$out" 'spawn' 'collect releases nothing mid-wave'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the wave-2 item stays queued after the wave-1 item is collected'
+out=$(wave_go)
+assert_contains "$out" 'spawn issue=680 ' 'and the wave release spawns its successor'
 assert_not_contains "$out" 'parked in' 'no park line is printed for it'
 # Put the run back as the cases below expect it: 671 out, 680 queued behind it.
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 git -C "$repo" worktree remove --force "$repo/.worktrees/feat/issue-680" && git -C "$repo" branch -q -D feat/issue-680
-jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)) |= (.state = "queued" | .worktree = "")' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)) |= (.state = "queued" | .worktree = "") | .open_wave = 1' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 # A red predecessor holds its successor too, and stays collectable (a field successor was spawned on a red branch).
 printf 'pr=https://github.com/acme/widget/pull/9\nci=red\nreview=done\nhead=abc\nnote=lint\n' >"$wt/.ak/result"
 out=$("$AK" collect --issue 671 2>&1)
@@ -122,7 +133,8 @@ printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=ab
 # A failed open-PR lookup leaves the successor queued for the next collect instead of reading as an open PR.
 routes=$(cat "$FAKE_GH_ROUTES")
 printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-680*\t-\t1\n%s\n' "$routes" >"$FAKE_GH_ROUTES"
-out=$("$AK" collect --issue 671 2>&1)
+"$AK" collect --issue 671 >/dev/null 2>&1
+out=$(wave_go)
 assert_contains "$out" 'after issue=680 note=open-PR lookup failed; collect again' 'a failed PR lookup is reported'
 assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'a failed PR lookup leaves the successor queued'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
@@ -132,15 +144,16 @@ git -C "$repo" worktree add -q -b feat/issue-680 "$repo/.worktrees/feat/issue-68
 reads=$(grep -c 'api graphql' "$FAKE_GH_LOG")
 out=$("$AK" collect --issue 671 2>&1); rc=$?
 assert_eq 0 "$rc" 'collect exits 0'
+assert_eq 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=findings=2 fixed=2 declined=0' "$out" 'collect prints the result and releases nothing'
+out=$(wave_go)
 wt2="$repo/.worktrees/feat/issue-680"
-assert_eq "issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=findings=2 fixed=2 declined=0
-spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" "$out" 'collect prints the result and the unblocked successor'
+assert_eq "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" "$out" 'the wave release prints the unblocked successor'
 assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$wt2" rev-parse HEAD)" 'the successor starts from the predecessor branch'
 assert_contains "$(cat "$wt2/.ak/prompt.md")" 'base=feat/issue-671' 'the successor targets the predecessor branch'
 assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
 assert_eq 'collected spawned' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$runfile")" 'the run file records both states'
 assert_eq "$wt2" "$(jq -r '.items[] | select(.n == 680) | .worktree' "$runfile")" 'the run file records the successor worktree'
-assert_eq 1 "$(($(grep -c 'api graphql' "$FAKE_GH_LOG") - reads))" 'collect reads the board once for the successor it moves'
+assert_eq 1 "$(($(grep -c 'api graphql' "$FAKE_GH_LOG") - reads))" 'collect and the wave release read the board once for the successor they move'
 
 printf 'stray\n' >stray.txt
 out=$("$AK" collect --issue 693 2>&1)
@@ -172,13 +185,14 @@ printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 # needs were [blocker, colliding, colliding] was based on the branch below its blocker).
 git -C "$repo" push -q origin "origin/main:refs/heads/feat/issue-693" 2>/dev/null
 git -C "$wt" push -q origin "HEAD:refs/heads/feat/issue-671"
-jq --arg wt693 "$repo/.worktrees/feat/issue-693" '.items += [{kind:"issue",n:692,worktree:"",branch:"feat/issue-692",state:"queued",needs:[671,693]}] |
+jq --arg wt693 "$repo/.worktrees/feat/issue-693" '.open_wave = 1 | .items += [{kind:"issue",n:692,wave:2,worktree:"",branch:"feat/issue-692",state:"queued",needs:[671,693]}] |
     .items |= ([{kind:"pr",n:671,worktree:"",branch:"x",state:"collected",needs:[]}] + map(select(.n == 693)) + map(select(.n != 693)))' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 routes=$(cat "$FAKE_GH_ROUTES")
 printf 'api repos/acme/widget/pulls?state=open&head=acme:feat/issue-692*\t%s\t0\n%s\n' "$WORK/empty.json" "$routes" >"$FAKE_GH_ROUTES"
 printf '[]' >"$WORK/empty.json"
 printf 'pr=https://github.com/acme/widget/pull/12\nci=green\nreview=done\nhead=def\nnote=n\n' >"$repo/.worktrees/feat/issue-693/.ak/result"
-out=$("$AK" collect --issue 693 2>&1)
+"$AK" collect --issue 693 >/dev/null 2>&1
+out=$(wave_go)
 assert_contains "$out" 'spawn issue=692' 'the successor of two collected issues spawns'
 assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-692/.ak/base")" 'its base is the predecessor latest in run order (a PR item sharing the number does not count), not the last listed need'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
@@ -222,6 +236,7 @@ printf '{"number":10,"state":"open"}' >"$WORK/pr10.json"
 printf 'api repos/acme/widget/pulls/10\t%s\t0\n%s\n' "$WORK/pr10.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
 ship "$wt" src/a.txt 9 green
 "$AK" collect --issue 671 >/dev/null 2>&1
+wave_go >/dev/null
 ship "$wt2" lib/core.sh 10 green
 out=$("$AK" collect --issue 680 2>&1)
 assert_not_contains "$out" 'merge-up' 'a child that holds its parent head is left alone'
@@ -252,7 +267,7 @@ printf '693\n' >"$wt2/.ak/pr"
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'issue=1 ' 'a forged issue file adds no spawn line'
 assert_contains "$out" 'merge-up issue=680 ' 'the worktree is named by its run item, not by what it says it is'
-assert_eq 'spawned spawned' "$(jq -r '[.items[] | select(.n == 680 or .n == 693) | .state] | join(" ")' "$runfile")" 'and no other item changes state'
+assert_eq 'spawned collected' "$(jq -r '[.items[] | select(.n == 680 or .n == 693) | .state] | join(" ")' "$runfile")" 'and no other item changes state'
 printf '680\n' >"$wt2/.ak/issue"
 rm -f -- "$wt2/.ak/pr" "$wt2/.ak/resolve"
 ship "$wt2" lib/core.sh 10 green
@@ -325,7 +340,7 @@ out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'blocked' 'unknown mergeability is not a conflict'
 
 # A repository without CI never registers a run: after the grace period that is ci=none, not a hold.
-jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued" | .open_wave = 1' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 write_result pending
 printf '{"number":9,"head":{"sha":"%s"}}' "$sha" >"$WORK/pr9-same.json"
 printf '{"check_runs":[]}' >"$WORK/runs-none.json"
@@ -333,11 +348,12 @@ case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-none.json"
 out=$(AK_CI_GRACE=0 "$AK" collect --issue 671 2>&1)
 assert_contains "$out" 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=none' 'a repository without checks reads as ci=none'
 assert_not_contains "$out" 'waits-on-pending' 'ci=none holds no successor'
+out=$(wave_go)
 assert_contains "$out" 'spawn issue=680' 'ci=none releases the successor'
 assert_eq collected "$(jq -r '.items[] | select(.n == 671) | .state' "$runfile")" 'and the issue is collected'
 
 # The head is read again after the wait: a PR that advanced from A to B while A was polled is judged at B.
-jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued" | .open_wave = 1' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 write_result pending
 printf '{"check_runs":[{"name":"lint","status":"in_progress","conclusion":null}]}' >"$WORK/runs-a.json"
 printf '{"number":9,"head":{"sha":"newhead1"}}' >"$WORK/pr9-b.json"
@@ -353,7 +369,7 @@ assert_contains "$out" 'ci read live at newhead' 'a head that moved during the w
 assert_contains "$out" 'ci=red' 'the new head is judged by its own checks, not the old head'"'"'s'
 assert_not_contains "$out" 'spawn issue=680' 'the moved head is not collected on the old head'"'"'s runs'
 # A PR that goes conflicted during the wait is blocked, not accepted on the checks read before the conflict.
-jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued" | .open_wave = 1' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 write_result pending
 case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-a.json"
 printf 'api repos/acme/widget/pulls/9\t%s\t0\n%s\n' "$WORK/pr9-dirty.json" "$(cat "$FAKE_GH_ROUTES")" >"$WORK/routes-dirty"
@@ -366,7 +382,7 @@ assert_contains "$out" 'note=PR #9 conflicts with its base' 'and says why'
 assert_not_contains "$out" 'spawn issue=680' 'a conflict found after the wait holds the successor'
 
 # An empty reread after the wait is not a stable head: the item is held and read again.
-jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued"' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
+jq '(.items[] | select(.n == 671)).state = "spawned" | (.items[] | select(.n == 680)).state = "queued" | .open_wave = 1' "$runfile" >"$runfile.tmp" && mv "$runfile.tmp" "$runfile"
 write_result pending
 case_routes "$WORK/pr9-same.json" "$sha" "$WORK/runs-a.json"
 printf 'api repos/acme/widget/pulls/9\t-\t1\n%s\n' "$(cat "$FAKE_GH_ROUTES")" >"$WORK/routes-fail"
@@ -470,6 +486,54 @@ printf 'api repos/acme/widget/pulls/10\t%s\t0\napi repos/acme/widget/commits/%s/
 assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$run_b")" 'the new run records the collection'
 assert_eq 'parked queued' "$(jq -r '[.items[] | select(.n == 671 or .n == 680) | .state] | join(" ")' "$run_a")" 'the first run keeps its queued item queued'
 assert_eq queued "$(jq -r '.items[] | select(.n == 693) | .state' "$run_a")" 'and spawns no descendant from it'
+
+# The wave rule: the next wave starts only when the whole open wave is in.
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+standard_board
+"$AK" plan --serialize >/dev/null 2>&1
+run_w="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+wt="$repo/.worktrees/feat/issue-671" wt3="$repo/.worktrees/feat/issue-693"
+for pair in "$wt:9" "$wt3:12"; do
+    printf 'x%s\n' "${pair##*:}" >"${pair%%:*}/lib/core.sh"
+    git -C "${pair%%:*}" add -A && git -C "${pair%%:*}" commit -qm work && git -C "${pair%%:*}" push -q origin HEAD
+    h=$(git -C "${pair%%:*}" rev-parse HEAD)
+    printf '{"number":%s,"state":"open","head":{"sha":"%s"}}' "${pair##*:}" "$h" >"$WORK/pr-${pair##*:}.json"
+    printf 'api repos/acme/widget/pulls/%s\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+        "${pair##*:}" "$WORK/pr-${pair##*:}.json" "$h" "$WORK/runs-head.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+    printf 'pr=https://github.com/acme/widget/pull/%s\nci=green\nreview=done\nhead=%s\nnote=n\n' "${pair##*:}" "$h" >"${pair%%:*}/.ak/result"
+done
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-head.json"
+out=$("$AK" collect --issue 671 2>&1)
+assert_not_contains "$out" 'spawn' 'a collected wave-1 issue spawns nothing'
+assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$run_w")" 'and the wave-2 item stays queued'
+out=$("$AK" collect --wave 2>&1); rc=$?
+assert_eq 1 "$rc" 'collect --wave refuses while a wave-1 worker is out'
+assert_contains "$out" 'wave 1 is still open: 693' 'and names the open issues'
+assert_contains "$out" 'fix: ak wait' 'and the command that waits'
+"$AK" collect --issue 693 >/dev/null 2>&1
+out=$("$AK" collect --wave 2>&1); rc=$?
+assert_eq 0 "$rc" 'collect --wave succeeds with the whole wave in'
+assert_contains "$out" 'spawn issue=680 ' 'and spawns the wave-2 item'
+assert_eq feat/issue-671 "$(cat "$repo/.worktrees/feat/issue-680/.ak/base")" 'stacked on its predecessor branch'
+assert_eq 2 "$(jq -r .open_wave "$run_w")" 'and the run opens wave 2'
+
+# A failed item holds its dependents, transitively; the rest of the wave still starts.
+jq '.open_wave = 1 | (.items[] | select(.n == 671)).state = "parked" | (.items[] | select(.n == 693)).state = "collected" |
+    (.items[] | select(.n == 680)) |= (.state = "queued" | .worktree = "") |
+    .items += [{kind:"issue",n:692,wave:3,worktree:"",branch:"feat/issue-692",state:"queued",needs:[680]},
+               {kind:"issue",n:690,wave:2,worktree:"",branch:"feat/issue-690",state:"queued",needs:[693]}]' "$run_w" >"$run_w.tmp" && mv "$run_w.tmp" "$run_w"
+out=$("$AK" collect --wave 2>&1)
+assert_contains "$out" 'held issue=680 reason=waits-on-parked-#671' 'a dependent of a parked item is held'
+assert_contains "$out" 'held issue=692 reason=waits-on-held-#680' 'and so is its own dependent'
+assert_contains "$out" 'spawn issue=690 ' 'the other wave-2 item spawns'
+assert_not_contains "$out" 'spawn issue=680' 'the held item does not'
+assert_eq 'held held' "$(jq -r '[.items[] | select(.n == 680 or .n == 692) | .state] | join(" ")' "$run_w")" 'the run records both as held'
+jq '(.items[] | select(.n == 690)).state = "collected"' "$run_w" >"$run_w.tmp" && mv "$run_w.tmp" "$run_w"
+out=$("$AK" plan --issue 680 2>&1)
+assert_contains "$out" 'spawn issue=680 ' 'plan --issue plans a held item again'
 
 # A PR that no run holds is planned by ak pr-plan; the fix line used to plan an issue with the PR's number.
 out=$("$AK" collect --pr 842 2>&1); rc=$?
