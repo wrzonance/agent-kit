@@ -246,4 +246,26 @@ wait "$c1"; rc=$?
 assert_eq 0 "$rc" 'a newer result settles the round'
 assert_contains "$(cat "$WORK/c1.out")" 'issue=12 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=fixed' 'with the new collect line'
 assert_contains "$(tail -n 1 "$WORK/c1.out")" 'wave=1 settled=1/1 summary=' 'and the closing count'
+assert_eq no "$([[ -e $repo/.ak/round.issue-12 ]] && echo yes || echo no)" 'the round stamp is gone once the item settles'
+
+# --check in a correction round shares the stamp: the old result and end record never settle it.
+set_run 13
+rm -rf "$subdir"
+claude_agent a13 13 true
+green_result >"$WORK/wt/13/.ak/result"
+touch -d '1 minute ago' "$WORK/wt/13/.ak/result" "$subdir/agent-a13.jsonl" "$subdir/agent-a13.meta.json"
+jq '.items[0].state = "collected"' "$repo/.ak/runs/r1.json" >"$WORK/r.tmp" && mv "$WORK/r.tmp" "$repo/.ak/runs/r1.json"
+out=$("$AK" wait --check --issue 13 2>&1); rc=$?
+assert_eq 3 "$rc" '--check --issue N keeps running past an old result and end record'
+assert_eq $'issue=13 state=running\nwave=1 settled=0/1' "$out" 'and prints the item running'
+"$AK" wait --check --issue 13 >/dev/null 2>&1; rc=$?
+assert_eq 3 "$rc" 'a second --check reuses the stamp and still runs'
+assert_eq yes "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the round stamp persists between calls'
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=fixed\n' >"$WORK/wt/13/.ak/result"
+out=$("$AK" wait --check --issue 13 2>&1); rc=$?
+assert_eq 0 "$rc" 'a newer result settles --check'
+assert_eq $'issue=13 state=reported\nwave=1 settled=1/1' "$out" 'with the item reported'
+"$AK" wait --issue 13 >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" 'the blocking wait shares the stamp and settles on the same result'
+assert_eq no "$([[ -e $repo/.ak/round.issue-13 ]] && echo yes || echo no)" 'the stamp is gone after the settle, so the next round starts fresh'
 finish

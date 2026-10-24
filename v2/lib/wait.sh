@@ -8,7 +8,7 @@ source "$AK_HOME/lib/collect.sh"
 source "$AK_HOME/lib/transcript.sh"
 
 WAIT_NAMED=()   # "kind:N" per item named for a correction round
-CALL_REF=''     # correction round: a file touched at the call; only activity newer than it counts
+CALL_REF=''     # the item's correction-round stamp (set per item in item_state); only activity newer than it counts
 
 # proc_start PID: an id of the process's start time, so a reused pid does not look like the watcher.
 proc_start() {
@@ -74,6 +74,10 @@ spawn_since() {
     printf '%s\n' "$since"
 }
 
+# round_stamp KIND N: the file whose mtime is when this item's correction round was called. It persists across ak wait
+# calls (--check and the blocking wait share it) until the item settles.
+round_stamp() { printf '%s/.ak/round.%s-%s\n' "$MAIN" "$1" "$2"; }
+
 # fresh PATH: true when a correction round may count PATH: always outside one, else only when written after the call.
 fresh() { [[ -z $CALL_REF || $1 -nt $CALL_REF ]]; }
 
@@ -92,6 +96,8 @@ quiet_s() {
 # judged from activity after the call only.
 item_state() {
     local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript
+    CALL_REF=$(round_stamp "$kind" "$n")
+    [[ -e $CALL_REF ]] || CALL_REF=''
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
         if (($(quiet_s $(($(date +%s) - $(stat -c %Y -- "$RUNFILE")))) >= hang)); then
@@ -168,6 +174,7 @@ next_step() {
 settle_line() {
     local id=${1%% *} kind n state=${1#* state=}
     kind=${id%%=*} n=${id#*=}
+    rm -f -- "$(round_stamp "$kind" "$n")"
     if [[ ${state%% *} != reported ]]; then
         printf '%s next=%s\n' "$1" "$(next_step "$kind" "$n" "${state%% *}")"
         return 0
@@ -213,14 +220,22 @@ attach() {
     while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
 }
 
-# open_corrections: a correction round adds the named items to the open wave, so the hook marker and collect --wave see them.
+# open_corrections: a correction round adds each named item without an open round to the open wave (so the hook marker and
+# collect --wave see it) and stamps the call time. An item already out with a stamp is in a round: the stamp is reused.
 open_corrections() {
-    local named
-    ((${#WAIT_NAMED[@]})) || return 0
-    named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R . | jq -sc .)
+    local id kind n state fresh_ids=()
+    for id in "${WAIT_NAMED[@]}"; do
+        kind=${id%%:*} n=${id#*:}
+        state=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n and (.worktree // "") != "")][0].state // "none"' "$RUNFILE")
+        [[ $state != none ]] || continue
+        if [[ $state =~ ^(spawned|pending|merge-up)$ && -e $(round_stamp "$kind" "$n") ]]; then continue; fi
+        : >"$(round_stamp "$kind" "$n")"
+        fresh_ids+=("$id")
+    done
+    ((${#fresh_ids[@]})) || return 0
     run_lock wait
     run_update '(.open_wave // 1) as $w | (.items[] | select(((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and (.worktree // "") != "")) |=
-        (.wave = $w | .state = "spawned")' --argjson named "$named"
+        (.wave = $w | .state = "spawned")' --argjson named "$(printf '%s\n' "${fresh_ids[@]}" | jq -R . | jq -sc .)"
     run_unlock
 }
 
@@ -239,19 +254,16 @@ cmd_main() {
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
     if ((check)); then
+        open_corrections
         report "$(wave_state)" || exit 3
         return 0
     fi
     plan_context wait
-    if ((${#WAIT_NAMED[@]})); then
-        CALL_REF="$MAIN/.ak/wait.call.$$"
-        : >"$CALL_REF"
-        open_corrections
-    fi
+    open_corrections
     until marker_take; do
         if marker_live; then attach; else rm -f -- "$MARKER"; fi
     done
-    trap 'marker_drop; rm -f -- "$CALL_REF"' EXIT
+    trap marker_drop EXIT
     trap 'exit 143' TERM INT
     wait_loop
 }
