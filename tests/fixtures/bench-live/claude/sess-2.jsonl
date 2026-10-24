@@ -1,0 +1,12 @@
+{"type":"user","timestamp":"2026-10-23T10:00:00Z","message":{"role":"user","content":"Fix the stop hook. Background command <task-notification> Agent \"x\" is in my text."}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:02Z","message":{"id":"msg_a","usage":{"input_tokens":1,"cache_read_input_tokens":0,"output_tokens":1},"content":[{"type":"tool_use","id":"tu_a","name":"Read","input":{"file_path":"/home/u/.claude/plugins/cache/agent-kit/ak/SKILL.md"}}]}}
+{"type":"user","timestamp":"2026-10-23T10:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_a","content":"12345678"}]}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:04Z","message":{"id":"msg_b","usage":{"input_tokens":1,"cache_read_input_tokens":0,"output_tokens":1},"content":[{"type":"text","text":"read it"}]}}
+{"type":"user","timestamp":"2026-10-23T10:00:10Z","message":{"role":"user","content":"second prompt, queued with a notice"}}
+{"type":"user","timestamp":"2026-10-23T10:00:11Z","message":{"role":"user","content":"<task-notification>\n<summary>Agent \"w\" completed</summary>\n</task-notification>"}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:12Z","message":{"id":"msg_c","usage":{"input_tokens":1,"cache_read_input_tokens":0,"output_tokens":1},"content":[{"type":"tool_use","id":"tu_c","name":"Bash","input":{"command":"cat /repo/agentkit/skills/x/SKILL.md"}}]}}
+{"type":"user","timestamp":"2026-10-23T10:00:13Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_c","content":[{"type":"text","text":"abc"}]}]}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-10-23T10:00:14Z"}
+{"type":"user","timestamp":"2026-10-23T10:00:15Z","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a summary."}}
+{"type":"user","timestamp":"2026-10-23T10:00:16Z","isMeta":true,"message":{"role":"user","content":"Stop hook feedback: keep going"}}
+{"type":"assistant","timestamp":"2026-10-23T10:00:20Z","message":{"id":"msg_d","usage":{"input_tokens":1,"cache_read_input_tokens":0,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}

@@ -30,7 +30,9 @@ WAIT_TOOLS = {"wait_agent", "wait"}
 TRIGGERS = ("agent_done", "bash_done", "teammate", "human", "hook", "other")
 CLAUDE_SPAWN_TOOLS = {"Agent", "Task"}
 CLAUDE_WAIT_TOOLS = {"TaskOutput"}
-CLAUDE_HOOK = re.compile(r"stop hook|hook feedback|<user-prompt-submit-hook>", re.IGNORECASE)
+# The harness's hook-feedback injections open with a system-reminder or hook envelope.
+CLAUDE_HOOK = re.compile(
+    r"(<system-reminder>\s*)?(<user-prompt-submit-hook>|(Stop|SubagentStop|UserPromptSubmit|PostToolUse|PreToolUse) hook (feedback|blocking error|additional context))")
 
 
 def ts(value: str) -> float:
@@ -149,11 +151,15 @@ def add_wake(wakes: dict, trigger: str) -> None:
     wakes["by_trigger"][trigger] += 1
 
 
-def message_text(message: dict) -> str:
+def first_text(message: dict) -> str:
+    """The text a user line opens with: the string content, or the first text block."""
     content = message.get("content")
     if isinstance(content, str):
         return content
-    return "".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+    for block in content or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            return block.get("text", "")
+    return ""
 
 
 def is_tool_result(message: dict) -> bool:
@@ -161,15 +167,27 @@ def is_tool_result(message: dict) -> bool:
     return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
+def result_bytes(block: dict) -> int:
+    content = block.get("content")
+    if isinstance(content, list):
+        content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return len(str(content or "").encode("utf-8", errors="replace"))
+
+
 def classify_claude_wake(text: str) -> str:
-    """Trigger of a non-tool-result user line that wakes the model."""
-    if "<task-notification>" in text:
-        return "bash_done" if "Background command" in text else "agent_done"
-    if "<teammate-message" in text or "Another Claude session sent a message" in text:
+    """Trigger of a non-tool-result user line. Only the harness-injected openings count; the
+    same words inside an operator prompt stay human."""
+    head = text.lstrip()
+    if head.startswith("<task-notification>"):
+        summary = re.match(r"<task-notification>\s*(?:<[^>]+>[^<]*</[^>]+>\s*)*?<summary>\s*(Agent \"|Background command)", head)
+        if summary is None:
+            return "other"
+        return "agent_done" if summary.group(1).startswith("Agent") else "bash_done"
+    if head.startswith(("<teammate-message", "Another Claude session sent a message")):
         return "teammate"
-    if CLAUDE_HOOK.search(text):
+    if CLAUDE_HOOK.match(head):
         return "hook"
-    return "human" if text.strip() else "other"
+    return "human" if head else "other"
 
 
 def claude_usage(usages: dict) -> dict:
@@ -181,6 +199,68 @@ def claude_usage(usages: dict) -> dict:
             "cached_input_tokens": cached, "output_tokens": out}
 
 
+def is_kit_read(name: str, tool_input: dict) -> bool:
+    if name == "Read":
+        return bool(KIT_PATH.search(str(tool_input.get("file_path", ""))))
+    if name == "Bash":
+        command = str(tool_input.get("command", ""))
+        return bool(READ_CMD.search(command) and KIT_PATH.search(command))
+    return False
+
+
+class ClaudeTally:
+    """Mutable state for one pass over a Claude transcript."""
+
+    def __init__(self) -> None:
+        self.usages: dict = {}
+        self.seen_tools: set = set()
+        self.bash_ids: set = set()
+        self.kit_ids: set = set()
+        self.tool_turns: dict = {}
+        self.turn_start = None
+        self.last_stamp = None
+        self.active_s = 0.0
+        self.boundaries = 0
+        self.summaries = 0
+
+    def close_turn(self) -> None:
+        if self.turn_start and self.last_stamp:
+            self.active_s += ts(self.last_stamp) - ts(self.turn_start)
+        self.turn_start = None
+
+
+def tally_tool_use(out: dict, tally: ClaudeTally, block: dict, stamp) -> None:
+    """Count one tool_use block (deduplicated by its id across streamed lines)."""
+    if block.get("id") in tally.seen_tools:
+        return
+    tally.seen_tools.add(block.get("id"))
+    out["calls"] += 1
+    name, tool_input = block.get("name", ""), block.get("input") or {}
+    if is_kit_read(name, tool_input):
+        tally.kit_ids.add(block.get("id"))
+    if name == "Bash":
+        out["exec_calls"] += 1
+        tally.bash_ids.add(block.get("id"))
+        out["help_calls"] += "--help" in str(tool_input.get("command", ""))
+    elif name in CLAUDE_SPAWN_TOOLS:
+        out["spawns"] += 1
+        if out["first_spawn"] is None:
+            out["first_spawn"] = {"at": stamp, "calls_before": out["calls"] - 1,
+                                  "tokens_before": claude_usage(tally.usages)["total_tokens"]}
+    elif name in CLAUDE_WAIT_TOOLS:
+        out["waits"] += 1
+
+
+def tally_tool_results(out: dict, tally: ClaudeTally, message: dict) -> None:
+    for block in message["content"]:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        if block.get("is_error") and block.get("tool_use_id") in tally.bash_ids:
+            out["failed_exec"] += 1
+        if block.get("tool_use_id") in tally.kit_ids:
+            out["kit_read_bytes"] += result_bytes(block)
+
+
 def score_claude(path: Path) -> dict:
     """Counters for one Claude Code transcript, in the same shape as score_thread."""
     out = {
@@ -189,52 +269,42 @@ def score_claude(path: Path) -> dict:
         "first_spawn": None, "start": None, "end": None, "tokens": tokens(None), "active_s": 0.0,
         "wakes": empty_wakes(), "cache_read_tokens": 0,
     }
-    usages: dict = {}
-    seen_tools: set = set()
-    bash_ids: set = set()
-    pending_wake = False
+    tally = ClaudeTally()
     for record in records(path):
         stamp = record.get("timestamp")
         if stamp:
             out["start"] = out["start"] or stamp
             out["end"] = stamp
         message = record.get("message") or {}
-        if record.get("type") == "user":
-            if is_tool_result(message):
-                for block in message["content"]:
-                    if block.get("is_error") and block.get("tool_use_id") in bash_ids:
-                        out["failed_exec"] += 1
-                continue
-            text = message_text(message)
-            trigger = classify_claude_wake(text)
-            if trigger == "human":
-                out["user_messages"] += 1
-            pending_wake = trigger
-        elif record.get("type") == "assistant":
-            if pending_wake:
-                add_wake(out["wakes"], pending_wake)
-                pending_wake = False
+        kind = record.get("type")
+        if kind == "system" and record.get("subtype") == "compact_boundary":
+            tally.boundaries += 1
+        if kind not in ("user", "assistant"):
+            continue
+        if kind == "user" and is_tool_result(message):
+            tally_tool_results(out, tally, message)
+        elif kind == "user" and record.get("isCompactSummary"):
+            tally.summaries += 1
+        elif kind == "user":
+            trigger = classify_claude_wake(first_text(message))
+            add_wake(out["wakes"], trigger)
+            out["user_messages"] += trigger == "human"
+            tally.close_turn()
+            tally.turn_start = stamp
+        else:
             if message.get("id"):
-                usages[message["id"]] = message.get("usage") or {}
+                tally.usages[message["id"]] = message.get("usage") or {}
+                tally.tool_turns.setdefault(message["id"], False)
             for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("id") in seen_tools:
-                    continue
-                seen_tools.add(block.get("id"))
-                out["calls"] += 1
-                name = block.get("name", "")
-                if name == "Bash":
-                    out["exec_calls"] += 1
-                    bash_ids.add(block.get("id"))
-                    command = str((block.get("input") or {}).get("command", ""))
-                    out["help_calls"] += "--help" in command
-                elif name in CLAUDE_SPAWN_TOOLS:
-                    out["spawns"] += 1
-                    if out["first_spawn"] is None:
-                        out["first_spawn"] = {"at": stamp, "calls_before": out["calls"] - 1,
-                                              "tokens_before": claude_usage(usages)["total_tokens"]}
-                elif name in CLAUDE_WAIT_TOOLS:
-                    out["waits"] += 1
-    out["tokens"] = claude_usage(usages)
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tally.tool_turns[message.get("id")] = True
+                    tally_tool_use(out, tally, block, stamp)
+        tally.last_stamp = stamp or tally.last_stamp
+    tally.close_turn()
+    out["active_s"] = round(tally.active_s, 1)
+    out["turn_ends"] = sum(1 for used_tool in tally.tool_turns.values() if not used_tool)
+    out["compactions"] = tally.boundaries or tally.summaries
+    out["tokens"] = claude_usage(tally.usages)
     out["cache_read_tokens"] = out["tokens"]["cached_input_tokens"]
     return out
 

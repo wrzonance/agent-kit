@@ -34,6 +34,17 @@ assert_eq 555 "$(field .workers.tokens "$claude")" 'claude: worker tokens'
 forced=$(python3 "$score" "$fixtures/claude/sess-1.jsonl" --harness claude 2>&1)
 assert_eq "$(field .root.wakes "$claude")" "$(field .root.wakes "$forced")" 'claude: --harness claude matches detection'
 
+shapes=$(python3 "$score" "$fixtures/claude/sess-2.jsonl" 2>&1)
+assert_eq 4 "$(field .root.wakes.total "$shapes")" 'claude: every non-tool-result user line is its own wake'
+assert_eq 2 "$(field .root.wakes.by_trigger.human "$shapes")" 'claude: human prompt mentioning stop hook / Background command stays human, back-to-back kept'
+assert_eq "$(field .root.prompts "$shapes")" "$(field .root.wakes.by_trigger.human "$shapes")" 'claude: human wakes equal prompts'
+assert_eq 1 "$(field .root.wakes.by_trigger.agent_done "$shapes")" 'claude: queued agent notice after a prompt is still counted'
+assert_eq 1 "$(field .root.wakes.by_trigger.hook "$shapes")" 'claude: hook feedback injection is a hook wake'
+assert_eq 11 "$(field .root.kit_read_bytes "$shapes")" 'claude: kit_read_bytes from Read and cat tool_results'
+assert_eq 1 "$(field .root.compactions "$shapes")" 'claude: compact_boundary counted once with its summary'
+assert_eq 2 "$(field .root.turn_ends "$shapes")" 'claude: turn_ends = assistant turns without tool_use'
+assert_eq 12.0 "$(field .root.active_s "$shapes")" 'claude: active_s sums wake-to-last-activity spans'
+
 codex=$(python3 "$score" "$fixtures/codex/2026/10/23/rollout-root.jsonl" --sessions "$fixtures/codex" 2>&1)
 assert_eq 4 "$(field .root.wakes.total "$codex")" 'codex: wakes = wait_agent returns + user turns'
 assert_eq 2 "$(field .root.wakes.by_trigger.agent_done "$codex")" 'codex: wait_agent returns are agent_done'
