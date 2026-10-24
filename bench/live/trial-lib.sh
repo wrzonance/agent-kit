@@ -84,8 +84,7 @@ default_subagent_reasoning_effort = "$worker_effort"
 
 [features]
 hooks = true
-js_repl = false
-multi_agent = false
+multi_agent = true
 TOML
 }
 

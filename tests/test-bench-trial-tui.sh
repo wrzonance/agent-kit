@@ -77,6 +77,8 @@ done
 run_arm codex
 assert_contains "$(cat "$tmp/work/t-codex/repo/.agent/config.env")" 'AGENT_WORKER_MODELS=gpt-6-luna' 'codex: kit workers use gpt-6-luna'
 assert_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'default_subagent_model = "gpt-6-luna"' 'codex: Codex sub-agents use gpt-6-luna'
+assert_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'multi_agent = true' 'codex: spawn_agent is enabled, the wave needs workers'
+assert_not_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'multi_agent = false' 'codex: multi-agent is never switched off'
 assert_contains "$(cat "$tmp/work/t-codex/codex-home/config.toml")" 'trust_level = "trusted"' 'codex: the clone dir is pre-trusted in the private home'
 assert_not_contains "$(cat "$tmp/work/t-codex/repo/.agent/config.env")" 'gpt-5.6' 'codex: no retired model id'
 run_arm claude
