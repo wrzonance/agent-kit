@@ -231,7 +231,28 @@ mkdir "$portable_bin"
 for tool in bash dirname jq git grep tail; do
     ln -s "$(command -v "$tool")" "$portable_bin/$tool"
 done
-ln -s "$(command -v shasum)" "$portable_bin/shasum"
+if real_shasum=$(command -v shasum 2>/dev/null); then
+    ln -s "$real_shasum" "$portable_bin/shasum"
+else
+    # No Perl shasum on this host: shim `shasum -a 256 [--] FILE` over an absolute-path SHA-256
+    # tool, printing "<hex>  <path>" like the real one. sha256sum stays off the helper's PATH.
+    sha_tool=$(command -v sha256sum 2>/dev/null || command -v openssl)
+    {
+        printf '#!%s\n' "$(command -v bash)"
+        printf 'tool=%q\n' "$sha_tool"
+        cat <<'SHIM'
+set -euo pipefail
+[[ "${1:-}" == -a && "${2:-}" == 256 ]] || exit 2
+shift 2
+[[ "${1:-}" != -- ]] || shift
+case $tool in
+    */openssl) h=$("$tool" dgst -sha256 -r -- "$1"); printf '%s  %s\n' "${h%% *}" "$1" ;;
+    *) exec "$tool" -- "$1" ;;
+esac
+SHIM
+    } >"$portable_bin/shasum"
+    chmod +x "$portable_bin/shasum"
+fi
 portable_fixture_digest=$(PATH="$portable_bin" fixture_digest "$tmp/verification.log")
 assert_eq "$log_hash" "${portable_fixture_digest%% *}" \
     'test fixture hashing supports shasum without GNU sha256sum'
