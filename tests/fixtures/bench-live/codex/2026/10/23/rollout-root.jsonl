@@ -1,0 +1,9 @@
+{"timestamp":"2026-10-23T10:00:00Z","type":"session_meta","payload":{"id":"root-1","session_id":"root-1","cli_version":"0.9.9"}}
+{"timestamp":"2026-10-23T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Run the issues."}]}}
+{"timestamp":"2026-10-23T10:00:02Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"c1","arguments":"{}"}}
+{"timestamp":"2026-10-23T10:00:03Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","call_id":"c2","arguments":"{}"}}
+{"timestamp":"2026-10-23T10:05:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"done"}}
+{"timestamp":"2026-10-23T10:05:01Z","type":"response_item","payload":{"type":"function_call","name":"wait_agent","call_id":"c3","arguments":"{}"}}
+{"timestamp":"2026-10-23T10:06:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c3","output":"done"}}
+{"timestamp":"2026-10-23T10:06:30Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"also fix the docs"}]}}
+{"timestamp":"2026-10-23T10:07:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1500,"input_tokens":1200,"cached_input_tokens":900,"output_tokens":300}}}}
