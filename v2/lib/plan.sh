@@ -432,7 +432,7 @@ issue_active() {
         IFS='|' read -r state wt needs <<<"$item"
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
+            spawned | red | blocked) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
             parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
@@ -470,7 +470,7 @@ run_live() {
     local wt state
     while IFS=$'\t' read -r state wt; do
         if [[ $state == parked ]]; then resumed_park "$wt" && return 0; else worker_out "$wt" "$1" && return 0; fi
-    done < <(jq -r '.items[] | select(.state == "spawned" or .state == "parked") | [.state, .worktree // ""] | @tsv' "$1")
+    done < <(jq -r '.items[] | select(.state | IN("spawned", "red", "blocked", "parked")) | [.state, .worktree // ""] | @tsv' "$1")
     return 1
 }
 

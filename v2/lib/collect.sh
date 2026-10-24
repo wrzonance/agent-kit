@@ -269,8 +269,8 @@ merge_up_children() {
     done < <(git -C "$MAIN" worktree list --porcelain | sed -n 's/^worktree //p')
 }
 
-# release_other_runs N WORKTREE: every run of the last day that holds N as parked or spawned (a prior attempt that
-# owned the issue) with a successor queued behind it records N as collected and, once its open wave is in, releases
+# release_other_runs N WORKTREE: every run of the last day that holds N as parked, red or spawned (a prior attempt that
+# owned the issue) with a successor queued or held behind it records N as collected and, once its open wave is in, releases
 # the next wave there. After a park,
 # `ak plan --issue N` makes a new run holding only N; a field operator re-planned the whole list by hand to keep the
 # earlier run's chain alive. A queued N is left alone: it waited on a predecessor that never finished there, so the
@@ -279,8 +279,8 @@ release_other_runs() {
     local n=$1 wt=$2 file own=$RUNFILE
     while IFS= read -r file; do
         [[ $file != "$own" ]] || continue
-        jq -e --argjson n "$n" '(.items | any(.kind == "issue" and .n == $n and (.state | IN("parked", "spawned"))))
-            and (.items | any(.kind == "issue" and .state == "queued" and (.needs | index($n))))' "$file" >/dev/null 2>&1 || continue
+        jq -e --argjson n "$n" '(.items | any(.kind == "issue" and .n == $n and (.state | IN("parked", "spawned", "red", "blocked"))))
+            and (.items | any(.kind == "issue" and (.state | IN("queued", "held")) and (.needs | index($n))))' "$file" >/dev/null 2>&1 || continue
         RUNFILE=$file
         run_update '(.items[] | select(.kind == "issue" and .n == $n)) |= (.state = "collected" | .worktree = $wt)' \
             --argjson n "$n" --arg wt "$wt" \
@@ -310,14 +310,30 @@ wave_hold() {
     done
 }
 
+# wave_unhold: held issues whose needs no longer include a failed or held item go back to queued, transitively: a
+# parked issue that was planned again and collected frees what was held behind it.
+wave_unhold() {
+    local rows n
+    while :; do
+        rows=$(jq -r '[.items[] | select(.kind == "issue")] as $is | $is[] | select(.state == "held") | .n as $n |
+            select(all(.needs[]; . as $m | $is | all(.n != $m or (.state | IN("parked", "red", "blocked", "dropped", "held") | not)))) |
+            $n' "$RUNFILE")
+        [[ -n $rows ]] || return 0
+        while IFS= read -r n; do
+            run_update '(.items[] | select(.kind == "issue" and .n == $n)).state = "queued"' --argjson n "$n"
+        done <<<"$rows"
+    done
+}
+
 # release_wave [LOUD]: the open wave is in. Hold what waits on a failed item, spawn the next wave, and open it. With
 # LOUD, "wave=done" says no later wave remains. A successor that could not start (a failed lookup) stays queued and is
-# retried by the next release, so it is never stranded behind the open wave.
+# retried by the next release, so it is never stranded behind the open wave; wave=done means no issue is left queued.
 release_wave() {
     local w
     w=$(jq -r '.open_wave // 1' "$RUNFILE")
+    wave_unhold
     wave_hold
-    if [[ -z $(jq -r --argjson w "$w" '.items[] | select(.kind == "issue" and .state == "queued" and (.wave // 1) >= $w) | .n' "$RUNFILE") ]]; then
+    if [[ -z $(jq -r '.items[] | select(.kind == "issue" and .state == "queued") | .n' "$RUNFILE") ]]; then
         [[ -z ${1:-} ]] || emit "wave=done"
         return 0
     fi
@@ -327,8 +343,9 @@ release_wave() {
         --argjson w "$((w + 1))"
 }
 
-# collect_one KIND N: read the worker's result and record the item's state, releasing nothing. Sets LINES and RESULT_*;
-# returns 1 when the worker left no result yet. COLLECT_STATE is the state the result decided.
+# collect_one KIND N: read the worker's result and record the item's state, releasing nothing. Sets LINES and RESULT_*.
+# COLLECT_STATE is the state the result decided, or no-result while the worker has not reported. Callers call it plainly:
+# an if condition would switch errexit off for the whole body and hide a failed run file write.
 collect_one() {
     local kind=$1 n=$2 item worktree state=collected m
     item=$(collect_item "$kind" "$n" "$RUNFILE")
@@ -345,7 +362,8 @@ collect_one() {
     worktree=$(jq -r '.worktree // ""' <<<"$item")
     if ! result_line "$kind" "$n" "$worktree"; then
         cross_write
-        return 1
+        COLLECT_STATE=no-result
+        return 0
     fi
     cross_write
     # A parked issue shipped nothing, so it releases nothing: its successors would start without its work and park too
@@ -373,7 +391,7 @@ collect_one() {
     # A collected park notes where its worker stopped (park_mark); ak ship later tells the operator's commits from it.
     [[ $state != parked ]] || park_mark "$worktree" || true
     run_update '(.items[] | select(.kind == $k and .n == $n)).state = $s' --arg k "$kind" --argjson n "$n" \
-        --arg s "$([[ $state =~ ^(red|blocked|pending|merge-up)$ ]] && echo spawned || echo "$state")"
+        --arg s "$([[ $state =~ ^(pending|merge-up)$ ]] && echo spawned || echo "$state")"
     [[ $state != collected ]] || merge_up_children "$worktree"
     COLLECT_STATE=$state COLLECT_WORKTREE=$worktree
 }
@@ -401,8 +419,7 @@ cmd_main() {
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
     [[ $kind != wave ]] || { cmd_wave; return 0; }
-    if collect_one "$kind" "$n"; then
-        [[ $kind != issue || $COLLECT_STATE != collected ]] || release_other_runs "$n" "$COLLECT_WORKTREE"
-    fi
+    collect_one "$kind" "$n"
+    [[ $kind != issue || $COLLECT_STATE != collected ]] || release_other_runs "$n" "$COLLECT_WORKTREE"
     printf '%s\n' "${LINES[@]}"
 }
