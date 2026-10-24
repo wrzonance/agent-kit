@@ -18,6 +18,7 @@ set_run() {
     local items='' n
     for n in "$@"; do
         mkdir -p "$WORK/wt/$n/.ak"
+        rm -f "$WORK/wt/$n/.ak/result"
         items+="${items:+,}{\"kind\":\"issue\",\"n\":$n,\"worktree\":\"$WORK/wt/$n\",\"spawned_at\":${SPAWNED_AT:-0},\"wave\":1,\"state\":\"spawned\",\"needs\":[]}"
     done
     printf '{"run":"r1","open_wave":1,"items":[%s]}\n' "$items" >"$repo/.ak/runs/r1.json"
@@ -30,28 +31,34 @@ claude_agent() {
     printf '{"finished":%s}\n' "$3" >"$subdir/agent-$1.meta.json"
 }
 
+# green_result: a worker's receipt for a green PR.
+green_result() { printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=n\n'; }
+reported5='issue=5 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=n'
+sum1="$repo/.ak/runs/r1.wave1.summary"
+
 set_run 5
-printf 'pr=none\n' >"$WORK/wt/5/.ak/result"
+green_result >"$WORK/wt/5/.ak/result"
 out=$("$AK" wait 2>&1); rc=$?
 assert_eq 0 "$rc" 'a result already there settles at once'
-assert_eq $'issue=5 state=reported\nwave=1 settled=1/1' "$out" 'reported is printed with the closing count'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$out" 'a reported worker prints its collect line and the closing count'
+assert_eq "$out" "$(cat "$sum1")" 'the summary file holds exactly what was printed'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is gone after ak wait exits'
 
 set_run 5
 rm -f "$WORK/wt/5/.ak/result"
 claude_agent a5 5 true
 out=$("$AK" wait 2>&1)
-assert_contains "$out" 'issue=5 state=ended-without-result' 'a finished transcript and no result ends without waiting for the threshold'
+assert_contains "$out" 'issue=5 state=ended-without-result next=ak plan --issue 5' 'a finished transcript and no result ends without waiting for the threshold, naming the recovery'
 
 claude_agent a5 5 false
 touch -d '10 seconds ago' "$subdir/agent-a5.jsonl"
 out=$("$AK" wait 2>&1)
-assert_contains "$out" 'issue=5 state=hung' 'a transcript quiet past the threshold is hung'
+assert_contains "$out" 'issue=5 state=hung next=stop its worker (Claude TaskStop, Codex interrupt_agent), then ak plan --issue 5' 'a hung worker is stopped, then planned again'
 
 rm -rf "$subdir"
 touch -d '10 seconds ago' "$WORK/wt/5/.ak"/* "$WORK/wt/5/.ak" 2>/dev/null
 out=$("$AK" wait 2>&1)
-assert_contains "$out" 'issue=5 state=unwatched note=no transcript matched; fell back to worktree activity' 'no transcript and an idle worktree is unwatched, naming the fallback'
+assert_contains "$out" 'issue=5 state=unwatched note=no transcript matched; fell back to worktree activity next=ak plan --issue 5' 'no transcript and an idle worktree is unwatched, naming the fallback'
 
 # --check: 3 while running, 0 once a result appears.
 set_run 5
@@ -59,7 +66,7 @@ claude_agent a5 5 false
 out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 3 "$rc" '--check exits 3 while a worker runs'
 assert_eq $'issue=5 state=running\nwave=1 settled=0/1' "$out" '--check prints the running state'
-printf 'pr=none\n' >"$WORK/wt/5/.ak/result"
+green_result >"$WORK/wt/5/.ak/result"
 "$AK" wait --check >/dev/null 2>&1; rc=$?
 assert_eq 0 "$rc" '--check exits 0 once the result is there'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" '--check leaves no marker'
@@ -106,17 +113,17 @@ assert_not_contains "$(cat "$marker")" 'cwd=' 'a known session leaves out the cw
 w2=$!
 sleep 2
 assert_eq "$w1" "$(sed -n 's/^pid=//p' "$marker")" 'a second ak wait does not replace the marker'
-printf 'pr=none\n' >"$WORK/wt/5/.ak/result"
+green_result >"$WORK/wt/5/.ak/result"
 wait "$w1"
 wait "$w2"
-assert_eq $'issue=5 state=reported\nwave=1 settled=1/1' "$(cat "$WORK/w1.out")" 'the watcher prints the summary'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$(cat "$WORK/w1.out")" 'the watcher prints the summary'
 assert_eq "$(cat "$WORK/w1.out")" "$(cat "$WORK/w2.out")" 'the attached ak wait prints the same summary'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is cleared when the watcher exits'
 
 export AK_WAIT_HANG_S=3
 # Without a session id the marker records the cwd.
 unset CLAUDE_CODE_SESSION_ID
-rm -f "$WORK/wt/5/.ak/result"
+set_run 5
 touch "$subdir/agent-a5.jsonl"
 "$AK" wait >/dev/null 2>&1 &
 w1=$!
@@ -183,10 +190,10 @@ assert_eq "$w2" "$(sed -n 's/^pid=//p' "$marker")" 'the attached ak wait takes t
 assert_eq 1 "$(grep -c '^pid=' "$marker")" 'and keeps exactly one marker'
 kill -0 "$w2" 2>/dev/null && alive=yes || alive=no
 assert_eq yes "$alive" 'it keeps waiting while the worker runs'
-printf 'pr=none\n' >"$WORK/wt/5/.ak/result"
+green_result >"$WORK/wt/5/.ak/result"
 wait "$w2"; rc=$?
 assert_eq 0 "$rc" 'and exits 0 once settled'
-assert_eq $'issue=5 state=reported\nwave=1 settled=1/1' "$(cat "$WORK/w2.out")" 'with the summary'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$(cat "$WORK/w2.out")" 'with the summary'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'and clears the marker'
 export AK_WAIT_HANG_S=3
 
@@ -195,4 +202,48 @@ printf 'not json' >"$repo/.ak/runs/r1.json"
 "$AK" wait >/dev/null 2>&1; rc=$?
 assert_eq 1 "$rc" 'an unreadable run exits 1'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'and writes no marker'
+
+# The wait covers CI: a reported item whose checks are pending then green settles green with no root call, and the
+# summary mixes collected and unrecovered workers.
+printf '{"number":9,"head":{"sha":"abc"}}' >"$WORK/pr9.json"
+printf '{"check_runs":[{"name":"lint","status":"in_progress","conclusion":null}]}' >"$WORK/runs-pending.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-green.json"
+ci_routes() {
+    printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/abc/check-runs*\t%s\t0\n' "$WORK/pr9.json" "$1" >"$FAKE_GH_ROUTES"
+}
+set_run 5 6
+rm -rf "$subdir"
+claude_agent a6 6 false
+printf 'pr=https://github.com/acme/widget/pull/9\nci=pending\nreview=done\nhead=abc\nnote=n\n' >"$WORK/wt/5/.ak/result"
+ci_routes "$WORK/runs-pending.json"
+(sleep 3; ci_routes "$WORK/runs-green.json"; printf 'x\n' >/dev/null) &
+swap=$!
+touch -d '10 seconds ago' "$subdir/agent-a6.jsonl"
+out=$(AK_WAIT_HANG_S=5 "$AK" wait 2>&1)
+wait "$swap"
+assert_contains "$out" 'issue=5 pr=https://github.com/acme/widget/pull/9 ci=green' 'the wait covered the pending CI and reports it green'
+assert_contains "$out" 'issue=6 state=hung next=stop its worker' 'the same summary names the hung worker'
+assert_eq "wave=1 settled=2/2 summary=$sum1" "$(tail -n 1 "$sum1")" 'the summary file ends with the closing count'
+assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is gone once the summary is written'
+
+# Correction round: --issue 12 keeps waiting past an old result until a newer one is written.
+set_run 12
+rm -rf "$subdir"
+claude_agent a12 12 true
+green_result >"$WORK/wt/12/.ak/result"
+touch -d '1 minute ago' "$WORK/wt/12/.ak/result" "$subdir/agent-a12.jsonl" "$subdir/agent-a12.meta.json"
+jq '.items[0].state = "collected"' "$repo/.ak/runs/r1.json" >"$WORK/r.tmp" && mv "$WORK/r.tmp" "$repo/.ak/runs/r1.json"
+ci_routes "$WORK/runs-green.json"
+export AK_WAIT_HANG_S=60
+"$AK" wait --issue 12 >"$WORK/c1.out" 2>&1 &
+c1=$!
+sleep 3
+kill -0 "$c1" 2>/dev/null && alive=yes || alive=no
+assert_eq yes "$alive" 'an old result and an old end record do not settle a correction round'
+assert_eq spawned "$(jq -r '.items[0].state' "$repo/.ak/runs/r1.json")" 'the correction item is back in the open wave'
+printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=abc\nnote=fixed\n' >"$WORK/wt/12/.ak/result"
+wait "$c1"; rc=$?
+assert_eq 0 "$rc" 'a newer result settles the round'
+assert_contains "$(cat "$WORK/c1.out")" 'issue=12 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=fixed' 'with the new collect line'
+assert_contains "$(tail -n 1 "$WORK/c1.out")" 'wave=1 settled=1/1 summary=' 'and the closing count'
 finish

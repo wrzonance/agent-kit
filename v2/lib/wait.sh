@@ -1,11 +1,14 @@
-# shellcheck shell=bash
-# ak wait [--issue N]... [--check]: block until every worker of the open wave has reported, ended or gone quiet, so the
+# shellcheck shell=bash disable=SC2016
+# ak wait [--issue N | --pr N]... [--check]: block until every worker of the open wave has reported, ended or gone quiet, so the
 # root wakes once per wave. Reads result files and transcripts; changes no run state. While it runs it owns the marker
 # $MAIN/.ak/wave.open, which a second ak wait reads to attach instead of starting a second watcher.
+# shellcheck source=collect.sh
+source "$AK_HOME/lib/collect.sh"
 # shellcheck source=transcript.sh
 source "$AK_HOME/lib/transcript.sh"
 
-WAIT_ISSUES=()
+WAIT_NAMED=()   # "kind:N" per item named for a correction round
+CALL_REF=''     # correction round: a file touched at the call; only activity newer than it counts
 
 # proc_start PID: an id of the process's start time, so a reused pid does not look like the watcher.
 proc_start() {
@@ -71,28 +74,44 @@ spawn_since() {
     printf '%s\n' "$since"
 }
 
+# fresh PATH: true when a correction round may count PATH: always outside one, else only when written after the call.
+fresh() { [[ -z $CALL_REF || $1 -nt $CALL_REF ]]; }
+
+# quiet_s SECONDS: how long a worker has been quiet; a correction round counts from its call at the earliest.
+quiet_s() {
+    local call
+    if [[ -n $CALL_REF ]]; then
+        call=$(($(date +%s) - $(stat -c %Y -- "$CALL_REF")))
+        (($1 <= call)) || { printf '%d\n' "$call"; return 0; }
+    fi
+    printf '%d\n' "$1"
+}
+
 # item_state KIND N WORKTREE SPAWNED_AT: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
+# A correction round resumes the same worker: its result counts when newer than the call, and an end record or hang is
+# judged from activity after the call only.
 item_state() {
     local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
-        if (($(date +%s) - $(stat -c %Y -- "$RUNFILE") >= hang)); then
+        if (($(quiet_s $(($(date +%s) - $(stat -c %Y -- "$RUNFILE")))) >= hang)); then
             echo 'unwatched note=no worktree recorded for this item'
         else
             echo running
         fi
         return 0
     fi
-    if [[ -f $wt/.ak/result ]]; then echo reported; return 0; fi
+    if [[ -f $wt/.ak/result ]] && fresh "$wt/.ak/result"; then echo reported; return 0; fi
     transcript=$(transcript_find "$wt" "$kind-$n" "$(spawn_since "$wt" "${4:-0}")")
     if [[ -n $transcript ]]; then
         case $(transcript_state "$transcript") in
-            ended | errored) echo ended-without-result; return 0 ;;
+            ended | errored)
+                if fresh "$transcript" || fresh "${transcript%.jsonl}.meta.json"; then echo ended-without-result; return 0; fi ;;
         esac
-        if (($(transcript_age "$transcript") >= hang)); then echo hung; else echo running; fi
+        if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; else echo running; fi
         return 0
     fi
-    if (($(worktree_idle_s "$wt") >= hang)); then
+    if (($(quiet_s "$(worktree_idle_s "$wt")") >= hang)); then
         echo 'unwatched note=no transcript matched; fell back to worktree activity'
     else
         echo running
@@ -102,10 +121,10 @@ item_state() {
 # watched: "KIND N WORKTREE" per item to watch: the named ones, else the open wave's items still out.
 watched() {
     local named
-    named=$(printf '%s\n' "${WAIT_ISSUES[@]}" | jq -R 'select(. != "") | tonumber' | jq -sc .)
+    named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R 'select(. != "")' | jq -sc .)
     jq -r --argjson named "$named" '(.open_wave // 1) as $w | .items[] |
         select((.state | IN("spawned", "pending", "merge-up")) as $out |
-               if ($named | length) > 0 then (.n as $n | $named | index($n)) != null and ($out or (.worktree // "") != "")
+               if ($named | length) > 0 then ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and ($out or (.worktree // "") != "")
                else (.wave // 1) == $w and $out end) |
         [.kind, .n, .worktree // "", .spawned_at // 0] | map(tostring) | join("\u001f")' "$RUNFILE"
 }
@@ -131,15 +150,62 @@ report() {
     ((settled == total))
 }
 
-# wait_loop: poll until nothing is running; print once, settled.
+# wave_number: the open wave.
+wave_number() { jq -r '.open_wave // 1' "$RUNFILE"; }
+
+# next_step KIND N STATE: the command that recovers a worker that did not report.
+next_step() {
+    local plan="ak plan --issue $2" stop=''
+    [[ $1 == issue ]] || plan="ak pr-plan --pr $2"
+    if [[ $3 == hung ]]; then
+        stop='stop its worker (Claude TaskStop, Codex interrupt_agent), then '
+    fi
+    printf '%s%s\n' "$stop" "$plan"
+}
+
+# settle_line LINE: the summary lines of one watched item. A reported worker is collected here, inside the wait, so the
+# CI wait happens in the silence and the root's one wake already carries the final state.
+settle_line() {
+    local id=${1%% *} kind n state=${1#* state=}
+    kind=${id%%=*} n=${id#*=}
+    if [[ ${state%% *} != reported ]]; then
+        printf '%s next=%s\n' "$1" "$(next_step "$kind" "$n" "${state%% *}")"
+        return 0
+    fi
+    LINES=()
+    run_lock wait
+    collect_one "$kind" "$n"
+    run_unlock
+    if ((${#LINES[@]})); then printf '%s\n' "${LINES[@]}"; else printf '%s\n' "$1"; fi
+}
+
+# settle STATES: print the summary of a settled wave and write it beside the run file. The marker goes only afterwards.
+settle() {
+    local line out='' total=0 w file
+    w=$(wave_number)
+    file="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").wave$w.summary"
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        total=$((total + 1))
+        out+=$(settle_line "$line")$'\n'
+    done <<<"$1"
+    out+="wave=$w settled=$total/$total summary=$file"
+    printf '%s\n' "$out" >"$file"
+    printf '%s\n' "$out"
+}
+
+# wait_loop: poll until nothing is running; settle once. With nothing out and a summary already written for the wave
+# (another watcher settled it while this one attached), print that summary instead.
 wait_loop() {
-    local states
+    local states file
     while :; do
         states=$(wave_state)
         ! grep -q 'state=running' <<<"$states" && break
         sleep "${AK_WAIT_POLL_S:-15}"
     done
-    report "$states" || true
+    file="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").wave$(wave_number).summary"
+    if [[ -z $states && ${#WAIT_NAMED[@]} -eq 0 && -f $file ]]; then cat -- "$file"; return 0; fi
+    settle "$states"
 }
 
 # attach: a watcher is live; wait for its marker to clear. The caller then takes over if workers are still out.
@@ -147,13 +213,24 @@ attach() {
     while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
 }
 
+# open_corrections: a correction round adds the named items to the open wave, so the hook marker and collect --wave see them.
+open_corrections() {
+    local named
+    ((${#WAIT_NAMED[@]})) || return 0
+    named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R . | jq -sc .)
+    run_lock wait
+    run_update '(.open_wave // 1) as $w | (.items[] | select(((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and (.worktree // "") != "")) |=
+        (.wave = $w | .state = "spawned")' --argjson named "$named"
+    run_unlock
+}
+
 cmd_main() {
-    local check=0
+    local check=0 usage='usage: ak wait [--issue N | --pr N]... [--check]'
     while (($#)); do
         case $1 in
             --check) check=1; shift ;;
-            --issue) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die 'usage: ak wait [--issue N]... [--check]'; WAIT_ISSUES+=("$2"); shift 2 ;;
-            *) usage_die 'usage: ak wait [--issue N]... [--check]' ;;
+            --issue | --pr) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"; WAIT_NAMED+=("${1#--}:$2"); shift 2 ;;
+            *) usage_die "$usage" ;;
         esac
     done
     MAIN=$(main_root)
@@ -165,11 +242,16 @@ cmd_main() {
         report "$(wave_state)" || exit 3
         return 0
     fi
-    mkdir -p -- "$MAIN/.ak"
+    plan_context wait
+    if ((${#WAIT_NAMED[@]})); then
+        CALL_REF="$MAIN/.ak/wait.call.$$"
+        : >"$CALL_REF"
+        open_corrections
+    fi
     until marker_take; do
         if marker_live; then attach; else rm -f -- "$MARKER"; fi
     done
-    trap marker_drop EXIT
+    trap 'marker_drop; rm -f -- "$CALL_REF"' EXIT
     trap 'exit 143' TERM INT
     wait_loop
 }
