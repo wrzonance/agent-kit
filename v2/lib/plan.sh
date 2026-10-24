@@ -391,7 +391,7 @@ spawn_issue() {
     compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"
     SPAWNED+=("$n")
     WORKTREE[$n]=$wt
-    emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"
+    emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT name=issue-$n"
 }
 
 # board_moves N...: move each issue to In progress. collect arrives without the board, so it is read once here, not once
@@ -645,7 +645,7 @@ resume_run() {
         [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || continue
         # A worker that already started is not offered again: the same lines twice would start a second one.
         [[ ! -e $wt/.ak/logs && ! -e $wt/.ak/setup.ok ]] || { running+=("skip issue=$n reason=running"); continue; }
-        lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT")
+        lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT name=issue-$n")
     done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned") | [.n, .worktree] | @tsv' "$file")
     ((${#lines[@]})) || return 1
     printf 'run=%s resumed\n' "$current"

@@ -250,7 +250,7 @@ merge_up() {
     printf 'origin/%s\n' "$base" >"$wt/.ak/resolve" || return 1
     rm -f -- "$wt/.ak/result" || return 1
     emit "merge-up $kind=$n note=$base moved to ${head:0:7} after this shipped; the worker below merges it, verifies and reports again"
-    emit "spawn $kind=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$(worker_model) effort=$(cfg AGENT_WORKER_EFFORT medium)"
+    emit "spawn $kind=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$(worker_model) effort=$(cfg AGENT_WORKER_EFFORT medium) name=$kind-$n"
     MERGED_UP="$kind $n $file"
 }
 

@@ -21,13 +21,13 @@ standard_board
 out=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'plan exits 0'
 wt="$repo/.worktrees/feat/issue-671"
-expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model=gpt-5.6-luna effort=medium
+expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-671
 drop issue=69 reason=label:tier:human-only
 drop issue=680 reason=collides-with-#671
 drop issue=690 reason=blocked-by:#1
 drop issue=691 reason=protected:.github/workflows/ci.yml
 drop issue=692 reason=open-pr
-spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model=gpt-5.6-luna effort=medium"
+spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-693"
 run=$(sed -n 1p <<<"$out")
 assert_contains "$run" 'run=' 'the first line names the run'
 assert_eq "$expected" "$(sed 1d <<<"$out")" 'spawn and drop lines follow board order'

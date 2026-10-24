@@ -147,7 +147,7 @@ assert_eq 0 "$rc" 'collect exits 0'
 assert_eq 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=findings=2 fixed=2 declined=0' "$out" 'collect prints the result and releases nothing'
 out=$(wave_go)
 wt2="$repo/.worktrees/feat/issue-680"
-assert_eq "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" "$out" 'the wave release prints the unblocked successor'
+assert_eq "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-680" "$out" 'the wave release prints the unblocked successor'
 assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$wt2" rev-parse HEAD)" 'the successor starts from the predecessor branch'
 assert_contains "$(cat "$wt2/.ak/prompt.md")" 'base=feat/issue-671' 'the successor targets the predecessor branch'
 assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
