@@ -9,6 +9,12 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
+   For Codex shell calls, use `exec_command` with `yield_time_ms=30000` and return the whole result:
+   `text(await tools.exec_command({...}))`. This preserves `output`, `session_id` and `exit_code`.
+   A `session_id` means the command is still running: collect that same session with `write_stdin`,
+   `chars=""`, `yield_time_ms=30000`, returning the whole result each time until `exit_code` is present.
+   If the outer `functions.exec` yields a `cell_id`, collect it with `functions.wait` first.
+   Empty output with a live handle means keep collecting that command; it is not a reason to run another plan.
 2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue_N` line, spawn one worker with exactly that
    model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
    `spawn_agent` `task_name`; `ak wait` finds Codex workers by it), and the content of the prompt file as its task.
@@ -16,8 +22,9 @@ Each `ak` command prints what you need next; there is no need to read its script
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
 3. Wait once for the whole wave. Claude: run `ak wait` as ONE background shell task and end the turn with no words;
    a hook holds worker notices, so your next wake is that command's exit. Codex: call `wait_agent` with
-   `timeout_ms=3600000`; on each return run `ak wait --check`; exit 3 means wait again with no words, exit 0 means
-   run the `next=` command it printed. `ak wait` settles every worker and prints one summary line each.
+   `timeout_ms=3600000`; on each return run `ak wait --check --settle`; exit 3 means wait again with no words.
+   Exit 0 already carries the collected summary: review it in step 4 without another `ak wait` call.
+   Settlement includes the CI wait; collect its shell handle as in step 1 if the command yields.
    While a wave is open, spawn nothing else and send nothing: no progress replies, no relays, no polling.
 4. On the wake, review every worker's line. A worker that is wrong or unfinished gets its correction handed back
    (Claude `SendMessage`, Codex `followup_task`); then wait on exactly those workers with `ak wait --issue N…`,

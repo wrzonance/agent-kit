@@ -1,6 +1,6 @@
 # shellcheck shell=bash disable=SC2016
-# ak wait [--issue N | --pr N]... [--check]: block until every worker of the open wave has reported, ended or gone quiet, so the
-# root wakes once per wave. Reads result files and transcripts; changes no run state. While it runs it owns the marker
+# ak wait [--issue N | --pr N]... [--check [--settle]]: wait for the open wave and collect its results.
+# --check returns readiness; --check --settle also collects a ready wave in that call. While settling it owns the marker
 # $MAIN/.ak/wave.open, which a second ak wait reads to attach instead of starting a second watcher.
 # shellcheck source=collect.sh
 source "$AK_HOME/lib/collect.sh"
@@ -287,13 +287,14 @@ settle() {
     printf '%s\n' "$SUMMARY"
 }
 
-# wait_loop: poll until nothing is running; settle once. With nothing out and a summary already written for the wave
+# wait_loop [CHECK]: poll until nothing is running (CHECK returns 3 instead); settle once. With a summary already written
 # (another watcher settled it while this one attached), print that summary instead.
 wait_loop() {
     local states file
     while :; do
         states=$(wave_state)
         ! grep -q 'state=running' <<<"$states" && break
+        if [[ ${1:-0} == 1 ]]; then report "$states" || true; return 3; fi
         sleep "${AK_WAIT_POLL_S:-15}"
     done
     file="$MAIN/.ak/runs/$RUN_ID.wave$(wave_number).summary"
@@ -341,14 +342,16 @@ next_wait() {
 }
 
 cmd_main() {
-    local check=0 usage='usage: ak wait [--issue N | --pr N]... [--check]'
+    local check=0 collect=0 states usage='usage: ak wait [--issue N | --pr N]... [--check [--settle]]'
     while (($#)); do
         case $1 in
             --check) check=1; shift ;;
+            --settle) collect=1; shift ;;
             --issue | --pr) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"; WAIT_NAMED+=("${1#--}:$2"); shift 2 ;;
             *) usage_die "$usage" ;;
         esac
     done
+    ((collect == 0 || check == 1)) || usage_die "$usage"
     MAIN=$(main_root)
     MARKER="$MAIN/.ak/wave.open"
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
@@ -357,19 +360,24 @@ cmd_main() {
     jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
     if ((check)); then
         open_corrections
-        report "$(wave_state)" || exit 3
-        next_wait
-        return 0
+        states=$(wave_state)
+        if ((collect == 0)); then
+            report "$states" || exit 3
+            next_wait
+            return 0
+        fi
+        if grep -q 'state=running' <<<"$states"; then report "$states" || true; return 3; fi
     fi
     plan_context wait
-    open_corrections
+    ((check)) || open_corrections
     # Attach only to a watcher of this very run and session; another's marker is left alone and this wait runs unmarked.
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
         marker_mine || break
+        if ((check)); then printf 'wave=%s state=settling\n' "$(wave_number)"; return 3; fi
         attach
     done
     trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT
-    wait_loop
+    wait_loop "$check"
 }

@@ -149,8 +149,10 @@ A `UserPromptSubmit` command hook shipped with the ak Claude plugin. It is the f
 
 - `ak plan`: unchanged flags. Output adds the wave of each `after` line, or a `wave=N issues=…` line per later
   wave.
-- `ak wait [--issue N]… [--check]`: blocks until settled and prints the summary. `--check` prints the state once
-  and exits (0 settled, 3 still open). Exit 1 means it could not read the run.
+- `ak wait [--issue N]… [--check [--settle]]`: blocks until settled and prints the summary. `--check` prints the state once
+  and exits (0 ready, 3 still open). `--check --settle` returns 3 while workers are active; once ready, it collects
+  their results, including CI, and returns the persisted summary in the same call. The root still reviews that
+  summary before `ak collect --wave`. Exit 1 reports a run read or settlement failure.
 - `ak collect`: per-issue collection stays. A new wave-boundary form (for example `ak collect --wave`) refuses
   while the wave is unsettled. Once settled, it records the wave accepted and prints `spawn` lines for the next
   wave's releasable issues and `held` lines for the rest.
