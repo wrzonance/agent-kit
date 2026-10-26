@@ -34,13 +34,13 @@ the diagnostic spike: its data is retained and excluded from comparison; no spik
 **Files:** `bench/live/trial-tui.sh`, `tests/test-bench-trial-tui.sh`,
 `tests/test-bench-tui-lifecycle.sh`, supporting test fixtures if necessary.
 
-- [ ] Add regression tests for initial prompt delivery and durable startup evidence.
-- [ ] Add regression tests for absent panes, cleanup errors, premature exit, and saved scores.
-- [ ] Run the tests against the original runner; record expected failures.
-- [ ] Implement initial prompt delivery and transcript-confirmed startup.
-- [ ] Implement guarded shutdown and retain scoring on failure.
-- [ ] Run focused suites and static checks; refactor only if needed to keep functions clear.
-- [ ] Run the canonical gate with `AGENT_TEST_JOBS=4`, capture its complete log.
-- [ ] Commit, run one unattended real Codex smoke, and record results without claiming A/B savings.
-- [ ] Review the focused diff once, fix confirmed findings with regression tests, push,
+- [x] Add regression tests for initial prompt delivery and durable startup evidence.
+- [x] Add regression tests for absent panes, cleanup errors, premature exit, and saved scores.
+- [x] Run the tests against the original runner; record expected failures.
+- [x] Implement initial prompt delivery and transcript-confirmed startup.
+- [x] Implement guarded shutdown and retain scoring on failure.
+- [x] Run focused suites and static checks; refactor only if needed to keep functions clear.
+- [x] Run the canonical gate with `AGENT_TEST_JOBS=4`, capture its complete log.
+- [x] Commit, run one unattended real Codex smoke, and record results without claiming A/B savings.
+- [x] Review the focused diff once, fix confirmed findings with regression tests, push,
       open the stacked draft PR with `Closes #1017`, and drive current-head CI green.

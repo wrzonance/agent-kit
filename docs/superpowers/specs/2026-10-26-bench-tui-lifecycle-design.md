@@ -39,3 +39,17 @@ Regression tests exercise the runner with external CLI/tmux/GitHub doubles. Cove
 harnesses, metadata-only and child-only startup, missing panes, unexpected cleanup failure,
 premature exit, and persisted root/outcome selection. Run static gates, the canonical suite
 with bounded concurrency, and one real unattended Codex smoke. Preserve its evidence.
+
+### Recorded smoke result
+
+`smoke-codex-1017-20261026T182732Z` ran unattended with runner `e2e6f04` and baseline
+kit `43e3c4224d708767c09a706645fff5e62fd99bcd`, using `gpt-6-luna` at high effort.
+The runner exited 0 after 460 seconds; hidden acceptance passed 4/4 and all four fixture
+PRs were CI-green. The root transcript contains exactly one initial invocation. Automatic
+`outcome.json`, `row.json`, and exactly one matching `bench/results/live.jsonl` row were
+verified, and the tmux session was gone after cleanup. No manual input was supplied.
+This proves the runner lifecycle, not the performance savings proposed by #1013.
+
+The fresh Codex fallback review found no actionable defects. Claude review/live execution
+was unavailable because of its monthly spend limit; Claude startup remains covered by the
+documented CLI interface and the regression suite, rather than a live smoke.
