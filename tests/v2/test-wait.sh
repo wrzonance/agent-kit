@@ -86,6 +86,18 @@ codex_child() {
 codex_child child-normal.jsonl a
 out=$("$AK" wait 2>&1)
 assert_contains "$out" 'issue=5 state=ended-without-result' 'a Codex child that completed without a result ended'
+# Native names are shared by issue and PR workers; older run paths still remain watchable.
+sed -i 's#/root/issue_5#/root/pr_5#g' "$sessions/rollout-a.jsonl"
+jq '(.items[].kind) = "pr"' "$repo/.ak/runs/r1.json" >"$WORK/pr-run.json"
+mv "$WORK/pr-run.json" "$repo/.ak/runs/r1.json"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'pr=5 state=ended-without-result' 'a PR worker is matched by its native name'
+jq '(.items[].kind) = "issue"' "$repo/.ak/runs/r1.json" >"$WORK/issue-run.json"
+mv "$WORK/issue-run.json" "$repo/.ak/runs/r1.json"
+sed -i 's#/root/pr_5#/root/issue-5#g' "$sessions/rollout-a.jsonl"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=ended-without-result' 'a historical hyphenated path still matches'
+sed -i 's#/root/issue-5#/root/issue_5#g' "$sessions/rollout-a.jsonl"
 head -n 2 "$sessions/rollout-a.jsonl" >"$sessions/rollout-b.jsonl"
 sed -i 's#/root/issue_5#/root/issue_6#g' "$sessions/rollout-a.jsonl"
 touch "$sessions/rollout-b.jsonl"

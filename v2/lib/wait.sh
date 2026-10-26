@@ -108,7 +108,7 @@ ident_transcript() {
 item_idents() {
     local transcript='' tr_id=''
     if [[ -n $3 ]]; then
-        transcript=$(transcript_find "$3" "$1-$2" "$(spawn_since "$3" "${4:-0}")")
+        transcript=$(transcript_find "$3" "${1}_$2" "$(spawn_since "$3" "${4:-0}")")
         [[ -z $transcript ]] || tr_id=$(ident_transcript "$transcript")
         printf '%s\037%s\n' "$(ident_result "$3")" "$tr_id"
     else
@@ -155,7 +155,7 @@ item_state() {
         return 0
     fi
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
-    transcript=$(transcript_find "$wt" "$kind-$n" "$(spawn_since "$wt" "${4:-0}")")
+    transcript=$(transcript_find "$wt" "${kind}_$n" "$(spawn_since "$wt" "${4:-0}")")
     if [[ -n $transcript ]]; then
         terminal_state=$(transcript_state "$transcript")
         case $terminal_state in

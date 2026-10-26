@@ -14,6 +14,11 @@ A summary of the highest counts needs the ordering `tally-11` adds. This
 issue is `blocked_by: tally-11`: it is the second-wave issue of the first
 pair, and its acceptance cannot pass without `sortItems` from `tally-11`.
 
+## Files to create
+
+- Create: `src/leaderboard.js`
+- Create: `test/leaderboard.smoke.mjs`
+
 ## What
 
 - Add `src/leaderboard.js` exporting a pure `topItems(state, n)` that

@@ -165,7 +165,7 @@ assert_eq 0 "$rc" 'collect exits 0'
 assert_eq 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=findings=2 fixed=2 declined=0' "$out" 'collect prints the result and releases nothing'
 out=$(wave_go)
 wt2="$repo/.worktrees/feat/issue-680"
-assert_eq "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-680" "$out" 'the wave release prints the unblocked successor'
+assert_eq "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue_680" "$out" 'the wave release prints the unblocked successor'
 assert_eq "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$wt2" rev-parse HEAD)" 'the successor starts from the predecessor branch'
 assert_contains "$(cat "$wt2/.ak/prompt.md")" 'base=feat/issue-671' 'the successor targets the predecessor branch'
 assert_eq feat/issue-671 "$(cat "$wt2/.ak/base")" 'the successor .ak/base is the predecessor branch'
@@ -267,7 +267,7 @@ ship "$wt" src/a.txt 9 green
 moved=$(git -C "$wt" rev-parse --short=7 HEAD)
 out=$("$AK" collect --issue 671 2>&1)
 assert_contains "$out" "merge-up issue=680 note=feat/issue-671 moved to $moved after this shipped" 'a reworked parent names the child that must follow'
-assert_contains "$out" "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium" 'the child goes back to its worker'
+assert_contains "$out" "spawn issue=680 cwd=$wt2 prompt=$wt2/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue_680" 'the child goes back to its worker with a valid native name'
 assert_eq origin/feat/issue-671 "$(cat "$wt2/.ak/resolve")" 'the worker is told what to merge'
 assert_eq no "$([[ -f $wt2/.ak/result ]] && echo yes || echo no)" 'the stale result is gone, so the child reads as running'
 assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the run counts the child as out again, so nothing is built on it meanwhile'

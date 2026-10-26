@@ -13,6 +13,11 @@ A long list is hard to scan. This is the second of two independent
 wave-fixture issues (see `tally-11`): it shares no file with any other
 issue, and `tally-14` builds on it.
 
+## Files to create
+
+- Create: `src/search.js`
+- Create: `test/search.smoke.mjs`
+
 ## What
 
 - Add `src/search.js` exporting a pure `filterItems(items, query)`: returns

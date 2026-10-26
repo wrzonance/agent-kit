@@ -21,13 +21,13 @@ standard_board
 out=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'plan exits 0'
 wt="$repo/.worktrees/feat/issue-671"
-expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-671
+expected="spawn issue=671 cwd=$wt prompt=$wt/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue_671
 drop issue=69 reason=label:tier:human-only
 drop issue=680 reason=collides-with-#671
 drop issue=690 reason=blocked-by:#1
 drop issue=691 reason=protected:.github/workflows/ci.yml
 drop issue=692 reason=open-pr
-spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue-693"
+spawn issue=693 cwd=$repo/.worktrees/feat/issue-693 prompt=$repo/.worktrees/feat/issue-693/.ak/prompt.md model=gpt-5.6-luna effort=medium name=issue_693"
 run=$(sed -n 1p <<<"$out")
 assert_contains "$run" 'run=' 'the first line names the run'
 assert_eq "$expected" "$(sed 1d <<<"$out")" 'spawn and drop lines follow board order'
@@ -67,6 +67,7 @@ again=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'a re-run plan exits 0'
 assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
 assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
+assert_contains "$again" 'name=issue_671' 'a resumed plan keeps a valid native worker name'
 assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
 named=$("$AK" plan --issue 700 2>&1)
 assert_not_contains "$named" 'resumed' 'naming an issue the current run never planned is new work, not a resume'

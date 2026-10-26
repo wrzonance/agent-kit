@@ -25,15 +25,15 @@ transcript_claude() {
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 
-# transcript_codex NAME SINCE: the newest child rollout of this root thread whose agent_path is /root/NAME. Codex lowercases and
-# underscores task names, so issue-5 is also looked for as issue_5. Spawn prompts are encrypted: never match on them.
+# transcript_codex NAME SINCE: the newest child rollout of this root thread whose agent_path is /root/NAME.
+# Spawn names use underscores; accept historical hyphenated paths too. Encrypted prompts cannot identify workers.
 transcript_codex() {
     local file best=''
     [[ -n ${CODEX_THREAD_ID:-} && -n $1 ]] || return 0
     while IFS= read -r file; do
         (($(transcript_born "$file") >= ${2:-0})) || continue
         head -n 1 -- "$file" | grep -qF -- "$CODEX_THREAD_ID" || continue
-        head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg a "/root/$1" --arg b "/root/${1//-/_}" \
+        head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg a "/root/$1" --arg b "/root/${1//_/-}" \
             '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and (.agent_path | IN($a, $b))' \
             >/dev/null 2>&1 || continue
         [[ -z $best || $file -nt $best ]] && best=$file

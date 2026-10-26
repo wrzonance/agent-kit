@@ -9,7 +9,7 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
-2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue-N` line, spawn one worker with exactly that
+2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue_N` line, spawn one worker with exactly that
    model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
    `spawn_agent` `task_name`; `ak wait` finds Codex workers by it), and the content of the prompt file as its task.
    Spawn them all now, before waiting: `--serialize` only turns overlapping issues into `after` lines, which

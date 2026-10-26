@@ -14,6 +14,11 @@ Matching items need a view. This issue is `blocked_by: tally-13`: it is the
 second-wave issue of the second pair, and its acceptance cannot pass
 without `filterItems` from `tally-13`.
 
+## Files to create
+
+- Create: `src/results.js`
+- Create: `test/results.smoke.mjs`
+
 ## What
 
 - Add `src/results.js` exporting a pure `renderResults(state, query)` that

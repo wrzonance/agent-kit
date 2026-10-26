@@ -15,6 +15,11 @@ other issue, and `tally-12` builds on it. Together `tally-11` to `tally-14`
 make the two-wave fixture for the interactive trials: two issues ready now,
 two that become ready when their blockers merge.
 
+## Files to create
+
+- Create: `src/sorting.js`
+- Create: `test/sorting.smoke.mjs`
+
 ## What
 
 - Add `src/sorting.js` exporting a pure `sortItems(items, key)` where `key`
