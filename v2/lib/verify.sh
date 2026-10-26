@@ -25,7 +25,7 @@ verify_suite_names() {
         compgen -v AGENT_CMD_ || true
         [[ ! -f $file ]] || grep -oE '^AGENT_CMD_[A-Za-z0-9_]+' "$file" || true
     } | sed 's/^AGENT_CMD_//' | LC_ALL=C sort -u | while IFS= read -r name; do
-        case $name in SETUP | VERIFY | TEST | *_FIX) continue ;; esac
+        case $name in SETUP | VERIFY | TEST | TEST_FOCUS | *_FIX) continue ;; esac
         printf '%s\n' "$name"
     done
 }
