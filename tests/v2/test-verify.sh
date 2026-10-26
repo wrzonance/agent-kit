@@ -125,6 +125,15 @@ out=$("$AK" verify 2>&1)
 assert_contains "$out" 'PASS web' 'an env override of a config command runs'
 assert_contains "$out" 'skipped=e2e' 'SKIP lines from area suites are collected'
 
+# AGENT_CMD_TEST_FOCUS is a parameterized template, not a runnable area suite.
+# A tests/ change used to execute its literal `%s` and fail verification.
+printf 'AGENT_CMD_TEST_FOCUS=tests/run-tests.sh --only %%s\n' >>"$repo/.agent/config.env"
+mkdir -p tests && printf 'change\n' >tests/focused.sh
+out=$("$AK" verify 2>&1); rc=$?
+assert_eq 0 "$rc" 'the parameterized focus command is not run as a suite'
+assert_not_contains "$out" 'test_focus' 'focus templates are excluded from area suite discovery'
+assert_contains "$out" 'PASS src' 'ordinary area suites still run beside a focus template'
+
 git push -q origin HEAD:refs/heads/feat/other 2>/dev/null && git fetch -q origin
 printf 'feat/other\n' >.ak/base
 out=$("$AK" verify 2>&1)
