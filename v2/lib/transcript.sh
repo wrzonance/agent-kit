@@ -16,12 +16,12 @@ path_named() {
 # whose first line names WORKTREE exactly.
 transcript_claude() {
     local base file best=''
-    base="$HOME/.claude/projects/$(main_root | tr -c 'a-zA-Z0-9\n' '-')"
+    base="$HOME/.claude/projects"
     while IFS= read -r file; do
         path_named "$1" <"$file" || continue
         (($(transcript_born "$file") >= ${2:-0})) || continue
         [[ -z $best || $file -nt $best ]] && best=$file
-    done < <(find "$base" -path "$base/${CLAUDE_CODE_SESSION_ID:-*}/subagents/agent-*.jsonl" 2>/dev/null)
+    done < <(find "$base" -path "$base/*/${CLAUDE_CODE_SESSION_ID:-*}/subagents/agent-*.jsonl" 2>/dev/null)
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 

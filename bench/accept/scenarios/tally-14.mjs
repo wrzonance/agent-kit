@@ -3,6 +3,7 @@
 // scores fail.
 export default async function run({ importTarget }) {
   const results = await importTarget('src/results.js');
+  const render = await importTarget('src/render.js');
   const renderFnType = typeof results.renderResults;
   if (renderFnType !== 'function') return { renderFnType };
 
@@ -16,6 +17,7 @@ export default async function run({ importTarget }) {
   return {
     renderFnType,
     teaHtml: results.renderResults(state, 'tea'),
+    teaRowHtml: render.renderItemRow(state.items[1]),
     noMatchHtml: results.renderResults(state, 'zzz'),
   };
 }

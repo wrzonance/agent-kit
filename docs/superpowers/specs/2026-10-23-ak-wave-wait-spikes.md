@@ -6,7 +6,9 @@ fixtures in `tests/v2/fixtures/transcripts/` remain.
 ## Verdicts
 
 - S1: block honored: yes. Hook stdin has NO `source` field (session_id, transcript_path, cwd, prompt_id, permission_mode, hook_event_name, prompt). Session id for Bash = $CLAUDE_CODE_SESSION_ID (== hook session_id). Plugin-shipped hook fires without user config (tested via --plugin-dir).
-- S4: running in tmux ak-spike-s4 (sleep pid 2713961), started 2026-10-23 02:50:57Z, ends ~03:57:37Z; check `ps -p 2713961` + spike-claude/hook-log.jsonl.
+- S4: completed. A background `sleep 4000` remained alive for 66:34 and exited 0 in an interactive Claude session;
+  its completion notice was delivered. No background-task limit was observed, so Task 6 needs no hand-off or
+  `AK_WAIT_HANDOFF_S`.
 - Ruling 6: the hook matches on prompt text (no `source` field exists): block only when the prompt starts with the <task-notification> envelope whose <summary> starts with `Agent "` (finished OR interim "is waiting on its own background work"); Bash notices always pass, so ak wait's own exit notice is the wake — cost if wrong: an envelope format change in a future Claude Code silently returns us to per-worker wakes (fail open).
 - Ruling 7: ak wait's Claude end-signal = subagent .meta.json finished:true (plus transcript end records); a stopped agent has no terminal transcript record — cost if wrong: a stopped worker reads as hung after AK_WAIT_HANG_S instead of ended-without-result at once.
 - Ruling 8: marker carries session=$CLAUDE_CODE_SESSION_ID; the hook blocks only on an exact session match (Review Focus 3 fully covered; cwd fallback only when the env var is absent) — cost if wrong: none known.

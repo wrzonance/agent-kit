@@ -30,7 +30,7 @@ hooks_ok() {
     jq -e '(.hooks | keys) == ["UserPromptSubmit"]
         and (.hooks.UserPromptSubmit | length) == 1
         and (.hooks.UserPromptSubmit[0].hooks | length) == 1
-        and (.hooks.UserPromptSubmit[0].hooks[0] | .type == "command" and (.command | endswith("/wave-barrier.sh")))
+        and (.hooks.UserPromptSubmit[0].hooks[0] | .type == "command" and .command == "\"${CLAUDE_PLUGIN_ROOT}/hooks/wave-barrier.sh\"")
         and (keys == ["hooks"])' "$dir/hooks.json" >/dev/null 2>&1 &&
         [[ $(find "$dir" -mindepth 1 -printf '%P\n' | LC_ALL=C sort | tr '\n' ' ') == 'hooks.json wave-barrier.sh ' ]]
 }

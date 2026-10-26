@@ -556,6 +556,9 @@ printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success
 out=$("$AK" collect --issue 671 2>&1)
 assert_not_contains "$out" 'spawn' 'a collected wave-1 issue spawns nothing'
 assert_eq queued "$(jq -r '.items[] | select(.n == 680) | .state' "$run_w")" 'and the wave-2 item stays queued'
+
+printf '{"run":"pr-run","items":[{"kind":"pr","n":44,"state":"spawned","worktree":"%s"}]}\n' "$wt" >"$repo/.ak/runs/pr-run.json"
+printf 'pr-run\n' >"$repo/.ak/runs/current"
 out=$("$AK" collect --wave 2>&1); rc=$?
 assert_eq 1 "$rc" 'collect --wave refuses while a wave-1 worker is out'
 assert_contains "$out" 'wave 1 is still open: 693' 'and names the open issues'

@@ -24,6 +24,14 @@ no11="$tmp/no11"; cp -r "$gold/." "$no11"; rm "$no11/src/sorting.js"
 assert_eq '{"tally-11":"fail","tally-12":"fail","tally-13":"pass","tally-14":"pass"}' "$(vector "$no11")" 'without tally-11 the dependent tally-12 fails too'
 no13="$tmp/no13"; cp -r "$gold/." "$no13"; rm "$no13/src/search.js"
 assert_eq '{"tally-11":"pass","tally-12":"pass","tally-13":"fail","tally-14":"fail"}' "$(vector "$no13")" 'without tally-13 the dependent tally-14 fails too'
+
+bad11="$tmp/bad11"; cp -r "$gold/." "$bad11"
+sed -i 's/  return copy;/  return items;/' "$bad11/src/sorting.js"
+assert_eq fail "$(vector "$bad11" | jq -r '.["tally-11"]')" 'tally-11 rejects returning the input array for an unknown key'
+
+bad14="$tmp/bad14"; cp -r "$gold/." "$bad14"
+sed -i "/return matches.map/c\\  return matches.map((item) => '<p>' + item.name + '</p>').join('');" "$bad14/src/results.js"
+assert_eq fail "$(vector "$bad14" | jq -r '.["tally-14"]')" 'tally-14 rejects text that is not renderItemRow markup'
 assert_eq 10 "$("$run_accept" "$gold" | jq .total)" 'the default set is still the ten frozen suites'
 
 # outcome.sh against a PR head that is the gold tree: it exits 0 and scores 11-14 with the waves set.

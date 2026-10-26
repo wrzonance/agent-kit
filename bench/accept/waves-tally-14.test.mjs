@@ -13,7 +13,7 @@ test('tally-14: src/results.js exports renderResults', () => {
 });
 
 test('tally-14: renderResults shows matching rows and a no-match message', () => {
-  assert.ok(obs.teaHtml.includes('Tea'), 'the Tea row is rendered');
+  assert.equal(obs.teaHtml, obs.teaRowHtml, 'the Tea row uses renderItemRow markup');
   assert.ok(!obs.teaHtml.includes('Coffee'), 'the Coffee row is not rendered');
   assert.equal(obs.noMatchHtml, '<p class="tally-empty">No matches</p>');
 });

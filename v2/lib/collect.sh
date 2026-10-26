@@ -424,8 +424,26 @@ collect_one() {
 }
 
 # cmd_wave: the open wave must be in; then the next wave is released.
+wave_runfile() {
+    local current file
+    current="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
+    if jq -e 'any(.items[]?; .kind == "issue")' "$current" >/dev/null 2>&1; then
+        printf '%s\n' "$current"
+        return 0
+    fi
+    while IFS= read -r file; do
+        [[ $file != "$current" ]] || continue
+        if jq -e 'any(.items[]?; .kind == "issue")' "$file" >/dev/null 2>&1; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done < <(printf '%s\n' "$MAIN"/.ak/runs/*.json | LC_ALL=C sort -r)
+    printf '%s\n' "$current"
+}
+
 cmd_wave() {
     local open
+    RUNFILE=$(wave_runfile)
     open=$(wave_open)
     [[ -z $open ]] || die "wave $(jq -r '.open_wave // 1' "$RUNFILE") is still open: $open" 'ak wait'
     release_wave loud

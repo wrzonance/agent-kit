@@ -162,6 +162,17 @@ out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=5 state=running' 'a prompt rewritten after the transcript was created also retires it'
 rm -f "$WORK/wt/5/.ak/prompt.md"
 
+# A Claude session may start from a linked worktree or subdirectory whose project slug is not the main checkout slug.
+rm -rf "$subdir"
+other_subdir="$HOME/.claude/projects/other-session-cwd/sess-1/subagents"
+mkdir -p "$other_subdir"
+printf '{"type":"user","message":{"content":"worktree %s"}}\n' "$WORK/wt/5" >"$other_subdir/agent-other.jsonl"
+printf '{"finished":true}\n' >"$other_subdir/agent-other.meta.json"
+SPAWNED_AT=0 set_run 5
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=ended-without-result' 'a session outside the main checkout project slug still finds its worker transcript'
+rm -rf "$other_subdir"
+
 # An item with no worktree is not watchable.
 printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":7,"worktree":"","wave":1,"state":"pending","needs":[]},{"kind":"issue","n":8,"worktree":"","wave":1,"state":"queued","needs":[]}]}\n' >"$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check 2>&1); rc=$?

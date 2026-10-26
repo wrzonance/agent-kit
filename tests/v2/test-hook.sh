@@ -31,6 +31,12 @@ run_hook() { bash "$hook"; }
 write_marker "$watcher" "$start" sess-1
 assert_eq "$blocked" "$(notice "$agent_final" | run_hook)" 'final agent notice, live marker, same session: blocked'
 assert_eq "$blocked" "$(notice "$agent_interim" | run_hook)" 'interim agent notice: blocked'
+
+plugin_space="$WORK/plugin root"
+cp -r "$REPO/v2" "$plugin_space"
+hook_command=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$plugin_space/hooks/hooks.json")
+assert_eq "$blocked" "$(notice "$agent_final" | CLAUDE_PLUGIN_ROOT="$plugin_space" bash -c "$hook_command")" 'the manifest runs the hook when the plugin root contains spaces'
+
 assert_eq '' "$(notice 'Background command \"ak wait\" completed (exit code 0)' | run_hook)" 'bash-task notice passes'
 human=$(printf '{"session_id":"sess-1","cwd":"%s","hook_event_name":"UserPromptSubmit","prompt":"Agent finished, what now?"}' "$repo/src")
 assert_eq '' "$(run_hook <<<"$human")" 'human prompt passes'

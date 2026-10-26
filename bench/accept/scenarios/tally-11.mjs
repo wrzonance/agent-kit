@@ -19,7 +19,7 @@ export default async function run({ importTarget }) {
     nameOrder: byName.map((i) => i.name),
     countOrder: byCount.map((i) => i.count),
     unknownOrder: unknown.map((i) => i.name),
-    returnsNewArray: byName !== items && byCount !== items,
+    returnsNewArray: byName !== items && byCount !== items && unknown !== items,
     inputUnchanged: JSON.stringify(items) === before,
   };
 }
