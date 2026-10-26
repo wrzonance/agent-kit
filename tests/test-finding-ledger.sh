@@ -12,6 +12,8 @@ fixture_digest() {
         sha256sum -- "$1"
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 -- "$1"
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 -r -- "$1"
     else
         return 1
     fi
@@ -209,6 +211,12 @@ git -C "$repair_repo" commit -qam repair
 repair_sha=$(git -C "$repair_repo" rev-parse HEAD)
 printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/verification.log"
 log_hash=$(fixture_digest "$tmp/verification.log"); log_hash=${log_hash%% *}
+openssl_bin="$tmp/openssl-bin"
+mkdir "$openssl_bin"
+ln -s "$(command -v openssl)" "$openssl_bin/openssl"
+openssl_fixture_digest=$(PATH="$openssl_bin" fixture_digest "$tmp/verification.log")
+assert_eq "$log_hash" "${openssl_fixture_digest%% *}" \
+    'test fixture hashing supports OpenSSL without sha256sum or shasum'
 for n in {1..8}; do
     jq -n --arg finding "confirmed-$n" --arg sha "$repair_sha" --arg log "$tmp/verification.log" --arg digest "$log_hash" \
         '{finding:$finding,repairSha:$sha,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
@@ -231,7 +239,28 @@ mkdir "$portable_bin"
 for tool in bash dirname jq git grep tail; do
     ln -s "$(command -v "$tool")" "$portable_bin/$tool"
 done
-ln -s "$(command -v shasum)" "$portable_bin/shasum"
+if real_shasum=$(command -v shasum 2>/dev/null); then
+    ln -s "$real_shasum" "$portable_bin/shasum"
+else
+    # No Perl shasum on this host: shim `shasum -a 256 [--] FILE` over an absolute-path SHA-256
+    # tool, printing "<hex>  <path>" like the real one. sha256sum stays off the helper's PATH.
+    sha_tool=$(command -v sha256sum 2>/dev/null || command -v openssl)
+    {
+        printf '#!%s\n' "$(command -v bash)"
+        printf 'tool=%q\n' "$sha_tool"
+        cat <<'SHIM'
+set -euo pipefail
+[[ "${1:-}" == -a && "${2:-}" == 256 ]] || exit 2
+shift 2
+[[ "${1:-}" != -- ]] || shift
+case $tool in
+    */openssl) h=$("$tool" dgst -sha256 -r -- "$1"); printf '%s  %s\n' "${h%% *}" "$1" ;;
+    *) exec "$tool" -- "$1" ;;
+esac
+SHIM
+    } >"$portable_bin/shasum"
+    chmod +x "$portable_bin/shasum"
+fi
 portable_fixture_digest=$(PATH="$portable_bin" fixture_digest "$tmp/verification.log")
 assert_eq "$log_hash" "${portable_fixture_digest%% *}" \
     'test fixture hashing supports shasum without GNU sha256sum'
