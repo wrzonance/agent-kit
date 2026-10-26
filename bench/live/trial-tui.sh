@@ -6,7 +6,7 @@
 #                           [--effort E] [--timeout SECONDS] [--trial ID] [--dry-run]
 #
 # Steps: reset the sandbox; pin the kit bytes at GITREF (a git archive, loaded through a private CODEX_HOME or
-# `claude --plugin-dir`); start the CLI in tmux; send the one invocation line and nothing else; poll GitHub (REST)
+# `claude --plugin-dir`); start the CLI with one initial prompt in tmux; poll GitHub (REST)
 # until every fixture issue has an open PR carrying an ak receipt comment, or the timeout; exit the CLI; score
 # the root transcript and every PR head; append one ledger row. --dry-run builds everything locally (no
 # GitHub, no ledger row) so the tmux sequence and the environment can be tested with stub CLIs.
@@ -109,42 +109,94 @@ case $harness in
     claude) cli=(claude --plugin-dir "$dir/kit/v2" --setting-sources "project,local" --dangerously-skip-permissions
         --model "$model" --effort "$effort") ;;
 esac
+cli+=("$invocation")
 [[ $harness == codex ]] && envs=("CODEX_HOME=$CODEX_HOME") || envs=()
 envs+=("PATH=$dir/bin:$PATH" "AK_BENCH_REAL_GH=$real_gh" "AK_BENCH_GH_LOG=$log_gh")
 printf -v command_line '%q ' env "${scrub[@]}" "${envs[@]}" "${cli[@]}"
 
 tmux_run() { env "${scrub[@]}" tmux "$@"; }
 
-# wait_for_prompt: read the pane (never type) until the CLI shows its input prompt. A folder-trust or bypass
-# dialog that appears first is answered with its documented accept key; that answers the CLI, it does not
-# instruct the agent. The invocation stays the only instruction typed.
-wait_for_prompt() {
-    local pane waited=0 trust_re bypass_re ready_re
+# A visible composer does not prove submission. Both CLIs accept an initial prompt; wait for a root turn
+# in its transcript, and retain that path so a newer worker transcript cannot become the scored root.
+root=''
+if [[ $harness == codex ]]; then
+    sessions="$CODEX_HOME/sessions"; glob='rollout-*.jsonl'
+else
+    slug=${dir//[^A-Za-z0-9]/-}-repo
+    sessions="$HOME/.claude/projects/$slug"; glob='*.jsonl'
+fi
+find_started_root() {
+    local file
+    while IFS= read -r -d '' file; do
+        if jq -se --arg harness "$harness" --arg cwd "$dir/repo" '
+            if $harness == "codex" then
+                any(.[]; .type == "session_meta" and .payload.cwd == $cwd
+                    and (.payload.parent_thread_id // "") == "")
+                and any(.[]; .type == "event_msg" and .payload.type == "task_started")
+            else any(.[]; .type == "assistant" and .cwd == $cwd) end
+        ' "$file" >/dev/null 2>&1; then root=$file; return 0; fi
+    done < <(find "$sessions" -maxdepth 6 -name "$glob" -not -path '*/subagents/*' \
+        -newer "$dir/started" -print0 2>/dev/null)
+    return 1
+}
+
+# Return 1 only for a vanished session; connection/permission errors are failures, not completion evidence.
+session_exists() {
+    local error
+    if error=$(tmux_run has-session -t "$session" 2>&1); then return 0; fi
+    case $error in
+        *"can't find session:"*|*"no server running"*|*"No such file or directory"*) return 1 ;;
+        *) log "tmux session check failed: $error"; return 2 ;;
+    esac
+}
+tmux_if_present() {
+    local command=$1 error status
+    shift
+    if session_exists; then :; else status=$?; ((status == 1)); return; fi
+    if error=$(tmux_run "$command" -t "$session" "$@" 2>&1); then return 0; fi
+    if session_exists; then :; else status=$?; ((status == 1)) && return 0; fi
+    log "tmux cleanup failed: $error"
+    return 1
+}
+stop_session() {
+    local status=0
+    if ((!dry)); then
+        tmux_if_present send-keys C-c || status=1
+        sleep 2
+        tmux_if_present send-keys C-c || status=1
+        sleep 5
+    fi
+    tmux_if_present kill-session || status=1
+    return "$status"
+}
+wait_for_start() {
+    local pane deadline=$((SECONDS + ${AK_BENCH_TUI_READY_TIMEOUT:-120})) trust_re bypass_re
     trust_re='[Dd]o you trust|trust the (files|contents)|trust this (folder|directory)'
     bypass_re='Bypass Permissions mode|Yes, I accept'
-    if [[ $harness == codex ]]; then ready_re='›|% context left'; else ready_re='❯|\? for shortcuts'; fi
-    while ((waited < ${AK_BENCH_TUI_READY_TIMEOUT:-120})); do
+    while :; do
+        find_started_root && { log 'root turn started'; return 0; }
+        ((SECONDS < deadline)) || break
+        session_exists || break
         pane=$(tmux_run capture-pane -p -t "$session" 2>/dev/null || true)
+        printf '%s\n' "$pane" >"$dir/startup-pane.txt"
         if grep -Eq "$trust_re" <<<"$pane"; then
-            tmux_run send-keys -t "$session" Enter
+            tmux_run send-keys -t "$session" Enter || break
         elif grep -Eq "$bypass_re" <<<"$pane"; then
-            tmux_run send-keys -t "$session" 2 Enter
-        elif grep -Eq "$ready_re" <<<"$pane"; then
-            return 0
+            tmux_run send-keys -t "$session" 2 Enter || break
         fi
         sleep "${AK_BENCH_TUI_READY_POLL:-1}"
-        waited=$((waited + 1))
     done
+    log "no agent turn within ${AK_BENCH_TUI_READY_TIMEOUT:-120}s or CLI exited; inspect $dir/startup-pane.txt and $sessions; invocation was not resent"
     return 1
 }
 
 tmux_run kill-session -t "$session" 2>/dev/null || true
 log "start $harness in tmux session $session (model=$model effort=$effort timeout=${timeout_s}s)"
 started=$(date -u +%s)
+: >"$dir/started"
 tmux_run new-session -d -s "$session" -x 220 -y 50 -c "$dir/repo" "$command_line"
-wait_for_prompt || { log "no input prompt within ${AK_BENCH_TUI_READY_TIMEOUT:-120}s; nothing was typed"; tmux_run kill-session -t "$session" 2>/dev/null || true; exit 1; }
-# The one line the operator would type. Nothing else is typed until the exit below.
-tmux_run send-keys -t "$session" "$invocation" Enter
+rc=0
+wait_for_start || rc=1
 
 # receipts_ready: every fixture issue has an open PR whose comments carry an ak receipt (REST only).
 receipts_ready() {
@@ -159,38 +211,21 @@ receipts_ready() {
     ((need > 0 && have == need))
 }
 
-rc=0
 if ((dry)); then
     log 'dry-run: not polling GitHub'
-else
+elif ((rc == 0)); then
     export AK_BENCH_REAL_GH="$real_gh"
     while :; do
         receipts_ready && break
+        if ! session_exists; then log 'CLI exited before all receipts arrived'; rc=1; break; fi
         if (($(date -u +%s) - started >= timeout_s)); then rc=124; break; fi
         sleep "${AK_BENCH_TUI_POLL:-60}"
     done
-    # Exit the CLI the way the operator would: Ctrl-C twice (both CLIs quit on it), then drop the session.
-    tmux_run send-keys -t "$session" C-c
-    sleep 2
-    tmux_run send-keys -t "$session" C-c
-    sleep 5
 fi
+stop_session || rc=1
 ended=$(date -u +%s)
-tmux_run kill-session -t "$session" 2>/dev/null || true
 log "run rc=$rc elapsed=$((ended - started))s"
-if ((dry)); then log 'dry-run: done'; exit 0; fi
-
-# Root transcript: the newest one this arm wrote. Codex has a private home; Claude files it under the clone's slug.
-if [[ $harness == codex ]]; then
-    sessions="$CODEX_HOME/sessions"
-    glob='rollout-*.jsonl'
-else
-    slug=${dir//[^A-Za-z0-9]/-}-repo
-    sessions="$HOME/.claude/projects/$slug"
-    glob='*.jsonl'
-fi
-root=$(find "$sessions" -maxdepth 6 -name "$glob" -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null |
-    sort -rn | head -n 1 | cut -d' ' -f2- || true)
+if ((dry)); then log 'dry-run: done'; exit "$rc"; fi
 
 log 'score PR heads with the hidden acceptance suites'
 outcome="$dir/outcome.json"
@@ -211,3 +246,4 @@ else
 fi
 cat -- "$row" >>"$bench/results/live.jsonl"
 jq -c '{trial, harness, mode, passed: .outcome.passed, prs: .outcome.prs, root_tokens: .root.tokens.total_tokens, wakes: .root.wakes.total}' "$row"
+exit "$rc"
