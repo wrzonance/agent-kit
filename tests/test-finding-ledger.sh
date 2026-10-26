@@ -12,6 +12,8 @@ fixture_digest() {
         sha256sum -- "$1"
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 -- "$1"
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 -r -- "$1"
     else
         return 1
     fi
@@ -209,6 +211,12 @@ git -C "$repair_repo" commit -qam repair
 repair_sha=$(git -C "$repair_repo" rev-parse HEAD)
 printf '=== agent-run tests/regression.sh\n=== agent-run exited rc=0 after 1s\n' >"$tmp/verification.log"
 log_hash=$(fixture_digest "$tmp/verification.log"); log_hash=${log_hash%% *}
+openssl_bin="$tmp/openssl-bin"
+mkdir "$openssl_bin"
+ln -s "$(command -v openssl)" "$openssl_bin/openssl"
+openssl_fixture_digest=$(PATH="$openssl_bin" fixture_digest "$tmp/verification.log")
+assert_eq "$log_hash" "${openssl_fixture_digest%% *}" \
+    'test fixture hashing supports OpenSSL without sha256sum or shasum'
 for n in {1..8}; do
     jq -n --arg finding "confirmed-$n" --arg sha "$repair_sha" --arg log "$tmp/verification.log" --arg digest "$log_hash" \
         '{finding:$finding,repairSha:$sha,head:$sha,path:"affected.sh",command:"tests/regression.sh",status:"passed",log:$log,logSha256:$digest}' >"$tmp/repair.json"
