@@ -143,7 +143,7 @@ item_meta() {
 # A correction round resumes the same worker: its result counts when it differs from the one the last settle saw, and an
 # end record likewise; a hang is judged from the call at the earliest.
 item_state() {
-    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript
+    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state
     item_meta "$kind" "$n"
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
@@ -157,9 +157,22 @@ item_state() {
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
     transcript=$(transcript_find "$wt" "$kind-$n" "$(spawn_since "$wt" "${4:-0}")")
     if [[ -n $transcript ]]; then
-        case $(transcript_state "$transcript") in
+        terminal_state=$(transcript_state "$transcript")
+        case $terminal_state in
             ended | errored)
-                if fresh "$(ident_transcript "$transcript")" "$SEEN_TR"; then echo ended-without-result; return 0; fi ;;
+                terminal_id=$(ident_transcript "$transcript")
+                if fresh "$terminal_id" "$SEEN_TR"; then
+                    # A worker can finish its previous turn after settle but before it picks up a correction. Confirm a
+                    # correction's terminal identity stays quiet for one poll so that tail cannot spawn a duplicate.
+                    if ((ROUND_AT > 0)); then
+                        sleep "${AK_WAIT_POLL_S:-15}"
+                        if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
+                        terminal_state=$(transcript_state "$transcript")
+                        [[ $terminal_state =~ ^(ended|errored)$ && $(ident_transcript "$transcript") == "$terminal_id" ]] || { echo running; return 0; }
+                    fi
+                    echo ended-without-result
+                    return 0
+                fi ;;
         esac
         if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; else echo running; fi
         return 0
@@ -293,17 +306,21 @@ attach() {
     while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
 }
 
-# open_corrections: a correction round adds each named item that is not out to the open wave (so the hook marker and
-# collect --wave see it) and stamps the call time in the item. An item already out is in a round: it is left alone. The
-# identities its last settle saw are kept; an item no settle saw (collected by hand) is compared with what is there now.
+# open_corrections: a correction round adds each named item to the open wave (so the hook marker and collect --wave see
+# it) and stamps the call time. An out item is left alone unless its prior worker ended and no round is open. The identities
+# its last settle saw are kept; an item no settle saw (collected by hand) is compared with what is there now.
 open_corrections() {
-    local id kind n row wt at idents
+    local id kind n row wt at idents state seen round ended
     for id in "${WAIT_NAMED[@]}"; do
         kind=${id%%:*} n=${id#*:}
         row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n and (.worktree // "") != "")][0] //
-            {state: "none"} | [.state, .worktree, (.spawned_at // 0), ((.seen // null) != null)] | map(tostring) | join("\u001f")' "$RUNFILE")
-        IFS=$'\037' read -r state wt at seen <<<"$row"
-        [[ $state != none && ! $state =~ ^(spawned|pending|merge-up)$ ]] || continue
+            {state: "none"} | [.state, .worktree, (.spawned_at // 0), ((.seen // null) != null), (.round_at // 0), (.ended // "")] |
+            map(tostring) | join("\u001f")' "$RUNFILE")
+        IFS=$'\037' read -r state wt at seen round ended <<<"$row"
+        [[ $state != none ]] || continue
+        if [[ $state =~ ^(spawned|pending|merge-up)$ ]]; then
+            [[ $round == 0 && -n $ended ]] || continue
+        fi
         idents=''
         [[ $seen == true ]] || idents=$(item_idents "$kind" "$n" "$wt" "$at")
         run_lock wait

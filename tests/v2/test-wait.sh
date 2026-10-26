@@ -291,6 +291,25 @@ assert_contains "$out" 'issue=15 state=ended-without-result' 'and reads ended'
 out=$("$AK" wait --check --issue 15 2>&1)
 assert_contains "$out" 'issue=15 state=ended-without-result' 'a second --check reads the same'
 
+# A transcript may receive its final tail write after the previous settle. A correction check must not mistake that
+# late write for the resumed worker ending when the worker starts writing during the terminal-state quiescence check.
+set_run 17
+rm -rf "$subdir"
+claude_agent a17 17 true
+"$AK" wait >/dev/null 2>&1
+printf '{"type":"assistant","message":{"content":"late tail"}}\n' >>"$subdir/agent-a17.jsonl"
+touch "$subdir/agent-a17.meta.json"
+(sleep 1; printf '{"finished":false}\n' >"$subdir/agent-a17.meta.json"; printf '{"type":"assistant","message":{"content":"resumed"}}\n' >>"$subdir/agent-a17.jsonl") &
+resumed=$!
+out=$(AK_WAIT_POLL_S=2 "$AK" wait --check --issue 17 2>&1); rc=$?
+wait "$resumed"
+assert_eq 3 "$rc" 'a late terminal tail does not settle a correction that resumes during the quiescence check'
+assert_eq $'issue=17 state=running\nwave=1 settled=0/1' "$out" 'the resumed correction remains running instead of becoming replaceable'
+green_result >"$WORK/wt/17/.ak/result"
+out=$("$AK" wait --check --issue 17 2>&1); rc=$?
+assert_eq 0 "$rc" 'the resumed correction still settles when it reports'
+assert_contains "$out" 'issue=17 state=reported' 'and reads the correction result'
+
 # A worker that did not report is recorded terminal in the run, so ak plan may replace it.
 set_run 16
 rm -rf "$subdir"
