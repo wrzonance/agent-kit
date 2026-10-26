@@ -26,7 +26,7 @@ The root has no command that blocks until a worker finishes. `skills/issues/SKIL
 harness's native wait. In practice the roots do something else, and every wake re-reads the whole root context
 (170k–600k tokens per turn):
 - Run A: 322 sleep loops and about 750 wake turns from task notifications and teammate heartbeat or idle
-  messages. That is about 620M cache reads, which is more than all 184 workers in the run spent.
+  messages. That implies roughly 128M–450M cache reads.
 - Run C: about 970 `wait_agent` calls on the main root.
 - Run E: 140 of 404 root calls (35%) were waits.
 - `lib/plan.sh` `run_lock` puts "ak plan: still working … run the same ak plan again" in the background after 3 s.
