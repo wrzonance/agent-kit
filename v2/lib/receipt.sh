@@ -22,12 +22,37 @@ receipt_findings() {
     done
 }
 
+# receipt_review_identity DIR: the findings content that a saved disposition set belongs to.
+receipt_review_identity() {
+    local dir=$1 findings
+    if [[ -f $dir/review.md ]]; then
+        findings=$(grep -E "$REVIEW_FINDING_RE" "$dir/review.md" | sed -E 's/^[[:space:]*-]*//' || true)
+        if [[ -n $findings ]]; then
+            printf 'findings\n%s\n' "$findings"
+        elif grep -qx '[[:space:]]*NO FINDINGS[[:space:]]*' "$dir/review.md"; then
+            printf 'no findings\n'
+        else
+            printf 'unparsed review\n%s\n' "$(cat -- "$dir/review.md")"
+        fi
+    elif [[ -f $dir/review.unavailable ]]; then
+        printf 'unavailable\n'
+    else
+        printf 'no review\n'
+    fi
+}
+
 # receipt_default DIR: the findings when none were given: the lines a receipt here wrote before (a merge-down runs the
 # receipt again), else none when the review found nothing or could not run, else a refusal naming the flag. A review
 # with findings never posts "none" by default (08c2516 bench: 8 of 12 workers spent a turn writing .ak/findings).
 receipt_default() {
-    local dir=$1 want=0
+    local dir=$1 want=0 saved identity
     if [[ -f $dir/findings && ! -L $dir/findings ]]; then
+        [[ -f $dir/findings-review && ! -L $dir/findings-review ]] ||
+            die "saved findings have no review identity" "read $dir/review.md and pass each disposition with --finding"
+        saved=$(<"$dir/findings-review")
+        identity=$(receipt_review_identity "$dir")
+        [[ $saved == "$identity" ]] ||
+            die "saved findings do not match the current review" "read $dir/review.md and pass each disposition with --finding"
         cat -- "$dir/findings"
         return 0
     fi
@@ -132,7 +157,7 @@ receipt_post() {
 }
 
 cmd_main() {
-    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity
     local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
@@ -169,6 +194,8 @@ cmd_main() {
     # The decided lines stay for a later receipt here (a merge-down), written fresh, never through a link.
     rm -f -- "$dir/findings"
     if [[ -n $findings ]]; then grep -v '^[[:space:]]*$' <<<"$lines" >"$dir/findings"; else printf 'none\n' >"$dir/findings"; fi
+    identity=$(receipt_review_identity "$dir") || exit 1
+    printf '%s\n' "$identity" >"$dir/findings-review"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(receipt_post "${pr%% *}" "$dir/receipt.md" "$head") ||
         die "could not post the receipt comment" "gh auth status"

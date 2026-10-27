@@ -192,6 +192,13 @@ assert_eq $'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of sc
 out=$("$AK" receipt 2>&1); rc=$?
 assert_eq 0 "$rc" 'a bare receipt reuses the earlier findings (a merge-down)'
 assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'the reused findings reach the result'
+printf 'reviewer=claude model=m head=h\nP1: a different finding — src/store.js:33 — x\nP2: a renamed finding — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses dispositions from a changed review with the same finding count'
+assert_contains "$out" 'saved findings do not match the current review' 'saved dispositions are tied to their review content'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a bare receipt reuses dispositions when the review findings still match'
 out=$("$AK" receipt --finding 'P1|bad' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a malformed --finding is refused'
 assert_contains "$out" 'malformed finding: P1|bad' 'the refusal quotes the argument'

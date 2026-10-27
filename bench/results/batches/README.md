@@ -87,9 +87,9 @@ original export:
 | Recorded wakes | 5 (5–6) | 5 (5–5) |
 
 Medians: total tokens −7.9%, worker tokens −4.9%, root tokens −12.6%, elapsed −16.2%.
-Means over the twelve workers per arm: 17.8 → 14.8 tool calls per worker (−17%),
-5.24M → 4.17M worker tokens (−20%). The candidate's best trial (47 calls, 1.09M
-worker tokens) sits well below every control trial; its other two trials match the
+Mean tool calls over the twelve workers per arm: 17.8 → 14.8 per worker (−17%).
+Total worker tokens per arm: 5.24M → 4.17M (−20%). The candidate's best trial (47 calls,
+1.09M worker tokens) sits well below every control trial; its other two trials match the
 control's best. Three trials per arm do not establish the size of the saving.
 
 Mechanism, counted in the worker transcripts of this batch (12 workers per arm):
@@ -104,7 +104,9 @@ Control trial 3 (`20261027T154157Z`) took 3,939 s with 4/4: its root ran a plain
 `wait_agent` ran its full hour with no child alive before it re-checked. The row
 stands for the arm; the path is fixed in #1023 / PR #1024.
 
-Reproduce: `python3 bench/live/compare.py bench/results/batches/20261027T151340Z-codex-550ff6c.jsonl`.
-A four-ref table comes from concatenating the three saved batch files; keep the
+Reproduce the delivery, root, and system metrics:
+`python3 bench/live/compare.py bench/results/batches/20261027T151340Z-codex-550ff6c.jsonl`.
+The command omits elapsed and worker metrics shown above. A four-ref table comes
+from concatenating the three saved batch files; keep the
 per-batch tables beside it, since the repeated 82093d0 and 08c2516 arms show batch
 variation of the same size as the differences between kits.
