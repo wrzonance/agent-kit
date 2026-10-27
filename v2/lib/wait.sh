@@ -374,7 +374,9 @@ cmd_main() {
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
         marker_mine || break
-        if ((check)); then printf 'wave=%s state=settling\n' "$(wave_number)"; return 3; fi
+        # With no worker running (checked above) the holder is settling, so a --check --settle call attaches until it
+        # drops the marker and returns the summary. An exit 3 here left a Codex root, whose stray `ak wait` was the
+        # holder, with nothing to wake it: the run sat at its cap with wave 2 never spawned (bench 2026-10-27).
         attach
     done
     trap 'marker_drop; run_unlock' EXIT
