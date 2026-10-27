@@ -51,6 +51,7 @@ assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted v
 assert_contains "$prompt" "branch feat/b into feat/a" 'branch and base are substituted'
 assert_contains "$prompt" "\`$REPO/v2/bin/ak\`" 'the worker command definition uses the absolute ak path'
 assert_not_contains "$prompt" '{{' 'no placeholder is left'
+assert_not_contains "$prompt" 'ak setup' 'no setup command configured, no setup step'
 file="$repo/.ak/runs/$run.json"
 assert_eq "$run" "$(cat "$repo/.ak/runs/current")" 'current names the run'
 assert_eq '11 12' "$(jq -r '[.items[] | select(.kind == "pr" and .state == "spawned") | .n] | join(" ")' "$file")" 'the run file lists the spawned PRs'
@@ -61,8 +62,10 @@ assert_eq '' "$(git status --porcelain --untracked-files=all -- .ak .worktrees)"
 printf 'pr=old\n' >"$wt/.ak/result"
 unset CODEX_HOME AGENT_WORKER_MODELS AGENT_WORKER_EFFORT
 export CLAUDECODE=1
-out=$("$AK" pr-plan --pr 12 2>&1)
+out=$(AGENT_CMD_SETUP='npm ci' "$AK" pr-plan --pr 12 2>&1)
 assert_contains "$out" "spawn pr=12 cwd=$wt prompt=$wt/.ak/prompt.md model=sonnet effort=medium" 'a rerun reuses the worktree with claude defaults'
+# shellcheck disable=SC2016 # markdown code span in the expected text
+assert_contains "$(cat "$wt/.ak/prompt.md")" '1. Run `ak setup`. If' 'a configured setup command renders the setup step'
 assert_eq no "$([[ -e $wt/.ak/result ]] && echo yes || echo no)" 'a stale result is removed'
 run2=$(sed -n 's/^run=//p' <<<"$out")
 assert_eq no "$([[ $run2 == "$run" ]] && echo yes || echo no)" 'a second run gets its own id'

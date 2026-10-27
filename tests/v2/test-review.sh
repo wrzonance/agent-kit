@@ -29,7 +29,8 @@ assert_eq 0 "$rc" 'review exits 0'
 assert_contains "$out" 'review=done findings=2' 'findings are counted'
 assert_contains "$out" 'P1: off by one' 'P1 title is printed'
 assert_contains "$out" 'P2: vague name' 'P2 title is printed'
-assert_not_contains "$out" 'loops past end' 'only titles are printed'
+# The whole finding line is printed (08c2516 bench: 7 of 12 workers spent a turn on cat .ak/review.md after titles).
+assert_contains "$out" $'P1: off by one \xe2\x80\x94 src/a.txt:2 \xe2\x80\x94 loops past end' 'the whole finding line is printed'
 log=$(cat "$FAKE_REVIEW_LOG")
 assert_contains "$log" 'bin=claude' 'under codex the reviewer is claude'
 assert_contains "$log" '--tools  --permission-mode dontAsk' 'claude runs with no tools'
@@ -70,14 +71,21 @@ assert_eq 20 "$(wc -l <<<"$out")" 'output is capped at 20 lines'
 # findings=unparsed, two printed findings=1 (seen on three of four reviews of this repository's own PRs).
 export CLAUDECODE=1 FAKE_REVIEW_NO_NEWLINE=1 FAKE_REVIEW_OUT='P1: only one — src/a.txt:1 — why'
 out=$("$AK" review --again 2>&1)
-assert_eq $'review=done findings=1\nP1: only one' "$out" 'a single finding without a final newline is counted and listed'
+assert_eq $'review=done findings=1\nP1: only one \xe2\x80\x94 src/a.txt:1 \xe2\x80\x94 why' "$out" 'a single finding without a final newline is counted and listed'
 export FAKE_REVIEW_OUT=$'P1: first — a:1 — x\nP2: last — b:2 — y'
 out=$("$AK" review --again 2>&1)
-assert_eq $'review=done findings=2\nP1: first\nP2: last' "$out" 'the last of two findings is not dropped'
+assert_eq $'review=done findings=2\nP1: first \xe2\x80\x94 a:1 \xe2\x80\x94 x\nP2: last \xe2\x80\x94 b:2 \xe2\x80\x94 y' "$out" 'the last of two findings is not dropped'
 export FAKE_REVIEW_OUT='NO FINDINGS'
 out=$("$AK" review --again 2>&1)
 assert_eq 'review=done findings=0' "$out" 'NO FINDINGS without a final newline still counts zero'
 unset CLAUDECODE FAKE_REVIEW_NO_NEWLINE
+
+# A long finding is cut at 200 characters and still counts once.
+long=$(printf 'P2: wordy %0300d' 0)
+export FAKE_REVIEW_OUT="$long"
+out=$("$AK" review --again 2>&1)
+assert_contains "$out" 'review=done findings=1' 'a long finding counts once'
+assert_eq 205 "$(sed -n 2p <<<"$out" | wc -c)" 'a long finding line is cut at 200 characters after its severity'
 
 export FAKE_REVIEW_OUT='this looks fine to me'
 out=$("$AK" review --again 2>&1); rc=$?
@@ -111,7 +119,7 @@ git push -q origin fix/thing 2>/dev/null
 : >"$FAKE_REVIEW_LOG"
 out=$("$AK" review 2>&1); rc=$?
 assert_eq 0 "$rc" 'a head that only moved by fixes exits 0'
-assert_eq "review=done findings=1 reused head=${head:0:7} read=$WORK/wt/.ak/review.md"$'\n''P1: off by one' "$out" 'reuse points to existing findings rather than another review'
+assert_eq "review=done findings=1 reused head=${head:0:7} read=$WORK/wt/.ak/review.md"$'\n'$'P1: off by one \xe2\x80\x94 src/a.txt:2 \xe2\x80\x94 loops past end' "$out" 'reuse points to existing findings rather than another review'
 assert_eq '' "$(cat "$FAKE_REVIEW_LOG")" 'a reused review does not run the reviewer'
 assert_eq "${first%% base=*}" "$(first3)" 'a reused review keeps its head'
 

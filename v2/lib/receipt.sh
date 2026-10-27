@@ -8,8 +8,10 @@ source "$AK_HOME/lib/ci.sh"
 source "$AK_HOME/lib/threads.sh"
 
 FINDING_RE='^ *(P[0-3]) *\| *([^|]*[^| ]) *\| *(fixed [0-9a-f]{7,40}|declined: .+)$'
+REVIEW_FINDING_RE='^[[:space:]*-]*P[12]:'
 
-# receipt_findings FILE: prints one "SEV | title | disposition" line per finding; refuses malformed lines.
+# receipt_findings: reads finding lines on stdin and prints one "SEV | title | disposition" line per finding; refuses
+# malformed lines.
 receipt_findings() {
     local line
     while IFS= read -r line || [[ -n $line ]]; do
@@ -17,7 +19,49 @@ receipt_findings() {
         [[ $line =~ $FINDING_RE ]] ||
             die "malformed finding: $line" "write each line as 'P1|title|fixed <sha>' or 'P2|title|declined: reason'"
         printf '%s | %s | %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-    done <"$1"
+    done
+}
+
+# receipt_review_identity DIR: the findings content that a saved disposition set belongs to.
+receipt_review_identity() {
+    local dir=$1 findings
+    if [[ -f $dir/review.md ]]; then
+        findings=$(grep -E "$REVIEW_FINDING_RE" "$dir/review.md" | sed -E 's/^[[:space:]*-]*//' || true)
+        if [[ -n $findings ]]; then
+            printf 'findings\n%s\n' "$findings"
+        elif grep -qx '[[:space:]]*NO FINDINGS[[:space:]]*' "$dir/review.md"; then
+            printf 'no findings\n'
+        else
+            printf 'unparsed review\n%s\n' "$(cat -- "$dir/review.md")"
+        fi
+    elif [[ -f $dir/review.unavailable ]]; then
+        printf 'unavailable\n'
+    else
+        printf 'no review\n'
+    fi
+}
+
+# receipt_default DIR: the findings when none were given: the lines a receipt here wrote before (a merge-down runs the
+# receipt again), else none when the review found nothing or could not run, else a refusal naming the flag. A review
+# with findings never posts "none" by default (08c2516 bench: 8 of 12 workers spent a turn writing .ak/findings).
+receipt_default() {
+    local dir=$1 want=0 saved identity
+    if [[ -f $dir/findings && ! -L $dir/findings ]]; then
+        [[ -f $dir/findings-review && ! -L $dir/findings-review ]] ||
+            die "saved findings have no review identity" "read $dir/review.md and pass each disposition with --finding"
+        saved=$(<"$dir/findings-review")
+        identity=$(receipt_review_identity "$dir")
+        [[ $saved == "$identity" ]] ||
+            die "saved findings do not match the current review" "read $dir/review.md and pass each disposition with --finding"
+        cat -- "$dir/findings"
+        return 0
+    fi
+    [[ ! -f $dir/review.md ]] || want=$(grep -cE "$REVIEW_FINDING_RE" "$dir/review.md" || true)
+    ((want == 0)) || die "the review has $want findings and no dispositions were given" \
+        "ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'"
+    [[ ! -f $dir/review.md ]] || grep -qx '[[:space:]]*NO FINDINGS[[:space:]]*' "$dir/review.md" ||
+        die "the review findings could not be parsed" "read $dir/review.md and pass each disposition with --finding"
+    printf 'none\n'
 }
 
 # receipt_all_decided DIR FINDINGS: every finding the review printed has a disposition (PR bench 2026-10-01: a
@@ -25,10 +69,11 @@ receipt_findings() {
 receipt_all_decided() {
     local review=$1/review.md want got titles
     [[ -f $review ]] || return 0
-    want=$(grep -cE '^P[12]:' "$review" || true)
+    want=$(grep -cE "$REVIEW_FINDING_RE" "$review" || true)
     got=$(grep -c . <<<"$2" || true)
     ((got >= want)) && return 0
-    titles=$(grep -E '^P[12]:' "$review" | sed 's/ — .*//' | cut -c1-80 | head -n 3 | paste -sd';' -)
+    titles=$(grep -E "$REVIEW_FINDING_RE" "$review" | sed -E 's/^[[:space:]*-]*//; s/ — .*//' |
+        cut -c1-80 | head -n 3 | paste -sd';' -)
     die "the review has $want findings but the findings file decides $got: $titles" \
         "write one line per finding: P1|title|fixed <sha> or P2|title|declined: reason"
 }
@@ -112,20 +157,24 @@ receipt_post() {
 }
 
 cmd_main() {
-    local file="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open inherited base
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity
+    local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
-            --findings) file=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
-            --remaining) remaining=${2:-}; shift 2 || usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
-            *) usage_die "usage: ak receipt --findings F [--remaining TEXT]" ;;
+            --finding) findings_given=1; lines+="${2:-}"$'\n'; shift 2 || usage_die "$usage" ;;
+            --findings) findings_given=1; file=${2:-}; shift 2 || usage_die "$usage" ;;
+            --remaining) remaining=${2:-}; shift 2 || usage_die "$usage" ;;
+            *) usage_die "$usage" ;;
         esac
     done
-    [[ -n $file ]] || usage_die "usage: ak receipt --findings F [--remaining TEXT]"
-    [[ -f $file ]] || die "findings file not found: $file" "printf 'none\\n' >$file"
-    file="$(cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file")"
+    [[ -z $file || -f $file ]] || die "findings file not found: $file" "ak receipt --finding 'P1|title|fixed <sha>'"
+    [[ -z $file ]] || lines+=$(<"$file")$'\n'
     cd -- "$(worktree_root)" || exit 1
     dir=$(ak_dir)
-    findings=$(receipt_findings "$file") || exit 1
+    ((!findings_given)) || [[ -n ${lines//[[:space:]]/} ]] ||
+        die "findings input is empty" "pass 'none' or one disposition per review finding"
+    [[ -n ${lines//[[:space:]]/} ]] || lines=$(receipt_default "$dir") || exit 1
+    findings=$(receipt_findings <<<"$lines") || exit 1
     head=$(ci_head)
     pr=$(ship_pr_find)
     [[ -n $pr ]] || die "no open PR for $(git branch --show-current)" "ak ship --message '<conventional commit>'"
@@ -142,6 +191,11 @@ cmd_main() {
     open=$(threads_open "$(slug)" "${pr%% *}") || die "cannot read the review threads on PR #${pr%% *}" "gh auth status"
     [[ -z $open ]] || die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" "ak threads"
     [[ -z $remaining ]] || receipt_part_of "${pr%% *}"
+    # The decided lines stay for a later receipt here (a merge-down), written fresh, never through a link.
+    rm -f -- "$dir/findings"
+    if [[ -n $findings ]]; then grep -v '^[[:space:]]*$' <<<"$lines" >"$dir/findings"; else printf 'none\n' >"$dir/findings"; fi
+    identity=$(receipt_review_identity "$dir") || exit 1
+    printf '%s\n' "$identity" >"$dir/findings-review"
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(receipt_post "${pr%% *}" "$dir/receipt.md" "$head") ||
         die "could not post the receipt comment" "gh auth status"

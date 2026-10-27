@@ -61,6 +61,7 @@ pr_plan_prompt() {
     text=${text//'{{BASE}}'/"$base"}
     text=${text//'{{SLUG}}'/"$slug"}
     text=${text//'{{AK}}'/"$AK_HOME/bin/ak"}
+    text=${text//'{{SETUP}}'/"$(setup_step)"}
     printf '%s\n' "$text" >"$wt/.ak/prompt.md"
 }
 

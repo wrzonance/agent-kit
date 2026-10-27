@@ -66,3 +66,47 @@ For a three-ref table, concatenate the two saved JSONL files into a temporary
 ledger and run `compare.py` on it. Keep the separate batch comparisons alongside
 that pooled table. These measurements cover Codex; Claude live savings remain
 unmeasured. No model, scorer or acceptance changes were made between these batches.
+
+## Worker turns follow-on
+
+`20261027T151340Z-codex-550ff6c.jsonl` preserves the next completed ABBAAB batch:
+08c2516 versus 550ff6c (PR #1022), three trials per arm, the same model/effort/CLI
+(Codex `gpt-6-luna` / high, CLI 0.164.0), fixture and local harness. All six trials
+passed all four hidden tasks and delivered four green PRs; no steers. SHA-256 of the
+original export:
+`cc881b0bab8b6519a2ab4b4ea6818b0995e0aa78d8e78120f16ec504bde71edf`.
+
+| | 08c2516 median (range) | 550ff6c median (range) |
+|---|---:|---:|
+| Total tokens including cached input | 1,939,546 (1,867,163–2,339,392) | 1,786,491 (1,356,983–1,835,056) |
+| Root tokens | 309,613 (269,877–324,486) | 270,608 (251,042–287,596) |
+| Worker tokens | 1,615,060 (1,557,550–2,069,515) | 1,535,449 (1,086,375–1,547,460) |
+| Worker tool calls (4 workers) | 67 (65–82) | 65 (47–65) |
+| Elapsed seconds | 396 (391–3,939) | 332 (326–402) |
+| Root tool calls | 17 (15–18) | 15 (14–16) |
+| Recorded wakes | 5 (5–6) | 5 (5–5) |
+
+Medians: total tokens −7.9%, worker tokens −4.9%, root tokens −12.6%, elapsed −16.2%.
+Mean tool calls over the twelve workers per arm: 17.8 → 14.8 per worker (−17%).
+Total worker tokens per arm: 5.24M → 4.17M (−20%). The candidate's best trial (47 calls,
+1.09M worker tokens) sits well below every control trial; its other two trials match the
+control's best. Three trials per arm do not establish the size of the saving.
+
+Mechanism, counted in the worker transcripts of this batch (12 workers per arm):
+`ak ship` refusals 6 → 0; skill-file reads 0.67 → 0 per worker; `ak setup` 1.0 → 0;
+`ak threads` 1.0 → 0; `cat .ak/review.md` after the review 0.33 → 0.58 (unchanged
+class; the whole-line output did not remove it). Review findings per PR were similar
+in both arms.
+
+Control trial 3 (`20261027T154157Z`) took 3,939 s with 4/4: its root ran a plain
+`ak wait` before spawning, that watcher settled wave 1, the root's
+`ak wait --check --settle` answered exit 3 `state=settling`, and the root's
+`wait_agent` ran its full hour with no child alive before it re-checked. The row
+stands for the arm; the path is fixed in #1023 / PR #1024.
+
+Reproduce the delivery, root, and system metrics:
+`python3 bench/live/compare.py bench/results/batches/20261027T151340Z-codex-550ff6c.jsonl`.
+The command omits elapsed and worker metrics shown above. A four-ref table comes
+from concatenating the three saved batch files; keep the
+per-batch tables beside it, since the repeated 82093d0 and 08c2516 arms show batch
+variation of the same size as the differences between kits.

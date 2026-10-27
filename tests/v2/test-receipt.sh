@@ -21,7 +21,8 @@ assert_eq 1 "$rc" 'a finding without a disposition is refused'
 assert_contains "$out" 'P1|bad thing' 'the refusal quotes the line'
 
 out=$("$AK" receipt 2>&1); rc=$?
-assert_eq 2 "$rc" 'receipt without --findings is a usage error'
+assert_eq 1 "$rc" 'a bare receipt before any review is refused'
+assert_contains "$out" 'fix: ak review' 'the refusal names the review command, not a findings flag'
 
 printf 'model=gpt-5.6-sol reviewer=codex\n\nfindings\n' >.ak/review.md
 printf 'P1|null deref in parser|fixed abc1234\n\nP2|rename helper|declined: churn outside the issue\n' >"$WORK/findings"
@@ -149,8 +150,13 @@ out=$("$AK" receipt --findings "$WORK/none2" --remaining 'y' 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue number that is not digits is refused, never put in a pattern'
 printf '7\n' >.ak/issue
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
-out=$("$AK" receipt --remaining x 2>&1); rc=$?
-assert_eq 2 "$rc" '--remaining without --findings is a usage error'
+# Findings are arguments, and none are needed when the review found nothing (08c2516 bench: 8 of 12 workers spent a
+# turn writing .ak/findings before the receipt).
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'an unavailable review needs no findings argument'
+assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'the receipt states none'
+assert_eq none "$(cat .ak/findings)" 'the decided findings are kept for a later receipt'
 
 # Every finding the review printed needs a disposition (PR bench 2026-10-01: a P1 was answered with "none").
 printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
@@ -162,6 +168,54 @@ assert_contains "$out" 'P1: undo drops the count' 'the refusal names the undecid
 printf 'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope\n' >"$WORK/decided"
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 0 "$rc" 'a receipt that decides every finding is accepted'
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt with undecided review findings is refused'
+assert_contains "$out" 'the review has 2 findings and no dispositions were given' 'the refusal counts the findings'
+assert_contains "$out" "fix: ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'" 'the fix line shows the flag'
+printf 'reviewer=claude model=m head=h\n- P1: undo drops the count — src/store.js:33 — x\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses a bulleted review finding'
+assert_contains "$out" 'the review has 1 findings and no dispositions were given' 'the refusal counts the finding syntax review accepts'
+out=$("$AK" receipt --findings "$WORK/undecided" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt cannot leave a bulleted review finding undecided'
+assert_contains "$out" 'the review has 1 findings but the findings file decides 0' 'disposition validation counts bulleted findings too'
+printf 'reviewer=claude model=m head=h\nthis review did not follow the requested format\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses an unparsed review'
+assert_contains "$out" 'the review findings could not be parsed' 'the refusal does not call an unparsed review clean'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+out=$("$AK" receipt --finding 'P1|undo drops the count|fixed abc1234' --finding 'P2|rename|declined: out of scope' 2>&1); rc=$?
+assert_eq 0 "$rc" 'findings given as arguments are accepted'
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'argument findings reach the result'
+assert_eq $'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope' "$(cat .ak/findings)" 'the decided lines are written to .ak/findings'
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a bare receipt reuses the earlier findings (a merge-down)'
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'the reused findings reach the result'
+printf 'reviewer=claude model=m head=h\nP1: a different finding — src/store.js:33 — x\nP2: a renamed finding — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses dispositions from a changed review with the same finding count'
+assert_contains "$out" 'saved findings do not match the current review' 'saved dispositions are tied to their review content'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a bare receipt reuses dispositions when the review findings still match'
+out=$("$AK" receipt --finding 'P1|bad' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a malformed --finding is refused'
+assert_contains "$out" 'malformed finding: P1|bad' 'the refusal quotes the argument'
+out=$("$AK" receipt --finding '' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty --finding is refused'
+assert_contains "$out" 'findings input is empty' 'empty argument findings do not reuse saved dispositions'
+: >"$WORK/empty-findings"
+out=$("$AK" receipt --findings "$WORK/empty-findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty findings file is refused'
+assert_contains "$out" 'findings input is empty' 'an empty findings file does not reuse saved dispositions'
+printf 'reviewer=claude model=m head=h\nNO FINDINGS\n' >.ak/review.md
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a clean review needs no findings argument'
+assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'a clean review posts none'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+cp "$WORK/decided" .ak/findings
 
 
 # Comments on the PR from review bots and people are findings too (a field root went to merge a PR carrying two

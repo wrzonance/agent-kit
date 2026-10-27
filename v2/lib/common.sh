@@ -198,6 +198,12 @@ run_logged() {
     return "$rc"
 }
 
+# setup_step: the playbook's setup step, or nothing when no AGENT_CMD_SETUP is configured (08c2516 bench: 12 of 12
+# workers spent a turn on setup=none).
+setup_step() { # shellcheck disable=SC2016 # markdown code span
+    [[ -z $(cfg AGENT_CMD_SETUP) ]] || printf 'Run `ak setup`. '
+}
+
 # The issue number this worktree works on, from its branch name (feat/issue-N) or .ak/issue.
 issue_number() {
     local root branch

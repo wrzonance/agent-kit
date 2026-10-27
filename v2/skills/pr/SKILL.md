@@ -23,7 +23,7 @@ Each `ak` command prints what you need next; there is no need to read its script
 2. For each `spawn` line, spawn one worker with exactly that model, effort and name (Claude Agent `name`,
    Codex `spawn_agent` `task_name`), and that cwd if supported. Use a fresh context (Codex `fork_turns="none"`).
    Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
-   final result. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
+   final result; it is complete, so skip skill lookups. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
    taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
    The worker reads the file; the root dispatches using the printed fields.
    Spawn them all before waiting. Use this same recipe for every later spawn, including merge-downs,

@@ -325,6 +325,7 @@ compose_prompt() {
     text=${text//"{{BASE}}"/"$3"}
     text=${text//"{{SLUG}}"/"$SLUG"}
     text=${text//"{{AK}}"/"$AK_HOME/bin/ak"}
+    text=${text//"{{SETUP}}"/"$(setup_step)"}
     text=${text//"{{ISSUE_BLOCK}}"/"$prior$(<"$4/issue.md")"}
     printf '%s\n' "$text"
 }
