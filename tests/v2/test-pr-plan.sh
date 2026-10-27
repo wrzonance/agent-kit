@@ -64,6 +64,7 @@ unset CODEX_HOME AGENT_WORKER_MODELS AGENT_WORKER_EFFORT
 export CLAUDECODE=1
 out=$(AGENT_CMD_SETUP='npm ci' "$AK" pr-plan --pr 12 2>&1)
 assert_contains "$out" "spawn pr=12 cwd=$wt prompt=$wt/.ak/prompt.md model=sonnet effort=medium" 'a rerun reuses the worktree with claude defaults'
+# shellcheck disable=SC2016 # markdown code span in the expected text
 assert_contains "$(cat "$wt/.ak/prompt.md")" '1. Run `ak setup`. If' 'a configured setup command renders the setup step'
 assert_eq no "$([[ -e $wt/.ak/result ]] && echo yes || echo no)" 'a stale result is removed'
 run2=$(sed -n 's/^run=//p' <<<"$out")

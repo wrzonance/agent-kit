@@ -741,6 +741,7 @@ fresh
 issue_route 671 'Fix src/a.txt'
 default_routes
 AGENT_CMD_SETUP='npm ci' "$AK" plan --issue 671 >/dev/null 2>&1
+# shellcheck disable=SC2016 # markdown code span in the expected text
 assert_contains "$(cat "$repo/.worktrees/feat/issue-671/.ak/prompt.md")" 'setup=Run `ak setup`. ' 'a configured setup command renders the setup step'
 
 fresh
