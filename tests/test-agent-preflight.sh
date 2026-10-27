@@ -68,8 +68,12 @@ fi
 alias_repo="$tmp/repo with spaces"
 mkdir -p -- "$alias_repo/.agent"
 git -C "$alias_repo" init -q
-worktree_alias_out=$("$script" --worktree "$alias_repo" --no-write 2> /dev/null)
-repo_root_alias_out=$("$script" --repo-root "$alias_repo" --no-write 2> /dev/null)
+# Both runs probe DNS for the sandbox line; under a loaded parallel gate one of them timed out and read
+# network=unresolved against the other's network=ok. The flag under test is the path alias, so the probe is
+# pinned to the sandbox-disabled reading for both runs.
+worktree_alias_out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$script" --worktree "$alias_repo" --no-write 2> /dev/null)
+repo_root_alias_out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$script" --repo-root "$alias_repo" --no-write 2> /dev/null)
+assert_contains "$worktree_alias_out" 'network=disabled' 'the alias comparison does not depend on a live DNS probe'
 assert_eq "$worktree_alias_out" "$repo_root_alias_out" \
     '--repo-root is equivalent to --worktree for a path containing spaces'
 
