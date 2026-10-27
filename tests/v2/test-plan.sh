@@ -746,6 +746,13 @@ assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 real="$REPO/v2/templates/issue-worker.md"
 assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
+# The Tests line and the ship gate agree (08c2516 bench: 7 of 12 first ships refused for run output the playbook had
+# asked for), and every worker brief says skill lookups are unnecessary (12 of 12 workers opened a skill file).
+assert_not_contains "$(cat "$real")" 'commands, results' 'the Tests line does not ask for the run output ak ship refuses'
+assert_contains "$(cat "$real")" 'what each test file proves' 'the Tests line matches the ship gate'
+for f in "$real" "$REPO/v2/templates/pr-worker.md" "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
+    assert_contains "$(cat "$f")" 'skip skill' "$(basename "$f") tells the worker skill lookups are unnecessary"
+done
 
 
 finish

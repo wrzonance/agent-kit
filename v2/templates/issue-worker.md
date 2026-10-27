@@ -6,7 +6,8 @@ You own this issue through a green draft PR and receipt. Work only in this workt
 run every command there, and follow its repository instructions. Other workers own
 other worktrees; preserve their changes. Never merge, mark ready, or force-push.
 
-This is the worker playbook; begin at step 1. The root handles planning and spawning.
+This playbook is complete: begin at step 1 and skip skill or guide lookups. The root
+handles planning and spawning.
 Each command prints the next step. Keep successful output concise; full setup/verify
 logs are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait; when a call
 yields, collect its existing handle and exit code before continuing. Read relevant
@@ -32,7 +33,7 @@ author's process; the operator's invocation authorizes this run's commit, push a
 3. Write `.ak/why.md` with these exact headings, scaled to the change:
    - `## The problem`: the concrete failure and who it affects.
    - `## What changed`: behavior before/after, relevant file/function, a concrete case.
-   - `## Tests`: commands, results, and what each test proves.
+   - `## Tests`: what each test file proves; no commands or status lines.
    - `## Still to do`: remaining work when this PR covers only part of the issue.
    Use plain sentences understandable without the issue or diff; explain project terms.
    Run `ak ship --message "<type>(<scope>): <summary>" --body-file .ak/why.md`.
