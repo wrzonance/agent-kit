@@ -97,7 +97,27 @@ mv "$WORK/issue-run.json" "$repo/.ak/runs/r1.json"
 sed -i 's#/root/pr_5#/root/issue-5#g' "$sessions/rollout-a.jsonl"
 out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=5 state=ended-without-result' 'a historical hyphenated path still matches'
-sed -i 's#/root/issue-5#/root/issue_5#g' "$sessions/rollout-a.jsonl"
+sed -i 's#/root/issue-5#/root/issue_5_2#g' "$sessions/rollout-a.jsonl"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=ended-without-result' 'a re-spawned worker carries a numbered name and still matches'
+sed -i 's#/root/issue_5_2#/root/issue_55#g' "$sessions/rollout-a.jsonl"
+out=$("$AK" wait --check 2>&1)
+assert_not_contains "$out" 'ended-without-result' 'a longer issue number is not a prefix match'
+sed -i 's#/root/issue_55#/root/issue_5#g' "$sessions/rollout-a.jsonl"
+# A spawn with no transcript of its own while an older worker holds the name: Codex refuses the second spawn and the
+# root's message reaches the finished worker, which answers from its old context and ends. After four polls that
+# worker's end is reported, so the root replans at once instead of waiting an hour on a worker nobody started.
+sleep 1
+SPAWNED_AT=$(date +%s) set_run 5
+touch "$WORK/wt/5/.ak"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=running' 'within the grace after a spawn the older transcript does not count'
+sleep 4
+touch "$WORK/wt/5/.ak"
+out=$("$AK" wait --check 2>&1)
+assert_contains "$out" 'issue=5 state=ended-without-result note=the earlier worker issue_5 answered this spawn and ended' \
+    'after the grace the older worker that took the spawn reads as ended, busy worktree or not'
+SPAWNED_AT=0 set_run 5
 head -n 2 "$sessions/rollout-a.jsonl" >"$sessions/rollout-b.jsonl"
 sed -i 's#/root/issue_5#/root/issue_6#g' "$sessions/rollout-a.jsonl"
 touch "$sessions/rollout-b.jsonl"

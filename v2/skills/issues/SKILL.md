@@ -15,7 +15,7 @@ Each `ak` command prints what you need next; there is no need to read its script
    `chars=""`, `yield_time_ms=30000`, returning the whole result each time until `exit_code` is present.
    If the outer `functions.exec` yields a `cell_id`, collect it with `functions.wait` first.
    Empty output with a live handle means keep collecting that command; it is not a reason to run another plan.
-2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue_N` line, spawn one worker with exactly that
+2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=…` line, spawn one worker with exactly that
    model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
    `spawn_agent` `task_name`; `ak wait` finds Codex workers by it). Use a fresh context (Codex `fork_turns="none"`).
    Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its

@@ -248,12 +248,13 @@ route "api $api/pulls/30" "$(pr_json 30 feat/q main)"
 route "api --paginate $api/commits/sha30/check-runs*" "$green"
 git worktree add -q -b feat/q "$WORK/wtq" origin/main
 mkdir -p "$WORK/wtq/.ak" && printf 'prompt\n' >"$WORK/wtq/.ak/prompt.md" && printf 'pr=x\n' >"$WORK/wtq/.ak/result"
+printf '1\n' >"$WORK/wtq/.ak/spawns"
 : >"$FAKE_GH_LOG"
 out=$("$AK" merge --pr 30 2>&1); rc=$?
 assert_eq 3 "$rc" 'a conflicting PR exits 3'
 assert_contains "$out" 'resolve pr=30 conflicts-with=main' 'the conflict is named'
 assert_contains "$out" "spawn pr=30 cwd=$WORK/wtq prompt=$WORK/wtq/.ak/prompt.md" 'the PR worker is respawned in its worktree'
-assert_contains "$out" 'name=pr_30' 'the respawn name is valid for the native agent tool'
+assert_contains "$out" 'name=pr_30_2' 'the respawn carries a new native name: the first worker still holds pr_30'
 assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records what to merge in'
 assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'a conflicting PR is not merged'

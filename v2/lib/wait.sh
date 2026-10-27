@@ -143,7 +143,7 @@ item_meta() {
 # A correction round resumes the same worker: its result counts when it differs from the one the last settle saw, and an
 # end record likewise; a hang is judged from the call at the earliest.
 item_state() {
-    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state
+    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state taken='' since
     item_meta "$kind" "$n"
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
@@ -155,7 +155,15 @@ item_state() {
         return 0
     fi
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
-    transcript=$(transcript_find "$wt" "${kind}_$n" "$(spawn_since "$wt" "${4:-0}")")
+    since=$(spawn_since "$wt" "${4:-0}")
+    transcript=$(transcript_find "$wt" "${kind}_$n" "$since")
+    if [[ -z $transcript && $(harness) == codex ]] && (($(date +%s) - since >= 4 * ${AK_WAIT_POLL_S:-15})); then
+        # No worker of this spawn after four polls: Codex keeps a finished worker's name, so the spawn under it failed
+        # and the root's message reached the old worker, which answers from its context and ends. Its end is this
+        # item's end, so the root replans now instead of waiting on a worker nobody started.
+        transcript=$(transcript_find "$wt" "${kind}_$n" 0)
+        [[ -z $transcript ]] || taken=" note=the earlier worker ${kind}_$n answered this spawn and ended"
+    fi
     if [[ -n $transcript ]]; then
         terminal_state=$(transcript_state "$transcript")
         case $terminal_state in
@@ -170,7 +178,7 @@ item_state() {
                         terminal_state=$(transcript_state "$transcript")
                         [[ $terminal_state =~ ^(ended|errored)$ && $(ident_transcript "$transcript") == "$terminal_id" ]] || { echo running; return 0; }
                     fi
-                    echo ended-without-result
+                    echo "ended-without-result$taken"
                     return 0
                 fi ;;
         esac

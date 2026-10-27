@@ -28,13 +28,15 @@ transcript_claude() {
 # transcript_codex NAME SINCE: the newest child rollout of this root thread whose agent_path is /root/NAME.
 # Spawn names use underscores; accept historical hyphenated paths too. Encrypted prompts cannot identify workers.
 transcript_codex() {
-    local file best=''
+    local file best='' path
     [[ -n ${CODEX_THREAD_ID:-} && -n $1 ]] || return 0
+    # The name, a historical hyphenated form of it, or a re-spawn's numbered form (worker_name).
+    path="^/root/${1//_/[_-]}([_-][0-9]+)?\$"
     while IFS= read -r file; do
         (($(transcript_born "$file") >= ${2:-0})) || continue
         head -n 1 -- "$file" | grep -qF -- "$CODEX_THREAD_ID" || continue
-        head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg a "/root/$1" --arg b "/root/${1//_/-}" \
-            '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and (.agent_path | IN($a, $b))' \
+        head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg path "$path" \
+            '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and ((.agent_path // "") | test($path))' \
             >/dev/null 2>&1 || continue
         [[ -z $best || $file -nt $best ]] && best=$file
     done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -mtime -7 2>/dev/null)
