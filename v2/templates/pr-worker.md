@@ -20,9 +20,9 @@ diagnostics as needed, rather than dumping whole trees or logs.
    both sides' intent, commit the merge, then `ak verify`,
    `ak ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `ak ci`.
    Go to step 6 (skip review; the receipt reuses the earlier findings).
-2. Run `ak review` once (an existing review is reused). It prints finding titles;
-   full findings are in `.ak/review.md`. For `review=unavailable`, go to step 5.
-   For `findings=unparsed`, read that file and account for every defect.
+2. Run `ak review` once (an existing review is reused). It prints the findings.
+   For `review=unavailable`, go to step 5. For `findings=unparsed`, read
+   `.ak/review.md` and account for every defect.
 3. Check findings against code: the reviewer saw only the diff. Fix real defects
    with regression tests that fail before the fix and are not edited to pass.
    Decline others with a one-line reason.
