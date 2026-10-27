@@ -95,6 +95,28 @@ assert_eq 3 "$rc" 'a live watcher with a worker still running returns pending wi
 assert_contains "$out" 'issue=2 state=running' 'the pending line names the running worker'
 assert_eq "$$" "$(sed -n 's/^pid=//p' "$marker")" 'the live watcher marker stays intact'
 rm -f "$marker"
+# If a worker resumes after the readiness probe while a same-session watcher owns the marker, attachment rechecks it.
+reset_run
+result 11 first >"$WORK/a/.ak/result"
+result 12 second >"$WORK/b/.ak/result"
+printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$$" "$(proc_start $$)" >"$marker"
+mkdir -p "$WORK/attach-bin"
+export REAL_LN REVIVE_RESULT="$WORK/b/.ak/result"
+REAL_LN=$(command -v ln)
+cat >"$WORK/attach-bin/ln" <<'SH'
+#!/usr/bin/env bash
+"$REAL_LN" "$@"
+rc=$?
+if [[ ${*: -1} == */wave.open ]]; then rm -f "$REVIVE_RESULT"; fi
+exit "$rc"
+SH
+chmod +x "$WORK/attach-bin/ln"
+out=$(PATH="$WORK/attach-bin:$PATH" timeout 5 "$AK" wait --check --settle 2>&1); rc=$?
+assert_eq 3 "$rc" 'attachment returns pending when a worker resumes while another watcher holds the marker'
+assert_contains "$out" 'issue=2 state=running' 'attachment reports the worker that resumed'
+assert_eq "$$" "$(sed -n 's/^pid=//p' "$marker")" 'attachment leaves the other watcher marker intact'
+rm -f "$marker"
+unset REAL_LN REVIVE_RESULT
 reset_run
 result 11 first >"$WORK/a/.ak/result"
 result 12 second >"$WORK/b/.ak/result"
