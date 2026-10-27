@@ -102,9 +102,14 @@ assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting a park no
 git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
 "$AK" collect --issue 671 >/dev/null 2>&1
 assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting the same park again does not move the note'
+# The worker left its counter as a link (or the worktree predates the counter): the root never writes through it, and
+# the worker's logs still say a worker ran here, so the next spawn gets a new name.
+printf 'keep\n' >"$WORK/victim" && ln -sfn "$WORK/victim" "$wt/.ak/spawns"
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_eq "$stopped $(git -C "$wt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning the park again records what was committed since'
 assert_contains "$out" 'name=issue_671_2' 'the park planned again names a new worker: Codex keeps the finished one under the old name'
+assert_eq keep "$(cat "$WORK/victim")" 'the counter is never written through a link a worker left'
+assert_eq '2 no' "$(cat "$wt/.ak/spawns") $([[ -L $wt/.ak/spawns ]] && echo yes || echo no)" 'the link is replaced by a plain counter'
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'

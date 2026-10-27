@@ -169,6 +169,8 @@ ak_dir() {
 worker_name() {
     local k
     k=$(($(worker_spawn_count "$3") + 1))
+    # Written fresh, never through a link a worker left.
+    rm -f -- "$3/.ak/spawns"
     printf '%s\n' "$k" >"$3/.ak/spawns"
     worker_name_now "$@"
 }
@@ -178,9 +180,17 @@ worker_name_now() {
     if ((k <= 1)); then printf '%s_%s\n' "$1" "$2"; else printf '%s_%s_%s\n' "$1" "$2" "$k"; fi
 }
 worker_spawn_count() {
-    local prior=''
-    [[ ! -f $1/.ak/spawns ]] || prior=$(<"$1/.ak/spawns")
-    [[ $prior =~ ^[0-9]+$ ]] && printf '%s\n' "$prior" || printf '0\n'
+    local file=$1/.ak/spawns prior=''
+    [[ -L $file || ! -f $file ]] || prior=$(<"$file")
+    if [[ $prior =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$prior"
+    elif [[ -e $1/.ak/logs || -e $1/.ak/setup.ok ]]; then
+        # No counter, but a worker already ran here (its logs or setup mark): count it, so the first spawn after an
+        # upgrade does not reuse its name.
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
 }
 
 # run_logged NAME COMMAND [DIR]: run COMMAND in DIR (relative to the worktree), log it, print PASS or FAIL + tail.

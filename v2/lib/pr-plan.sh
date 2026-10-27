@@ -102,7 +102,7 @@ cmd_main() {
     (($# > 0)) || usage_die "usage: ak pr-plan --pr N [--pr N]..."
     while (($# > 0)); do
         [[ $1 == --pr && ${2:-} =~ ^[0-9]+$ ]] || usage_die "usage: ak pr-plan --pr N [--pr N]..."
-        prs+=("$2")
+        [[ " ${prs[*]} " == *" $2 "* ]] || prs+=("$2")
         shift 2
     done
     local root slug dir runs run model effort items='[]' n json reason wt spawns=''
