@@ -67,16 +67,22 @@ proc_start() {
     fi
 }
 # The holder: owns the marker for two seconds, then publishes the summary and drops the marker, like settle does.
+holder_gate="$WORK/settle-holder-ready"
 (
+    while [[ ! -e $holder_gate ]]; do sleep 0.01; done
     sleep 2
-    printf 'issue=1 pr=https://github.com/acme/widget/pull/11 ci=green review=done note=first\nwave=1 settled=2/2 summary=%s\n' "$summary" >"$summary"
+    printf '%s\n' \
+        'issue=1 pr=https://github.com/acme/widget/pull/11 ci=green review=done note=first' \
+        "wave=1 settled=2/2 summary=$summary" >"$summary"
     rm -f "$marker"
 ) &
 holder=$!
 printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$holder" "$(proc_start "$holder")" >"$marker"
+: >"$holder_gate"
 out=$(timeout 10 "$AK" wait --check --settle 2>&1); rc=$?
 wait "$holder"
 assert_eq 0 "$rc" 'a readiness call attaches to a watcher that is settling and returns its summary'
+assert_contains "$out" 'issue=1 pr=https://github.com/acme/widget/pull/11 ci=green review=done note=first' 'the holder summary carries its collected result'
 assert_contains "$out" 'wave=1 settled=2/2' 'the summary the holder published is returned'
 assert_not_contains "$out" 'state=settling' 'no pending line is printed once the holder has settled'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the holder dropped its marker and the caller wrote none'
