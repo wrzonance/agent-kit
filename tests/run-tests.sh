@@ -473,7 +473,11 @@ step 'unit suites'
 selection_note=''
 [[ -z $only ]] || selection_note=", focus=$only"
 [[ -z $shard ]] || selection_note=", shard=$shard"
-printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" "$selection_note"
+# shellcheck source=lib/timeout-scale.sh
+source "$here/lib/timeout-scale.sh"
+AGENT_TEST_TIMEOUT_SCALE=$(timeout_scale "$jobs")
+export AGENT_TEST_TIMEOUT_SCALE
+printf '  %d selected (jobs=%s, timeout-scale=%s%s)\n' "${#selected[@]}" "$jobs" "$AGENT_TEST_TIMEOUT_SCALE" "$selection_note"
 
 suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-test-suites.XXXXXX")
 trap 'rm -rf -- "$suite_tmp"' EXIT
