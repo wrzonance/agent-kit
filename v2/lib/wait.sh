@@ -302,9 +302,17 @@ wait_loop() {
     settle "$states"
 }
 
-# attach: a watcher is live; wait for its marker to clear. The caller then takes over if workers are still out.
+# attach: a watcher is live; wait for its marker to clear. A readiness caller rechecks the wave while attached so it
+# can return pending if a worker resumes after the initial probe. Plain waits retain their blocking behavior.
 attach() {
-    while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
+    local check=${1:-0} states
+    while marker_live; do
+        if ((check)); then
+            states=$(wave_state)
+            if grep -q 'state=running' <<<"$states"; then report "$states" || true; return 3; fi
+        fi
+        sleep "${AK_WAIT_POLL_S:-15}"
+    done
 }
 
 # open_corrections: a correction round adds each named item to the open wave (so the hook marker and collect --wave see
@@ -374,8 +382,10 @@ cmd_main() {
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
         marker_mine || break
-        if ((check)); then printf 'wave=%s state=settling\n' "$(wave_number)"; return 3; fi
-        attach
+        # With no worker running (checked above) the holder is settling, so a --check --settle call attaches until it
+        # drops the marker and returns the summary. An exit 3 here left a Codex root, whose stray `ak wait` was the
+        # holder, with nothing to wake it: the run sat at its cap with wave 2 never spawned (bench 2026-10-27).
+        attach "$check" || return $?
     done
     trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT

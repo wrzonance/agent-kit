@@ -50,23 +50,77 @@ assert_eq 0 "$rc" 'a new correction result settles without another command'
 assert_contains "$out" 'note=corrected' 'the correction summary carries the new result'
 assert_eq null "$(jq -r '.items[0].round_at' "$runfile")" 'settlement closes the correction stamp'
 
-# A live watcher owns settlement; a readiness call must not attach and block behind it.
+# A live watcher of this run that is settling (no worker running) is attached to, and its summary is returned: a
+# Codex root whose stray `ak wait` was mid-settle got exit 3 "state=settling", ended its turn with no child left to
+# wake it, and the trial ran to its cap (bench 2026-10-27, trial 20261027T154157Z).
 reset_run
 result 11 first >"$WORK/a/.ak/result"
 result 12 second >"$WORK/b/.ak/result"
-if [[ -r /proc/$$/stat ]]; then
-    stat_line=$(</proc/$$/stat)
-    read -ra stat_fields <<<"${stat_line##*) }"
-    start=${stat_fields[19]}
-else
-    start=$(ps -o lstart= -p $$ | sed 's/^ *//')
-fi
-printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$$" "$start" >"$marker"
+proc_start() {
+    if [[ -r /proc/$1/stat ]]; then
+        local line fields
+        line=$(<"/proc/$1/stat")
+        read -ra fields <<<"${line##*) }"
+        printf '%s\n' "${fields[19]}"
+    else
+        ps -o lstart= -p "$1" | sed 's/^ *//'
+    fi
+}
+# The holder: owns the marker for two seconds, then publishes the summary and drops the marker, like settle does.
+holder_gate="$WORK/settle-holder-ready"
+(
+    while [[ ! -e $holder_gate ]]; do sleep 0.01; done
+    sleep 2
+    printf '%s\n' \
+        'issue=1 pr=https://github.com/acme/widget/pull/11 ci=green review=done note=first' \
+        "wave=1 settled=2/2 summary=$summary" >"$summary"
+    rm -f "$marker"
+) &
+holder=$!
+printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$holder" "$(proc_start "$holder")" >"$marker"
+: >"$holder_gate"
+out=$(timeout 10 "$AK" wait --check --settle 2>&1); rc=$?
+wait "$holder"
+assert_eq 0 "$rc" 'a readiness call attaches to a watcher that is settling and returns its summary'
+assert_contains "$out" 'issue=1 pr=https://github.com/acme/widget/pull/11 ci=green review=done note=first' 'the holder summary carries its collected result'
+assert_contains "$out" 'wave=1 settled=2/2' 'the summary the holder published is returned'
+assert_not_contains "$out" 'state=settling' 'no pending line is printed once the holder has settled'
+assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the holder dropped its marker and the caller wrote none'
+# A live watcher while a worker is still out is not attached to: pending is returned without blocking.
+reset_run
+result 11 first >"$WORK/a/.ak/result"
+printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$$" "$(proc_start $$)" >"$marker"
 out=$(timeout 5 "$AK" wait --check --settle 2>&1); rc=$?
-assert_eq 3 "$rc" 'an existing watcher returns pending without attaching'
-assert_contains "$out" 'state=settling' 'the caller knows settlement is already owned'
+assert_eq 3 "$rc" 'a live watcher with a worker still running returns pending without attaching'
+assert_contains "$out" 'issue=2 state=running' 'the pending line names the running worker'
 assert_eq "$$" "$(sed -n 's/^pid=//p' "$marker")" 'the live watcher marker stays intact'
-sed -i 's/session=settle-test/session=other-session/' "$marker"
+rm -f "$marker"
+# If a worker resumes after the readiness probe while a same-session watcher owns the marker, attachment rechecks it.
+reset_run
+result 11 first >"$WORK/a/.ak/result"
+result 12 second >"$WORK/b/.ak/result"
+printf 'pid=%s\nstart=%s\nsession=settle-test\nrun=r\n' "$$" "$(proc_start $$)" >"$marker"
+mkdir -p "$WORK/attach-bin"
+export REAL_LN REVIVE_RESULT="$WORK/b/.ak/result"
+REAL_LN=$(command -v ln)
+cat >"$WORK/attach-bin/ln" <<'SH'
+#!/usr/bin/env bash
+"$REAL_LN" "$@"
+rc=$?
+if [[ ${*: -1} == */wave.open ]]; then rm -f "$REVIVE_RESULT"; fi
+exit "$rc"
+SH
+chmod +x "$WORK/attach-bin/ln"
+out=$(PATH="$WORK/attach-bin:$PATH" timeout 5 "$AK" wait --check --settle 2>&1); rc=$?
+assert_eq 3 "$rc" 'attachment returns pending when a worker resumes while another watcher holds the marker'
+assert_contains "$out" 'issue=2 state=running' 'attachment reports the worker that resumed'
+assert_eq "$$" "$(sed -n 's/^pid=//p' "$marker")" 'attachment leaves the other watcher marker intact'
+rm -f "$marker"
+unset REAL_LN REVIVE_RESULT
+reset_run
+result 11 first >"$WORK/a/.ak/result"
+result 12 second >"$WORK/b/.ak/result"
+printf 'pid=%s\nstart=%s\nsession=other-session\nrun=r\n' "$$" "$(proc_start $$)" >"$marker"
 out=$("$AK" wait --check --settle 2>&1); rc=$?
 assert_eq 0 "$rc" 'another session marker does not block this settlement'
 assert_eq "$$" "$(sed -n 's/^pid=//p' "$marker")" 'another session marker is not removed'
