@@ -36,7 +36,7 @@
 - Modify: `v2/skills/issues/SKILL.md:21-22`, `v2/skills/pr/SKILL.md:25-26` (spawn message)
 - Test: `tests/v2/test-plan.sh` (template content block near line 745)
 
-- [ ] **Step 1: Write the failing assertions** in `tests/v2/test-plan.sh` after the placeholder check:
+- [x] **Step 1: Write the failing assertions** in `tests/v2/test-plan.sh` after the placeholder check:
 
 ```bash
 assert_not_contains "$(cat "$real")" 'commands, results' 'the Tests line does not ask for the run output ak ship refuses'
@@ -46,10 +46,10 @@ for f in "$real" "$REPO/v2/templates/pr-worker.md" "$REPO/v2/skills/issues/SKILL
 done
 ```
 
-- [ ] **Step 2: Run** `bash tests/v2/test-plan.sh` — expect the four new assertions to fail.
-- [ ] **Step 3: Edit the prose.** Step 3 `## Tests` bullet: "per test file, what it proves; no commands or status lines." Header of both templates: "This playbook is complete: skip skill and guide lookups; the repository's own instructions still apply." Spawn message in both skills: append "The playbook is complete; skip skill lookups."
-- [ ] **Step 4: Run** `bash tests/v2/test-plan.sh && tests/v2/lint-budget.sh` — PASS.
-- [ ] **Step 5: Commit** `docs(v2): align the Tests line with the ship gate and tell workers skill lookups are unnecessary`.
+- [x] **Step 2: Run** `bash tests/v2/test-plan.sh` — expect the four new assertions to fail.
+- [x] **Step 3: Edit the prose.** Step 3 `## Tests` bullet: "per test file, what it proves; no commands or status lines." Header of both templates: "This playbook is complete: skip skill and guide lookups; the repository's own instructions still apply." Spawn message in both skills: append "The playbook is complete; skip skill lookups."
+- [x] **Step 4: Run** `bash tests/v2/test-plan.sh && tests/v2/lint-budget.sh` — PASS.
+- [x] **Step 5: Commit** `docs(v2): align the Tests line with the ship gate and tell workers skill lookups are unnecessary`.
 
 ### Task 2: Setup step renders only when configured
 
@@ -62,11 +62,11 @@ done
 **Interfaces:**
 - Produces: `setup_step` in `common.sh`: prints "Run \`ak setup\`. " when `cfg AGENT_CMD_SETUP` is non-empty, else nothing.
 
-- [ ] **Step 1: Write the failing assertions.** In `test-plan.sh` after the first rendered prompt (`prompt=$(cat "$wt/.ak/prompt.md")`, line 43): `assert_not_contains "$prompt" 'ak setup' 'no setup command, no setup step'`; add `SETUP` to the placeholder allow-list. Add a plan run with `AGENT_CMD_SETUP='true'` on a fresh issue and assert the prompt contains "1. Run \`ak setup\`." In `test-pr-plan.sh` after line 49: `assert_not_contains "$prompt" 'ak setup'`; a second render with `AGENT_CMD_SETUP=true` contains it.
-- [ ] **Step 2: Run** both suites — FAIL.
-- [ ] **Step 3: Implement.** `setup_step()` in `common.sh`; `text=${text//"{{SETUP}}"/"$(setup_step)"}` in both composers; templates read `1. {{SETUP}}If \`.ak/resolve\` exists: …`.
-- [ ] **Step 4: Run** both suites — PASS.
-- [ ] **Step 5: Commit** `perf(plan): render the setup step only when a setup command is configured`.
+- [x] **Step 1: Write the failing assertions.** In `test-plan.sh` after the first rendered prompt (`prompt=$(cat "$wt/.ak/prompt.md")`, line 43): `assert_not_contains "$prompt" 'ak setup' 'no setup command, no setup step'`; add `SETUP` to the placeholder allow-list. Add a plan run with `AGENT_CMD_SETUP='true'` on a fresh issue and assert the prompt contains "1. Run \`ak setup\`." In `test-pr-plan.sh` after line 49: `assert_not_contains "$prompt" 'ak setup'`; a second render with `AGENT_CMD_SETUP=true` contains it.
+- [x] **Step 2: Run** both suites — FAIL.
+- [x] **Step 3: Implement.** `setup_step()` in `common.sh`; `text=${text//"{{SETUP}}"/"$(setup_step)"}` in both composers; templates read `1. {{SETUP}}If \`.ak/resolve\` exists: …`.
+- [x] **Step 4: Run** both suites — PASS.
+- [x] **Step 5: Commit** `perf(plan): render the setup step only when a setup command is configured`.
 
 ### Task 3: `ak ci` lists open threads on green
 
@@ -79,12 +79,12 @@ done
 - Consumes: `threads_open SLUG N`, `threads_summary` from `threads.sh` (source it at the top of `ci.sh`; `receipt.sh` already sources both, and `cmd_main` is defined last in each file).
 - Produces: after `ci=green…` or `ci=none…`, one line `threads=N` (`N` open threads) followed by `thread=ID author path:line: text` lines; `threads=? note=could not read the review threads; run ak threads` when the read fails. Nothing when the branch has no open PR.
 
-- [ ] **Step 1: Write the failing assertions.** The existing exact-match green assertions (`assert_eq 'ci=green checks=2 failing=' "$out"`) become two-line expectations only where a PR is routed; where `$prs` answers `[]` there is no PR and no threads line, so those stay. Add: with `set_pr … clean`, `assert_eq $'ci=green checks=1 failing=\nthreads=0'`; route one open thread for PR 12 and assert `threads=1 note=…` plus the `thread=T1 …` line; route the graphql call to exit 1 and assert `threads=? note=` with `fix:`-free single line and rc 0; `ci=none` with a PR also prints `threads=0`.
-- [ ] **Step 2: Run** `bash tests/v2/test-ci.sh` — FAIL.
-- [ ] **Step 3: Implement** `ci_threads PR` and call it from `cmd_main` for the green and none returns, after the summary line.
-- [ ] **Step 4: Playbook step 6** (both templates): "`ak ci` green lists open threads (`thread=ID …`). Fix (verify, ship) or decline each, then `ak threads --resolve ID --note …`. Open threads block the receipt." Drop "Run `ak threads`."
-- [ ] **Step 5: Run** `bash tests/v2/test-ci.sh tests/v2/test-receipt.sh tests/v2/test-threads.sh` — PASS.
-- [ ] **Step 6: Commit** `perf(ci): list open review threads with the green verdict`.
+- [x] **Step 1: Write the failing assertions.** The existing exact-match green assertions (`assert_eq 'ci=green checks=2 failing=' "$out"`) become two-line expectations only where a PR is routed; where `$prs` answers `[]` there is no PR and no threads line, so those stay. Add: with `set_pr … clean`, `assert_eq $'ci=green checks=1 failing=\nthreads=0'`; route one open thread for PR 12 and assert `threads=1 note=…` plus the `thread=T1 …` line; route the graphql call to exit 1 and assert `threads=? note=` with `fix:`-free single line and rc 0; `ci=none` with a PR also prints `threads=0`.
+- [x] **Step 2: Run** `bash tests/v2/test-ci.sh` — FAIL.
+- [x] **Step 3: Implement** `ci_threads PR` and call it from `cmd_main` for the green and none returns, after the summary line.
+- [x] **Step 4: Playbook step 6** (both templates): "`ak ci` green lists open threads (`thread=ID …`). Fix (verify, ship) or decline each, then `ak threads --resolve ID --note …`. Open threads block the receipt." Drop "Run `ak threads`."
+- [x] **Step 5: Run** `bash tests/v2/test-ci.sh tests/v2/test-receipt.sh tests/v2/test-threads.sh` — PASS.
+- [x] **Step 6: Commit** `perf(ci): list open review threads with the green verdict`.
 
 ### Task 4: `ak receipt` takes findings as arguments
 
@@ -96,12 +96,12 @@ done
 **Interfaces:**
 - Produces: `ak receipt [--finding LINE]... [--findings FILE] [--remaining TEXT]`. Lines from `--finding` and the file are concatenated. With neither: an existing regular `.ak/findings` is used; else when `.ak/review.md` has no `P1:`/`P2:` line or `.ak/review.unavailable` exists, findings are `none`; else `die "the review has N findings and no dispositions were given" "ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'"`. The decided lines (or `none`) are written to `.ak/findings` before posting.
 
-- [ ] **Step 1: Write the failing assertions.** Replace `assert_eq 2 "$rc" 'receipt without --findings is a usage error'` with: a review holding two findings and no arguments → rc 1, output contains `no dispositions were given` and `fix: ak receipt --finding`; `--finding 'P1|null deref in parser|fixed abc1234' --finding 'P2|rename helper|declined: churn outside the issue'` → rc 0 and `.ak/findings` holds both lines; then `ak receipt` with no arguments reuses `.ak/findings` (result note still `findings=2`); with `review.md` saying `NO FINDINGS`, bare `ak receipt` → rc 0, receipt says `Findings: none`.
-- [ ] **Step 2: Run** `bash tests/v2/test-receipt.sh` — FAIL.
-- [ ] **Step 3: Implement** in `receipt.sh`: collect `lines` from `--finding`, append the file's content, `receipt_findings` reads from a here-string, the fallbacks above, write `.ak/findings` (`rm -f` first so a link is never written through).
-- [ ] **Step 4: Playbook step 6** (both templates): "Run `ak receipt`, with `--finding "P1|<title>|fixed <sha>"` or `--finding "P2|<title>|declined: <reason>"` per review finding (either severity, either disposition); none needed when the review had no findings. On merge-down, `ak receipt` alone reuses the earlier findings." Keep `--remaining`.
-- [ ] **Step 5: Run** `bash tests/v2/test-receipt.sh` — PASS.
-- [ ] **Step 6: Commit** `perf(receipt): take findings as arguments and need none for a clean review`.
+- [x] **Step 1: Write the failing assertions.** Replace `assert_eq 2 "$rc" 'receipt without --findings is a usage error'` with: a review holding two findings and no arguments → rc 1, output contains `no dispositions were given` and `fix: ak receipt --finding`; `--finding 'P1|null deref in parser|fixed abc1234' --finding 'P2|rename helper|declined: churn outside the issue'` → rc 0 and `.ak/findings` holds both lines; then `ak receipt` with no arguments reuses `.ak/findings` (result note still `findings=2`); with `review.md` saying `NO FINDINGS`, bare `ak receipt` → rc 0, receipt says `Findings: none`.
+- [x] **Step 2: Run** `bash tests/v2/test-receipt.sh` — FAIL.
+- [x] **Step 3: Implement** in `receipt.sh`: collect `lines` from `--finding`, append the file's content, `receipt_findings` reads from a here-string, the fallbacks above, write `.ak/findings` (`rm -f` first so a link is never written through).
+- [x] **Step 4: Playbook step 6** (both templates): "Run `ak receipt`, with `--finding "P1|<title>|fixed <sha>"` or `--finding "P2|<title>|declined: <reason>"` per review finding (either severity, either disposition); none needed when the review had no findings. On merge-down, `ak receipt` alone reuses the earlier findings." Keep `--remaining`.
+- [x] **Step 5: Run** `bash tests/v2/test-receipt.sh` — PASS.
+- [x] **Step 6: Commit** `perf(receipt): take findings as arguments and need none for a clean review`.
 
 ### Task 5: `ak review` prints whole finding lines
 
@@ -110,16 +110,16 @@ done
 - Modify: `v2/templates/pr-worker.md` step 2
 - Test: `tests/v2/test-review.sh`
 
-- [ ] **Step 1: Write the failing assertions.** Flip `assert_not_contains "$out" 'loops past end' 'only titles are printed'` to `assert_contains … 'the whole finding line is printed'`; the reuse exact-match line gains the location and reason; add a 300-character finding and assert its printed line is 200 characters or fewer and `findings=1`.
-- [ ] **Step 2: Run** `bash tests/v2/test-review.sh tests/v2/test-receipt.sh` — FAIL.
-- [ ] **Step 3: Implement**: `review_titles` prints `"${BASH_REMATCH[1]}: ${BASH_REMATCH[2]:0:200}"`. `receipt_all_decided` counts `^P[12]:` lines in `review.md`, which is unchanged.
-- [ ] **Step 4: pr-worker.md step 2**: "It prints the findings; for `findings=unparsed`, read `.ak/review.md`."
-- [ ] **Step 5: Run** both suites — PASS.
-- [ ] **Step 6: Commit** `perf(review): print each finding whole so workers skip reading review.md`.
+- [x] **Step 1: Write the failing assertions.** Flip `assert_not_contains "$out" 'loops past end' 'only titles are printed'` to `assert_contains … 'the whole finding line is printed'`; the reuse exact-match line gains the location and reason; add a 300-character finding and assert its printed line is 200 characters or fewer and `findings=1`.
+- [x] **Step 2: Run** `bash tests/v2/test-review.sh tests/v2/test-receipt.sh` — FAIL.
+- [x] **Step 3: Implement**: `review_titles` prints `"${BASH_REMATCH[1]}: ${BASH_REMATCH[2]:0:200}"`. `receipt_all_decided` counts `^P[12]:` lines in `review.md`, which is unchanged.
+- [x] **Step 4: pr-worker.md step 2**: "It prints the findings; for `findings=unparsed`, read `.ak/review.md`."
+- [x] **Step 5: Run** both suites — PASS.
+- [x] **Step 6: Commit** `perf(review): print each finding whole so workers skip reading review.md`.
 
 ### Task 6: Gate, docs, PR
 
-- [ ] **Step 1:** `bash tests/v2/run.sh` — all suites PASS, budget ok.
-- [ ] **Step 2:** `AGENT_TEST_JOBS=4 tests/run-tests.sh` — ALL GREEN.
-- [ ] **Step 3:** Render one issue prompt with the bench fixture paths and record its byte size against 08c2516's 5,974.
+- [x] **Step 1:** `bash tests/v2/run.sh` — all suites PASS, budget ok.
+- [x] **Step 2:** `AGENT_TEST_JOBS=4 tests/run-tests.sh` — all suites green except one pre-existing preflight DNS-probe flake, fixed as #1020 (rerun alone: 251/251).
+- [x] **Step 3:** Render one issue prompt with the bench fixture paths and record its byte size against 08c2516's 5,974.
 - [ ] **Step 4:** Push, open the draft PR (`Closes #1019`), move the issue to In review, and write the adapted benchmark commands (08c2516 versus the candidate SHA) into the PR body.
