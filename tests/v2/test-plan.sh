@@ -44,6 +44,7 @@ prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'Issue 671: Title 671' 'the prompt substitutes number and title'
 assert_contains "$prompt" "branch=feat/issue-671 worktree=$wt base=main slug=acme/widget ak=$WORK/v2/bin/ak" 'the prompt substitutes the run facts'
 assert_contains "$prompt" 'untrusted' 'the issue block is labelled untrusted'
+assert_contains "$prompt" $'setup=\n' 'no setup command configured, no setup step (08c2516 bench: 12 of 12 workers spent a turn on setup=none)'
 assert_eq 'title: Title 671' "$(head -n 1 "$wt/.ak/issue.md")" '.ak/issue.md starts with the title line ship reads'
 assert_eq main "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 assert_contains "$prompt" 'please hurry' 'comments are included'
@@ -735,6 +736,13 @@ assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree
 out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" "drop issue=671 reason=worktree-unusable:$wt" 'uncommitted work nobody parked still makes a worktree unusable'
 
+# A repository with a setup command keeps the step.
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+AGENT_CMD_SETUP='npm ci' "$AK" plan --issue 671 >/dev/null 2>&1
+assert_contains "$(cat "$repo/.worktrees/feat/issue-671/.ak/prompt.md")" 'setup=Run `ak setup`. ' 'a configured setup command renders the setup step'
+
 fresh
 standard_board
 rm -f -- "$WORK/v2/templates/issue-worker.md"
@@ -744,7 +752,7 @@ assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 
 # The shipped templates use only the placeholders their composers substitute, and the issue block stands alone.
 real="$REPO/v2/templates/issue-worker.md"
-assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
+assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|SETUP|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
 # The Tests line and the ship gate agree (08c2516 bench: 7 of 12 first ships refused for run output the playbook had
 # asked for), and every worker brief says skill lookups are unnecessary (12 of 12 workers opened a skill file).

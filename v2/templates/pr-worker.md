@@ -15,7 +15,7 @@ are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait and collect
 existing handle and exit code when a call yields. Read relevant code and failure
 diagnostics as needed, rather than dumping whole trees or logs.
 
-1. Run `ak setup`. If `.ak/resolve` exists, run
+1. {{SETUP}}If `.ak/resolve` exists, run
    `git fetch origin && git merge "$(cat .ak/resolve)"`, resolve conflicts preserving
    both sides' intent, commit the merge, then `ak verify`,
    `ak ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `ak ci`.

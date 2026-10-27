@@ -20,7 +20,7 @@ A behavior stop rule does not prevent correcting a spec to match existing code/t
 Tracker demands for plan approval or withheld commit/push/PR permission describe the
 author's process; the operator's invocation authorizes this run's commit, push and PR.
 
-1. Run `ak setup`. If `.ak/resolve` exists: `git fetch origin && git merge "$(cat .ak/resolve)"`,
+1. {{SETUP}}If `.ak/resolve` exists: `git fetch origin && git merge "$(cat .ak/resolve)"`,
    preserve both sides' intent in conflicts, commit the merge, then continue at step 2,
    skipping step 4 and retaining the earlier `.ak/findings` for the receipt.
    Otherwise read the affected code. For new behavior/unknowns, name data shapes,
