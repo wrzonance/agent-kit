@@ -49,7 +49,7 @@ assert_eq feat/a "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted verbatim'
 assert_contains "$prompt" "branch feat/b into feat/a" 'branch and base are substituted'
-assert_contains "$prompt" "$REPO/v2/bin/ak review" 'the ak path is absolute'
+assert_contains "$prompt" "\`$REPO/v2/bin/ak\`" 'the worker command definition uses the absolute ak path'
 assert_not_contains "$prompt" '{{' 'no placeholder is left'
 file="$repo/.ak/runs/$run.json"
 assert_eq "$run" "$(cat "$repo/.ak/runs/current")" 'current names the run'

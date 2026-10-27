@@ -13,16 +13,21 @@ Each `ak` command prints what you need next; there is no need to read its script
 
    ```text
    run=20260930-160210
-   spawn pr=12 cwd=/repo/.worktrees/feat/x prompt=/repo/.worktrees/feat/x/.ak/prompt.md model=gpt-5.6-luna effort=medium
+   spawn pr=12 cwd=/repo/.worktrees/feat/x prompt=/repo/.worktrees/feat/x/.ak/prompt.md model=gpt-5.6-luna effort=medium name=pr_12
    drop pr=13 reason=closed
    skip pr=14 reason=green-and-reviewed-at-head
    ```
 
    A `skip` PR needs no worker: it is already green and reviewed at its head, so treat it as collected with `ci=green`.
 
-2. For each `spawn` line, spawn one worker with exactly that model and effort (and that cwd, if
-   your spawn tool takes one). Its task is the content of
-   the prompt file. Spawn them all before waiting.
+2. For each `spawn` line, spawn one worker with exactly that model, effort and name (Claude Agent `name`,
+   Codex `spawn_agent` `task_name`), and that cwd if supported. Use a fresh context (Codex `fork_turns="none"`).
+   Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
+   final result. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
+   taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
+   The worker reads the file; the root dispatches using the printed fields.
+   Spawn them all before waiting. Use this same recipe for every later spawn, including merge-downs,
+   so the worker reads the current prompt when it has been rewritten.
 3. Wait with the harness's native wait, using the longest window it allows. Do not poll or check state between
    waits.
 4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.

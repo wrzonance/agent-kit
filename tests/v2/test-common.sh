@@ -55,8 +55,10 @@ assert_eq '' "$(git status --porcelain)" '.ak/ is excluded from git'
 out=$(run_logged ok 'echo fine'); rc=$?
 assert_eq 'PASS ok' "$(tail -n 1 <<<"$out")" 'run_logged ends with one PASS line'
 assert_eq 'run ok: echo fine' "$(head -n 1 <<<"$out")" 'run_logged says what it started before anything else'
-# A field worker polled a 12-minute check with 1-second waits 165 times; the start line says how to wait.
-assert_contains "$out" 'wait on this with the longest wait your shell allows; a beat prints every 20s' 'run_logged says how to wait on it'
+# Waiting instructions belong in the worker playbook once, not in every successful command's output.
+assert_eq 2 "$(wc -l <<<"$out")" 'a fast success prints only command and result'
+assert_eq fine "$(cat .ak/logs/ok.log)" 'concise success retains the full log'
+assert_not_contains "$out" $'\nfine' 'successful log content stays out of the worker context'
 # A worker whose command yields with no output goes looking for it (field run 2026-10-01: 12M tokens of ps polling).
 out=$(AK_HEARTBEAT=1 run_logged slow 'sleep 3')
 assert_contains "$out" 'slow still running' 'a long command prints a heartbeat while it runs'
@@ -70,6 +72,7 @@ out=$(run_logged bad 'echo boom; exit 3'); rc=$?
 assert_eq 3 "$rc" 'run_logged returns the command status'
 assert_contains "$out" 'FAIL bad rc=3' 'run_logged names the failure'
 assert_contains "$out" 'boom' 'run_logged prints the tail'
+assert_contains "$out" "log=$WORK/wt/.ak/logs/bad.log" 'a failure names the full diagnostic log'
 
 export CODEX_HOME=/x
 assert_eq 'Codex <noreply@openai.com>' "$(trailer)" 'codex trailer'

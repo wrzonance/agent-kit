@@ -111,7 +111,7 @@ git push -q origin fix/thing 2>/dev/null
 : >"$FAKE_REVIEW_LOG"
 out=$("$AK" review 2>&1); rc=$?
 assert_eq 0 "$rc" 'a head that only moved by fixes exits 0'
-assert_eq "review=done findings=1 reused head=${head:0:7} note=one review per PR; ak review --again reviews the current diff"$'\n''P1: off by one' "$out" 'the existing review is reused with its titles'
+assert_eq "review=done findings=1 reused head=${head:0:7} read=$WORK/wt/.ak/review.md"$'\n''P1: off by one' "$out" 'reuse points to existing findings rather than another review'
 assert_eq '' "$(cat "$FAKE_REVIEW_LOG")" 'a reused review does not run the reviewer'
 assert_eq "${first%% base=*}" "$(first3)" 'a reused review keeps its head'
 

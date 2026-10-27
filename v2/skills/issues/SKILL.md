@@ -17,7 +17,12 @@ Each `ak` command prints what you need next; there is no need to read its script
    Empty output with a live handle means keep collecting that command; it is not a reason to run another plan.
 2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue_N` line, spawn one worker with exactly that
    model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
-   `spawn_agent` `task_name`; `ak wait` finds Codex workers by it), and the content of the prompt file as its task.
+   `spawn_agent` `task_name`; `ak wait` finds Codex workers by it). Use a fresh context (Codex `fork_turns="none"`).
+   Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
+   final result. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
+   taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
+   The worker reads the file; the root dispatches using the printed fields.
+   Use this same message on later spawn lines so workers read rewritten prompts.
    Spawn them all now, before waiting: `--serialize` only turns overlapping issues into `after` lines, which
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
 3. Wait once for the whole wave. Claude: run `ak wait` as ONE background shell task and end the turn with no words;
