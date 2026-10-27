@@ -33,9 +33,9 @@ diagnostics as needed, rather than dumping whole trees or logs.
    On red, read its errors, fix, verify, ship, retry; stop after 3 red rounds and
    report that. `inherited=` names checks also failing on base: note shared errors,
    fix errors caused by your diff.
-6. Run `ak threads`. Fix (verify, ship) or decline each thread, then resolve with
-   `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"` or
-   `--note "declined: <reason>"`. Write plain sentences for the comment's author,
+6. Green lists open review threads (`thread=ID …`). Fix (verify, ship) or decline each,
+   then resolve with `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"`
+   or `--note "declined: <reason>"`. Write plain sentences for the comment's author,
    naming relevant files/functions. Open threads block the receipt.
    Write `.ak/findings`, one line per finding: `P1|<title>|fixed <sha>` or
    `P2|<title>|declined: <reason>`; either severity can have either disposition.

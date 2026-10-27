@@ -46,9 +46,9 @@ author's process; the operator's invocation authorizes this run's commit, push a
 5. Run `ak ci`: 0 = green/no CI, 1 = red, 3 = pending (run it again). On red, use the
    printed diagnostics to fix, verify, ship, retry; at most 3 red rounds. `inherited=`
    names checks also failing on base: note shared errors, fix those your diff causes.
-6. Run `ak threads`. Fix (verify, ship) or decline each thread, then resolve with
-   `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"` or
-   `--note "declined: <reason>"`. Use a plain sentence for its author. Open threads
+6. Green lists open review threads (`thread=ID …`). Fix (verify, ship) or decline each,
+   then resolve with `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"`
+   or `--note "declined: <reason>"`. Use a plain sentence for its author. Open threads
    block the receipt. Write `.ak/findings`, one line per finding:
    `P1|<title>|fixed <sha>` or `P2|<title>|declined: <reason>`; either severity can
    have either disposition. Use `none` only when there were no findings. On merge-down,
