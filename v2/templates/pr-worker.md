@@ -19,7 +19,7 @@ diagnostics as needed, rather than dumping whole trees or logs.
    `git fetch origin && git merge "$(cat .ak/resolve)"`, resolve conflicts preserving
    both sides' intent, commit the merge, then `ak verify`,
    `ak ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`, `ak ci`.
-   Go to step 6 keeping the earlier findings file (skip review).
+   Go to step 6 (skip review; the receipt reuses the earlier findings).
 2. Run `ak review` once (an existing review is reused). It prints finding titles;
    full findings are in `.ak/review.md`. For `review=unavailable`, go to step 5.
    For `findings=unparsed`, read that file and account for every defect.
@@ -37,8 +37,8 @@ diagnostics as needed, rather than dumping whole trees or logs.
    then resolve with `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"`
    or `--note "declined: <reason>"`. Write plain sentences for the comment's author,
    naming relevant files/functions. Open threads block the receipt.
-   Write `.ak/findings`, one line per finding: `P1|<title>|fixed <sha>` or
-   `P2|<title>|declined: <reason>`; either severity can have either disposition.
-   Use `none` when there were no findings or review was unavailable. On merge-down,
-   keep the earlier file. Run `ak receipt --findings .ak/findings`.
+   Run `ak receipt` with one `--finding "P1|<title>|fixed <sha>"` or
+   `--finding "P2|<title>|declined: <reason>"` per review finding (either severity can
+   have either disposition; none when the review had none or was unavailable).
+   On merge-down, `ak receipt` alone reuses the earlier findings.
 7. End with only the receipt's result line.

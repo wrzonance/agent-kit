@@ -14,7 +14,7 @@ usage: ak <command> [args]
           pr-plan --pr N [--pr N]...                merge --pr N
           wait [--issue N | --pr N]... [--check [--settle]]
   worker: setup   verify   ship --message M [--body-file F]   review
-          ci [--timeout S] [--once]   threads [--resolve ID --note T]   receipt --findings F [--remaining T]
+          ci [--timeout S] [--once]   threads [--resolve ID --note T]   receipt [--finding L]... [--findings F] [--remaining T]
           park --reason T
 USAGE
 }
