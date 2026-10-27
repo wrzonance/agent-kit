@@ -8,6 +8,7 @@ source "$AK_HOME/lib/ci.sh"
 source "$AK_HOME/lib/threads.sh"
 
 FINDING_RE='^ *(P[0-3]) *\| *([^|]*[^| ]) *\| *(fixed [0-9a-f]{7,40}|declined: .+)$'
+REVIEW_FINDING_RE='^[[:space:]*-]*P[12]:'
 
 # receipt_findings: reads finding lines on stdin and prints one "SEV | title | disposition" line per finding; refuses
 # malformed lines.
@@ -30,9 +31,11 @@ receipt_default() {
         cat -- "$dir/findings"
         return 0
     fi
-    [[ ! -f $dir/review.md ]] || want=$(grep -cE '^P[12]:' "$dir/review.md" || true)
+    [[ ! -f $dir/review.md ]] || want=$(grep -cE "$REVIEW_FINDING_RE" "$dir/review.md" || true)
     ((want == 0)) || die "the review has $want findings and no dispositions were given" \
         "ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'"
+    [[ ! -f $dir/review.md ]] || grep -qx '[[:space:]]*NO FINDINGS[[:space:]]*' "$dir/review.md" ||
+        die "the review findings could not be parsed" "read $dir/review.md and pass each disposition with --finding"
     printf 'none\n'
 }
 
@@ -41,10 +44,11 @@ receipt_default() {
 receipt_all_decided() {
     local review=$1/review.md want got titles
     [[ -f $review ]] || return 0
-    want=$(grep -cE '^P[12]:' "$review" || true)
+    want=$(grep -cE "$REVIEW_FINDING_RE" "$review" || true)
     got=$(grep -c . <<<"$2" || true)
     ((got >= want)) && return 0
-    titles=$(grep -E '^P[12]:' "$review" | sed 's/ — .*//' | cut -c1-80 | head -n 3 | paste -sd';' -)
+    titles=$(grep -E "$REVIEW_FINDING_RE" "$review" | sed -E 's/^[[:space:]*-]*//; s/ — .*//' |
+        cut -c1-80 | head -n 3 | paste -sd';' -)
     die "the review has $want findings but the findings file decides $got: $titles" \
         "write one line per finding: P1|title|fixed <sha> or P2|title|declined: reason"
 }
@@ -128,12 +132,12 @@ receipt_post() {
 }
 
 cmd_main() {
-    local file="" lines="" remaining="" dir head pr runs ci summary review findings note body url fixed declined count open inherited base
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base
     local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
-            --finding) lines+="${2:-}"$'\n'; shift 2 || usage_die "$usage" ;;
-            --findings) file=${2:-}; shift 2 || usage_die "$usage" ;;
+            --finding) findings_given=1; lines+="${2:-}"$'\n'; shift 2 || usage_die "$usage" ;;
+            --findings) findings_given=1; file=${2:-}; shift 2 || usage_die "$usage" ;;
             --remaining) remaining=${2:-}; shift 2 || usage_die "$usage" ;;
             *) usage_die "$usage" ;;
         esac
@@ -142,6 +146,8 @@ cmd_main() {
     [[ -z $file ]] || lines+=$(<"$file")$'\n'
     cd -- "$(worktree_root)" || exit 1
     dir=$(ak_dir)
+    ((!findings_given)) || [[ -n ${lines//[[:space:]]/} ]] ||
+        die "findings input is empty" "pass 'none' or one disposition per review finding"
     [[ -n ${lines//[[:space:]]/} ]] || lines=$(receipt_default "$dir") || exit 1
     findings=$(receipt_findings <<<"$lines") || exit 1
     head=$(ci_head)

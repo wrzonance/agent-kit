@@ -173,6 +173,18 @@ out=$("$AK" receipt 2>&1); rc=$?
 assert_eq 1 "$rc" 'a bare receipt with undecided review findings is refused'
 assert_contains "$out" 'the review has 2 findings and no dispositions were given' 'the refusal counts the findings'
 assert_contains "$out" "fix: ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'" 'the fix line shows the flag'
+printf 'reviewer=claude model=m head=h\n- P1: undo drops the count — src/store.js:33 — x\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses a bulleted review finding'
+assert_contains "$out" 'the review has 1 findings and no dispositions were given' 'the refusal counts the finding syntax review accepts'
+out=$("$AK" receipt --findings "$WORK/undecided" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt cannot leave a bulleted review finding undecided'
+assert_contains "$out" 'the review has 1 findings but the findings file decides 0' 'disposition validation counts bulleted findings too'
+printf 'reviewer=claude model=m head=h\nthis review did not follow the requested format\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses an unparsed review'
+assert_contains "$out" 'the review findings could not be parsed' 'the refusal does not call an unparsed review clean'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
 out=$("$AK" receipt --finding 'P1|undo drops the count|fixed abc1234' --finding 'P2|rename|declined: out of scope' 2>&1); rc=$?
 assert_eq 0 "$rc" 'findings given as arguments are accepted'
 assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'argument findings reach the result'
@@ -183,6 +195,13 @@ assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'the re
 out=$("$AK" receipt --finding 'P1|bad' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a malformed --finding is refused'
 assert_contains "$out" 'malformed finding: P1|bad' 'the refusal quotes the argument'
+out=$("$AK" receipt --finding '' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty --finding is refused'
+assert_contains "$out" 'findings input is empty' 'empty argument findings do not reuse saved dispositions'
+: >"$WORK/empty-findings"
+out=$("$AK" receipt --findings "$WORK/empty-findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty findings file is refused'
+assert_contains "$out" 'findings input is empty' 'an empty findings file does not reuse saved dispositions'
 printf 'reviewer=claude model=m head=h\nNO FINDINGS\n' >.ak/review.md
 rm -f .ak/findings
 out=$("$AK" receipt 2>&1); rc=$?
