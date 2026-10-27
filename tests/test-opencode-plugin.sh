@@ -21,10 +21,9 @@ index_js="$opencode_dir/index.js"
 run_wrapper="$opencode_dir/test/run-wrapper.mjs"
 run_probe="$opencode_dir/test/run-probe.sh"
 
-probe_timeout_scale=${AGENT_TEST_TIMEOUT_SCALE:-1}
-if [[ ! $probe_timeout_scale =~ ^[1-9][0-9]*$ ]]; then
-    probe_timeout_scale=1
-fi
+# shellcheck source=lib/timeout-scale.sh
+source "$here/lib/timeout-scale.sh"
+probe_timeout_scale=$(timeout_scale "${AGENT_TEST_JOBS:-1}")
 probe_bound_seconds=$((10 * probe_timeout_scale))
 
 # --- zero-runtime-dependency invariant --------------------------------------
@@ -69,11 +68,11 @@ probe_rc=$?
 assert_eq 0 "$probe_rc" 'run-probe.sh exits 0 against this repository'
 assert_contains "$probe_out" 'gh=' 'run-probe.sh output contains the expected gh= line'
 
-# Concurrent full-suite verification supplies a load-derived scale so the
-# probe has enough time to start under CPU contention instead of failing at a
-# fixed ten-second bound. The normal probe output pins the effective bound.
+# run-tests.sh exports the job count, so the probe gets ten seconds per suite
+# sharing the CPU instead of failing at a fixed ten-second bound (it hit that
+# bound under four jobs on a busy host). The probe output pins the bound used.
 assert_contains "$probe_out" " $probe_bound_seconds (" \
-    'probe bound scales with AGENT_TEST_TIMEOUT_SCALE'
+    'probe bound scales with the job count or AGENT_TEST_TIMEOUT_SCALE'
 
 # --- run-probe.sh fallback: forced no-timeout path still finds gh= --------
 # Exercises the AGENTKIT_PROBE_FORCE_NO_TIMEOUT test seam against the REAL

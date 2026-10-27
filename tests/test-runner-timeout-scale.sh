@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# run-tests.sh: concurrent suites run under a timeout scale, so a probe bounded for an idle host does not fail at its
-# fixed bound while the other suites hold the CPU (the opencode-plugin probe hit its 10 s watchdog under four jobs).
+# A suite that bounds a probe for an idle host scales the bound by the suites sharing the CPU (run-tests.sh exports the
+# job count), so the opencode-plugin probe no longer dies at its 10 s watchdog under four jobs on a busy host.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/assert.sh
@@ -15,5 +15,7 @@ assert_eq 4 "$(timeout_scale 4)" 'four concurrent suites scale every bound by fo
 assert_eq 7 "$(AGENT_TEST_TIMEOUT_SCALE=7 timeout_scale 4)" 'an operator scale wins over the job count'
 assert_eq 4 "$(AGENT_TEST_TIMEOUT_SCALE=0 timeout_scale 4)" 'a scale that is not a positive integer is ignored'
 assert_eq 4 "$(AGENT_TEST_TIMEOUT_SCALE=fast timeout_scale 4)" 'a non-numeric scale is ignored'
+assert_eq 1 "$(timeout_scale)" 'no job count means a suite run alone'
+assert_eq 1 "$(timeout_scale many)" 'a job count that is not a positive integer means a suite run alone'
 
 finish
