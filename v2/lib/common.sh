@@ -161,6 +161,38 @@ ak_dir() {
     printf '%s\n' "$dir"
 }
 
+# worker_name KIND N WORKTREE: the native name of the worker this spawn line starts: KIND_N for the worktree's first
+# spawn, KIND_N_2, KIND_N_3... after. Codex keeps a finished worker's name, so a second spawn under it fails and the
+# root's message lands on the old worker; ak wait matches the name by prefix. worker_name_now prints the current
+# name without starting a new one: a resumed plan reprints the same spawn, and a harness that refuses the duplicate
+# name keeps a second worker off the worktree.
+worker_name() {
+    local k
+    k=$(($(worker_spawn_count "$3") + 1))
+    # Written fresh, never through a link a worker left.
+    rm -f -- "$3/.ak/spawns"
+    printf '%s\n' "$k" >"$3/.ak/spawns"
+    worker_name_now "$@"
+}
+worker_name_now() {
+    local k
+    k=$(worker_spawn_count "$3")
+    if ((k <= 1)); then printf '%s_%s\n' "$1" "$2"; else printf '%s_%s_%s\n' "$1" "$2" "$k"; fi
+}
+worker_spawn_count() {
+    local file=$1/.ak/spawns prior=''
+    [[ -L $file || ! -f $file ]] || prior=$(<"$file")
+    if [[ $prior =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$prior"
+    elif [[ -e $1/.ak/logs || -e $1/.ak/setup.ok ]]; then
+        # No counter, but a worker already ran here (its logs or setup mark): count it, so the first spawn after an
+        # upgrade does not reuse its name.
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
+}
+
 # run_logged NAME COMMAND [DIR]: run COMMAND in DIR (relative to the worktree), log it, print PASS or FAIL + tail.
 # A command that runs for minutes shows a heartbeat (AK_HEARTBEAT seconds, default 20: below the ~30 s at which
 # an agent's shell yields), so the agent sees it is alive instead of inspecting processes.

@@ -68,7 +68,7 @@ again=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'a re-run plan exits 0'
 assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
 assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
-assert_contains "$again" 'name=issue_671' 'a resumed plan keeps a valid native worker name'
+assert_eq 1 "$(grep -c 'name=issue_671$' <<<"$again")" 'a resumed plan reprints the same worker name: a harness that refuses the duplicate keeps a second worker off the worktree'
 assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
 named=$("$AK" plan --issue 700 2>&1)
 assert_not_contains "$named" 'resumed' 'naming an issue the current run never planned is new work, not a resume'
@@ -102,8 +102,14 @@ assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting a park no
 git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
 "$AK" collect --issue 671 >/dev/null 2>&1
 assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting the same park again does not move the note'
-"$AK" plan --new --issue 671 >/dev/null 2>&1
+# The worker left its counter as a link (or the worktree predates the counter): the root never writes through it, and
+# the worker's logs still say a worker ran here, so the next spawn gets a new name.
+printf 'keep\n' >"$WORK/victim" && ln -sfn "$WORK/victim" "$wt/.ak/spawns"
+out=$("$AK" plan --new --issue 671 2>&1)
 assert_eq "$stopped $(git -C "$wt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning the park again records what was committed since'
+assert_contains "$out" 'name=issue_671_2' 'the park planned again names a new worker: Codex keeps the finished one under the old name'
+assert_eq keep "$(cat "$WORK/victim")" 'the counter is never written through a link a worker left'
+assert_eq '2 no' "$(cat "$wt/.ak/spawns") $([[ -L $wt/.ak/spawns ]] && echo yes || echo no)" 'the link is replaced by a plain counter'
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'

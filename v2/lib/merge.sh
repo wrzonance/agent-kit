@@ -113,8 +113,8 @@ merge_update() {
     printf '%s\n' "$base" >"$wt/.ak/base"
     rm -f -- "$wt/.ak/result"
     printf 'resolve pr=%s conflicts-with=%s\n' "$n" "$base"
-    printf 'spawn pr=%s cwd=%s prompt=%s/.ak/prompt.md model=%s effort=%s name=pr_%s\n' "$n" "$wt" "$wt" \
-        "$(worker_model)" "$(cfg AGENT_WORKER_EFFORT medium)" "$n"
+    printf 'spawn pr=%s cwd=%s prompt=%s/.ak/prompt.md model=%s effort=%s name=%s\n' "$n" "$wt" "$wt" \
+        "$(worker_model)" "$(cfg AGENT_WORKER_EFFORT medium)" "$(worker_name pr "$n" "$wt")"
     return 3
 }
 

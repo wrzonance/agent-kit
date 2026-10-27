@@ -110,3 +110,35 @@ The command omits elapsed and worker metrics shown above. A four-ref table comes
 from concatenating the three saved batch files; keep the
 per-batch tables beside it, since the repeated 82093d0 and 08c2516 arms show batch
 variation of the same size as the differences between kits.
+
+## Re-spawn names follow-on
+
+`20261027T195115Z-codex-e498a1c.jsonl` preserves the next completed ABBAAB batch:
+6ed8f74 (main after #1021, #1022 and #1024 merged) versus e498a1c (PR #1026), three
+trials per arm, the same model/effort/CLI (Codex `gpt-6-luna` / high, CLI 0.164.0),
+fixture and local harness. All six trials delivered four green PRs; no steers. SHA-256
+of the original export:
+`224e7eeba0e0d4fef7eeb35e81cc1bfddba7caa1001a5c84a4692f281cc22714`.
+
+| | 6ed8f74 median (range) | e498a1c median (range) |
+|---|---:|---:|
+| Hidden tasks passed of 4 | 4 (3–4) | 4 (4–4) |
+| Total tokens including cached input | 1,447,336 (1,386,437–1,544,463) | 1,406,912 (1,386,204–1,632,530) |
+| Root tokens | 288,653 (232,820–306,541) | 309,323 (267,991–325,002) |
+| Worker tokens | 1,214,516 (1,079,896–1,255,810) | 1,081,910 (1,076,881–1,364,539) |
+| Worker tool calls (4 workers) | 54 (47–54) | 48 (47–60) |
+| Elapsed seconds | 275 (268–326) | 275 (275–329) |
+| Root tool calls | 16 (14–16) | 17 (15–18) |
+| Recorded wakes | 5 (4–5) | 5 (5–6) |
+
+The two arms overlap on every metric: the change renames re-spawned workers and adds
+an `ak wait` state for a spawn whose name an ended worker still holds, and this fixture
+never parks or replans an issue, so the batch shows no regression rather than the
+saving (the hour-long `wait_agent` per replan), which `tests/v2/test-wait.sh` pins.
+Control trial `20261027T200916Z` passed 3/4: the worker for one task shipped a green PR
+with a clean review that failed its hidden check, on the unchanged control kit.
+
+Reproduce the delivery, root, and system metrics:
+`python3 bench/live/compare.py bench/results/batches/20261027T195115Z-codex-e498a1c.jsonl`.
+Keep this table beside the earlier ones: both arms here sit below the previous batch's
+550ff6c arm on total tokens by 20% with the same kit bytes, which is batch variation.
