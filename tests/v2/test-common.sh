@@ -55,8 +55,10 @@ assert_eq '' "$(git status --porcelain)" '.ak/ is excluded from git'
 out=$(run_logged ok 'echo fine'); rc=$?
 assert_eq 'PASS ok' "$(tail -n 1 <<<"$out")" 'run_logged ends with one PASS line'
 assert_eq 'run ok: echo fine' "$(head -n 1 <<<"$out")" 'run_logged says what it started before anything else'
-# A field worker polled a 12-minute check with 1-second waits 165 times; the start line says how to wait.
-assert_contains "$out" 'wait on this with the longest wait your shell allows; a beat prints every 20s' 'run_logged says how to wait on it'
+# Waiting instructions belong in the worker playbook once, not in every successful command's output.
+assert_eq 2 "$(wc -l <<<"$out")" 'a fast success prints only command and result'
+assert_eq fine "$(cat .ak/logs/ok.log)" 'concise success retains the full log'
+assert_not_contains "$out" $'\nfine' 'successful log content stays out of the worker context'
 # A worker whose command yields with no output goes looking for it (field run 2026-10-01: 12M tokens of ps polling).
 out=$(AK_HEARTBEAT=1 run_logged slow 'sleep 3')
 assert_contains "$out" 'slow still running' 'a long command prints a heartbeat while it runs'
@@ -70,6 +72,7 @@ out=$(run_logged bad 'echo boom; exit 3'); rc=$?
 assert_eq 3 "$rc" 'run_logged returns the command status'
 assert_contains "$out" 'FAIL bad rc=3' 'run_logged names the failure'
 assert_contains "$out" 'boom' 'run_logged prints the tail'
+assert_contains "$out" "log=$WORK/wt/.ak/logs/bad.log" 'a failure names the full diagnostic log'
 
 export CODEX_HOME=/x
 assert_eq 'Codex <noreply@openai.com>' "$(trailer)" 'codex trailer'
@@ -79,5 +82,18 @@ assert_eq 'claude' "$(harness)" 'claude harness'
 export CODEX_THREAD_ID=t1
 assert_eq 'codex' "$(harness)" 'a Codex shell launched from a Claude session is codex'
 unset CLAUDECODE CODEX_THREAD_ID
+
+# Timestamps read through one helper that works with GNU (stat -c) and BSD/macOS (stat -f) stat.
+mkdir -p "$WORK/bsd"
+cat >"$WORK/bsd/stat" <<'STUB'
+#!/usr/bin/env bash
+[[ $1 != -c ]] || { echo "stat: illegal option -- c" >&2; exit 1; }
+case $2 in %m) echo 111 ;; %B) echo 222 ;; *) exit 1 ;; esac
+STUB
+chmod +x "$WORK/bsd/stat"
+assert_eq '111 222' "$(PATH="$WORK/bsd:$PATH" bash -c 'source "$1"; echo "$(file_mtime x) $(file_birth x)"' _ "$REPO/v2/lib/common.sh")" 'file_mtime and file_birth fall back to BSD stat -f'
+touch -d '@1000' "$WORK/gnu-file"
+assert_eq 1000 "$(file_mtime "$WORK/gnu-file")" 'file_mtime reads GNU stat'
+assert_eq 'no' "$(grep -rl 'stat -c' "$REPO/v2/lib" "$REPO/v2/hooks" | grep -v common.sh >/dev/null && echo yes || echo no)" 'no other v2 script calls stat -c directly'
 
 finish

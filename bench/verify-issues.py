@@ -58,7 +58,8 @@ def parse_frontmatter(path):
 
 
 def main():
-    paths = sorted(glob.glob(os.path.join(ISSUES_DIR, '*.md')))
+    # 01-10 are the frozen Tier-1 set; 11 and up are the live two-wave fixture and have their own shape.
+    paths = sorted(glob.glob(os.path.join(ISSUES_DIR, '0[1-9]-*.md')) + glob.glob(os.path.join(ISSUES_DIR, '10-*.md')))
     if len(paths) != 10:
         die(f'expected exactly 10 issue files, found {len(paths)}: {paths}')
 

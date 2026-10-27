@@ -13,6 +13,16 @@ usage_die() {
     exit 2
 }
 
+# file_mtime PATH / file_birth PATH: epoch seconds, through GNU stat (-c) or BSD/macOS stat (-f). A birth time the
+# filesystem does not keep reads as the mtime.
+file_mtime() { stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1"; }
+file_birth() {
+    local born
+    born=$(stat -c %W -- "$1" 2>/dev/null) || born=$(stat -f %B -- "$1" 2>/dev/null) || born=0
+    ((born > 0)) || born=$(file_mtime "$1")
+    printf '%s\n' "$born"
+}
+
 # The worktree the command runs in.
 worktree_root() {
     git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository" "cd into the repository"
@@ -171,7 +181,6 @@ run_logged() {
     mkdir -p -- "$(dirname -- "$log")"
     # A field worker polled a 12-minute check with 1-second waits, 165 times; each poll re-sent its whole context.
     printf 'run %s: %s%s\n' "$name" "${command:0:100}" "$([[ $dir == . ]] || printf ' (in %s)' "$dir")"
-    printf 'wait on this with the longest wait your shell allows; a beat prints every %ds\n' "$beat"
     (cd -- "$(worktree_root)/$dir" && bash -c "$command") >"$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do

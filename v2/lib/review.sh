@@ -147,7 +147,7 @@ cmd_main() {
     diff=$(review_diff "$base")
     head=$(git rev-parse HEAD)
     if ((!again)) && old=$(review_reusable "$dir/review.md" "$base"); then
-        review_report "$dir/review.md" "reused head=${old:0:7} note=one review per PR; ak review --again reviews the current diff"
+        review_report "$dir/review.md" "reused head=${old:0:7} read=$dir/review.md"
         return 0
     fi
     rm -f -- "$dir/review.md" "$dir/review.unavailable"

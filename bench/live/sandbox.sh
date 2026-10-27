@@ -3,7 +3,8 @@
 #
 #   create          one time: a private repo seeded from bench/fixtures/tally (tag fixture-v1), the ten
 #                   bench/issues as GitHub issues with their blocked_by links, a Projects board with the
-#                   canonical Status column, and a one-line Node CI. Writes bench/live/sandbox.json.
+#                   canonical Status column, and a one-line Node CI.
+#                   An issue whose front matter says `status: Backlog` starts there on reset, not Ready. Writes bench/live/sandbox.json.
 #   reset "01 03"   before each trial: main back to fixture-v1, every PR closed, every branch but main
 #                   deleted, issue comments removed, the listed issues open and Ready, the rest closed.
 set -euo pipefail
@@ -24,6 +25,9 @@ log() { printf 'sandbox: %s\n' "$*" >&2; }
 issue_title() { sed -n 's/^# //p' "$1" | head -n 1; }
 issue_body() { awk 'BEGIN{fm=0} /^---$/ && fm<2 {fm++; next} fm>=2' "$1" | sed '1,/^# /d'; }
 issue_field() { sed -n "s/^$2: *//p" "$1" | head -n 1; }
+# issue_board_status FILE: the Status column the issue starts in. Ready unless its front matter says otherwise:
+# a blocked wave-fixture issue starts in Backlog so the run, not the reset, decides when it is picked.
+issue_board_status() { local status; status=$(issue_field "$1" status); printf '%s\n' "${status:-Ready}"; }
 
 seed_tree() {
     local dir=$1
@@ -131,13 +135,14 @@ archive_board_items() {
     [[ -z $body ]] || gql "mutation{ $body}" >/dev/null
 }
 
-# board_ready NODE_ID...: add each issue to the board and set it Ready, in two GraphQL calls.
-board_ready() {
-    local project field ready body='' i=0 node items
+# board_set STATUS NODE_ID...: add each issue to the board and set its Status, in three GraphQL calls.
+board_set() {
+    local status=$1 project field ready body='' i=0 node items
+    shift
     project=$(jq -r '.board.project_id' "$state")
     field=$(jq -r '.board.status_field' "$state")
     ready=$(gql "query{node(id:\"$field\"){... on ProjectV2SingleSelectField{options{id name}}}}" |
-        jq -r '.data.node.options[] | select(.name == "Ready") | .id')
+        jq -r --arg s "$status" '.data.node.options[] | select(.name == $s) | .id')
     for node in "$@"; do
         body+="i$i: addProjectV2ItemById(input:{projectId:\"$project\",contentId:\"$node\"}){item{id}} "
         i=$((i + 1))
@@ -153,7 +158,7 @@ board_ready() {
 
 cmd_reset() {
     [[ -f $state ]] || die "no $state; run: bench/live/sandbox.sh create"
-    local work pr ref number id file json nodes=() map='{}' blocker
+    local work pr ref number id file json nodes=() backlog=() map='{}' blocker
     work=$(mktemp -d)
     git clone -q "https://github.com/$REPO.git" "$work"
     git -C "$work" push -q --force origin "$TAG^{commit}:refs/heads/main"
@@ -174,7 +179,11 @@ cmd_reset() {
         file=$(ls "$bench"/issues/"$id"-*.md)
         json=$(gh api "repos/$REPO/issues" -f title="$(issue_title "$file")" -f body="$(issue_body "$file")")
         map=$(jq --arg id "tally-$id" --argjson n "$(jq .number <<<"$json")" '. + {($id): $n}' <<<"$map")
-        nodes+=("$(jq -r .node_id <<<"$json")")
+        if [[ $(issue_board_status "$file") == Ready ]]; then
+            nodes+=("$(jq -r .node_id <<<"$json")")
+        else
+            backlog+=("$(jq -r .node_id <<<"$json")")
+        fi
     done
     for id in ${1:-}; do
         file=$(ls "$bench"/issues/"$id"-*.md)
@@ -183,7 +192,8 @@ cmd_reset() {
         gh api "repos/$REPO/issues/$(jq -r --arg id "tally-$id" '.[$id]' <<<"$map")/dependencies/blocked_by" \
             -F issue_id="$(gh api "repos/$REPO/issues/$(jq -r --arg b "$blocker" '.[$b]' <<<"$map")" --jq .id)" >/dev/null
     done
-    ((${#nodes[@]} == 0)) || board_ready "${nodes[@]}"
+    ((${#nodes[@]} == 0)) || board_set Ready "${nodes[@]}"
+    ((${#backlog[@]} == 0)) || board_set Backlog "${backlog[@]}"
     # Per-trial state lives outside the repository, so a trial never dirties a tracked file.
     mkdir -p "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}"
     printf '%s\n' "$map" >"${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json"
@@ -216,6 +226,9 @@ cmd_seed_prs() {
     rm -rf -- "$clone"
     printf '%s\n' "$map" >"$work/current-prs.json"
 }
+
+# Sourced by tests for its pure helpers; only a direct run dispatches a command.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 case ${1:-} in
     create) cmd_create ;;

@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-10-23T10:00:10Z","message":{"role":"user","content":"work"}}
+{"type":"assistant","timestamp":"2026-10-23T10:04:00Z","message":{"id":"msg_w1","model":"claude-sonnet-5-5","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"output_tokens":50},"content":[{"type":"tool_use","id":"tw_1","name":"Bash","input":{"command":"git status"}}]}}

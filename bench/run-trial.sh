@@ -150,7 +150,7 @@ for f in "${worker_sessions[@]}"; do
 done
 
 if [[ -z $selected_issues ]]; then
-    issue_ids=$(grep -h '^id: ' "$repo_root"/bench/issues/*.md | sed 's/^id: *//' | sort)
+    issue_ids=$(grep -h '^id: ' "$repo_root"/bench/issues/0[1-9]-*.md "$repo_root"/bench/issues/10-*.md | sed 's/^id: *//' | sort)
     selected_issues=$(jq -Rnc '[inputs]' <<< "$issue_ids")
 fi
 

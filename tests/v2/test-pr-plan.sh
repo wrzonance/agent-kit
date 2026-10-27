@@ -35,7 +35,7 @@ export CODEX_HOME=/x AGENT_WORKER_MODELS='claude-sonnet-5,gpt-5.6-terra' AGENT_W
 out=$("$AK" pr-plan --pr 11 --pr 12 --pr 13 --pr 14 --pr 15 2>&1); rc=$?
 assert_eq 0 "$rc" 'pr-plan exits 0'
 run=$(sed -n 's/^run=//p' <<<"$out")
-assert_contains "$out" "spawn pr=11 cwd=$WORK/existing-a prompt=$WORK/existing-a/.ak/prompt.md model=gpt-5.6-terra effort=high" 'an existing worktree is reused; model matches the harness'
+assert_contains "$out" "spawn pr=11 cwd=$WORK/existing-a prompt=$WORK/existing-a/.ak/prompt.md model=gpt-5.6-terra effort=high name=pr_11" 'an existing worktree is reused; model matches the harness'
 wt="$repo/.worktrees/feat/b"
 assert_contains "$out" "spawn pr=12 cwd=$wt prompt=$wt/.ak/prompt.md" 'a new worktree is created under .worktrees'
 assert_contains "$out" 'drop pr=13 reason=closed' 'a closed PR is dropped'
@@ -49,7 +49,7 @@ assert_eq feat/a "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'PR #12 Fix & things <12>' 'the title is substituted verbatim'
 assert_contains "$prompt" "branch feat/b into feat/a" 'branch and base are substituted'
-assert_contains "$prompt" "$REPO/v2/bin/ak review" 'the ak path is absolute'
+assert_contains "$prompt" "\`$REPO/v2/bin/ak\`" 'the worker command definition uses the absolute ak path'
 assert_not_contains "$prompt" '{{' 'no placeholder is left'
 file="$repo/.ak/runs/$run.json"
 assert_eq "$run" "$(cat "$repo/.ak/runs/current")" 'current names the run'

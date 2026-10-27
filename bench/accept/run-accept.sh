@@ -2,7 +2,10 @@
 # bench/accept/run-accept.sh -- score a Tally tree against every per-issue
 # oracle suite under bench/accept/tally-*.test.mjs (epic #152, issue #326).
 #
-# Usage: bench/accept/run-accept.sh TARGET_DIR
+# Usage: bench/accept/run-accept.sh [--set frozen|waves] TARGET_DIR
+#
+# --set frozen (default) runs the ten tally-NN suites. --set waves runs the four waves-tally-NN suites of the
+# separate fixture tally-waves-v1 (issues 11-14, the two-wave interactive trials); results keep the tally-NN keys.
 #
 # TARGET_DIR is any tree shaped like bench/fixtures/tally (the untouched
 # skeleton, expected 0/10), bench/gold/tally (the reference solution,
@@ -33,10 +36,16 @@ die() {
 }
 
 usage() {
-    printf 'Usage: %s TARGET_DIR\n' "$program" >&2
+    printf 'Usage: %s [--set frozen|waves] TARGET_DIR\n' "$program" >&2
     exit 2
 }
 
+set_name=frozen
+if [[ ${1:-} == --set ]]; then
+    [[ $# -ge 2 && ( $2 == frozen || $2 == waves ) ]] || usage
+    set_name=$2
+    shift 2
+fi
 [[ $# -eq 1 ]] || usage
 target=$1
 [[ -d $target ]] || die "target directory not found: $target"
@@ -49,7 +58,11 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'could 
 target_abs=$(cd -- "$target" && pwd -P) || die "could not resolve target directory: $target"
 
 shopt -s nullglob
-suites=("$script_dir"/tally-*.test.mjs)
+if [[ $set_name == waves ]]; then
+    suites=("$script_dir"/waves-tally-*.test.mjs)
+else
+    suites=("$script_dir"/tally-*.test.mjs)
+fi
 shopt -u nullglob
 [[ ${#suites[@]} -gt 0 ]] || die "no oracle suites found under $script_dir"
 
@@ -58,6 +71,7 @@ passed=0
 total=0
 for suite in "${suites[@]}"; do
     id=$(basename "$suite" .test.mjs)
+    id=${id#waves-}
     total=$((total + 1))
     if BENCH_ACCEPT_TARGET="$target_abs" timeout --signal=KILL "${timeout_seconds}s" node --test "$suite" \
         > /dev/null 2>&1; then

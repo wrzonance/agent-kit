@@ -9,15 +9,32 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
-2. For each `spawn issue=N cwd=… prompt=… model=… effort=…` line, spawn one worker with exactly that model
-   and effort (and that cwd, if your spawn tool takes one), and the content of the prompt file as its task.
+   For Codex shell calls, use `exec_command` with `yield_time_ms=30000` and return the whole result:
+   `text(await tools.exec_command({...}))`. This preserves `output`, `session_id` and `exit_code`.
+   A `session_id` means the command is still running: collect that same session with `write_stdin`,
+   `chars=""`, `yield_time_ms=30000`, returning the whole result each time until `exit_code` is present.
+   If the outer `functions.exec` yields a `cell_id`, collect it with `functions.wait` first.
+   Empty output with a live handle means keep collecting that command; it is not a reason to run another plan.
+2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=issue_N` line, spawn one worker with exactly that
+   model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
+   `spawn_agent` `task_name`; `ak wait` finds Codex workers by it). Use a fresh context (Codex `fork_turns="none"`).
+   Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
+   final result. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
+   taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
+   The worker reads the file; the root dispatches using the printed fields.
+   Use this same message on later spawn lines so workers read rewritten prompts.
    Spawn them all now, before waiting: `--serialize` only turns overlapping issues into `after` lines, which
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
-3. Wait with your harness's native wait, using the longest window it allows. Do not poll or refresh anything
-   between waits. A wait that ends with nothing finished needs no words: wait again. A worker's progress
-   messages need no reply, relay or help: it owns its review, CI and threads until it reports. Answer a
-   worker only when it asks you something.
-4. When a worker finishes, run `ak collect --issue N`. Spawn a worker for every `spawn` line it prints, the same
-   way as step 2. A `next=` line from collect is the operator's step for a parked or red issue: put it in the
-   report as printed. The operator runs the command it ends with, which hands the rest to a worker.
-5. When no workers remain, print every collect line as the report and stop.
+3. Wait once for the whole wave. Claude: run `ak wait` as ONE background shell task and end the turn with no words;
+   a hook holds worker notices, so your next wake is that command's exit. Codex: call `wait_agent` with
+   `timeout_ms=3600000`; on each return run `ak wait --check --settle`; exit 3 means wait again with no words.
+   Exit 0 already carries the collected summary: review it in step 4 without another `ak wait` call.
+   Settlement includes the CI wait; collect its shell handle as in step 1 if the command yields.
+   While a wave is open, spawn nothing else and send nothing: no progress replies, no relays, no polling.
+4. On the wake, review every worker's line. A worker that is wrong or unfinished gets its correction handed back
+   (Claude `SendMessage`, Codex `followup_task`); then wait on exactly those workers with `ak wait --issue N…`,
+   the same way as step 3. A `next=` line is the operator's step for a parked, hung or red issue: put it in the
+   report as printed.
+5. When satisfied, run `ak collect --wave`. Spawn a worker for every `spawn` line it prints, as in step 2, and
+   wait again as in step 3. Repeat until it prints `wave=done`.
+6. Then print every summary line as the report and stop.

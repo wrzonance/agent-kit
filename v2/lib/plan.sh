@@ -7,6 +7,7 @@ LINES=()               # output lines, in order
 declare -A ISSUE_JSON  # issue number -> REST issue JSON
 declare -A WRITES      # chosen issue number -> write set, one path per line
 CHOSEN=()              # spawned and queued issue numbers, in order
+declare -A WAVE        # chosen issue number -> wave: 1 + the deepest wave among its in-run predecessors
 declare -A NEEDS       # queued issue number -> comma-separated predecessors
 declare -A WORKTREE    # spawned issue number -> worktree path
 declare -A OTHERS      # dropped or skipped issue number -> its output line
@@ -390,7 +391,7 @@ spawn_issue() {
     compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"
     SPAWNED+=("$n")
     WORKTREE[$n]=$wt
-    emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT"
+    emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT name=issue_$n"
 }
 
 # board_moves N...: move each issue to In progress. collect arrives without the board, so it is read once here, not once
@@ -418,25 +419,33 @@ spawn_flush() {
 }
 
 # pick LIMIT SERIALIZE: walk candidates on fd 3, choosing up to LIMIT spawns.
+# issue_worktree N: where issue N's worktree lives.
+issue_worktree() {
+    local wt
+    wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$1"
+    [[ $wt == /* ]] || wt="$MAIN/$wt"
+    printf '%s\n' "$wt"
+}
+
 # issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. A field run planned an issue another run still
 # had queued, and a later collect re-spawned an issue that had already shipped. Only a run with a worker still out
 # (spawned, no result) and touched within a day counts, so an abandoned run never blocks new work.
 issue_active() {
-    local n=$1 skip=${2:-} file item state wt needs
+    local n=$1 skip=${2:-} file item state wt needs ended
     while IFS= read -r file; do
         [[ $file != "$skip" ]] || continue
         run_live "$file" || continue
         item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
-            [.state, .worktree // "", (.needs | map("#" + tostring) | join(","))] | join("|")' "$file")
-        IFS='|' read -r state wt needs <<<"$item"
+            [.state, .worktree // "", (.needs | map("#" + tostring) | join(",")), (.ended // "")] | join("|")' "$file")
+        IFS='|' read -r state wt needs ended <<<"$item"
         case $state in
             queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            spawned) worker_out "$wt" "$file" && { printf 'running\n'; return 0; } ;;
+            # A worker ak wait recorded as ended, stopped or hung is gone: the item may be planned again.
+            spawned | red | blocked) [[ -n $ended ]] || ! worker_out "$wt" "$file" || { printf 'running\n'; return 0; } ;;
             parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
         esac
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
-    wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$n"
-    [[ $wt == /* ]] || wt="$MAIN/$wt"
+    wt=$(issue_worktree "$n")
     # A parked result (pr=none) is not shipped: once the operator unblocks it, re-running the issue plans it again.
     [[ ! -f $wt/.ak/result ]] || needs=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
     [[ ${needs:-} != http* ]] || printf 'shipped:%s\n' "$needs"
@@ -450,7 +459,7 @@ worker_out() {
     local wt=$1 age
     [[ -n $wt && ! -f $wt/.ak/result ]] || return 1
     [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] && return 0
-    age=$(( $(date +%s) - $(stat -c %Y -- "$2") ))
+    age=$(( $(date +%s) - $(file_mtime "$2") ))
     ((age < ${AK_SPAWN_GRACE:-600}))
 }
 
@@ -469,14 +478,14 @@ run_live() {
     local wt state
     while IFS=$'\t' read -r state wt; do
         if [[ $state == parked ]]; then resumed_park "$wt" && return 0; else worker_out "$wt" "$1" && return 0; fi
-    done < <(jq -r '.items[] | select(.state == "spawned" or .state == "parked") | [.state, .worktree // ""] | @tsv' "$1")
+    done < <(jq -r '.items[] | select((.state | IN("spawned", "red", "blocked", "parked")) and ((.ended // "") == "")) | [.state, .worktree // ""] | @tsv' "$1")
     return 1
 }
 
-# run_lock NAME: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
+# run_lock [NAME]: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
 # later a collect, whose first call had not returned yet; the second call now waits, then reports the first's work.
 run_lock() {
-    local name=$1 dir="$MAIN/.ak/locks/run" waited=0 lost=''
+    local dir="$MAIN/.ak/locks/run" waited=0
     mkdir -p -- "$MAIN/.ak/locks"
     until mkdir -- "$dir" 2>/dev/null; do
         # A lock whose owner died is free.
@@ -487,17 +496,10 @@ run_lock() {
     done
     printf '%s\n' "$$" >"$dir/pid"
     RUN_LOCK=$dir
-    # A call that outlives an agent's shell yield returns no output, and the agent re-runs it; say to wait instead. A
-    # field root that then lost the plan's output stopped for good on "do not re-run it", so say what recovers it.
-    [[ $name != plan ]] || lost='. If its output is lost, run the same ak plan again: it prints the same lines'
-    { sleep "${AK_SLOW_NOTICE:-3}" >/dev/null 2>&1 &&
-            printf 'ak %s: still working; wait for this call to finish%s\n' "$name" "$lost" >&2; } </dev/null &
-    SLOW_NOTICE=$!
 }
 
-# run_unlock: release the run lock and silence the slow-call notice.
+# run_unlock: release the run lock.
 run_unlock() {
-    kill "${SLOW_NOTICE:-0}" 2>/dev/null || true
     rm -rf -- "${RUN_LOCK:-/nonexistent}"
 }
 
@@ -505,6 +507,14 @@ run_unlock() {
 other() {
     OTHERS[$1]=$2
     emit "$2"
+}
+
+# wave_of NEEDS: the wave of an issue that needs these (comma-separated): 1 + the deepest wave among the
+# predecessors chosen in this run. A predecessor outside the run (a shipped blocker) adds none.
+wave_of() {
+    local h max=0
+    for h in ${1//,/ }; do ((${WAVE[$h]:-0} <= max)) || max=${WAVE[$h]}; done
+    echo $((max + 1))
 }
 
 # choose N SERIALIZE: place an issue that passed check_issue: drop on a collision, queue it, or spawn it.
@@ -518,10 +528,11 @@ choose() {
         other "$n" "drop issue=$n reason=collides-with-#${hits%%,*}"
     elif [[ -n $hits ]]; then
         WRITES[$n]=$WS NEEDS[$n]=$hits STACKS[$n]=$STACK
+        WAVE[$n]=$(wave_of "$hits")
         CHOSEN+=("$n")
-        emit "after issue=$n needs=$hits"
+        emit "after issue=$n needs=$hits wave=${WAVE[$n]}"
     elif spawn_issue "$n" "origin/${STACK:+feat/issue-}${STACK:-$BASE}" "${STACK:+feat/issue-}${STACK:-$BASE}"; then
-        WRITES[$n]=$WS
+        WRITES[$n]=$WS WAVE[$n]=1
         CHOSEN+=("$n")
         return 0
     else
@@ -601,9 +612,9 @@ pick() {
 write_run() {
     local n items='[]' others='[]'
     for n in "${CHOSEN[@]}"; do
-        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" \
-            '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)",
-                   state: (if $needs == "" then "spawned" else "queued" end),
+        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" \
+            '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)", wave: $wave,
+                   spawned_at: (now | floor), state: (if $needs == "" then "spawned" else "queued" end),
                    needs: ($needs | split(",") | map(select(. != "") | tonumber))}
                   + (if $stack == "" then {} else {stack: ($stack | tonumber)} end)]' <<<"$items")
     done
@@ -611,7 +622,7 @@ write_run() {
         others=$(jq -c --argjson n "$n" --arg line "${OTHERS[$n]}" '. + [{n: $n, line: $line}]' <<<"$others")
     done
     jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" --argjson others "$others" \
-        '{run: $run, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
+        '{run: $run, open_wave: 1, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
@@ -628,19 +639,19 @@ resume_run() {
     for n in "$@"; do
         jq -e --argjson n "$n" 'any(.items[], (.others // [])[]; (.kind // "issue") == "issue" and .n == $n)' "$file" >/dev/null || return 1
     done
-    age=$(( $(date +%s) - $(stat -c %Y -- "$file") ))
+    age=$(( $(date +%s) - $(file_mtime "$file") ))
     ((age < ${AK_RESUME_SECONDS:-21600})) || return 1
     local lines=() running=()
     while IFS=$'\t' read -r n wt; do
         [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || continue
         # A worker that already started is not offered again: the same lines twice would start a second one.
         [[ ! -e $wt/.ak/logs && ! -e $wt/.ak/setup.ok ]] || { running+=("skip issue=$n reason=running"); continue; }
-        lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT")
-    done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned") | [.n, .worktree] | @tsv' "$file")
+        lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT name=issue_$n")
+    done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned" and ((.ended // "") == "")) | [.n, .worktree] | @tsv' "$file")
     ((${#lines[@]})) || return 1
     printf 'run=%s resumed\n' "$current"
     printf '%s\n' "${lines[@]}" "${running[@]}"
-    jq -r '(.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(","))"),
+    jq -r '(.items[] | select(.kind == "issue" and .state == "queued") | "after issue=\(.n) needs=\(.needs | map(tostring) | join(",")) wave=\(.wave // 1)"),
         ((.others // [])[] | .line)' "$file"
 }
 

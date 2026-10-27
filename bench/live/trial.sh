@@ -15,6 +15,8 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bench=$(dirname -- "$here")
 kit_repo=$(dirname -- "$bench")
 state="$here/sandbox.json"
+# shellcheck source=trial-lib.sh
+source "$here/trial-lib.sh"
 
 kit='' ref='' issues='01 03 04' model=gpt-6-luna effort=high worker_model=gpt-5.6-luna worker_effort=medium
 timeout_s=5400 trial='' scenario=issues
@@ -53,45 +55,8 @@ case $kit in
         prompt='$ak:issues --yolo --serialize' ;;
 esac
 
-# GitHub's hourly GraphQL pool is shared by every tool on the account; a trial that starts dry fails in seconds.
-# budget: "REMAINING RESET_EPOCH" for the GraphQL pool, read through GraphQL itself. The REST rate_limit view
-# reported 4999 left while GraphQL's own rateLimit said 20, and two sandbox resets died on the throttle. A query that
-# is itself throttled counts as an empty pool and waits for the REST-reported reset.
-budget() {
-    local out
-    if out=$(gh api graphql -f query='query { rateLimit { remaining resetAt } }' \
-        --jq '"\(.data.rateLimit.remaining) \(.data.rateLimit.resetAt | fromdateiso8601)"' 2>/dev/null); then
-        printf '%s\n' "$out"
-    else
-        printf '0 %s\n' "$(gh api rate_limit --jq .resources.graphql.reset)"
-    fi
-}
-read -r gql_left gql_reset < <(budget)
-while ((gql_left < ${AK_BENCH_MIN_GRAPHQL:-1500})); do
-    log "GraphQL pool at $gql_left; waiting for reset at $(date -u -d "@$gql_reset" +%H:%M:%SZ)"
-    wait_s=$((gql_reset - $(date +%s) + 30))
-    sleep $((wait_s > 60 ? wait_s : 60))
-    read -r gql_left gql_reset < <(budget)
-done
-
-log "reset sandbox, open issues: $issues"
-# A reset that fails is almost always GitHub throttling; wait it out once rather than burning the trial.
-"$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log" || {
-    log 'reset failed; waiting 15 minutes for GitHub throttling to clear'
-    sleep 900
-    "$here/sandbox.sh" reset "$issues" 2>>"$dir/trial.log"
-}
-
-# GitHub's project listing lags fresh items; a run that starts before they show sees a different board.
-expect=$(wc -w <<<"$issues")
-for _ in $(seq 1 30); do
-    seen=$(gh project item-list "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --format json --limit 100 |
-        jq --argjson want "$(jq -c '[.[]]' "${AK_BENCH_WORK:-$HOME/.cache/ak-bench}/current-issues.json")" \
-            '[.items[] | select(.status == "Ready" and (.content.number as $n | $want | index($n)))] | length')
-    ((seen >= expect)) && break
-    sleep 10
-done
-((seen >= expect)) || { log "board never showed all $expect trial issues as Ready (saw $seen)"; exit 1; }
+wait_graphql_budget
+reset_sandbox_ready "$issues"
 
 if [[ $scenario == prs ]]; then
     log "seed draft PRs for: $issues"
@@ -111,26 +76,7 @@ trap 'git -C "$kit_repo" worktree remove --force "$dir/kit" 2>/dev/null || true'
 export CODEX_HOME="$dir/codex-home"
 mkdir -p "$CODEX_HOME"
 cp -- "${AK_BENCH_CODEX_AUTH:-$HOME/.codex/auth.json}" "$CODEX_HOME/auth.json"
-# Mirrors the field machine's config (2026-09-30) so a trial runs the setup the field repository runs.
-cat >"$CODEX_HOME/config.toml" <<TOML
-model = "$model"
-model_reasoning_effort = "$effort"
-service_tier = "default"
-approvals_reviewer = "auto_review"
-default_permissions = ":danger-full-access"
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
-
-[agents]
-max_concurrent_threads_per_session = 20
-default_subagent_model = "$worker_model"
-default_subagent_reasoning_effort = "$worker_effort"
-
-[features]
-hooks = true
-js_repl = false
-multi_agent = false
-TOML
+write_codex_config
 codex plugin marketplace add "$dir/kit" >>"$dir/trial.log" 2>&1
 codex plugin add "$plugin@agent-kit" >>"$dir/trial.log" 2>&1
 
@@ -144,21 +90,7 @@ if [[ $kit == v1 ]]; then
         --project "$(jq -r .board.number "$state")" --owner "${repo%%/*}" --force >>"$dir/trial.log" 2>&1 ||
         { log 'v1 onboarding (bootstrap-repo.sh) failed; see trial.log'; exit 1; }
 fi
-cat >"$dir/repo/.agent/config.env" <<ENV
-AGENT_REPO_SLUG=$repo
-AGENT_BASE_BRANCH=main
-AGENT_WORKTREE_ROOT=.worktrees
-AGENT_PROJECT_OWNER=${repo%%/*}
-AGENT_PROJECT_NUMBER=$(jq -r .board.number "$state")
-AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done
-AGENT_CMD_TEST="node test/smoke.mjs"
-AGENT_CMD_VERIFY="node test/smoke.mjs"
-AGENT_WORKER_MODELS=$worker_model
-AGENT_WORKER_EFFORT=$worker_effort
-AGENT_LABEL_TYPES=bug,enhancement
-AGENT_LABEL_AREAS=render,store
-AGENT_LABEL_PRIORITIES=p1,p2
-ENV
+write_bench_config "$dir/repo"
 
 # Every gh call during the run goes through a counting shim, so API use is exact, not a shared-pool delta.
 mkdir -p "$dir/bin"
@@ -170,8 +102,7 @@ export PATH="$dir/bin:$PATH"
 log "run: codex exec $prompt (model=$model effort=$effort timeout=${timeout_s}s)"
 started=$(date -u +%s)
 rc=0
-# The trial must not inherit the operator's harness: a Claude Code session exports CLAUDE* into every child.
-mapfile -t scrub < <(env | sed -n 's/^\(CLAUDE[A-Z_]*\|CODEX_THREAD_ID\|CODEX_SESSION_ID\|CODEX_CI\)=.*/-u\n\1/p')
+scrub_args
 env "${scrub[@]}" timeout --kill-after=30 "$timeout_s" codex exec --json --dangerously-bypass-approvals-and-sandbox \
     --dangerously-bypass-hook-trust --skip-git-repo-check -C "$dir/repo" -m "$model" \
     -c "model_reasoning_effort=\"$effort\"" "$prompt" >"$dir/exec.jsonl" 2>"$dir/exec.err" || rc=$?
