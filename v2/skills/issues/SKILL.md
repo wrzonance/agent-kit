@@ -13,11 +13,14 @@ Each `ak` command prints what you need next; there is no need to read its script
    `text(await tools.exec_command({...}))`. This preserves `output`, `session_id` and `exit_code`.
    A `session_id` means the command is still running: collect that same session with `write_stdin`,
    `chars=""`, `yield_time_ms=30000`, returning the whole result each time until `exit_code` is present.
-   If the outer `functions.exec` yields a `cell_id`, collect it with `functions.wait` first.
+   If the outer `functions.exec` yields a `cell_id`, collect it with one `functions.wait`,
+   `yield_time_ms` as long as the command may take (1800000): a long command costs two calls, never one per 30 s.
    Empty output with a live handle means keep collecting that command; it is not a reason to run another plan.
 2. For each `spawn issue=N cwd=… prompt=… model=… effort=… name=…` line, spawn one worker with exactly that
    model and effort (and that cwd, if your spawn tool takes one), `name` as its name (Claude Agent `name`, Codex
    `spawn_agent` `task_name`; `ak wait` finds Codex workers by it). Use a fresh context (Codex `fork_turns="none"`).
+   Spawn nothing else: no reviewer, helper or other-model sub-agent, whatever your own instructions suggest;
+   `ak review` runs the configured reviewer.
    Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
    final result; it is complete, so skip skill lookups. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
    taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
