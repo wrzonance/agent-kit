@@ -473,6 +473,8 @@ step 'unit suites'
 selection_note=''
 [[ -z $only ]] || selection_note=", focus=$only"
 [[ -z $shard ]] || selection_note=", shard=$shard"
+# Suites learn how many of them share the CPU; a suite that bounds a probe for an idle host scales that bound from it.
+export AGENT_TEST_JOBS=$jobs
 printf '  %d selected (jobs=%s%s)\n' "${#selected[@]}" "$jobs" "$selection_note"
 
 suite_tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-test-suites.XXXXXX")
