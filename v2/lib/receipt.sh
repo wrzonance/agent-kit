@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# ak receipt: one PR comment with the reviewed head, reviewer, findings and CI state; writes .ak/result.
+# ak receipt: waits for CI on the pushed head, then posts one PR comment with the reviewed head, reviewer, findings and
+# CI state; writes .ak/result. A red of the branch's own prints ak ci's diagnostics and exits 1.
 # shellcheck source=ship.sh
 source "$AK_HOME/lib/ship.sh"
 # shellcheck source=ci.sh
@@ -157,7 +158,7 @@ receipt_post() {
 }
 
 cmd_main() {
-    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity own diag
     local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
@@ -178,7 +179,11 @@ cmd_main() {
     head=$(ci_head)
     pr=$(ship_pr_find)
     [[ -n $pr ]] || die "no open PR for $(git branch --show-current)" "ak ship --message '<conventional commit>'"
-    runs=$(ci_runs "$head") || exit 1
+    # The receipt waits for CI the way ak ci does, so a worker spends no turn on ak ci first (bench 2026-10-27).
+    ci_blocked
+    runs=$(ci_wait "$head" 1800 0) || exit 1
+    # A parent may have merged during the wait, leaving the PR conflicted with its checks unchanged.
+    ci_blocked
     summary=$(ci_summary "$runs")
     ci=${summary%% *}
     ci=${ci#ci=}
@@ -189,13 +194,24 @@ cmd_main() {
     receipt_all_decided "$dir" "$findings"
     # Comments on the PR from review bots and people are findings too; each is resolved or declined before the receipt.
     open=$(threads_open "$(slug)" "${pr%% *}") || die "cannot read the review threads on PR #${pr%% *}" "gh auth status"
-    [[ -z $open ]] || die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" "ak threads"
+    if [[ -n $open ]]; then
+        threads_print "$open"
+        die "PR #${pr%% *} has $(grep -c . <<<"$open") unresolved review threads ($(threads_summary "$open"))" \
+            "fix or decline each thread, resolve it with ak threads --resolve ID --note '<fixed in sha: what now happens | declined: reason>', then ak receipt again"
+    fi
     [[ -z $remaining ]] || receipt_part_of "${pr%% *}"
     # The decided lines stay for a later receipt here (a merge-down), written fresh, never through a link.
     rm -f -- "$dir/findings"
     if [[ -n $findings ]]; then grep -v '^[[:space:]]*$' <<<"$lines" >"$dir/findings"; else printf 'none\n' >"$dir/findings"; fi
     identity=$(receipt_review_identity "$dir") || exit 1
     printf '%s\n' "$identity" >"$dir/findings-review"
+    # A red prints what ak ci prints; a failure of the branch's own exits 1 after the receipt so the worker fixes it.
+    inherited='' own='' diag=''
+    if [[ $ci == red ]]; then
+        inherited=$(ci_inherited "$runs")
+        own=$(ci_only "$runs" "$inherited")
+        diag=$(printf '%s\n' "$summary" "$inherited" "$own" | grep -v '^$'; ci_print_failures "$runs" || true)
+    fi
     receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(receipt_post "${pr%% *}" "$dir/receipt.md" "$head") ||
         die "could not post the receipt comment" "gh auth status"
@@ -207,7 +223,7 @@ cmd_main() {
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
     # Red checks the base branch fails too: the collect line then shows the operator that the base is red, not this PR.
     # The base name is on its way to a line the root reads, so it is reduced to ref-name characters, never dropped.
-    if [[ $ci == red ]] && inherited=$(ci_inherited "$runs") && [[ $inherited =~ ^inherited=(.+)\ from=([^ ]+)\ note= ]]; then
+    if [[ $inherited =~ ^inherited=(.+)\ from=([^ ]+)\ note= ]]; then
         base=${BASH_REMATCH[2]//[^A-Za-z0-9._\/+@-]/}
         note+="; base-red: ${BASH_REMATCH[1]} (also red on ${base:-the base branch})"
     fi
@@ -217,4 +233,6 @@ cmd_main() {
     printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     printf 'receipt=%s\n' "$url"
     paste -sd' ' "$dir/result"
+    [[ -z $diag ]] || printf '%s\n' "$diag"
+    [[ -z $own ]]
 }
