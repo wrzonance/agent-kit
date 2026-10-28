@@ -88,9 +88,22 @@ multi_agent = true
 TOML
 }
 
+# fixture_variant: the fixture variant this trial runs, as a label suffix. AK_BENCH_VERIFY_SLEEP=S makes the bench
+# verify sleep S seconds first ("+verifySs"): field verifies ran for minutes and workers polled them 17 to 92 times,
+# while the plain fixture's verify ends inside one 30 s shell slice, so that wait was never measured.
+fixture_variant() {
+    local s=${AK_BENCH_VERIFY_SLEEP:-}
+    [[ -n $s ]] || return 0
+    [[ $s =~ ^[0-9]+$ ]] || { printf 'trial: AK_BENCH_VERIFY_SLEEP must be whole seconds, got: %s\n' "$s" >&2; return 2; }
+    printf '+verify%ss\n' "$s"
+}
+
 # write_bench_config CLONE: the shared bench .agent/config.env, so every arm reads identical settings.
 # Needs: repo, state, worker_model, worker_effort.
 write_bench_config() {
+    local variant verify='node test/smoke.mjs'
+    variant=$(fixture_variant) || return 2
+    [[ -z $variant ]] || verify="sleep $AK_BENCH_VERIFY_SLEEP && $verify"
     mkdir -p "$1/.agent"
     cat >"$1/.agent/config.env" <<ENV
 AGENT_REPO_SLUG=$repo
@@ -99,8 +112,8 @@ AGENT_WORKTREE_ROOT=.worktrees
 AGENT_PROJECT_OWNER=${repo%%/*}
 AGENT_PROJECT_NUMBER=$(jq -r .board.number "$state")
 AGENT_STATUS_VOCAB=Backlog,Ready,In progress,In review,Done
-AGENT_CMD_TEST="node test/smoke.mjs"
-AGENT_CMD_VERIFY="node test/smoke.mjs"
+AGENT_CMD_TEST="$verify"
+AGENT_CMD_VERIFY="$verify"
 AGENT_WORKER_MODELS=$worker_model
 AGENT_WORKER_EFFORT=$worker_effort
 AGENT_LABEL_TYPES=bug,enhancement
