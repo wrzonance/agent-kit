@@ -768,6 +768,17 @@ assert_not_contains "$(cat "$real")" 'commands, results' 'the Tests line does no
 assert_contains "$(cat "$real")" 'what each test file proves' 'the Tests line matches the ship gate'
 for f in "$real" "$REPO/v2/templates/pr-worker.md" "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
     assert_contains "$(cat "$f")" 'skip skill' "$(basename "$f") tells the worker skill lookups are unnecessary"
+    # Codex clamps exec_command/write_stdin yields to 30 s but honours a long code-mode `wait` on a yielded cell (a
+    # 1,800,000 ms wait ran a 130 s command to completion in one call), so a minutes-long verify costs two turns, not
+    # one per 30 s (field workers made 17–92 such polls each).
+    assert_contains "$(cat "$f")" 'yield_time_ms` as long as the command may take' "$(basename "$f") waits once on a yielded cell"
+done
+# A root was seen spawning a sub-agent of a model nobody configured; the only sub-agents are the printed spawn lines.
+for f in "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
+    assert_contains "$(cat "$f")" 'Spawn nothing else' "$(basename "$f") forbids any sub-agent beyond the spawn lines"
+done
+for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
+    assert_contains "$(cat "$f")" 'Spawn no sub-agents' "$(basename "$f") forbids worker sub-agents"
 done
 
 

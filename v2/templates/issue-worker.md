@@ -10,8 +10,10 @@ This playbook is complete: begin at step 1 and skip skill or guide lookups. The 
 handles planning and spawning.
 Each command prints the next step. Keep successful output concise; full setup/verify
 logs are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait; when a call
-yields, collect its existing handle and exit code before continuing. Read relevant
-code and failure diagnostics as needed, rather than dumping whole trees or logs.
+yields, collect its existing handle and exit code before continuing: one `wait` on the
+yielded cell with `yield_time_ms` as long as the command may take (1800000), never 30 s
+polls. Spawn no sub-agents. Read relevant code and failure diagnostics as needed,
+rather than dumping whole trees or logs.
 
 If blocked, run `ak park --reason "<why>"` and end with its line, without messaging
 the root. For multi-PR work or an operator/live-session step, deliver the part this

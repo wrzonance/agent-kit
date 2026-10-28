@@ -12,8 +12,10 @@ This playbook is complete: skip skill or guide lookups. The root handles plannin
 spawning; begin below. Commands print what you need next;
 follow a refusal's `fix:` line. Keep successful output concise; full setup/verify logs
 are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait and collect an
-existing handle and exit code when a call yields. Read relevant code and failure
-diagnostics as needed, rather than dumping whole trees or logs.
+existing handle and exit code when a call yields: one `wait` on the yielded cell with
+`yield_time_ms` as long as the command may take (1800000), never 30 s polls.
+Spawn no sub-agents. Read relevant code and failure diagnostics as needed, rather than
+dumping whole trees or logs.
 
 1. {{SETUP}}If `.ak/resolve` exists, run
    `git fetch origin && git merge "$(cat .ak/resolve)"`, resolve conflicts preserving
