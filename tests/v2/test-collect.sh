@@ -641,6 +641,18 @@ assert_not_contains "$out" 'wave=done' 'a spawned last wave is not done yet'
 jq '(.items[] | select(.n == 691)).state = "collected"' "$run_r" >"$run_r.tmp" && mv "$run_r.tmp" "$run_r"
 out=$("$AK" collect --wave 2>&1)
 assert_eq 'wave=done' "$out" 'everything collected reads wave=done'
+# wave=done comes after every settled wave's item lines, so the root reports without reading the summary files (bench
+# 2026-10-27: 5 of 12 roots spent their last turn on `cat .ak/runs/*.summary`). Only this run's waves count, in order.
+run_id=$(basename -- "$run_r" .json)
+printf 'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=n\nwave=1 settled=1/1 summary=x\n' \
+    >"$repo/.ak/runs/$run_id.wave1.summary"
+printf 'issue=691 pr=https://github.com/acme/widget/pull/14 ci=green review=done note=n\nwave=3 settled=1/1 summary=y\n' \
+    >"$repo/.ak/runs/$run_id.wave3.summary"
+printf 'issue=999 pr=other\n' >"$repo/.ak/runs/other-run.wave1.summary"
+out=$("$AK" collect --wave 2>&1)
+assert_eq $'issue=671 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=n\nissue=691 pr=https://github.com/acme/widget/pull/14 ci=green review=done note=n\nwave=done' \
+    "$out" 'wave=done follows each wave summary line of this run, in wave order'
+rm -f -- "$repo/.ak/runs/$run_id".wave*.summary "$repo/.ak/runs/other-run.wave1.summary"
 
 # A blocked item holds its dependents the same way.
 jq '(.items[] | select(.n == 680)) |= (.state = "queued" | .worktree = "") | (.items[] | select(.n == 691)).state = "queued" |
