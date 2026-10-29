@@ -433,10 +433,15 @@ assert_contains "$out" "fix: fix what ak verify printed, then ak ship --message 
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-8)" 'a failing verify pushes nothing'
 assert_eq "$(git rev-parse origin/main)" "$(git rev-parse HEAD)" 'a failing verify commits nothing'
 rm -f "$WORK/verify-red"
+printf '90\n' >.ak/verify-seconds
 out=$("$AK" ship --message 'feat: eight' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a passing verify ships'
 assert_contains "$out" 'verify=pass' 'ship prints the verify result'
 assert_contains "$out" 'pr=https://github.com/acme/widget/pull/13' 'and then ships'
+# A worker whose ship ran a 90 s verify took it for a hung command and polled ps and sleep for ten turns (bench
+# 2026-10-29): the first line says a verify is starting, how long the last one took, and to wait on this command.
+assert_eq 'ak ship: running ak verify first; the last verify here took ~90s. This one command verifies, commits, pushes and ends with a pr= line: wait on it, without polling or inspecting processes.' \
+    "$(head -n 1 <<<"$out")" 'ship announces the verify, its last duration and the wait before running it'
 assert_eq 2 "$(grep -c ran "$WORK/verify-runs")" 'ship ran verify itself both times'
 printf 'more\n' >>src/eight.txt
 "$AK" verify >/dev/null 2>&1
@@ -444,6 +449,7 @@ out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a ship after a passing verify succeeds'
 assert_eq 3 "$(grep -c ran "$WORK/verify-runs")" 'a verify that passed on this exact tree is not run again'
 assert_not_contains "$out" 'verify=' 'a tree that already passed prints no second verify'
+assert_not_contains "$out" 'running ak verify first' 'a tree that already passed announces no verify'
 "$AK" verify >/dev/null 2>&1
 printf 'late\n' >>src/eight.txt
 out=$("$AK" ship --message 'feat: late' 2>&1); rc=$?
@@ -455,6 +461,8 @@ touch "$WORK/verify-red"
 out=$("$AK" ship --message 'feat: red' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a verify that failed after an earlier pass on the same tree still blocks the ship'
 rm -f "$WORK/verify-red"
+assert_eq 'ak ship: running ak verify first. This one command verifies, commits, pushes and ends with a pr= line: wait on it, without polling or inspecting processes.' \
+    "$(rm -f .ak/verify-seconds; printf 'x\n' >>src/eight.txt; "$AK" ship --message 'feat: x' 2>&1 | head -n 1)" 'with no earlier verify the notice names no duration'
 unset AGENT_CMD_SRC AGENT_RUNDIR_SRC
 
 finish

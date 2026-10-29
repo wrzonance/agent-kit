@@ -280,10 +280,15 @@ ship_resolved() {
 # ship_verified MESSAGE: run ak verify unless it already passed on this exact tree; a failing verify ships nothing.
 # Workers spent one turn on `ak verify` and the next on `ak ship` (bench 2026-10-27).
 ship_verified() {
-    local file tree rc=0
+    local file tree rc=0 last
     file="$(ak_dir)/verified"
     tree=$(worktree_tree) || tree=''
     [[ -z $tree || ! -f $file || -L $file || $(<"$file") != "$tree" ]] || return 0
+    # A worker whose ship ran a 90 s verify took it for a hung command and polled ps and sleep for ten turns
+    # (bench 2026-10-29): say first that a verify is starting, how long the last one took, and to wait.
+    last=$(cat -- "$(ak_dir)/verify-seconds" 2>/dev/null) || last=''
+    [[ $last =~ ^[0-9]+$ && ! -L $(ak_dir)/verify-seconds ]] && last="; the last verify here took ~${last}s" || last=''
+    printf 'ak ship: running ak verify first%s. This one command verifies, commits, pushes and ends with a pr= line: wait on it, without polling or inspecting processes.\n' "$last"
     "$AK_HOME/bin/ak" verify || rc=$?
     ((rc == 0)) || die "verify failed; nothing was committed or pushed" "fix what ak verify printed, then ak ship --message '$1'"
 }
