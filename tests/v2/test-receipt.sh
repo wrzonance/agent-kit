@@ -14,6 +14,8 @@ mkdir -p .ak
 route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
 route "api repos/acme/widget/commits/$head/check-runs?per_page=100 --paginate" '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}'
 route 'api -X POST repos/acme/widget/issues/9/comments *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-1"}'
+route 'api -X GET repos/acme/widget/pulls -f head=acme:feat/issue-7 -f state=open' '[{"number":9}]'
+route 'api repos/acme/widget/pulls/9' '{"mergeable_state":"clean","base":{"ref":"main"}}'
 
 printf 'P1|bad thing\n' >"$WORK/bad"
 out=$("$AK" receipt --findings "$WORK/bad" 2>&1); rc=$?
@@ -106,6 +108,47 @@ git add -f .ak/ci-only
 assert_not_contains "$(cat .ak/result)" 'ci-only' 'a tracked record is ignored'
 git rm -q --cached .ak/ci-only
 rm -f .ak/ci-only
+
+# ak receipt waits for CI itself, so a worker spends no turn on `ak ci` before it (bench 2026-10-27: every worker ran
+# ak ci, then ak receipt). Pending runs are polled until they conclude, and the concluded state is what is posted.
+printf '{"check_runs":[{"name":"t","status":"in_progress","conclusion":null}]}' >"$WORK/runs.json"
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' "$head" "$WORK/runs.json" "$routes" >"$FAKE_GH_ROUTES"
+(sleep 1 && printf '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}' >"$WORK/runs.new" &&
+    mv -f "$WORK/runs.new" "$WORK/runs.json") &
+: >"$FAKE_GH_LOG"
+out=$(AK_CI_INTERVAL=1 "$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+wait
+assert_eq 0 "$rc" 'a receipt on pending CI waits and then succeeds'
+assert_contains "$out" "ci pending on ${head:0:12}" 'the receipt says it is waiting on CI'
+assert_contains "$(cat .ak/result)" 'ci=green' 'the concluded state is recorded, not pending'
+assert_eq yes "$( (($(grep -c "commits/$head/check-runs" "$FAKE_GH_LOG") >= 2)) && echo yes || echo no)" 'the check runs were read again until they concluded'
+# A red of the branch's own prints what ak ci printed and exits 1: the worker fixes, ships and runs the receipt again.
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
+    "$head" "$WORK/red-head.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a red of its own exits 1'
+assert_contains "$out" 'ci=red checks=2 failing=t,own' 'the receipt prints the CI line'
+assert_contains "$out" 'inherited=t from=main' 'and the checks the base branch fails too'
+assert_contains "$out" 'ci-only=own' 'and the checks only this branch fails'
+assert_contains "$out" '--- own: no Actions job log' "and each failing job's errors"
+assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9' 'the red state is still posted'
+rm -f .ak/ci-only
+# A red the base branch causes alone is not the worker's to fix: the receipt records it and exits 0.
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
+    "$head" "$WORK/red-main.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'a red the base branch causes alone exits 0'
+assert_contains "$(cat .ak/result)" 'base-red: t (also red on main)' 'the result names the base-red check'
+rm -f .ak/ci-only
+# A PR that conflicts with its base gets no PR checks; its head's checks are never read as its CI.
+printf '{"mergeable_state":"dirty","base":{"ref":"main"}}' >"$WORK/dirty.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\n%s\n' "$WORK/dirty.json" "$routes" >"$FAKE_GH_ROUTES"
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a conflicted PR gets no receipt'
+assert_contains "$out" 'ci=blocked note=PR #9 conflicts with main' 'the refusal names the conflict'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/issues/9/comments' 'nothing is posted for a conflicted PR'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 rm .ak/review.md
 touch .ak/review.unavailable
@@ -225,6 +268,8 @@ mv "$FAKE_GH_ROUTES" "$WORK/routes.old" && { tail -n 1 "$WORK/routes.old"; head 
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 1 "$rc" 'a receipt with open review threads is refused'
 assert_contains "$out" 'PR #9 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the open threads by author'
-assert_contains "$out" 'fix: ak threads' 'the refusal points at ak threads'
+assert_contains "$out" 'thread=T1 github-code-quality src/a.cs:294: Generic catch clause more' 'the refusal lists each open thread with its ID'
+assert_not_contains "$out" 'thread=T3' 'a resolved thread is not listed'
+assert_contains "$out" 'fix: fix or decline each thread, resolve it with ak threads --resolve ID --note' 'the refusal names the resolve command, not another listing'
 
 finish
