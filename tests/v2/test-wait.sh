@@ -75,6 +75,29 @@ out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 0 "$rc" '--check exits 0 once the result is there'
 assert_eq 'next=ak wait' "$(tail -n 1 <<<"$out")" '--check at exit 0 ends with the command that settles the wave'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" '--check leaves no marker'
+# A worker in its final ak receipt reported 130 ms after the root's --check said running, ended 1.5 s later, and the
+# root's wait_agent then started after the last wake and slept its full hour (bench 2026-10-29). --check gives a worker
+# whose receipt has started a short grace to report before it answers running.
+rm -f "$WORK/wt/5/.ak/result"
+: >"$WORK/wt/5/.ak/receipt-started"
+(sleep 1; green_result >"$WORK/wt/5/.ak/result") &
+out=$(AK_WAIT_FINAL_S=10 "$AK" wait --check 2>&1); rc=$?
+wait
+assert_eq 0 "$rc" '--check waits for a worker whose receipt has started and reports within the grace'
+rm -f "$WORK/wt/5/.ak/result"
+: >"$WORK/wt/5/.ak/receipt-started"
+touch "$subdir/agent-a5.jsonl"
+start=$SECONDS
+out=$(AK_WAIT_FINAL_S=2 "$AK" wait --check 2>&1); rc=$?
+assert_eq 3 "$rc" 'a receipt that outlasts the grace (waiting on CI) is still running'
+assert_eq yes "$( ((SECONDS - start < 6)) && echo yes || echo no)" 'and the grace is bounded'
+rm -f "$WORK/wt/5/.ak/receipt-started"
+touch "$subdir/agent-a5.jsonl"
+start=$SECONDS
+out=$(AK_WAIT_FINAL_S=10 "$AK" wait --check 2>&1); rc=$?
+assert_eq 3 "$rc" 'a worker that has not started its receipt is running'
+assert_eq yes "$( ((SECONDS - start < 5)) && echo yes || echo no)" 'and gets no grace'
+green_result >"$WORK/wt/5/.ak/result"
 
 # Codex: children are matched by parent thread and agent_path, and end on task_complete.
 rm -f "$WORK/wt/5/.ak/result"
