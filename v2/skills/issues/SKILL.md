@@ -5,7 +5,8 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 
 # issues
 
-`ak` is `<this skill's directory>/../../bin/ak`. Pass the operator's flags straight through to `ak plan`.
+`ak` is the `bin/ak` beside this plugin's `skills` directory: `<this skill's directory>/../../bin/ak`.
+Pass the operator's flags straight through to `ak plan`.
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
@@ -40,4 +41,4 @@ Each `ak` command prints what you need next; there is no need to read its script
    report as printed.
 5. When satisfied, run `ak collect --wave`. Spawn a worker for every `spawn` line it prints, as in step 2, and
    wait again as in step 3. Repeat until it prints `wave=done`.
-6. Then print every summary line as the report and stop.
+6. `wave=done` follows every wave's summary lines: print those lines as the report and stop.

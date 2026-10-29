@@ -777,6 +777,12 @@ done
 for f in "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
     assert_contains "$(cat "$f")" 'Spawn nothing else' "$(basename "$f") forbids any sub-agent beyond the spawn lines"
 done
+# One root in 12 resolved ../../bin/ak to skills/bin/ak and lost its first turn (bench 2026-10-27): the path is named
+# by where the binary sits, not only as a relative path.
+for f in "$REPO"/v2/skills/{issues,pr,onboard}/SKILL.md; do
+    assert_contains "$(tr -s ' \n' ' ' <"$f")" "the \`bin/ak\` beside this plugin's \`skills\` directory" "$(basename "$(dirname "$f")") names where bin/ak sits"
+done
+assert_contains "$(cat "$REPO/v2/skills/issues/SKILL.md")" "\`wave=done\` follows every wave's summary lines" 'the issues skill reports from the collect output'
 for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
     assert_contains "$(cat "$f")" 'Spawn no sub-agents' "$(basename "$f") forbids worker sub-agents"
     # ak ship runs ak verify and ak receipt waits for CI (bench 2026-10-27: a turn each on ak verify and ak ci before them).

@@ -40,7 +40,11 @@ set_run 5
 green_result >"$WORK/wt/5/.ak/result"
 out=$("$AK" wait 2>&1); rc=$?
 assert_eq 0 "$rc" 'a result already there settles at once'
-assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$out" 'a reported worker prints its collect line and the closing count'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1" "$out" 'a reported worker prints its collect line and the closing count'
+# The closing count names no file: roots read the summary path it used to print, a turn for lines they already had
+# (bench 2026-10-28). The file is still written for ak collect --wave.
+assert_not_contains "$out" 'summary=' 'the closing count names no summary file to read'
+assert_eq yes "$([[ -f $sum1 ]] && echo yes || echo no)" 'the summary file is still written'
 assert_eq "$out" "$(cat "$sum1")" 'the summary file holds exactly what was printed'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is gone after ak wait exits'
 
@@ -149,7 +153,7 @@ assert_eq "$w1" "$(sed -n 's/^pid=//p' "$marker")" 'a second ak wait does not re
 green_result >"$WORK/wt/5/.ak/result"
 wait "$w1"
 wait "$w2"
-assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$(cat "$WORK/w1.out")" 'the watcher prints the summary'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1" "$(cat "$WORK/w1.out")" 'the watcher prints the summary'
 assert_eq "$(cat "$WORK/w1.out")" "$(cat "$WORK/w2.out")" 'the attached ak wait prints the same summary'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is cleared when the watcher exits'
 
@@ -237,7 +241,7 @@ assert_eq yes "$alive" 'it keeps waiting while the worker runs'
 green_result >"$WORK/wt/5/.ak/result"
 wait "$w2"; rc=$?
 assert_eq 0 "$rc" 'and exits 0 once settled'
-assert_eq "$reported5"$'\n'"wave=1 settled=1/1 summary=$sum1" "$(cat "$WORK/w2.out")" 'with the summary'
+assert_eq "$reported5"$'\n'"wave=1 settled=1/1" "$(cat "$WORK/w2.out")" 'with the summary'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'and clears the marker'
 export AK_WAIT_HANG_S=3
 
@@ -267,7 +271,7 @@ out=$(AK_WAIT_HANG_S=5 "$AK" wait 2>&1)
 wait "$swap"
 assert_contains "$out" 'issue=5 pr=https://github.com/acme/widget/pull/9 ci=green' 'the wait covered the pending CI and reports it green'
 assert_contains "$out" 'issue=6 state=hung next=stop its worker' 'the same summary names the hung worker'
-assert_eq "wave=1 settled=2/2 summary=$sum1" "$(tail -n 1 "$sum1")" 'the summary file ends with the closing count'
+assert_eq "wave=1 settled=2/2" "$(tail -n 1 "$sum1")" 'the summary file ends with the closing count'
 assert_eq no "$([[ -e $marker ]] && echo yes || echo no)" 'the marker is gone once the summary is written'
 
 # Correction round: --issue 12 keeps waiting past an old result until a newer one is written.
@@ -289,7 +293,7 @@ printf 'pr=https://github.com/acme/widget/pull/9\nci=green\nreview=done\nhead=ab
 wait "$c1"; rc=$?
 assert_eq 0 "$rc" 'a newer result settles the round'
 assert_contains "$(cat "$WORK/c1.out")" 'issue=12 pr=https://github.com/acme/widget/pull/9 ci=green review=done note=fixed' 'with the new collect line'
-assert_contains "$(tail -n 1 "$WORK/c1.out")" 'wave=1 settled=1/1 summary=' 'and the closing count'
+assert_contains "$(tail -n 1 "$WORK/c1.out")" 'wave=1 settled=1/1' 'and the closing count'
 assert_eq null "$(jq -r '.items[0].round_at' "$repo/.ak/runs/r1.json")" 'the round is closed once the item settles'
 
 # --check in a correction round shares the stamp: the old result and end record never settle it.
@@ -385,7 +389,7 @@ printf 'r2\n' >"$repo/.ak/runs/current"
 rm -f "$WORK/wt/6/.ak/result"
 green_result >"$WORK/wt/6/.ak/result"
 out=$(CLAUDE_CODE_SESSION_ID=sess-2 timeout 20 "$AK" wait 2>&1)
-assert_contains "$out" 'wave=1 settled=1/1 summary=' 'a wait for another run and session settles on its own'
+assert_contains "$out" 'wave=1 settled=1/1' 'a wait for another run and session settles on its own'
 assert_eq "$w1" "$(sed -n 's/^pid=//p' "$marker")" 'and leaves the first watcher marker alone'
 assert_eq yes "$([[ -f $repo/.ak/runs/r2.wave1.summary ]] && echo yes || echo no)" 'its summary is under its own run'
 green_result >"$WORK/wt/5/.ak/result"

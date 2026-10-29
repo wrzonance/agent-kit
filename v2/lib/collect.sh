@@ -441,12 +441,25 @@ wave_runfile() {
     printf '%s\n' "$current"
 }
 
+# wave_report: this run's settled item lines, wave by wave, from the summaries ak wait wrote. The root reports from
+# them without reading the files (bench 2026-10-27: 5 of 12 roots spent their last turn on `cat .ak/runs/*.summary`).
+wave_report() {
+    local run w last file
+    run=$(basename -- "$RUNFILE" .json)
+    last=$(jq -r '.open_wave // 1' "$RUNFILE")
+    for ((w = 1; w <= last; w++)); do
+        file="$MAIN/.ak/runs/$run.wave$w.summary"
+        [[ ! -f $file || -L $file ]] || grep -v '^wave=' -- "$file" || true
+    done
+}
+
 cmd_wave() {
     local open
     RUNFILE=$(wave_runfile)
     open=$(wave_open)
     [[ -z $open ]] || die "wave $(jq -r '.open_wave // 1' "$RUNFILE") is still open: $open" 'ak wait'
     release_wave loud
+    [[ " ${LINES[*]} " != *' wave=done '* ]] || wave_report
     printf '%s\n' "${LINES[@]}"
 }
 
