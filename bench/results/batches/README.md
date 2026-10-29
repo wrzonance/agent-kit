@@ -142,3 +142,43 @@ Reproduce the delivery, root, and system metrics:
 `python3 bench/live/compare.py bench/results/batches/20261027T195115Z-codex-e498a1c.jsonl`.
 Keep this table beside the earlier ones: both arms here sit below the previous batch's
 550ff6c arm on total tokens by 20% with the same kit bytes, which is batch variation.
+
+## Long-verify fixture: worker and root turn cuts
+
+`20261028T235254Z-codex-fbbcda8-verify90.jsonl` preserves the first batch on the
+long-verify fixture variant (`AK_BENCH_VERIFY_SLEEP=90`, rows labelled
+`tally-waves-v1+verify90s`): c1470d8 (main after #1027 and #1028) versus fbbcda8, a
+local merge of PR #1029 (`ak ship` runs the verify, `ak receipt` waits for CI), the
+first two commits of PR #1030 (the wave report, the `bin/ak` wording) and this PR's
+fixture variant. ABBAAB, three trials per arm, Codex `gpt-6-luna` / high, CLI
+0.165.0, run from a separate checkout carrying the same uncommitted harness edits as
+the earlier batches. All six trials delivered four green PRs; no steers. SHA-256 of
+the original export:
+`b34cff5674a45d9fbc273058b53ecc994beb3fe924a8be84724f608e44d49781`.
+
+| | c1470d8 median (range) | fbbcda8 median (range) |
+|---|---:|---:|
+| Hidden tasks passed of 4 | 4 (4–4) | 4 (4–4) |
+| Total tokens including cached input | 2,232,477 (2,113,888–2,420,065) | 1,647,219 (1,302,521–1,850,693) |
+| Root tokens | 271,373 (233,708–294,437) | 233,703 (215,395–289,351) |
+| Worker tokens | 1,998,769 (1,819,451–2,148,692) | 1,357,868 (1,068,818–1,635,298) |
+| Worker tool calls (4 workers) | 83 (77–90) | 57 (47–71) |
+| Elapsed seconds | 578 (520–580) | 448 (447–573) |
+| Root tool calls | 16 (14–16) | 13 (13–16) |
+| Recorded wakes | 5 (5–5) | 5 (4–5) |
+
+The arms do not overlap on total or worker tokens: the candidate's costliest trial
+used fewer than the control's cheapest. Across the 12 workers per arm, the control
+made 27 `ak verify` and 12 `ak ci` calls and the candidate none; median worker turns
+fell from 22 (14–30) to 14.5 (11–23). Roots read a summary file twice in the control
+and once in the candidate, a mid-run read of the path the closing wave count named,
+which a later commit on #1030 removes and this batch does not include.
+
+Each 90-second command still costs three worker calls: the shell call returns a
+handle at 30 s, a second call collects it and yields a cell, and only the third
+waits to the end.
+
+Reproduce the delivery, root, and system metrics:
+`python3 bench/live/compare.py bench/results/batches/20261028T235254Z-codex-fbbcda8-verify90.jsonl`.
+No earlier batch ran this fixture variant, so compare only the two arms of this one;
+three trials per arm is a small sample.
