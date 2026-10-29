@@ -182,3 +182,23 @@ Reproduce the delivery, root, and system metrics:
 `python3 bench/live/compare.py bench/results/batches/20261028T235254Z-codex-fbbcda8-verify90.jsonl`.
 No earlier batch ran this fixture variant, so compare only the two arms of this one;
 three trials per arm is a small sample.
+
+## Merged main on the long-verify fixture
+
+`20261029T163740Z-codex-1f19826-verify90.jsonl` repeats the long-verify batch with main after
+#1029-#1032 merged (1f19826) against the previous main (c1470d8): ABBAAB, three trials per arm, Codex
+`gpt-6-luna` / high, CLI 0.165.0, `AK_BENCH_VERIFY_SLEEP=90`, the same checkout and harness as the
+previous batch. All six trials delivered four green PRs. SHA-256 of the original export:
+`9d370cd25979a8489f708c10701b2bcebb4f5bdecdf12a200eefc3ee1683c346`.
+
+| | c1470d8 median (range) | 1f19826 median (range) |
+|---|---:|---:|
+| Total tokens | 2,210,474 (2,198,943–2,389,570) | 1,886,530 (1,824,268–2,663,048) |
+| Worker tool calls (4 workers) | 80 (80–88) | 67 (67–94) |
+| Root tool calls | 16 (15–16) | 15 (15–15) |
+| Elapsed seconds | 642 (517–645) | 512 (511–580) |
+
+Two candidate trials sit below every control trial. The third (`20261029T165816Z`, 2.66M) has one worker at
+39 turns: its `ak ship` ran the 90 s verify, returned a handle at 30 s, and the worker polled `ps`, the verify
+log and `sleep` for about ten turns instead of waiting on the handle, then fixed a real review finding. Keep
+this table beside the previous one: the arms overlap, and three trials per arm is a small sample.
