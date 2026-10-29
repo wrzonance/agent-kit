@@ -790,6 +790,10 @@ done
 assert_contains "$(cat "$REPO/v2/skills/issues/SKILL.md")" "\`wave=done\` follows every wave's summary lines" 'the issues skill reports from the collect output'
 for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
     assert_contains "$(cat "$f")" 'Spawn no sub-agents' "$(basename "$f") forbids worker sub-agents"
+    # A long command cost three calls: exec returned a session at 30 s, a second call collected it and yielded a cell,
+    # a third waited (bench 2026-10-28/29). The collect loop inside the starting script makes it two.
+    assert_contains "$(tr -s ' \n' ' ' <"$f")" 'while (r.exit_code === undefined && r.session_id) r = await tools.write_stdin' \
+        "$(basename "$f") collects a long command inside the call that starts it"
     # ak ship runs ak verify and ak receipt waits for CI (bench 2026-10-27: a turn each on ak verify and ak ci before them).
     playbook=$(tr -s ' \n' ' ' <"$f")
     assert_contains "$playbook" "runs \`ak verify\` first" "$(basename "$f") lets ak ship run the verify"

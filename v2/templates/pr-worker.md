@@ -11,9 +11,13 @@ correcting a spec to match existing code/tests.
 This playbook is complete: skip skill or guide lookups. The root handles planning and
 spawning; begin below. Commands print what you need next;
 follow a refusal's `fix:` line. Keep successful output concise; full setup/verify logs
-are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait and collect an
-existing handle and exit code when a call yields: one `wait` on the yielded cell with
-`yield_time_ms` as long as the command may take (1800000), never 30 s polls. Never end your turn while a command you started is still running: an idle worker is not resumed by its background job or monitor. Wait in this turn, repeating the longest blocking shell wait until it exits.
+are in `.ak/logs/`, CI logs in `.ak/ci/`.
+Run each `ak` command in one script that keeps collecting it until it exits, so the call
+that starts it also waits for it: `let r = await tools.exec_command({cmd: "<command>", yield_time_ms: 30000});
+while (r.exit_code === undefined && r.session_id) r = await tools.write_stdin({session_id:
+r.session_id, chars: '', yield_time_ms: 30000}); text(r)`. If that script yields a cell, make
+one `wait` on the cell with `yield_time_ms` as long as the command may take (1800000), never
+30 s polls. Never end your turn while a command you started is still running: an idle worker is not resumed by its background job or monitor. Wait in this turn, repeating the longest blocking shell wait until it exits.
 Spawn no sub-agents. Read relevant code and failure diagnostics as needed, rather than
 dumping whole trees or logs.
 
