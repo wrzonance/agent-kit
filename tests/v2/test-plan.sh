@@ -785,6 +785,12 @@ done
 assert_contains "$(cat "$REPO/v2/skills/issues/SKILL.md")" "\`wave=done\` follows every wave's summary lines" 'the issues skill reports from the collect output'
 for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
     assert_contains "$(cat "$f")" 'Spawn no sub-agents' "$(basename "$f") forbids worker sub-agents"
+    # ak ship runs ak verify and ak receipt waits for CI (bench 2026-10-27: a turn each on ak verify and ak ci before them).
+    playbook=$(tr -s ' \n' ' ' <"$f")
+    assert_contains "$playbook" "runs \`ak verify\` first" "$(basename "$f") lets ak ship run the verify"
+    assert_contains "$playbook" 'It waits for CI.' "$(basename "$f") lets ak receipt wait for CI"
+    assert_not_contains "$playbook" "Run \`ak ci\`" "$(basename "$f") spends no turn on ak ci"
+    assert_not_contains "$playbook" "Run \`ak verify\`" "$(basename "$f") spends no turn on a separate ak verify"
 done
 
 

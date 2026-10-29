@@ -149,6 +149,17 @@ hand_over() {
         mv -f -- "$file.tmp" "$file"
 }
 
+# worktree_tree: the tree `git add -A` would commit from this worktree, read through a copy of the index so the real
+# one is untouched. ak verify records it on a pass; ak ship verifies again only for a different tree.
+worktree_tree() {
+    local index tree rc=0
+    index=$(mktemp) || return 1
+    cp -- "$(git rev-parse --path-format=absolute --git-path index)" "$index" 2>/dev/null || rm -f -- "$index"
+    tree=$(GIT_INDEX_FILE=$index git add -A 2>/dev/null && GIT_INDEX_FILE=$index git write-tree 2>/dev/null) || rc=1
+    rm -f -- "$index"
+    ((rc == 0)) && printf '%s\n' "$tree"
+}
+
 # The per-worktree state directory, kept out of git through the shared info/exclude.
 ak_dir() {
     local root dir exclude

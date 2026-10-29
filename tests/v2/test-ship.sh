@@ -417,4 +417,44 @@ assert_eq 1 "$rc" 'an unfetchable merge-down base is refused, not checked agains
 assert_contains "$out" 'cannot fetch feat/gone' 'the refusal names the base it could not fetch'
 rm -f .ak/resolve
 
+# ak ship runs ak verify itself unless verify already passed on this exact tree (bench 2026-10-27: workers spent one
+# turn on `ak verify` and the next on `ak ship`). A failing verify commits and pushes nothing.
+git -C "$repo" worktree add -q -b feat/issue-8 "$WORK/wt8" origin/main
+cd "$WORK/wt8" || exit 1
+: >"$FAKE_GH_ROUTES"
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-8&state=open' '[{"number":13,"html_url":"https://github.com/acme/widget/pull/13"}]'
+printf 'eight\n' >src/eight.txt
+export AGENT_CMD_SRC="echo ran >>$WORK/verify-runs; test ! -e $WORK/verify-red" AGENT_RUNDIR_SRC=src
+touch "$WORK/verify-red"
+out=$("$AK" ship --message 'feat: eight' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a failing verify refuses the ship'
+assert_contains "$out" 'verify=fail' 'the refusal shows the verify result'
+assert_contains "$out" "fix: fix what ak verify printed, then ak ship --message 'feat: eight'" 'the refusal names the next step'
+assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-8)" 'a failing verify pushes nothing'
+assert_eq "$(git rev-parse origin/main)" "$(git rev-parse HEAD)" 'a failing verify commits nothing'
+rm -f "$WORK/verify-red"
+out=$("$AK" ship --message 'feat: eight' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a passing verify ships'
+assert_contains "$out" 'verify=pass' 'ship prints the verify result'
+assert_contains "$out" 'pr=https://github.com/acme/widget/pull/13' 'and then ships'
+assert_eq 2 "$(grep -c ran "$WORK/verify-runs")" 'ship ran verify itself both times'
+printf 'more\n' >>src/eight.txt
+"$AK" verify >/dev/null 2>&1
+out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
+assert_eq 0 "$rc" 'a ship after a passing verify succeeds'
+assert_eq 3 "$(grep -c ran "$WORK/verify-runs")" 'a verify that passed on this exact tree is not run again'
+assert_not_contains "$out" 'verify=' 'a tree that already passed prints no second verify'
+"$AK" verify >/dev/null 2>&1
+printf 'late\n' >>src/eight.txt
+out=$("$AK" ship --message 'feat: late' 2>&1); rc=$?
+assert_eq 5 "$(grep -c ran "$WORK/verify-runs")" 'a change after the verify runs it again'
+assert_contains "$out" 'verify=pass' 'and prints its result'
+"$AK" verify >/dev/null 2>&1
+touch "$WORK/verify-red"
+"$AK" verify >/dev/null 2>&1
+out=$("$AK" ship --message 'feat: red' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a verify that failed after an earlier pass on the same tree still blocks the ship'
+rm -f "$WORK/verify-red"
+unset AGENT_CMD_SRC AGENT_RUNDIR_SRC
+
 finish

@@ -352,7 +352,7 @@ sync_base() {
     local wt=$1 from=$2
     git -C "$wt" merge-base --is-ancestor "$from" HEAD 2>/dev/null && return 0
     # Uncommitted work (a parked worktree handed on as it stands) is not merged over: a conflict with the moved base
-    # shows at ak ci, which names the merge to run once that work is committed.
+    # shows at ak receipt (or ak ci), which names the merge to run once that work is committed.
     [[ -z $(git -C "$wt" status --porcelain 2>>"$AK_LOG") ]] || return 0
     if [[ -z $(git -C "$wt" rev-list "$from..HEAD" 2>/dev/null) ]]; then
         git -C "$wt" merge -q --ff-only "$from" >>"$AK_LOG" 2>&1 && return 0

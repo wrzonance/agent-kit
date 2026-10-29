@@ -277,6 +277,17 @@ ship_resolved() {
     rm -f -- .ak/resolve
 }
 
+# ship_verified MESSAGE: run ak verify unless it already passed on this exact tree; a failing verify ships nothing.
+# Workers spent one turn on `ak verify` and the next on `ak ship` (bench 2026-10-27).
+ship_verified() {
+    local file tree rc=0
+    file="$(ak_dir)/verified"
+    tree=$(worktree_tree) || tree=''
+    [[ -z $tree || ! -f $file || -L $file || $(<"$file") != "$tree" ]] || return 0
+    "$AK_HOME/bin/ak" verify || rc=$?
+    ((rc == 0)) || die "verify failed; nothing was committed or pushed" "fix what ak verify printed, then ak ship --message '$1'"
+}
+
 cmd_main() {
     local message="" body_file="" branch base pr body board=""
     while (($#)); do
@@ -298,6 +309,7 @@ cmd_main() {
     ship_protected ||
         die "cannot read the protected-path policy in $(main_root)/.agent/config.env" "fix the file's permissions, then ak ship --message '<message>'"
     ((${#PROTECTED[@]} == 0)) || ship_refuse_protected
+    ship_verified "$message"
     ship_commit "$message"
     ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||
