@@ -12,7 +12,7 @@ Each command prints the next step. Keep successful output concise; full setup/ve
 logs are in `.ak/logs/`, CI logs in `.ak/ci/`. Use the longest shell wait; when a call
 yields, collect its existing handle and exit code before continuing: one `wait` on the
 yielded cell with `yield_time_ms` as long as the command may take (1800000), never 30 s
-polls. Spawn no sub-agents. Read relevant code and failure diagnostics as needed,
+polls. Never end your turn while a command you started is still running: an idle worker is not resumed by its background job or monitor. Wait in this turn, repeating the longest blocking shell wait until it exits. Spawn no sub-agents. Read relevant code and failure diagnostics as needed,
 rather than dumping whole trees or logs.
 
 If blocked, run `ak park --reason "<why>"` and end with its line, without messaging

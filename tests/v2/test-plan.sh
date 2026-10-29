@@ -762,6 +762,11 @@ real="$REPO/v2/templates/issue-worker.md"
 assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|SETUP|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
 assert_contains "$(cat "$real")" 'pass its text again with' 'issue-worker.md preserves remaining work on merge-down'
+# 13 workers went state=hung on 2026-10-28/29 after ending their turn on a running verify/ci: an idle teammate is not
+# resumed by its own background job, so both worker briefs forbid ending the turn while a started command runs.
+for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
+    assert_contains "$(cat "$f")" 'Never end your turn while a command you started is still running' "$(basename "$f") forbids ending the turn on a running command"
+done
 # The Tests line and the ship gate agree (08c2516 bench: 7 of 12 first ships refused for run output the playbook had
 # asked for), and every worker brief says skill lookups are unnecessary (12 of 12 workers opened a skill file).
 assert_not_contains "$(cat "$real")" 'commands, results' 'the Tests line does not ask for the run output ak ship refuses'
