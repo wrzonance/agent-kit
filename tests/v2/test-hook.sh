@@ -76,10 +76,27 @@ done <"$WORK/samples"
 agents=$(grep -c '<summary>Agent \\"' "$samples")
 assert_eq "$agents" "$held" 'recorded samples: exactly the agent notices are held'
 
-start_ns=$(date +%s%N)
-for _ in $(seq 100); do notice "$agent_final" | run_hook >/dev/null; done
-ms=$((($(date +%s%N) - start_ns) / 1000000))
-assert_eq under "$( ((ms < 2000)) && echo under || echo "${ms}ms")" "100 runs under 2s (took ${ms}ms)"
+# The hook runs on every prompt, so its cost is the processes it forks. Count them with logging shims instead of
+# timing it: a wall-clock budget fails under host load, while a new subprocess or network call always shows here.
+shims="$WORK/shims"
+mkdir -p "$shims"
+for tool in git dirname sed awk grep cat ps date sleep curl wget jq tr cut head; do
+    cat >"$shims/$tool" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${0##*/}" >>"$SHIM_LOG"
+PATH=${PATH#"$SHIM_DIR:"} exec "${0##*/}" "$@"
+SHIM
+    chmod +x "$shims/$tool"
+done
+# forks INPUT: how many external processes the hook spawns for that stdin.
+forks() {
+    : >"$WORK/shim.log"
+    printf '%s' "$1" | SHIM_DIR="$shims" SHIM_LOG="$WORK/shim.log" PATH="$shims:$PATH" bash "$hook" >/dev/null
+    wc -l <"$WORK/shim.log" | tr -d ' '
+}
+human_prompt='{"session_id":"sess-1","cwd":"/x","prompt":"hello"}'
+assert_eq 1 "$(forks "$human_prompt")" 'an ordinary prompt forks only the stdin read'
+assert_eq 3 "$(forks "$(notice "$agent_final")")" 'a live-marker agent notice forks only stdin, git and dirname'
 
 # The gate: the tree as shipped passes; a second event, a second command, or an extra file fails it.
 lint="$V2_TESTS/lint-budget.sh"
