@@ -290,7 +290,8 @@ settle() {
         total=$((total + 1))
         settle_line "$line"
     done <<<"$1"
-    SUMMARY+="wave=$w settled=$total/$total summary=$file"
+    # No path on the closing count: roots read the file it named, a turn for lines they already had (bench 2026-10-28).
+    SUMMARY+="wave=$w settled=$total/$total"
     printf '%s\n' "$SUMMARY" >"$file"
     printf '%s\n' "$SUMMARY"
 }
