@@ -11,6 +11,7 @@ WAIT_NAMED=()   # "kind:N" per item named for a correction round
 ROUND_AT=0      # when the item's correction round was called (set per item in item_state); 0 outside a round
 SEEN_RES=''     # the identity of the item's result, and of its transcript, at its last settle: a round counts only what differs
 SEEN_TR=''
+WAIT_CHECK=0    # --check: answer at once, with a short grace for a worker already in its receipt
 RUN_ID=''       # the run this ak wait captured at start; its marker and summary belong to it
 SUMMARY=''      # the settled wave's lines, built by settle_line
 
@@ -142,6 +143,21 @@ item_meta() {
 # item_state KIND N WORKTREE SPAWNED_AT: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
 # A correction round resumes the same worker: its result counts when it differs from the one the last settle saw, and an
 # end record likewise; a hang is judged from the call at the earliest.
+# final_grace WORKTREE SINCE: in --check, a worker whose ak receipt started after its spawn gets AK_WAIT_FINAL_S
+# (default 30) to report. One reported 130 ms after a --check said running and ended before the root's wait_agent
+# began, which then slept its full hour (bench 2026-10-29). A receipt still waiting on CI outlasts the grace.
+final_grace() {
+    local marker=$1/.ak/receipt-started deadline
+    ((WAIT_CHECK)) && [[ -f $marker && ! -L $marker ]] || return 1
+    (($(file_mtime "$marker") >= $2)) || return 1
+    deadline=$((SECONDS + ${AK_WAIT_FINAL_S:-30}))
+    while ((SECONDS < deadline)); do
+        [[ -f $1/.ak/result ]] && fresh "$(ident_result "$1")" "$SEEN_RES" && return 0
+        sleep 1
+    done
+    return 1
+}
+
 item_state() {
     local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state taken='' since
     item_meta "$kind" "$n"
@@ -182,7 +198,8 @@ item_state() {
                     return 0
                 fi ;;
         esac
-        if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; else echo running; fi
+        if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; return 0; fi
+        if final_grace "$wt" "$since"; then echo reported; else echo running; fi
         return 0
     fi
     if (($(quiet_s "$(worktree_idle_s "$wt")") >= hang)); then
@@ -362,7 +379,7 @@ cmd_main() {
     local check=0 collect=0 states usage='usage: ak wait [--issue N | --pr N]... [--check [--settle]]'
     while (($#)); do
         case $1 in
-            --check) check=1; shift ;;
+            --check) check=1; WAIT_CHECK=1; shift ;;
             --settle) collect=1; shift ;;
             --issue | --pr) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"; WAIT_NAMED+=("${1#--}:$2"); shift 2 ;;
             *) usage_die "$usage" ;;
