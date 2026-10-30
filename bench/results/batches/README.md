@@ -202,3 +202,19 @@ Two candidate trials sit below every control trial. The third (`20261029T165816Z
 39 turns: its `ak ship` ran the 90 s verify, returned a handle at 30 s, and the worker polled `ps`, the verify
 log and `sleep` for about ten turns instead of waiting on the handle, then fixed a real review finding. Keep
 this table beside the previous one: the arms overlap, and three trials per arm is a small sample.
+
+## Ship notice and one-call collect loop
+
+Two ABBAAB batches on the long-verify fixture (`AK_BENCH_VERIFY_SLEEP=90`), each with main 9468515 as control,
+three trials per arm, Codex `gpt-6-luna` / high, CLI 0.165.0, the same checkout and harness as the earlier batches.
+All twelve trials delivered four green PRs.
+
+- `20261029T200901Z-codex-93483da-verify90.jsonl` (SHA-256 `7f7313e181908d6c879ab2588dfe9bd5f33f59a39289db8f6eebcbc3f3c4cb9f`): PR #1038, `ak ship` announces
+  the verify and its last duration. Mean total tokens 1.67M against 1.95M for main (14% fewer); worker tool calls
+  59 against 71. Trial `20261029T210540Z` ran 4,113 s: its root's `ak wait --check` said running 130 ms before a
+  worker reported, and its `wait_agent` slept the full hour (fixed by #1040). Tokens were unaffected.
+- `20261029T221500Z-codex-c7f8a1b-verify90.jsonl` (SHA-256 `15beb6fd3419a87f6a31b7be73be5fae4ea2b418dbb7e158542a04decc762e33`): PR #1039, the collect loop inside
+  the call that starts a long command. Mean total tokens 1.95M against 1.79M for main (9% more); every worker used
+  the loop but still made 3 to 6 `write_stdin` calls and 1 to 3 waits. #1039 was closed unmerged.
+
+Keep these beside the earlier tables: the two batches' main arms differ by 8% with the same kit bytes.
