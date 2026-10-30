@@ -94,6 +94,7 @@ verify_record() {
 
 cmd_main() {
     local full=0 name command dir changed path out="" rc=0 skipped whole uncovered=() owned areas cached=0
+    local start=$SECONDS
     local -a ran=() suites=()
     case ${1:-} in --full) full=1 ;; '') ;; *) usage_die "usage: ak verify [--full]" ;; esac
     cd -- "$(worktree_root)" || exit 1
@@ -151,6 +152,11 @@ cmd_main() {
             "$( ((${#uncovered[@]} > 3)) && printf ' (+%d)' $((${#uncovered[@]} - 3)))"
     fi
     if [[ -n $skipped ]] || ((cached || (${#suites[@]} > 0 && !full))); then printf 'oracle=ci\n'; fi
+    # How long the suites took: ak ship names it when it runs verify, so a worker knows how long to wait.
+    if ((${#ran[@]} > 0)); then
+        rm -f -- "$(ak_dir)/verify-seconds"
+        printf '%s\n' "$((SECONDS - start))" >"$(ak_dir)/verify-seconds"
+    fi
     verify_record "$rc"
     return "$rc"
 }
