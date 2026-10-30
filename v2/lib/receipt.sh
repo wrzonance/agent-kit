@@ -172,6 +172,9 @@ cmd_main() {
     [[ -z $file ]] || lines+=$(<"$file")$'\n'
     cd -- "$(worktree_root)" || exit 1
     dir=$(ak_dir)
+    # ak wait --check gives a worker in its final receipt a short grace to report (bench 2026-10-29).
+    rm -f -- "$dir/receipt-started"
+    : >"$dir/receipt-started"
     ((!findings_given)) || [[ -n ${lines//[[:space:]]/} ]] ||
         die "findings input is empty" "pass 'none' or one disposition per review finding"
     [[ -n ${lines//[[:space:]]/} ]] || lines=$(receipt_default "$dir") || exit 1
