@@ -35,7 +35,7 @@ dumping whole trees or logs.
    `--finding "P2|<title>|declined: <reason>"` per review finding (either severity can
    have either disposition; none when the review had none or was unavailable).
    It waits for CI. On red (exit 1) read its errors, fix, ship, and run it again with
-   the same arguments; stop after 3 red rounds and report that. `inherited=` names
+   the same arguments; the third red round records the result and exits 0. `inherited=` names
    checks also failing on base: note shared errors, fix errors caused by your diff.
    Listed review threads (`thread=ID …`): fix (ship) or decline each, resolve it with
    `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"` or

@@ -86,6 +86,8 @@ printf '%s' "$red" >"$WORK/red-head.json"
 printf '{"check_runs":[{"name":"t","status":"completed","conclusion":"failure"}]}' >"$WORK/red-main.json"
 printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
     "$head" "$WORK/red-head.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+# The third red round records the result (two earlier heads were red).
+printf '0000001\n0000002\n' >.ak/red-heads
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 assert_contains "$(cat .ak/result)" 'ci=red' 'a red head is recorded as red'
 assert_contains "$(cat .ak/result)" '; base-red: t (also red on main)' 'the result note names the check the base branch fails too'
@@ -107,7 +109,7 @@ git add -f .ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 assert_not_contains "$(cat .ak/result)" 'ci-only' 'a tracked record is ignored'
 git rm -q --cached .ak/ci-only
-rm -f .ak/ci-only
+rm -f .ak/ci-only .ak/red-heads
 
 # ak receipt waits for CI itself, so a worker spends no turn on `ak ci` before it (bench 2026-10-27: every worker ran
 # ak ci, then ak receipt). Pending runs are polled until they conclude, and the concluded state is what is posted.
@@ -132,7 +134,18 @@ assert_contains "$out" 'inherited=t from=main' 'and the checks the base branch f
 assert_contains "$out" 'ci-only=own' 'and the checks only this branch fails'
 assert_contains "$out" '--- own: no Actions job log' "and each failing job's errors"
 assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9' 'the red state is still posted'
-rm -f .ak/ci-only
+# Below the third round no result is written: ak wait would read the worker as reported while it fixes (#1029 wrote it).
+assert_contains "$(cat .ak/result)" 'ci=green' 'a red round below the third leaves the earlier result alone'
+assert_contains "$out" 'red round 1 of 3: fix what the diagnostics name, ak ship, then ak receipt again' 'the receipt names the round and the next step'
+assert_not_contains "$out" 'pr=https://github.com/acme/widget/pull/9 ci=red' 'and prints no result line'
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_contains "$out" 'red round 1 of 3' 'the same head red again is the same round'
+printf '0000001\n0000002\n%s\n' "$head" >.ak/red-heads
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'the third red round ends the worker'
+assert_contains "$(cat .ak/result)" 'ci=red' 'and records the red result'
+assert_contains "$out" 'red round 3 of 3: recorded as red' 'and says so'
+rm -f .ak/ci-only .ak/red-heads
 # A red the base branch causes alone is not the worker's to fix: the receipt records it and exits 0.
 printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
     "$head" "$WORK/red-main.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"

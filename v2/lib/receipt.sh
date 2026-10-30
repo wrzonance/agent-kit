@@ -157,8 +157,16 @@ receipt_post() {
     gh api -X POST "repos/$(slug)/issues/$pr/comments" -F "body=@$file"
 }
 
+# receipt_red_round DIR HEAD: how many distinct heads this worktree's receipts have seen red of their own, HEAD counted.
+receipt_red_round() {
+    local file=$1/red-heads
+    [[ ! -L $file ]] || rm -f -- "$file"
+    grep -qxF -- "$2" "$file" 2>/dev/null || printf '%s\n' "$2" >>"$file"
+    LC_ALL=C sort -u -- "$file" | grep -c .
+}
+
 cmd_main() {
-    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity own diag
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity own diag round
     local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
@@ -233,9 +241,18 @@ cmd_main() {
     # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
     ! ci_only_trusted "$dir/ci-only" ||
         note+="; ci-only: $(LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' <"$dir/ci-only" | cut -c1-60 | head -n 20 | paste -sd, -)"
-    printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     printf 'receipt=%s\n' "$url"
+    # A red of the branch's own below the third round writes no result: ak wait reads a result as the worker's end,
+    # and this worker is about to fix and ship again. The third red head is recorded, and the worker ends.
+    round=0
+    [[ -z $own ]] || round=$(receipt_red_round "$dir" "$head")
+    if ((round > 0 && round < 3)); then
+        [[ -z $diag ]] || printf '%s\n' "$diag"
+        printf 'red round %s of 3: fix what the diagnostics name, ak ship, then ak receipt again\n' "$round"
+        return 1
+    fi
+    printf 'pr=%s\nci=%s\nreview=%s\nhead=%s\nnote=%s\n' "${pr#* }" "$ci" "$review" "$head" "$note" >"$dir/result"
     paste -sd' ' "$dir/result"
     [[ -z $diag ]] || printf '%s\n' "$diag"
-    [[ -z $own ]]
+    ((round == 0)) || printf 'red round %s of 3: recorded as red; end with the result line\n' "$round"
 }

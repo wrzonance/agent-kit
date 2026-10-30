@@ -51,7 +51,7 @@ author's process; the operator's invocation authorizes this run's commit, push a
    have either disposition; none when the review had none), adding
    `--remaining "<what is left and why>"` for partial completion. It waits for CI.
    On red (exit 1) use the printed diagnostics to fix, ship, and run it again with the
-   same arguments; at most 3 red rounds. `inherited=` names checks also failing on base:
+   same arguments; the third red round records the result and exits 0. `inherited=` names checks also failing on base:
    note shared errors, fix those your diff causes. Listed review threads
    (`thread=ID …`): fix (ship) or decline each, resolve it with
    `ak threads --resolve ID --note "fixed in <sha>: <what now happens>"` or
