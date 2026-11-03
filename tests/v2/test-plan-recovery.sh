@@ -136,6 +136,18 @@ touch -d '-8 days' "$CODEX_HOME/sessions/rollout-worker.jsonl"
 out=$("$AK" plan --new --issue 5 2>&1)
 assert_contains "$out" 'spawn issue=5 ' 'a transcript quiet beyond the hang limit does not block recovery forever'
 
+# An unchanged operator-parked result remains parked until the operator changes its recorded state.
+fresh
+start
+printf 'pr=none\nnote=parked: needs a manual credential\n' >"$wt/.ak/result"
+jq '(.items[] | select(.n == 5)).state = "parked"' "$runfile" >"$WORK/parked.json"
+mv "$WORK/parked.json" "$runfile"
+out=$("$AK" plan --new --issue 5 2>&1)
+assert_contains "$out" 'skip issue=5 reason=parked' 'an unchanged parked issue does not respawn'
+rm -f "$wt/.ak/result"
+out=$("$AK" plan --new --issue 5 2>&1)
+assert_contains "$out" 'spawn issue=5 ' 'clearing the park result lets the operator resume the issue'
+
 fresh
 start
 age_work
@@ -213,6 +225,17 @@ out=$("$AK" plan --new --issue 5 2>&1)
 assert_contains "$out" 'spawn issue=5 ' 'a prior receipt is included when resuming an issue'
 assert_eq yes "$(grep -Eq '^----- END UNTRUSTED ISSUE DATA [0-9a-f]{16} -----$' "$wt/.ak/prompt.md" && echo yes || echo no)" \
     'the untrusted-data terminator is a separate line after truncated evidence'
+
+# A broken worktree index makes git status fail; it must not be interpreted as a clean tree.
+fresh
+start
+rm -rf -- "$wt/.ak/logs"
+jq '.items[].ended = "ended-without-result"' "$runfile" >"$WORK/ended.json"
+mv "$WORK/ended.json" "$runfile"
+gitdir=$(git -C "$wt" rev-parse --absolute-git-dir)
+printf 'not an index\n' >"$gitdir/index"
+out=$("$AK" plan --new --issue 5 2>&1)
+assert_contains "$out" 'drop issue=5 reason=worktree-unusable:' 'a failed git status refuses to reuse a worktree'
 
 fresh
 start

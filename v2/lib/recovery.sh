@@ -6,7 +6,7 @@ source "$AK_HOME/lib/transcript.sh"
 # issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. Collect passes its run file:
 # its receipt satisfies a queued wave, whereas a fresh plan must check whether that PR is still open.
 issue_active() {
-    local n=$1 skip=${2:-} file item state wt needs ended seen=0 pr json
+    local n=$1 skip=${2:-} file item state wt needs ended seen=0 pr json parked record parked_head head
     while IFS= read -r file; do
         [[ $file != "$skip" ]] || continue
         item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
@@ -25,6 +25,16 @@ issue_active() {
     # A known worktree can outlive its run record. Never count a merely existing directory as ownership.
     if ((seen == 0)) && [[ -f $wt/.ak/issue ]] && [[ $(cat "$wt/.ak/issue") == "$n" ]] && worker_out "$wt" ''; then
         printf 'running\n'; return 0
+    fi
+    if [[ -f $wt/.ak/result ]]; then
+        parked=$(sed -n 's/^note=parked: //p' "$wt/.ak/result" | head -n 1)
+        if [[ -n $parked ]]; then
+            record=$(handed_file "$wt") || { printf 'parked\n'; return 0; }
+            [[ ! -L $record.parked && -f $record.parked ]] || { printf 'parked\n'; return 0; }
+            parked_head=$(head -n 1 -- "$record.parked")
+            head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || { printf 'parked\n'; return 0; }
+            [[ $head != "$parked_head" ]] || { printf 'parked\n'; return 0; }
+        fi
     fi
     [[ -f $wt/.ak/result ]] || return 0
     pr=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)

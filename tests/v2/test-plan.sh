@@ -189,11 +189,17 @@ assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")
 assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
-# A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
-# parked results by hand before re-running).
+# A parked issue is not shipped: an operator commit after the recorded park lets a named plan resume it.
 # shellcheck disable=SC2016
-printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
-printf 'lint\n' >"$repo/.worktrees/feat/issue-671/.ak/ci-only"
+wt="$repo/.worktrees/feat/issue-671"
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$wt/.ak/result"
+printf 'lint\n' >"$wt/.ak/ci-only"
+wt_path=$(cd "$wt" && pwd -P)
+park_record="$repo/.ak/handed/$(printf '%s' "$wt_path" | git hash-object --stdin)"
+mkdir -p "$(dirname "$park_record")"
+git -C "$wt" rev-parse HEAD >"$park_record.parked"
+printf 'operator supplied the protected file\n' >>"$wt/src/a.txt"
+git -C "$wt" add src/a.txt && git -C "$wt" commit -q -m 'operator unblocks parked issue'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
@@ -722,9 +728,7 @@ default_routes
 out=$("$AK" plan 2>&1)
 assert_eq 'next=nothing workable; name issues with --issue N' "$(grep '^next=' <<<"$out")" 'a failed open-issue read leaves the line as it was'
 
-# A parked worktree is handed on with the uncommitted work its worker left (field run: the park's next= said to commit
-# what only the operator may commit and plan again; the operator committed the one protected file, and the plan dropped
-# the issue as worktree-unusable because the worker's other paths were still uncommitted).
+# A parked worktree resumes after the operator commits the protected file; the worker's other unfinished path survives.
 fresh
 issue_route 671 'Fix src/a.txt'
 default_routes
@@ -732,12 +736,19 @@ default_routes
 wt="$repo/.worktrees/feat/issue-671"
 parked=$(git -C "$wt" rev-parse HEAD)
 printf 'work\n' >"$wt/src/a.txt"
+printf 'unfinished\n' >"$wt/src/b.txt"
 printf 'pr=none\nci=none\nreview=skipped\nhead=%s\nnote=parked: protected path needs the operator\n' "$parked" >"$wt/.ak/result"
+wt_path=$(cd "$wt" && pwd -P)
+park_record="$repo/.ak/handed/$(printf '%s' "$wt_path" | git hash-object --stdin)"
+mkdir -p "$(dirname "$park_record")"
+printf '%s\n' "$parked" >"$park_record.parked"
+git -C "$wt" add src/a.txt && git -C "$wt" commit -q -m 'operator commits protected path'
 printf 'moved\n' >lib/core.sh && git commit -q -am 'main moves' && git push -q origin main
 out=$("$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree with uncommitted work is planned again'
-assert_eq ' M src/a.txt' "$(git -C "$wt" status --porcelain)" 'the uncommitted work is still there'
-assert_eq "$parked" "$(git -C "$wt" rev-parse HEAD)" 'a moved base is not merged over uncommitted work'
+assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree resumes after an operator commit'
+assert_eq ' M src/b.txt' "$(git -C "$wt" status --porcelain)" 'the worker unfinished path is still there'
+assert_eq yes "$( [[ $(git -C "$wt" rev-parse HEAD) != "$parked" ]] && echo yes || echo no )" 'the operator commit is retained'
+assert_rc 1 'a moved base is not merged over uncommitted work' -- git -C "$wt" merge-base --is-ancestor origin/main HEAD
 assert_eq no "$([[ -e $wt/.ak/resolve ]] && echo yes || echo no)" 'and it is not turned into a merge-down'
 assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree holds uncommitted changes:" 'the new worker is told to carry on from the uncommitted work'
 out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)

@@ -347,12 +347,13 @@ compose_prompt() {
 # add_worktree BRANCH WORKTREE FROM: eligibility was checked before this call. Reuse the expected worktree
 # without discarding any unfinished files; a directory on another branch is never that worktree.
 add_worktree() {
-    local branch=$1 wt=$2
+    local branch=$1 wt=$2 dirty
     if [[ -d $wt ]]; then
         [[ ! -L $wt && $(git -C "$wt" rev-parse --show-toplevel 2>>"$AK_LOG") == "$wt" &&
             $(git -C "$wt" branch --show-current 2>>"$AK_LOG") == "$branch" &&
             $(git -C "$wt" rev-parse --path-format=absolute --git-common-dir) == "$(git -C "$MAIN" rev-parse --path-format=absolute --git-common-dir)" ]] || return 1
-        [[ -z $(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all) ]] ||
+        dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>>"$AK_LOG") || return 1
+        [[ -z $dirty ]] ||
             { [[ -f $wt/.ak/issue ]] && [[ $(cat "$wt/.ak/issue") == "${branch##*/issue-}" ]]; }
     elif git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch"; then
         git -C "$MAIN" worktree add -q "$wt" "$branch" >>"$AK_LOG" 2>&1
