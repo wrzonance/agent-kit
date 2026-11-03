@@ -138,14 +138,15 @@ assert_contains "$out" 'spawn issue=5 ' 'a transcript quiet beyond the hang limi
 
 # An unchanged operator-parked result remains parked until the operator changes its recorded state.
 fresh
+board_route 5 "{\"items\":[$(board_item 5 'In progress')]}"
 start
 printf 'pr=none\nnote=parked: needs a manual credential\n' >"$wt/.ak/result"
 jq '(.items[] | select(.n == 5)).state = "parked"' "$runfile" >"$WORK/parked.json"
 mv "$WORK/parked.json" "$runfile"
-out=$("$AK" plan --new --issue 5 2>&1)
+out=$("$AK" plan --new 2>&1)
 assert_contains "$out" 'skip issue=5 reason=parked' 'an unchanged parked issue does not respawn'
 rm -f "$wt/.ak/result"
-out=$("$AK" plan --new --issue 5 2>&1)
+out=$("$AK" plan --new 2>&1)
 assert_contains "$out" 'spawn issue=5 ' 'clearing the park result lets the operator resume the issue'
 
 fresh

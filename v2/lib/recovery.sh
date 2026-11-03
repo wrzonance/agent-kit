@@ -29,11 +29,14 @@ issue_active() {
     if [[ -f $wt/.ak/result ]]; then
         parked=$(sed -n 's/^note=parked: //p' "$wt/.ak/result" | head -n 1)
         if [[ -n $parked ]]; then
+            # Naming the issue is the operator's explicit decision to revisit its parked cause.
+            [[ ${NAMED:-0} != 0 ]] || {
             record=$(handed_file "$wt") || { printf 'parked\n'; return 0; }
             [[ ! -L $record.parked && -f $record.parked ]] || { printf 'parked\n'; return 0; }
             parked_head=$(head -n 1 -- "$record.parked")
             head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || { printf 'parked\n'; return 0; }
             [[ $head != "$parked_head" ]] || { printf 'parked\n'; return 0; }
+            }
         fi
     fi
     [[ -f $wt/.ak/result ]] || return 0
