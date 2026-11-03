@@ -55,7 +55,7 @@ assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a first spawn records no
 assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
-assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","needs":[]}' \
+assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","named":false,"needs":[]}' \
     "$(jq -c '.items[0] | del(.spawned_at)' "$runfile")" 'the run file records the spawned item'
 assert_eq number "$(jq -r '.items[0].spawned_at | type' "$runfile")" 'and its spawn time, which ak wait uses to ignore older transcripts'
 assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
@@ -190,8 +190,8 @@ assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped suc
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
 # A parked issue is not shipped: an operator commit after the recorded park lets a named plan resume it.
-# shellcheck disable=SC2016
 wt="$repo/.worktrees/feat/issue-671"
+# shellcheck disable=SC2016
 printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$wt/.ak/result"
 printf 'lint\n' >"$wt/.ak/ci-only"
 wt_path=$(cd "$wt" && pwd -P)

@@ -44,6 +44,7 @@ issue_route() {
 default_routes() {
     route 'api repos/acme/widget/issues/*/comments*' '[{"user":{"login":"bob"},"body":"please hurry"}]'
     route 'api repos/acme/widget/issues/*/dependencies/blocked_by*' '[]'
+    route 'api repos/acme/widget/issues/*/timeline?per_page=100' '[]'
     route 'api repos/acme/widget/pulls*' '[]'
     route 'project item-edit*' ''
 }

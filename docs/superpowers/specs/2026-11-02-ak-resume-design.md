@@ -24,14 +24,15 @@ The command handles deterministic eligibility; the worker assesses completion.
 
 - Keep Ready first, then In progress and In review, then Backlog with `--yolo`.
 - Retain exclusions, dependencies, protected paths, collision handling and limits.
-- Respect matched running transcripts even if commits are old. Persist the run's
-  harness/session so a later invocation can find its worker. Ended workers are
-  resumable. Without a transcript, use recent worktree activity, including staged,
-  modified and untracked files, with the existing 20-minute wait threshold.
+- Use a matched running transcript as liveness evidence only while it is newer
+  than the existing 20-minute `AK_WAIT_HANG_S` threshold. Persist the run's
+  harness/session so a later invocation can find its worker. Ended or stale
+  workers are resumable. Without a transcript, use recent worktree activity,
+  including staged, modified and untracked files, with the same threshold.
 - Reuse only the expected git worktree and branch; never discard dirty files.
   Old setup markers alone must not hold work forever.
-- Check a saved PR's current state. Open or unreadable PRs hold their issue;
-  closed PRs do not prove an open issue complete. Preserve prior evidence in the
+- Check saved and issue-linked PRs, including custom-branch PRs. Open or unreadable
+  PRs hold their issue; closed PRs do not prove an open issue complete. Preserve prior evidence in the
   new prompt and retire review/receipt state belonging to the previous PR.
 - The worker compares issue acceptance criteria against code, commits, PRs,
   previous receipts and local changes, then continues only what remains. A park

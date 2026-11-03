@@ -57,6 +57,14 @@ assert_not_contains "$out" 'issue=7' 'Backlog still requires yolo'
 assert_not_contains "$out" 'next=nothing workable' 'unfinished work prevents a false empty queue'
 
 fresh
+board_route 5 "{\"items\":[$(board_item 6 'In review')]}"
+issue_route 6 'Finish src/b.txt'
+route 'api repos/acme/widget/issues/6/timeline?per_page=100' '[{"event":"cross-referenced","source":{"issue":{"number":1044,"state":"open","title":"Custom branch PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1044"}}}}]'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'skip issue=6 reason=open-linked-pr:#1044' 'an In review issue linked to an open custom-branch PR is not dispatched twice'
+
+fresh
 board_route 5 "{\"items\":[$(board_item 5 'In progress'),$(board_item 6 Ready)]}"
 issue_route 5 'Finish src/a.txt'
 issue_route 6 'Finish src/b.txt'

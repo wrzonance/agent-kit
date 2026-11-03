@@ -75,21 +75,21 @@ board_candidates() {
              l: ((.labels // []) | map(if type == "object" then .name else . end) | join(","))}] |
         (map(select(.s == "ready")) + map(select(.s == "in progress" or .s == "in review")) +
             (if $yolo then map(select(.s == "backlog")) else [] end))[] |
-        "\(.n)\t\(.l)"' <<<"$BOARD_ITEMS"
+        "\(.n)\t\(.s)\t\(.l)"' <<<"$BOARD_ITEMS"
 }
 
 # label_candidates LABEL: open issues carrying the ready label, when there is no board.
 label_candidates() {
     local list
     list=$(api "repos/$SLUG/issues?state=open&labels=$1&per_page=100") || die "cannot list issues labelled $1" "gh auth status"
-    jq -r '.[] | select(has("pull_request") | not) | "\(.number)\t\([.labels[]?.name] | join(","))"' <<<"$list"
+    jq -r '.[] | select(has("pull_request") | not) | "\(.number)\tready\t\([.labels[]?.name] | join(","))"' <<<"$list"
 }
 
 candidates() {
     local yolo=$1 label
     shift
     if (($#)); then
-        printf '%s\t\n' "$@"
+        printf '%s\tnamed\t\n' "$@"
     elif [[ -n ${BOARD_ITEMS:-} ]]; then
         board_candidates "$yolo"
     else
@@ -535,7 +535,7 @@ unblock() {
 }
 
 pick() {
-    local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=() rows=() i=0 ahead=0 batch
+    local limit=$1 serialize=$2 named=$3 spawned=0 n labels status active held m blocked=() rows=() i=0 ahead=0 batch
     NAMED=$named
     mapfile -t -u 3 rows
     while ((spawned < limit && i < ${#rows[@]})); do
@@ -544,15 +544,15 @@ pick() {
         if ((i >= ahead)); then
             batch=()
             for ((ahead = i; ahead < ${#rows[@]} && ${#batch[@]} < (i || limit > 8 ? 8 : limit); ahead++)); do
-                IFS=$'\t' read -r n labels <<<"${rows[ahead]}"
+                IFS=$'\t' read -r n status labels <<<"${rows[ahead]}"
                 [[ ! $n =~ ^[0-9]+$ || -n $(excluded_label "$labels") ]] || batch+=("$n")
             done
             prefetch "${batch[@]}"
         fi
-        IFS=$'\t' read -r n labels <<<"${rows[i]}"
+        IFS=$'\t' read -r n status labels <<<"${rows[i]}"
         i=$((i + 1))
         [[ $n =~ ^[0-9]+$ ]] || continue
-        active=$(issue_active "$n")
+        active=$(issue_active "$n" '' "$status")
         [[ -z $active ]] || { other "$n" "skip issue=$n reason=$active"; continue; }
         check_issue "$n" "$labels"
         # A closed issue on the board is finished work, not a decision anyone needs to read.
@@ -581,9 +581,9 @@ pick() {
 write_run() {
     local n items='[]' others='[]'
     for n in "${CHOSEN[@]}"; do
-        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" \
+        items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" --argjson named "${NAMED:-0}" \
             '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)", wave: $wave,
-                   spawned_at: (now | floor), state: (if $needs == "" then "spawned" else "queued" end),
+                   spawned_at: (now | floor), state: (if $needs == "" then "spawned" else "queued" end), named: ($named != 0),
                    needs: ($needs | split(",") | map(select(. != "") | tonumber))}
                   + (if $stack == "" then {} else {stack: ($stack | tonumber)} end)]' <<<"$items")
     done

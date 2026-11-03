@@ -6,7 +6,10 @@ source "$AK_HOME/lib/transcript.sh"
 # issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. Collect passes its run file:
 # its receipt satisfies a queued wave, whereas a fresh plan must check whether that PR is still open.
 issue_active() {
-    local n=$1 skip=${2:-} file item state wt needs ended seen=0 pr json parked record parked_head head
+    local n=$1 skip=${2:-} status=${3:-} explicit=${NAMED:-0} file item state wt needs ended seen=0 pr json parked record parked_head head
+    if [[ -n $skip ]] && jq -e --argjson n "$n" 'any(.items[]; .n == $n and .named == true)' "$skip" >/dev/null 2>&1; then
+        explicit=1
+    fi
     while IFS= read -r file; do
         [[ $file != "$skip" ]] || continue
         item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
@@ -22,6 +25,14 @@ issue_active() {
         break
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' 2>/dev/null | LC_ALL=C sort -Vr)
     wt=$(issue_worktree "$n")
+    if [[ $status == 'in progress' || $status == 'in review' ]]; then
+        pr=$(linked_open_pr "$n")
+        case $pr in
+            unreadable) printf 'linked-pr-unreadable\n'; return 0 ;;
+            '') ;;
+            *) printf 'open-linked-pr:#%s\n' "$pr"; return 0 ;;
+        esac
+    fi
     # A known worktree can outlive its run record. Never count a merely existing directory as ownership.
     if ((seen == 0)) && [[ -f $wt/.ak/issue ]] && [[ $(cat "$wt/.ak/issue") == "$n" ]] && worker_out "$wt" ''; then
         printf 'running\n'; return 0
@@ -30,12 +41,12 @@ issue_active() {
         parked=$(sed -n 's/^note=parked: //p' "$wt/.ak/result" | head -n 1)
         if [[ -n $parked ]]; then
             # Naming the issue is the operator's explicit decision to revisit its parked cause.
-            [[ ${NAMED:-0} != 0 ]] || {
-            record=$(handed_file "$wt") || { printf 'parked\n'; return 0; }
-            [[ ! -L $record.parked && -f $record.parked ]] || { printf 'parked\n'; return 0; }
-            parked_head=$(head -n 1 -- "$record.parked")
-            head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || { printf 'parked\n'; return 0; }
-            [[ $head != "$parked_head" ]] || { printf 'parked\n'; return 0; }
+            [[ $explicit != 0 ]] || {
+                record=$(handed_file "$wt") || { printf 'parked\n'; return 0; }
+                [[ ! -L $record.parked && -f $record.parked ]] || { printf 'parked\n'; return 0; }
+                parked_head=$(head -n 1 -- "$record.parked")
+                head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || { printf 'parked\n'; return 0; }
+                [[ $head != "$parked_head" ]] || { printf 'parked\n'; return 0; }
             }
         fi
     fi
@@ -52,6 +63,19 @@ issue_active() {
         closed) ;;
         *) printf 'pr-state-unreadable:ak pr-plan --pr %s\n' "$n" ;;
     esac
+}
+
+# linked_open_pr N: the GitHub timeline's cross-reference event is the supported link from an issue to a PR,
+# including PRs opened from a custom branch. The linked PR's API number and open state are all we use.
+linked_open_pr() {
+    local json number
+    json=$(api "repos/$SLUG/issues/$1/timeline?per_page=100") || { printf 'unreadable\n'; return 0; }
+    jq -e 'type == "array"' <<<"$json" >/dev/null 2>&1 || { printf 'unreadable\n'; return 0; }
+    number=$(jq -r '[.[] | select(.event == "cross-referenced" and .source.issue.state == "open" and
+        (.source.issue.pull_request.url // "") != "") | .source.issue.number | select(type == "number")] |
+        sort | .[0] // empty' <<<"$json")
+    [[ -z $number ]] || [[ $number =~ ^[0-9]+$ ]] || { printf 'unreadable\n'; return 0; }
+    printf '%s\n' "$number"
 }
 
 # worker_transcript WORKTREE RUNFILE: find the worker in its owning session, not necessarily this invocation's.
