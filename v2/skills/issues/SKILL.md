@@ -8,6 +8,10 @@ description: Work several GitHub issues in parallel, one worker per issue in its
 `ak` is the `bin/ak` beside this plugin's `skills` directory: `<this skill's directory>/../../bin/ak`.
 Pass the operator's flags straight through to `ak plan`.
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
+Planning considers Ready and unfinished In progress/In review work; `--yolo` also adds Backlog.
+It checks worker activity before reuse. A quiet live worker is not abandoned just because its
+last commit is old. Recovery prompts tell the worker to assess completed requirements, prior
+PRs/receipts, pause causes and uncommitted work, then continue only what remains.
 
 1. Run `ak plan [flags]`. It prints `run=`, then `spawn`, `after` and `drop` lines.
    For Codex shell calls, use `exec_command` with `yield_time_ms=30000` and return the whole result:

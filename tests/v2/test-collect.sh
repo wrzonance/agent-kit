@@ -424,6 +424,43 @@ assert_not_contains "$(grep '^next=' <<<"$out")" 'red CI' 'and not red CI'
 # The hold after three moving heads (note "head moved during the wait") needs a PR route that changes on every read;
 # the stub answers from static files, so that branch is not asserted here.
 
+# A named decision to revisit a parked issue survives when that issue queues behind a predecessor.
+rm -rf -- "$WORK/repo" "$WORK/origin.git"
+: >"$FAKE_GH_ROUTES"
+repo=$(board_repo)
+cd "$repo" || exit 1
+issue_route 671 'Fix src/a.txt'
+issue_route 680 'Also touches src/a.txt'
+default_routes
+"$AK" plan --issue 680 >/dev/null 2>&1
+wt="$repo/.worktrees/feat/issue-671" wt2="$repo/.worktrees/feat/issue-680"
+printf 'pr=none\nci=none\nreview=skipped\nhead=abc\nnote=parked: operator must supply a protected path\n' >"$wt2/.ak/result"
+"$AK" collect --issue 680 >/dev/null 2>&1
+out=$("$AK" plan --issue 671 --issue 680 --serialize 2>&1)
+assert_contains "$out" 'after issue=680 needs=671' 'the explicit parked issue is queued behind its predecessor'
+runfile="$repo/.ak/runs/$(cat "$repo/.ak/runs/current").json"
+assert_eq true "$(jq -r '.items[] | select(.n == 680) | .named' "$runfile")" 'the run records the explicit decision for its queued item'
+ship "$wt" src/a.txt 9 green
+head=$(git -C "$wt" rev-parse HEAD)
+printf '{"number":9,"state":"open","head":{"sha":"%s"}}' "$head" >"$WORK/pr9-named.json"
+printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"}]}' >"$WORK/runs-named.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
+    "$WORK/pr9-named.json" "$head" "$WORK/runs-named.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
+"$AK" collect --issue 671 >/dev/null 2>&1
+routes=$(cat "$FAKE_GH_ROUTES")
+printf '%s' '[[{"event":"cross-referenced","source":{"issue":{"number":1046,"state":"open","title":"Custom branch PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1046"}}}}]]' >"$WORK/timeline-open.json"
+printf 'api --paginate --slurp repos/acme/widget/issues/680/timeline?per_page=100\t%s\t0\n%s\n' \
+    "$WORK/timeline-open.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --wave 2>&1)
+assert_contains "$out" 'after issue=680 reason=open-linked-pr:#1046' 'queued release checks for a linked open PR on any branch'
+assert_not_contains "$out" 'spawn issue=680' 'a linked open PR holds a named queued issue'
+printf '%s' '[[]]' >"$WORK/timeline-empty.json"
+printf 'api --paginate --slurp repos/acme/widget/issues/680/timeline?per_page=100\t%s\t0\n%s\n' \
+    "$WORK/timeline-empty.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --wave 2>&1)
+assert_contains "$out" "spawn issue=680 cwd=$wt2 " 'collect honors the persisted explicit recovery decision'
+assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the queued parked issue is recorded as spawned'
+
 # A re-planned park releases the successors the earlier run still holds: after `ak plan --issue N` makes a new run for
 # the parked issue, collecting it there also walks the earlier run (a field operator re-planned the whole list by
 # hand to keep the chain alive).

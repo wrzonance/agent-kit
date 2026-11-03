@@ -25,7 +25,13 @@ author's process; the operator's invocation authorizes this run's commit, push a
 1. {{SETUP}}If `.ak/resolve` exists: `git fetch origin && git merge "$(cat .ak/resolve)"`,
    preserve both sides' intent in conflicts, commit the merge, then continue at step 2,
    skipping step 3; the receipt reuses the earlier findings.
-   Otherwise read the affected code. For new behavior/unknowns, name data shapes,
+   Otherwise assess what remains before editing: compare acceptance criteria with
+   current code/tests, branch commits, previous PRs and receipts (including `Remaining:`),
+   and staged, unstaged and untracked work. Preserve useful work and continue from it;
+   a merged PR or checked box alone does not prove the whole issue complete. Recheck
+   a prior pause's cause; leave genuine manual/operator steps parked. If nothing
+   remains, park with the completion evidence rather than inventing a change.
+   For new behavior/unknowns, name data shapes,
    write signatures, list changed files/call sites, spike unresolved design questions and
    revert the spike, then test invariants at module boundaries. For a bug/pattern
    extension, write its regression test. Observe red, change code to green, refactor.
