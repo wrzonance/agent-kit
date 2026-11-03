@@ -39,7 +39,7 @@ transcript_codex() {
             '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and ((.agent_path // "") | test($path))' \
             >/dev/null 2>&1 || continue
         [[ -z $best || $file -nt $best ]] && best=$file
-    done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -mtime -7 2>/dev/null)
+    done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' 2>/dev/null)
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 
@@ -70,4 +70,26 @@ transcript_state() {
 # transcript_age PATH: seconds since the transcript last grew.
 transcript_age() {
     printf '%d\n' $(($(date +%s) - $(file_mtime "$1")))
+}
+
+# worktree_idle_s WORKTREE: age of the newest local activity, including files not yet staged or committed.
+# NUL-separated paths preserve spaces/newlines. Read-only probes must not refresh the index themselves.
+worktree_idle_s() {
+    local newest=0 file m gitdir
+    local GIT_OPTIONAL_LOCKS=0
+    export GIT_OPTIONAL_LOCKS
+    gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=''
+    while IFS= read -r -d '' file; do
+        [[ -e $file && ! -L $file ]] || continue
+        m=$(file_mtime "$file")
+        ((m <= newest)) || newest=$m
+    done < <(
+        printf '%s\0' "$1/.ak" "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD" "$gitdir/logs/HEAD"
+        [[ -n $gitdir ]] || exit 0
+        while IFS= read -r -d '' file; do printf '%s\0' "$1/$file"; done < <(
+            git -C "$1" ls-files -z --modified --others --exclude-standard
+            git -C "$1" diff --cached --name-only -z
+        )
+    )
+    printf '%d\n' $(($(date +%s) - newest))
 }

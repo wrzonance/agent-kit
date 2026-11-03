@@ -2,6 +2,8 @@
 # ak plan [--limit N] [--yolo] [--serialize] [--issue N]...: everything before spawning, in one call.
 # shellcheck source=board.sh
 source "$AK_HOME/lib/board.sh"
+# shellcheck source=recovery.sh
+source "$AK_HOME/lib/recovery.sh"
 
 LINES=()               # output lines, in order
 declare -A ISSUE_JSON  # issue number -> REST issue JSON
@@ -64,14 +66,15 @@ split_list() {
     ((${#words[@]} == 0)) || printf '%s\n' "${words[@]}"
 }
 
-# board_candidates YOLO: `N<TAB>labels` for this repository's Ready (then Backlog) board issues.
+# board_candidates YOLO: Ready, unfinished work, then Backlog when requested.
 board_candidates() {
     jq -r --arg slug "$SLUG" --argjson yolo "$1" '
         [.items[]? | select(.content.type == "Issue") |
             select((.content.repository // "") as $r | $r == $slug or ($r | endswith("/" + $slug))) |
             {n: .content.number, s: ((.status // "") | ascii_downcase),
              l: ((.labels // []) | map(if type == "object" then .name else . end) | join(","))}] |
-        (map(select(.s == "ready")) + (if $yolo then map(select(.s == "backlog")) else [] end))[] |
+        (map(select(.s == "ready")) + map(select(.s == "in progress" or .s == "in review")) +
+            (if $yolo then map(select(.s == "backlog")) else [] end))[] |
         "\(.n)\t\(.l)"' <<<"$BOARD_ITEMS"
 }
 
@@ -301,6 +304,16 @@ issue_block() {
     printf -- '----- BEGIN UNTRUSTED ISSUE DATA %s -----\n' "$nonce"
     jq -r '"# \(.title)\n\n\(.body // "")"' <<<"${ISSUE_JSON[$n]}"
     jq -r '.[]? | "\n## Comment by @\(.user.login // "unknown")\n\n\(.body // "")"' <<<"$comments" 2>>"$AK_LOG" || true
+    # Prior receipts and results are worker-written data, not instructions or proof of issue completion.
+    local wt result receipt
+    wt=$(issue_worktree "$n")
+    result=$wt/.ak/previous-result receipt=$wt/.ak/previous-receipt
+    if [[ -f $wt/.ak/result ]] && grep -q '^pr=http' "$wt/.ak/result"; then result=$wt/.ak/result receipt=$wt/.ak/receipt.md; fi
+    if [[ -f $result ]]; then
+        printf '\n## Previous attempt (reassess against current code)\n'
+        head -c 4000 -- "$result"
+        [[ ! -f $receipt ]] || head -c 8000 -- "$receipt"
+    fi
     [[ -z ${2:-} ]] || printf '\nearlier park note: %s\n' "${2:0:400}"
     printf -- '----- END UNTRUSTED ISSUE DATA %s -----\n' "$nonce"
 }
@@ -314,8 +327,8 @@ compose_prompt() {
     local n=$1 text prior=''
     [[ -z ${5:-} ]] || prior="An earlier worker parked this issue; its note is the last line of the data block below. The issue was planned again afterwards, so check whether that cause still holds before parking on it."
     # A new worker that is not told would start over beside the work already there, or discard it.
-    [[ -z $prior || -z $(git -C "$2" status --porcelain 2>>"$AK_LOG") ]] ||
-        prior+=" The worktree still holds that worker's uncommitted changes: read \`git status\` and \`git diff\`, and carry on from them."
+    [[ -z $(git -C "$2" status --porcelain --untracked-files=all 2>>"$AK_LOG") ]] ||
+        prior+=" The worktree holds uncommitted changes: read \`git status --untracked-files=all\`, \`git diff\` and \`git diff --cached\`, inspect untracked files, and carry on from them."
     prior+=${prior:+$'\n\n'}
     text=$(<"$TEMPLATE")
     text=${text//"{{ISSUE}}"/"$n"}
@@ -330,14 +343,16 @@ compose_prompt() {
     printf '%s\n' "$text"
 }
 
-# add_worktree BRANCH WORKTREE FROM: reuse a clean worktree or branch, else branch from FROM. A worktree whose worker
-# parked is reused with the uncommitted work that worker left: a field park said to commit what only the operator may
-# commit and plan again, the operator committed that one file, and the plan dropped the issue as worktree-unusable
-# over the worker's other 17 paths.
+# add_worktree BRANCH WORKTREE FROM: eligibility was checked before this call. Reuse the expected worktree
+# without discarding any unfinished files; a directory on another branch is never that worktree.
 add_worktree() {
     local branch=$1 wt=$2
     if [[ -d $wt ]]; then
-        [[ -z $(git -C "$wt" status --porcelain 2>>"$AK_LOG") ]] || grep -q '^note=parked: ' "$wt/.ak/result" 2>/dev/null
+        [[ ! -L $wt && $(git -C "$wt" rev-parse --show-toplevel 2>>"$AK_LOG") == "$wt" &&
+            $(git -C "$wt" branch --show-current 2>>"$AK_LOG") == "$branch" &&
+            $(git -C "$wt" rev-parse --path-format=absolute --git-common-dir) == "$(git -C "$MAIN" rev-parse --path-format=absolute --git-common-dir)" ]] || return 1
+        [[ -z $(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all) ]] ||
+            { [[ -f $wt/.ak/issue ]] && [[ $(cat "$wt/.ak/issue") == "${branch##*/issue-}" ]]; }
     elif git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch"; then
         git -C "$MAIN" worktree add -q "$wt" "$branch" >>"$AK_LOG" 2>&1
     else
@@ -387,9 +402,15 @@ spawn_issue() {
     # answer, which ak ship then does not hold against the next worker. A first spawn has no park, and neither has a
     # re-spawn nobody parked, so a commit a stopped worker left there is still that worker's.
     [[ -z $prior ]] || hand_over "$wt" || { emit "drop issue=$n reason=worktree-unusable:$wt"; return 1; }
-    rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     issue_block "$n" "$prior" >"$dir/issue.md"
     compose_prompt "$n" "$wt" "$3" "$dir" "$prior" >"$dir/prompt.md"
+    if [[ -f $dir/result ]] && grep -q '^pr=http' "$dir/result"; then
+        rm -f -- "$dir/previous-result" "$dir/previous-receipt"
+        mv -f -- "$dir/result" "$dir/previous-result"
+        [[ ! -f $dir/receipt.md ]] || mv -f -- "$dir/receipt.md" "$dir/previous-receipt"
+        rm -f -- "$dir/review.md" "$dir/review.unavailable" "$dir/findings" "$dir/findings-review"
+    fi
+    rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     SPAWNED+=("$n")
     WORKTREE[$n]=$wt
     emit "spawn issue=$n cwd=$wt prompt=$dir/prompt.md model=$MODEL effort=$EFFORT name=$(worker_name issue "$n" "$wt")"
@@ -426,61 +447,6 @@ issue_worktree() {
     wt="$(cfg AGENT_WORKTREE_ROOT .worktrees)/feat/issue-$1"
     [[ $wt == /* ]] || wt="$MAIN/$wt"
     printf '%s\n' "$wt"
-}
-
-# issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. A field run planned an issue another run still
-# had queued, and a later collect re-spawned an issue that had already shipped. Only a run with a worker still out
-# (spawned, no result) and touched within a day counts, so an abandoned run never blocks new work.
-issue_active() {
-    local n=$1 skip=${2:-} file item state wt needs ended
-    while IFS= read -r file; do
-        [[ $file != "$skip" ]] || continue
-        run_live "$file" || continue
-        item=$(jq -r --argjson n "$n" '[.items[] | select(.kind == "issue" and .n == $n)][0] // empty |
-            [.state, .worktree // "", (.needs | map("#" + tostring) | join(",")), (.ended // "")] | join("|")' "$file")
-        IFS='|' read -r state wt needs ended <<<"$item"
-        case $state in
-            queued) printf 'queued-after-%s\n' "$needs"; return 0 ;;
-            # A worker ak wait recorded as ended, stopped or hung is gone: the item may be planned again.
-            spawned | red | blocked) [[ -n $ended ]] || ! worker_out "$wt" "$file" || { printf 'running\n'; return 0; } ;;
-            parked) ! resumed_park "$wt" || { printf 'running\n'; return 0; } ;;
-        esac
-    done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' -mmin -1440 2>/dev/null | LC_ALL=C sort)
-    wt=$(issue_worktree "$n")
-    # A parked result (pr=none) is not shipped: once the operator unblocks it, re-running the issue plans it again.
-    [[ ! -f $wt/.ak/result ]] || needs=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
-    [[ ${needs:-} != http* ]] || printf 'shipped:%s\n' "$needs"
-    return 0
-}
-
-# worker_out WORKTREE RUNFILE: is a worker on this spawned item, i.e. no result yet, and it started (ak setup ran) or the
-# run is under 10 minutes old? A field plan's output was lost, so its spawns never got workers, and every later plan
-# skipped them as running for a day.
-worker_out() {
-    local wt=$1 age
-    [[ -n $wt && ! -f $wt/.ak/result ]] || return 1
-    [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] && return 0
-    age=$(( $(date +%s) - $(file_mtime "$2") ))
-    ((age < ${AK_SPAWN_GRACE:-600}))
-}
-
-# resumed_park WORKTREE: a park answered in place. A field root messaged the parked worker instead of re-planning; the
-# worker removed its result and carried on while the run file still said parked, so the next plan would have spawned a
-# second worker there. The sign is work after the park: a log newer than the marker ak park left. A result removed by
-# hand with no work after it leaves the issue free to plan again.
-resumed_park() {
-    local wt=$1
-    [[ -n $wt && ! -f $wt/.ak/result && -f $wt/.ak/parked ]] || return 1
-    [[ -n $(find "$wt/.ak/logs" -type f -newer "$wt/.ak/parked" -print -quit 2>/dev/null) ]]
-}
-
-# run_live FILE: does the run still have a worker out?
-run_live() {
-    local wt state
-    while IFS=$'\t' read -r state wt; do
-        if [[ $state == parked ]]; then resumed_park "$wt" && return 0; else worker_out "$wt" "$1" && return 0; fi
-    done < <(jq -r '.items[] | select((.state | IN("spawned", "red", "blocked", "parked")) and ((.ended // "") == "")) | [.state, .worktree // ""] | @tsv' "$1")
-    return 1
 }
 
 # run_lock [NAME]: one ak plan or ak collect per checkout at a time; both rewrite run files. A field root re-ran a plan, and
@@ -623,7 +589,8 @@ write_run() {
         others=$(jq -c --argjson n "$n" --arg line "${OTHERS[$n]}" '. + [{n: $n, line: $line}]' <<<"$others")
     done
     jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" --argjson others "$others" \
-        '{run: $run, open_wave: 1, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
+        --arg harness "$(harness)" --arg session "${CODEX_THREAD_ID:-${CLAUDE_CODE_SESSION_ID:-}}" \
+        '{run: $run, harness: $harness, session: $session, open_wave: 1, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
@@ -646,7 +613,11 @@ resume_run() {
     while IFS=$'\t' read -r n wt; do
         [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || continue
         # A worker that already started is not offered again: the same lines twice would start a second one.
-        [[ ! -e $wt/.ak/logs && ! -e $wt/.ak/setup.ok ]] || { running+=("skip issue=$n reason=running"); continue; }
+        if [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok || -n $(worker_transcript "$wt" "$file") ]]; then
+            worker_out "$wt" "$file" || return 1
+            running+=("skip issue=$n reason=running")
+            continue
+        fi
         lines+=("spawn issue=$n cwd=$wt prompt=$wt/.ak/prompt.md model=$MODEL effort=$EFFORT name=$(worker_name_now issue "$n" "$wt")")
     done < <(jq -r '.items[] | select(.kind == "issue" and .state == "spawned" and ((.ended // "") == "")) | [.n, .worktree] | @tsv' "$file")
     ((${#lines[@]})) || return 1
@@ -704,7 +675,7 @@ plan_next() {
     backlog=$([[ $1 == false && -n ${BOARD_ITEMS:-} ]] && jq '[.items[]? | select(.content.type == "Issue" and
         ((.status // "") | ascii_downcase) == "backlog")] | length' <<<"$BOARD_ITEMS" || echo 0)
     if ((backlog > 0)); then
-        printf 'next=nothing workable in Ready; --yolo adds %d Backlog issues, or name issues with --issue N%s\n' "$backlog" "$extra"
+        printf 'next=nothing workable in Ready or unfinished work; --yolo adds %d Backlog issues, or name issues with --issue N%s\n' "$backlog" "$extra"
     else
         printf 'next=nothing workable; name issues with --issue N%s\n' "$extra"
     fi

@@ -154,6 +154,7 @@ assert_eq 1 "$(grep -c '^spawn' <<<"$out")" '--limit 1 spawns one issue'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/680' '--limit stops checking once the limit is filled'
 
 fresh
+route 'api repos/acme/widget/pulls/78' '{"state":"open"}'
 standard_board
 out=$("$AK" plan --serialize 2>&1)
 assert_contains "$out" 'after issue=680 needs=671 wave=2' '--serialize chains the colliding issue'
@@ -271,7 +272,7 @@ fresh
 board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 701 Backlog)]}"
 default_routes
 out=$("$AK" plan 2>&1)
-assert_contains "$out" 'next=nothing workable in Ready; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
+assert_contains "$out" 'next=nothing workable in Ready or unfinished work; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
 out=$("$AK" plan --issue 69 2>&1)
 assert_contains "$out" 'next=none of the named issues can start; each line above says why' 'an empty named plan does not ask for names again'
 assert_not_contains "$out" 'name issues with --issue N' 'the operator who named issues is not told to name issues'
@@ -738,9 +739,9 @@ assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree with uncomm
 assert_eq ' M src/a.txt' "$(git -C "$wt" status --porcelain)" 'the uncommitted work is still there'
 assert_eq "$parked" "$(git -C "$wt" rev-parse HEAD)" 'a moved base is not merged over uncommitted work'
 assert_eq no "$([[ -e $wt/.ak/resolve ]] && echo yes || echo no)" 'and it is not turned into a merge-down'
-assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree still holds that worker's uncommitted changes: read \`git status\` and \`git diff\`, and carry on from them." 'the new worker is told to carry on from the uncommitted work'
+assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree holds uncommitted changes:" 'the new worker is told to carry on from the uncommitted work'
 out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" "drop issue=671 reason=worktree-unusable:$wt" 'uncommitted work nobody parked still makes a worktree unusable'
+assert_contains "$out" 'skip issue=671 reason=running' 'recent uncommitted work protects a worker that has not parked'
 
 # A repository with a setup command keeps the step.
 fresh

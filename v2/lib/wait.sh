@@ -68,18 +68,6 @@ marker_mine() {
 
 marker_drop() { [[ $(marker_get pid) != "$$" ]] || rm -f -- "$MARKER"; }
 
-# worktree_idle_s WORKTREE: seconds since the newest sign of life in a worktree (its .ak files, index and HEAD).
-worktree_idle_s() {
-    local newest=0 file m gitdir
-    gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=''
-    for file in "$1/.ak" "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD"; do
-        [[ -e $file ]] || continue
-        m=$(file_mtime "$file")
-        ((m <= newest)) || newest=$m
-    done
-    printf '%d\n' $(($(date +%s) - newest))
-}
-
 # spawn_since WORKTREE SPAWNED_AT: when the item's current worker was spawned: the later of the run file's spawned_at and
 # the worktree's prompt or resolve file (rewritten at every spawn, re-spawn and merge-down).
 spawn_since() {
