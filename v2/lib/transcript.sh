@@ -39,7 +39,7 @@ transcript_codex() {
             '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and ((.agent_path // "") | test($path))' \
             >/dev/null 2>&1 || continue
         [[ -z $best || $file -nt $best ]] && best=$file
-    done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' 2>/dev/null)
+    done < <(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -mmin -10080 2>/dev/null)
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 

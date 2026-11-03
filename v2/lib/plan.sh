@@ -312,7 +312,8 @@ issue_block() {
     if [[ -f $result ]]; then
         printf '\n## Previous attempt (reassess against current code)\n'
         head -c 4000 -- "$result"
-        [[ ! -f $receipt ]] || head -c 8000 -- "$receipt"
+        printf '\n'
+        if [[ -f $receipt ]]; then head -c 8000 -- "$receipt"; printf '\n'; fi
     fi
     [[ -z ${2:-} ]] || printf '\nearlier park note: %s\n' "${2:0:400}"
     printf -- '----- END UNTRUSTED ISSUE DATA %s -----\n' "$nonce"

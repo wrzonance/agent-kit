@@ -65,10 +65,15 @@ worker_transcript() {
 # worker_out WORKTREE RUNFILE [ENDED]: live transcript evidence outranks a previous hang/stop classification.
 # Without a transcript, an explicit end releases the work; otherwise recent files protect it.
 worker_out() {
-    local wt=$1 age tr since=0
+    local wt=$1 age tr since=0 state
     [[ -n $wt && -d $wt && ! -f $wt/.ak/result ]] || return 1
     tr=$(worker_transcript "$wt" "$2")
-    [[ -z $tr ]] || { [[ $(transcript_state "$tr") == running ]]; return; }
+    if [[ -n $tr ]]; then
+        state=$(transcript_state "$tr")
+        [[ $state == running ]] || return 1
+        (($(transcript_age "$tr") < ${AK_WAIT_HANG_S:-1200}))
+        return
+    fi
     [[ -z ${3:-} ]] || return 1
     if [[ -e $wt/.ak/logs || -e $wt/.ak/setup.ok ]] ||
         [[ -n $(GIT_OPTIONAL_LOCKS=0 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null) ]]; then

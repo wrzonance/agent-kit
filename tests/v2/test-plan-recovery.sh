@@ -134,7 +134,7 @@ age_work
 child owner task_started
 touch -d '-8 days' "$CODEX_HOME/sessions/rollout-worker.jsonl"
 out=$("$AK" plan --new --issue 5 2>&1)
-assert_not_contains "$out" 'spawn issue=5 ' 'a quiet live transcript is not discarded by a seven-day search cutoff'
+assert_contains "$out" 'spawn issue=5 ' 'a transcript quiet beyond the hang limit does not block recovery forever'
 
 fresh
 start
@@ -201,6 +201,18 @@ for state in merged closed open unreadable; do
         assert_contains "$(cat "$wt/.ak/result")" 'pull/77' 'a held result is preserved'
     fi
 done
+
+# Worker evidence is truncated on byte boundaries, but the untrusted-data terminator stays on its own line.
+fresh
+start
+printf '%04000d' 0 >"$wt/.ak/previous-result"
+printf '%08001d' 0 >"$wt/.ak/previous-receipt"
+jq '.items[].ended = "hung"' "$runfile" >"$WORK/hung.json"
+mv "$WORK/hung.json" "$runfile"
+out=$("$AK" plan --new --issue 5 2>&1)
+assert_contains "$out" 'spawn issue=5 ' 'a prior receipt is included when resuming an issue'
+assert_eq yes "$(grep -Eq '^----- END UNTRUSTED ISSUE DATA [0-9a-f]{16} -----$' "$wt/.ak/prompt.md" && echo yes || echo no)" \
+    'the untrusted-data terminator is a separate line after truncated evidence'
 
 fresh
 start
