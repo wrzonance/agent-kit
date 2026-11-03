@@ -6,7 +6,7 @@ source "$AK_HOME/lib/transcript.sh"
 # issue_active N [SKIP_RUNFILE]: why N must not spawn again, or nothing. Collect passes its run file:
 # its receipt satisfies a queued wave, whereas a fresh plan must check whether that PR is still open.
 issue_active() {
-    local n=$1 skip=${2:-} status=${3:-} explicit=${NAMED:-0} file item state wt needs ended seen=0 pr json parked record parked_head head
+    local n=$1 skip=${2:-} explicit=${NAMED:-0} file item state wt needs ended seen=0 pr prn json parked record parked_head head
     if [[ -n $skip ]] && jq -e --argjson n "$n" 'any(.items[]; .n == $n and .named == true)' "$skip" >/dev/null 2>&1; then
         explicit=1
     fi
@@ -25,18 +25,31 @@ issue_active() {
         break
     done < <(find "$MAIN/.ak/runs" -maxdepth 1 -name '*.json' 2>/dev/null | LC_ALL=C sort -Vr)
     wt=$(issue_worktree "$n")
-    if [[ $status == 'in progress' || $status == 'in review' ]]; then
-        pr=$(linked_open_pr "$n")
-        case $pr in
-            unreadable) printf 'linked-pr-unreadable\n'; return 0 ;;
-            '') ;;
-            *) printf 'open-linked-pr:#%s\n' "$pr"; return 0 ;;
-        esac
-    fi
     # A known worktree can outlive its run record. Never count a merely existing directory as ownership.
     if ((seen == 0)) && [[ -f $wt/.ak/issue ]] && [[ $(cat "$wt/.ak/issue") == "$n" ]] && worker_out "$wt" ''; then
         printf 'running\n'; return 0
     fi
+    if [[ -f $wt/.ak/result ]]; then
+        pr=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
+        if [[ $pr == http* ]]; then
+            if [[ -n $skip ]]; then printf 'shipped:%s\n' "$pr"; return 0; fi
+            # Only a PR number from this repository reaches the API, never a worker-supplied URL or command.
+            prn=${pr##*/}
+            [[ $prn =~ ^[0-9]+$ && $pr == *"/$SLUG/pull/$prn" ]] || { printf 'pr-state-unreadable\n'; return 0; }
+            json=$(api "repos/$SLUG/pulls/$prn") || { printf 'pr-state-unreadable:ak pr-plan --pr %s\n' "$prn"; return 0; }
+            case $(jq -r '.state // ""' <<<"$json" 2>/dev/null) in
+                open) printf 'shipped:%s\n' "$pr"; return 0 ;;
+                closed) ;;
+                *) printf 'pr-state-unreadable:ak pr-plan --pr %s\n' "$prn"; return 0 ;;
+            esac
+        fi
+    fi
+    pr=$(linked_open_pr "$n")
+    case $pr in
+        unreadable) printf 'linked-pr-unreadable\n'; return 0 ;;
+        '') ;;
+        *) printf 'open-linked-pr:#%s\n' "$pr"; return 0 ;;
+    esac
     if [[ -f $wt/.ak/result ]]; then
         parked=$(sed -n 's/^note=parked: //p' "$wt/.ak/result" | head -n 1)
         if [[ -n $parked ]]; then
@@ -50,28 +63,15 @@ issue_active() {
             }
         fi
     fi
-    [[ -f $wt/.ak/result ]] || return 0
-    pr=$(sed -n 's/^pr=//p' "$wt/.ak/result" | head -n 1)
-    [[ $pr == http* ]] || return 0
-    if [[ -n $skip ]]; then printf 'shipped:%s\n' "$pr"; return 0; fi
-    # Only a PR number from this repository reaches the API, never a worker-supplied URL or command.
-    n=${pr##*/}
-    [[ $n =~ ^[0-9]+$ && $pr == *"/$SLUG/pull/$n" ]] || { printf 'pr-state-unreadable\n'; return 0; }
-    json=$(api "repos/$SLUG/pulls/$n") || { printf 'pr-state-unreadable:ak pr-plan --pr %s\n' "$n"; return 0; }
-    case $(jq -r '.state // ""' <<<"$json" 2>/dev/null) in
-        open) printf 'shipped:%s\n' "$pr" ;;
-        closed) ;;
-        *) printf 'pr-state-unreadable:ak pr-plan --pr %s\n' "$n" ;;
-    esac
 }
 
 # linked_open_pr N: the GitHub timeline's cross-reference event is the supported link from an issue to a PR,
 # including PRs opened from a custom branch. The linked PR's API number and open state are all we use.
 linked_open_pr() {
     local json number
-    json=$(api "repos/$SLUG/issues/$1/timeline?per_page=100") || { printf 'unreadable\n'; return 0; }
-    jq -e 'type == "array"' <<<"$json" >/dev/null 2>&1 || { printf 'unreadable\n'; return 0; }
-    number=$(jq -r '[.[] | select(.event == "cross-referenced" and .source.issue.state == "open" and
+    json=$(api --paginate "repos/$SLUG/issues/$1/timeline?per_page=100") || { printf 'unreadable\n'; return 0; }
+    jq -e 'type == "array" and all(.[]; type == "array")' <<<"$json" >/dev/null 2>&1 || { printf 'unreadable\n'; return 0; }
+    number=$(jq -r '[.[][] | select(.event == "cross-referenced" and .source.issue.state == "open" and
         (.source.issue.pull_request.url // "") != "") | .source.issue.number | select(type == "number")] |
         sort | .[0] // empty' <<<"$json")
     [[ -z $number ]] || [[ $number =~ ^[0-9]+$ ]] || { printf 'unreadable\n'; return 0; }

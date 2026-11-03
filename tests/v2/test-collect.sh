@@ -447,6 +447,16 @@ printf '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success
 printf 'api repos/acme/widget/pulls/9\t%s\t0\napi repos/acme/widget/commits/%s/check-runs*\t%s\t0\n%s\n' \
     "$WORK/pr9-named.json" "$head" "$WORK/runs-named.json" "$(cat "$FAKE_GH_ROUTES")" >"$FAKE_GH_ROUTES"
 "$AK" collect --issue 671 >/dev/null 2>&1
+routes=$(cat "$FAKE_GH_ROUTES")
+printf '%s' '[[{"event":"cross-referenced","source":{"issue":{"number":1046,"state":"open","title":"Custom branch PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1046"}}}}]]' >"$WORK/timeline-open.json"
+printf 'api --paginate --slurp repos/acme/widget/issues/680/timeline?per_page=100\t%s\t0\n%s\n' \
+    "$WORK/timeline-open.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" collect --wave 2>&1)
+assert_contains "$out" 'after issue=680 reason=open-linked-pr:#1046' 'queued release checks for a linked open PR on any branch'
+assert_not_contains "$out" 'spawn issue=680' 'a linked open PR holds a named queued issue'
+printf '%s' '[[]]' >"$WORK/timeline-empty.json"
+printf 'api --paginate --slurp repos/acme/widget/issues/680/timeline?per_page=100\t%s\t0\n%s\n' \
+    "$WORK/timeline-empty.json" "$routes" >"$FAKE_GH_ROUTES"
 out=$("$AK" collect --wave 2>&1)
 assert_contains "$out" "spawn issue=680 cwd=$wt2 " 'collect honors the persisted explicit recovery decision'
 assert_eq spawned "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")" 'the queued parked issue is recorded as spawned'

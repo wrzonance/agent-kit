@@ -59,10 +59,25 @@ assert_not_contains "$out" 'next=nothing workable' 'unfinished work prevents a f
 fresh
 board_route 5 "{\"items\":[$(board_item 6 'In review')]}"
 issue_route 6 'Finish src/b.txt'
-route 'api repos/acme/widget/issues/6/timeline?per_page=100' '[{"event":"cross-referenced","source":{"issue":{"number":1044,"state":"open","title":"Custom branch PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1044"}}}}]'
+route 'api --paginate --slurp repos/acme/widget/issues/6/timeline?per_page=100' '[[],[{"event":"cross-referenced","source":{"issue":{"number":1044,"state":"open","title":"Custom branch PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1044"}}}}]]'
 default_routes
 out=$("$AK" plan 2>&1)
-assert_contains "$out" 'skip issue=6 reason=open-linked-pr:#1044' 'an In review issue linked to an open custom-branch PR is not dispatched twice'
+assert_contains "$out" 'skip issue=6 reason=open-linked-pr:#1044' 'pagination finds a linked open custom-branch PR after the first timeline page'
+
+fresh
+board_route 5 "{\"items\":[$(board_item 8 Ready)]}"
+issue_route 8 'Finish src/b.txt'
+route 'api --paginate --slurp repos/acme/widget/issues/8/timeline?per_page=100' '[[{"event":"cross-referenced","source":{"issue":{"number":1045,"state":"open","title":"Ready issue PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1045"}}}}]]'
+default_routes
+out=$("$AK" plan 2>&1)
+assert_contains "$out" 'skip issue=8 reason=open-linked-pr:#1045' 'Ready issues with a linked open custom-branch PR are not dispatched twice'
+
+fresh
+issue_route 9 'Finish src/b.txt'
+route 'api --paginate --slurp repos/acme/widget/issues/9/timeline?per_page=100' '[[{"event":"cross-referenced","source":{"issue":{"number":1046,"state":"open","title":"Named issue PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1046"}}}}]]'
+default_routes
+out=$("$AK" plan --issue 9 2>&1)
+assert_contains "$out" 'skip issue=9 reason=open-linked-pr:#1046' 'explicitly named issues also check for linked custom-branch PRs'
 
 fresh
 board_route 5 "{\"items\":[$(board_item 5 'In progress'),$(board_item 6 Ready)]}"

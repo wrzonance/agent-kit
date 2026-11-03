@@ -34,19 +34,26 @@ emit() {
     printf '%s\n' "$1" >>"$AK_LOG"
 }
 
-# api PATH: a REST read. Inside a plan (CACHE set) each path is read once: a re-check of a dropped issue, or six issues
-# behind the same outside blocker, ask GitHub nothing new.
+# api [--paginate] PATH: a REST read. Inside a plan (CACHE set) each path is read once; paginated responses are slurped
+# into one JSON value so a linked PR cannot hide on a later timeline page.
 api() {
-    local file="$CACHE/${1//[^A-Za-z0-9]/_}" part
-    [[ -n $CACHE ]] || { gh api "$1" 2>>"$AK_LOG"; return; }
+    local paginate=0 path file part
+    [[ ${1:-} != --paginate ]] || { paginate=1; shift; }
+    path=$1
+    file="$CACHE/${path//[^A-Za-z0-9]/_}$([[ $paginate == 1 ]] && echo _pages)"
+    [[ -n $CACHE ]] || { if ((paginate)); then gh api --paginate --slurp "$path" 2>>"$AK_LOG"; else gh api "$path" 2>>"$AK_LOG"; fi; return; }
     # A failed read leaves no file, so the next caller reads again and gets the failure itself.
     part="$file.$BASHPID"
-    [[ -f $file ]] || { gh api "$1" >"$part" 2>>"$AK_LOG" && mv -- "$part" "$file"; } || return 1
+    if [[ ! -f $file ]]; then
+        if ((paginate)); then gh api --paginate --slurp "$path" >"$part" 2>>"$AK_LOG" || return 1
+        else gh api "$path" >"$part" 2>>"$AK_LOG" || return 1; fi
+        mv -- "$part" "$file"
+    fi
     cat -- "$file"
 }
 
-# prefetch N...: read each issue, its blockers and its open-PR lookup at once, for check_issue to find. A field plan
-# made these three reads one after another for 26 candidates and took 60 s to print 3 spawn lines.
+# prefetch N...: read issue details, blockers, the canonical-branch PR and linked timeline at once. A field plan made
+# candidate reads one after another and took 60 s to print 3 spawn lines.
 prefetch() {
     local n path pids=()
     for n in "$@"; do
@@ -55,6 +62,8 @@ prefetch() {
             api "$path" >/dev/null &
             pids+=("$!")
         done
+        api --paginate "repos/$SLUG/issues/$n/timeline?per_page=100" >/dev/null &
+        pids+=("$!")
     done
     ((${#pids[@]} == 0)) || wait "${pids[@]}" || true
 }
@@ -75,21 +84,21 @@ board_candidates() {
              l: ((.labels // []) | map(if type == "object" then .name else . end) | join(","))}] |
         (map(select(.s == "ready")) + map(select(.s == "in progress" or .s == "in review")) +
             (if $yolo then map(select(.s == "backlog")) else [] end))[] |
-        "\(.n)\t\(.s)\t\(.l)"' <<<"$BOARD_ITEMS"
+        "\(.n)\t\(.l)"' <<<"$BOARD_ITEMS"
 }
 
 # label_candidates LABEL: open issues carrying the ready label, when there is no board.
 label_candidates() {
     local list
     list=$(api "repos/$SLUG/issues?state=open&labels=$1&per_page=100") || die "cannot list issues labelled $1" "gh auth status"
-    jq -r '.[] | select(has("pull_request") | not) | "\(.number)\tready\t\([.labels[]?.name] | join(","))"' <<<"$list"
+    jq -r '.[] | select(has("pull_request") | not) | "\(.number)\t\([.labels[]?.name] | join(","))"' <<<"$list"
 }
 
 candidates() {
     local yolo=$1 label
     shift
     if (($#)); then
-        printf '%s\tnamed\t\n' "$@"
+        printf '%s\t\n' "$@"
     elif [[ -n ${BOARD_ITEMS:-} ]]; then
         board_candidates "$yolo"
     else
@@ -535,7 +544,7 @@ unblock() {
 }
 
 pick() {
-    local limit=$1 serialize=$2 named=$3 spawned=0 n labels status active held m blocked=() rows=() i=0 ahead=0 batch
+    local limit=$1 serialize=$2 named=$3 spawned=0 n labels active held m blocked=() rows=() i=0 ahead=0 batch
     NAMED=$named
     mapfile -t -u 3 rows
     while ((spawned < limit && i < ${#rows[@]})); do
@@ -544,15 +553,16 @@ pick() {
         if ((i >= ahead)); then
             batch=()
             for ((ahead = i; ahead < ${#rows[@]} && ${#batch[@]} < (i || limit > 8 ? 8 : limit); ahead++)); do
-                IFS=$'\t' read -r n status labels <<<"${rows[ahead]}"
+                IFS=$'\t' read -r n labels <<<"${rows[ahead]}"
                 [[ ! $n =~ ^[0-9]+$ || -n $(excluded_label "$labels") ]] || batch+=("$n")
             done
             prefetch "${batch[@]}"
         fi
-        IFS=$'\t' read -r n status labels <<<"${rows[i]}"
+        IFS=$'\t' read -r n labels <<<"${rows[i]}"
         i=$((i + 1))
         [[ $n =~ ^[0-9]+$ ]] || continue
-        active=$(issue_active "$n" '' "$status")
+        active=''
+        [[ -n $(excluded_label "$labels") ]] || active=$(issue_active "$n")
         [[ -z $active ]] || { other "$n" "skip issue=$n reason=$active"; continue; }
         check_issue "$n" "$labels"
         # A closed issue on the board is finished work, not a decision anyone needs to read.
