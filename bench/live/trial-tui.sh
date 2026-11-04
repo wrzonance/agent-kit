@@ -40,6 +40,8 @@ while (($#)); do
 done
 [[ $harness == codex || $harness == claude ]] || { printf 'trial-tui: --harness codex|claude is required\n' >&2; exit 2; }
 [[ -n $ref ]] || { printf 'trial-tui: --ref is required\n' >&2; exit 2; }
+# The fixture variant (AK_BENCH_VERIFY_SLEEP) is checked before the sandbox is reset, and labels every row.
+variant=$(fixture_variant) || exit 2
 # Workers use a model of the arm's own harness: AGENT_WORKER_MODELS names it for the kit, and Codex also reads it
 # from its config.
 if [[ $harness == codex ]]; then
@@ -233,7 +235,7 @@ outcome="$dir/outcome.json"
     jq --argjson calls "$("$here/gh-calls.py" "$log_gh")" '. + {github: $calls}' >"$outcome"
 
 row="$dir/row.json"
-fixture_label="tally-waves-v1:$(jq -r .tag "$state"):$issues"
+fixture_label="tally-waves-v1$variant:$(jq -r .tag "$state"):$issues"
 if [[ -n $root ]]; then
     "$here/score.py" "$root" --sessions "$sessions" --harness "$harness" --outcome "$outcome" \
         --label kit=v2 --label mode=tui --label harness="$harness" --label ref="$sha" --label fixture="$fixture_label" \

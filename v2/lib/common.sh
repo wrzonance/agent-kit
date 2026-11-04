@@ -149,6 +149,17 @@ hand_over() {
         mv -f -- "$file.tmp" "$file"
 }
 
+# worktree_tree: the tree `git add -A` would commit from this worktree, read through a copy of the index so the real
+# one is untouched. ak verify records it on a pass; ak ship verifies again only for a different tree.
+worktree_tree() {
+    local index tree rc=0
+    index=$(mktemp) || return 1
+    cp -- "$(git rev-parse --path-format=absolute --git-path index)" "$index" 2>/dev/null || rm -f -- "$index"
+    tree=$(GIT_INDEX_FILE=$index git add -A 2>/dev/null && GIT_INDEX_FILE=$index git write-tree 2>/dev/null) || rc=1
+    rm -f -- "$index"
+    ((rc == 0)) && printf '%s\n' "$tree"
+}
+
 # The per-worktree state directory, kept out of git through the shared info/exclude.
 ak_dir() {
     local root dir exclude
@@ -159,6 +170,38 @@ ak_dir() {
     mkdir -p -- "$(dirname -- "$exclude")"
     grep -qxF '.ak/' "$exclude" 2>/dev/null || printf '.ak/\n' >>"$exclude"
     printf '%s\n' "$dir"
+}
+
+# worker_name KIND N WORKTREE: the native name of the worker this spawn line starts: KIND_N for the worktree's first
+# spawn, KIND_N_2, KIND_N_3... after. Codex keeps a finished worker's name, so a second spawn under it fails and the
+# root's message lands on the old worker; ak wait matches the name by prefix. worker_name_now prints the current
+# name without starting a new one: a resumed plan reprints the same spawn, and a harness that refuses the duplicate
+# name keeps a second worker off the worktree.
+worker_name() {
+    local k
+    k=$(($(worker_spawn_count "$3") + 1))
+    # Written fresh, never through a link a worker left.
+    rm -f -- "$3/.ak/spawns"
+    printf '%s\n' "$k" >"$3/.ak/spawns"
+    worker_name_now "$@"
+}
+worker_name_now() {
+    local k
+    k=$(worker_spawn_count "$3")
+    if ((k <= 1)); then printf '%s_%s\n' "$1" "$2"; else printf '%s_%s_%s\n' "$1" "$2" "$k"; fi
+}
+worker_spawn_count() {
+    local file=$1/.ak/spawns prior=''
+    [[ -L $file || ! -f $file ]] || prior=$(<"$file")
+    if [[ $prior =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$prior"
+    elif [[ -e $1/.ak/logs || -e $1/.ak/setup.ok ]]; then
+        # No counter, but a worker already ran here (its logs or setup mark): count it, so the first spawn after an
+        # upgrade does not reuse its name.
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
 }
 
 # run_logged NAME COMMAND [DIR]: run COMMAND in DIR (relative to the worktree), log it, print PASS or FAIL + tail.
@@ -196,6 +239,12 @@ run_logged() {
         tail -n 12 -- "$log"
     fi
     return "$rc"
+}
+
+# setup_step: the playbook's setup step, or nothing when no AGENT_CMD_SETUP is configured (08c2516 bench: 12 of 12
+# workers spent a turn on setup=none).
+setup_step() { # shellcheck disable=SC2016 # markdown code span
+    [[ -z $(cfg AGENT_CMD_SETUP) ]] || printf 'Run `ak setup`. '
 }
 
 # The issue number this worktree works on, from its branch name (feat/issue-N) or .ak/issue.

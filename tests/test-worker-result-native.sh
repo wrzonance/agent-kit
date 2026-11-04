@@ -2,11 +2,17 @@
 # Native execution evidence is accepted once and missing proof gets one durable recovery.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-python3 - "$(dirname -- "$here")" <<'PY'
+# shellcheck source=lib/timeout-scale.sh
+source "$here/lib/timeout-scale.sh"
+# Two cases time a validation that must not wait on an active run; under four concurrent suites the quick path alone
+# exceeded the idle-host bound of 1 s (2 of 4 runs on a loaded host), so the runs, bounds and deadlines scale with the
+# job count. Run alone, every value is unchanged.
+python3 - "$(dirname -- "$here")" "$(timeout_scale "${AGENT_TEST_JOBS:-1}")" <<'PY'
 import hashlib, json, os, re, shlex, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
 helper=Path(sys.argv[1])/'agentkit/skills/.shared/scripts/worker-result.sh'
+scale=int(sys.argv[2])
 runner=helper.with_name('agent-run.sh')
 
 def native_ids(repo):
@@ -160,7 +166,7 @@ with tempfile.TemporaryDirectory() as temp:
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=os.environ.copy())
     # A running record precedes the runner's initial git status/index refresh.
     # Wait for the declared command before changing HEAD, avoiding its index lock.
-    for _ in range(100):
+    for _ in range(100*scale):
         if list((repo/'.agent/run-records').rglob('running')) and Path(os.environ['ACTIVE_DIR']).is_dir(): break
         time.sleep(0.02)
     else: raise AssertionError('held-head fixture did not start its declared command')
@@ -170,7 +176,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert old_execution!=new_execution and old_lease==new_lease,(old_execution,new_execution,old_lease,new_lease)
     duplicate=run_native('--force')
     assert duplicate.returncode==2 and executions()==1,(duplicate.returncode,duplicate.stdout,duplicate.stderr)
-    owner.communicate(timeout=5)
+    owner.communicate(timeout=5*scale)
 
     # A known red result is rejected without rerunning until green.
     repo,result,artifact,state,validate,executions,run_native=fixture('known-red',exit_code=7)
@@ -211,16 +217,16 @@ with tempfile.TemporaryDirectory() as temp:
     assert executions()==1 and 'already used for this check and candidate head' in exhausted['reason'],exhausted
 
     # A bounded wait leaves the runner active; resume collects that same execution.
-    repo,result,artifact,state,validate,executions,run_native=fixture('timed-active',delay=2)
+    repo,result,artifact,state,validate,executions,run_native=fixture('timed-active',delay=2*scale)
     pending=validate(2,recovery_timeout=0.1)
     assert 'still active after bounded wait' in pending['reason'] and executions()==1,pending
     recovery=list(json.loads(state.read_text())['nativeRecoveries'].values())
     assert len(recovery)==1 and recovery[0]['status']=='started' and \
            recovery[0]['provenance']=='root-started' and recovery[0]['waitSpent'] is True,recovery
     assert len(list((repo/'.agent/run-records').rglob('running')))==1,'timeout erased active identity'
-    started=time.monotonic(); still_pending=validate(2,recovery_timeout=2,attempt='attempt2')
-    assert time.monotonic()-started<1 and executions()==1,still_pending
-    for _ in range(150):
+    started=time.monotonic(); still_pending=validate(2,recovery_timeout=2*scale,attempt='attempt2')
+    assert time.monotonic()-started<scale and executions()==1,still_pending
+    for _ in range(150*scale):
         if not list((repo/'.agent/run-records').rglob('running')): break
         time.sleep(0.02)
     else: raise AssertionError('timed recovery did not eventually finish')
@@ -233,19 +239,19 @@ with tempfile.TemporaryDirectory() as temp:
     assert executions()==1 and 'verification failed' in dirty['reason'],dirty
 
     # A foreign active run may be adopted only after root independently pins its summary.
-    repo,result,artifact,state,validate,executions,run_native=fixture('foreign-pinned',delay=2)
+    repo,result,artifact,state,validate,executions,run_native=fixture('foreign-pinned',delay=2*scale)
     result['verification'][0].update(status='unknown',reason='execution still running')
     artifact.write_text(json.dumps(result)+'\n')
     owner=subprocess.Popen([str(runner),'--dir',str(repo),'--cmd','test','--summary'],
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=os.environ.copy())
-    for _ in range(100):
+    for _ in range(100*scale):
         if list((repo/'.agent/run-records').rglob('running')): break
         time.sleep(0.02)
     else: raise AssertionError('foreign-pinned fixture did not publish its running record')
     pending=validate(2,recovery_timeout=0.1)
-    started=time.monotonic(); pending_again=validate(2,recovery_timeout=2,attempt='attempt2')
-    assert time.monotonic()-started<1 and executions()==1,pending_again
-    owner_out,owner_err=owner.communicate(timeout=5)
+    started=time.monotonic(); pending_again=validate(2,recovery_timeout=2*scale,attempt='attempt2')
+    assert time.monotonic()-started<scale and executions()==1,pending_again
+    owner_out,owner_err=owner.communicate(timeout=5*scale)
     assert owner.returncode==0,(owner.returncode,owner_out,owner_err)
     match=re.search(r' log=([^ ]+) log-sha256=([0-9a-f]{64}) receipt=',owner_out.splitlines()[-1]); assert match
     accepted=validate(0,match.group(2),attempt='attempt3')
@@ -270,12 +276,12 @@ with tempfile.TemporaryDirectory() as temp:
     artifact.write_text(json.dumps(result)+'\n')
     owner=subprocess.Popen([str(runner),'--dir',str(repo),'--cmd','test','--summary'],
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=os.environ.copy())
-    for _ in range(100):
+    for _ in range(100*scale):
         if list((repo/'.agent/run-records').rglob('running')): break
         time.sleep(0.02)
     else: raise AssertionError('active fixture did not publish its running record')
     accepted=validate(0)
-    owner_out,owner_err=owner.communicate(timeout=5)
+    owner_out,owner_err=owner.communicate(timeout=5*scale)
     assert owner.returncode==0,(owner.returncode,owner_out,owner_err)
     recovery=list(json.loads(state.read_text())['nativeRecoveries'].values())
     assert executions()==2 and accepted['evidence']=='native-log',accepted
@@ -308,7 +314,7 @@ with tempfile.TemporaryDirectory() as temp:
     interrupted=subprocess.Popen([str(runner),'--dir',str(repo),'--cmd','test','--summary'],
                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=os.environ.copy(),
                                  start_new_session=True)
-    for _ in range(100):
+    for _ in range(100*scale):
         running=list((repo/'.agent/run-records').rglob('running'))
         if running:
             active_log=Path(running[0].read_text().strip())
@@ -316,7 +322,7 @@ with tempfile.TemporaryDirectory() as temp:
         time.sleep(0.02)
     else: raise AssertionError('interrupted fixture did not publish its running record')
     os.killpg(interrupted.pid,signal.SIGTERM)
-    interrupted_out,interrupted_err=interrupted.communicate(timeout=5)
+    interrupted_out,interrupted_err=interrupted.communicate(timeout=5*scale)
     assert interrupted.returncode==130,(interrupted.returncode,interrupted_out,interrupted_err)
     match=re.search(r' log=([^ ]+) log-sha256=unavailable receipt=',interrupted_out.splitlines()[-1]); assert match
     result['verification'][0]['log']=match.group(1); artifact.write_text(json.dumps(result)+'\n')

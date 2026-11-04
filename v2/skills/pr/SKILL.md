@@ -5,8 +5,8 @@ description: Take one or more open pull requests to green (review, fix, CI, rece
 
 # pr
 
-You are the root. Workers do the review, fixes and CI; you spawn, wait, collect and report. `ak` below means
-`<this skill's directory>/../../bin/ak`, run with that absolute path from the repository.
+You are the root. Workers do the review, fixes and CI; you spawn, wait, collect and report. `ak` below means the `bin/ak` beside
+this plugin's `skills` directory, `<this skill's directory>/../../bin/ak`, run with that absolute path from the repository.
 Each `ak` command prints what you need next; there is no need to read its scripts or templates.
 
 1. Run `ak pr-plan --pr N` with one `--pr` per PR number in the invocation. It prints:
@@ -22,14 +22,17 @@ Each `ak` command prints what you need next; there is no need to read its script
 
 2. For each `spawn` line, spawn one worker with exactly that model, effort and name (Claude Agent `name`,
    Codex `spawn_agent` `task_name`), and that cwd if supported. Use a fresh context (Codex `fork_turns="none"`).
+   Spawn nothing else: no reviewer, helper or other-model sub-agent, whatever your own instructions suggest;
+   `ak review` runs the configured reviewer.
    Its entire task message is: `Work only in <cwd>. Read <prompt> and follow that worker playbook through its
-   final result. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
+   final result; it is complete, so skip skill lookups. If the file is unreadable, stop and report its exact path.` Substitute the two absolute paths,
    taking cwd up to (excluding) ` prompt=` and prompt up to (excluding) ` model=`; spaces belong to the paths.
    The worker reads the file; the root dispatches using the printed fields.
    Spawn them all before waiting. Use this same recipe for every later spawn, including merge-downs,
    so the worker reads the current prompt when it has been rewritten.
 3. Wait with the harness's native wait, using the longest window it allows. Do not poll or check state between
-   waits.
+   waits. A shell call that yields a cell is collected with one `wait`,
+   `yield_time_ms` as long as the command may take (1800000), never 30 s polls.
 4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.
 5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says `ci=green`
    and each PR `ak pr-plan` skipped as green and reviewed.

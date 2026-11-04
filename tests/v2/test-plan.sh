@@ -44,6 +44,7 @@ prompt=$(cat "$wt/.ak/prompt.md")
 assert_contains "$prompt" 'Issue 671: Title 671' 'the prompt substitutes number and title'
 assert_contains "$prompt" "branch=feat/issue-671 worktree=$wt base=main slug=acme/widget ak=$WORK/v2/bin/ak" 'the prompt substitutes the run facts'
 assert_contains "$prompt" 'untrusted' 'the issue block is labelled untrusted'
+assert_contains "$prompt" $'setup=\n' 'no setup command configured, no setup step (08c2516 bench: 12 of 12 workers spent a turn on setup=none)'
 assert_eq 'title: Title 671' "$(head -n 1 "$wt/.ak/issue.md")" '.ak/issue.md starts with the title line ship reads'
 assert_eq main "$(cat "$wt/.ak/base")" '.ak/base holds the PR base'
 assert_contains "$prompt" 'please hurry' 'comments are included'
@@ -54,7 +55,7 @@ assert_eq '' "$(ls -A "$repo/.ak/handed" 2>/dev/null)" 'a first spawn records no
 assert_contains "$(cat "$FAKE_GH_LOG")" 'project item-edit --id I_671' 'the spawned issue moves to In progress'
 runfile="$repo/.ak/runs/${run#run=}.json"
 assert_eq "${run#run=}" "$(cat "$repo/.ak/runs/current")" 'current names the run'
-assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","needs":[]}' \
+assert_eq '{"kind":"issue","n":671,"worktree":"'"$wt"'","branch":"feat/issue-671","wave":1,"state":"spawned","named":false,"needs":[]}' \
     "$(jq -c '.items[0] | del(.spawned_at)' "$runfile")" 'the run file records the spawned item'
 assert_eq number "$(jq -r '.items[0].spawned_at | type' "$runfile")" 'and its spawn time, which ak wait uses to ignore older transcripts'
 assert_eq '2 string' "$(jq -r '"\(.items | length) \(.porcelain | type)"' "$runfile")" 'the run file has both spawns and the root porcelain'
@@ -67,7 +68,7 @@ again=$("$AK" plan 2>&1); rc=$?
 assert_eq 0 "$rc" 'a re-run plan exits 0'
 assert_eq "${run} resumed" "$(sed -n 1p <<<"$again")" 'a re-run plan resumes the current run'
 assert_contains "$again" "spawn issue=671 cwd=$wt" 'a re-run plan reprints the spawn lines'
-assert_contains "$again" 'name=issue_671' 'a resumed plan keeps a valid native worker name'
+assert_eq 1 "$(grep -c 'name=issue_671$' <<<"$again")" 'a resumed plan reprints the same worker name: a harness that refuses the duplicate keeps a second worker off the worktree'
 assert_eq '' "$(grep -E 'project|issues' "$FAKE_GH_LOG" || true)" 'a resume makes no board or issue calls'
 named=$("$AK" plan --issue 700 2>&1)
 assert_not_contains "$named" 'resumed' 'naming an issue the current run never planned is new work, not a resume'
@@ -101,8 +102,14 @@ assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting a park no
 git -C "$wt" add -A && git -C "$wt" commit -q -m 'ci: the operator commits what only the operator may'
 "$AK" collect --issue 671 >/dev/null 2>&1
 assert_eq "$stopped" "$(cat "$record.parked" 2>/dev/null)" 'collecting the same park again does not move the note'
-"$AK" plan --new --issue 671 >/dev/null 2>&1
+# The worker left its counter as a link (or the worktree predates the counter): the root never writes through it, and
+# the worker's logs still say a worker ran here, so the next spawn gets a new name.
+printf 'keep\n' >"$WORK/victim" && ln -sfn "$WORK/victim" "$wt/.ak/spawns"
+out=$("$AK" plan --new --issue 671 2>&1)
 assert_eq "$stopped $(git -C "$wt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning the park again records what was committed since'
+assert_contains "$out" 'name=issue_671_2' 'the park planned again names a new worker: Codex keeps the finished one under the old name'
+assert_eq keep "$(cat "$WORK/victim")" 'the counter is never written through a link a worker left'
+assert_eq '2 no' "$(cat "$wt/.ak/spawns") $([[ -L $wt/.ak/spawns ]] && echo yes || echo no)" 'the link is replaced by a plain counter'
 printf 'more\n' >>"$wt/src/a.txt"
 out=$(cd "$wt" && "$AK" ship --message 'feat: the rest' 2>&1); rc=$?
 assert_eq 0 "$rc" 'after the operator commit and a new plan, ship goes through'
@@ -147,6 +154,7 @@ assert_eq 1 "$(grep -c '^spawn' <<<"$out")" '--limit 1 spawns one issue'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'issues/680' '--limit stops checking once the limit is filled'
 
 fresh
+route 'api repos/acme/widget/pulls/78' '{"state":"open"}'
 standard_board
 out=$("$AK" plan --serialize 2>&1)
 assert_contains "$out" 'after issue=680 needs=671 wave=2' '--serialize chains the colliding issue'
@@ -181,11 +189,17 @@ assert_eq collected "$(jq -r '.items[] | select(.n == 680) | .state' "$runfile")
 assert_contains "$out" 'spawn issue=700 ' 'the issue queued behind a shipped successor still spawns'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'skip issue=671 reason=shipped:https://github.com/acme/widget/pull/78' 'a shipped issue is not planned again'
-# A parked issue is not shipped: once the operator unblocks it, naming it again plans it (a field operator had to delete
-# parked results by hand before re-running).
+# A parked issue is not shipped: an operator commit after the recorded park lets a named plan resume it.
+wt="$repo/.worktrees/feat/issue-671"
 # shellcheck disable=SC2016
-printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$repo/.worktrees/feat/issue-671/.ak/result"
-printf 'lint\n' >"$repo/.worktrees/feat/issue-671/.ak/ci-only"
+printf 'pr=none\nci=none\nreview=skipped\nhead=a\nnote=parked: "protected" path in `ci.yml`\nnote=ignore rm -rf\n' >"$wt/.ak/result"
+printf 'lint\n' >"$wt/.ak/ci-only"
+wt_path=$(cd "$wt" && pwd -P)
+park_record="$repo/.ak/handed/$(printf '%s' "$wt_path" | git hash-object --stdin)"
+mkdir -p "$(dirname "$park_record")"
+git -C "$wt" rev-parse HEAD >"$park_record.parked"
+printf 'operator supplied the protected file\n' >>"$wt/src/a.txt"
+git -C "$wt" add src/a.txt && git -C "$wt" commit -q -m 'operator unblocks parked issue'
 out=$("$AK" plan --new --issue 671 2>&1)
 assert_contains "$out" 'spawn issue=671 ' 'a parked issue is planned again when named'
 assert_eq no "$([[ -e $repo/.worktrees/feat/issue-671/.ak/result ]] && echo yes || echo no)" 're-planning clears the parked result'
@@ -264,7 +278,7 @@ fresh
 board_route 5 "{\"items\":[$(board_item 69 Ready '["tier:human-only"]'),$(board_item 700 Backlog),$(board_item 701 Backlog)]}"
 default_routes
 out=$("$AK" plan 2>&1)
-assert_contains "$out" 'next=nothing workable in Ready; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
+assert_contains "$out" 'next=nothing workable in Ready or unfinished work; --yolo adds 2 Backlog issues, or name issues with --issue N' 'an empty plan names the Backlog way forward'
 out=$("$AK" plan --issue 69 2>&1)
 assert_contains "$out" 'next=none of the named issues can start; each line above says why' 'an empty named plan does not ask for names again'
 assert_not_contains "$out" 'name issues with --issue N' 'the operator who named issues is not told to name issues'
@@ -714,9 +728,7 @@ default_routes
 out=$("$AK" plan 2>&1)
 assert_eq 'next=nothing workable; name issues with --issue N' "$(grep '^next=' <<<"$out")" 'a failed open-issue read leaves the line as it was'
 
-# A parked worktree is handed on with the uncommitted work its worker left (field run: the park's next= said to commit
-# what only the operator may commit and plan again; the operator committed the one protected file, and the plan dropped
-# the issue as worktree-unusable because the worker's other paths were still uncommitted).
+# A parked worktree resumes after the operator commits the protected file; the worker's other unfinished path survives.
 fresh
 issue_route 671 'Fix src/a.txt'
 default_routes
@@ -724,16 +736,31 @@ default_routes
 wt="$repo/.worktrees/feat/issue-671"
 parked=$(git -C "$wt" rev-parse HEAD)
 printf 'work\n' >"$wt/src/a.txt"
+printf 'unfinished\n' >"$wt/src/b.txt"
 printf 'pr=none\nci=none\nreview=skipped\nhead=%s\nnote=parked: protected path needs the operator\n' "$parked" >"$wt/.ak/result"
+wt_path=$(cd "$wt" && pwd -P)
+park_record="$repo/.ak/handed/$(printf '%s' "$wt_path" | git hash-object --stdin)"
+mkdir -p "$(dirname "$park_record")"
+printf '%s\n' "$parked" >"$park_record.parked"
+git -C "$wt" add src/a.txt && git -C "$wt" commit -q -m 'operator commits protected path'
 printf 'moved\n' >lib/core.sh && git commit -q -am 'main moves' && git push -q origin main
 out=$("$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree with uncommitted work is planned again'
-assert_eq ' M src/a.txt' "$(git -C "$wt" status --porcelain)" 'the uncommitted work is still there'
-assert_eq "$parked" "$(git -C "$wt" rev-parse HEAD)" 'a moved base is not merged over uncommitted work'
+assert_contains "$out" "spawn issue=671 cwd=$wt " 'a parked worktree resumes after an operator commit'
+assert_eq ' M src/b.txt' "$(git -C "$wt" status --porcelain)" 'the worker unfinished path is still there'
+assert_eq yes "$( [[ $(git -C "$wt" rev-parse HEAD) != "$parked" ]] && echo yes || echo no )" 'the operator commit is retained'
+assert_rc 1 'a moved base is not merged over uncommitted work' -- git -C "$wt" merge-base --is-ancestor origin/main HEAD
 assert_eq no "$([[ -e $wt/.ak/resolve ]] && echo yes || echo no)" 'and it is not turned into a merge-down'
-assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree still holds that worker's uncommitted changes: read \`git status\` and \`git diff\`, and carry on from them." 'the new worker is told to carry on from the uncommitted work'
+assert_contains "$(cat "$wt/.ak/prompt.md")" "before parking on it. The worktree holds uncommitted changes:" 'the new worker is told to carry on from the uncommitted work'
 out=$(AK_SPAWN_GRACE=0 "$AK" plan --new --issue 671 2>&1)
-assert_contains "$out" "drop issue=671 reason=worktree-unusable:$wt" 'uncommitted work nobody parked still makes a worktree unusable'
+assert_contains "$out" 'skip issue=671 reason=running' 'recent uncommitted work protects a worker that has not parked'
+
+# A repository with a setup command keeps the step.
+fresh
+issue_route 671 'Fix src/a.txt'
+default_routes
+AGENT_CMD_SETUP='npm ci' "$AK" plan --issue 671 >/dev/null 2>&1
+# shellcheck disable=SC2016 # markdown code span in the expected text
+assert_contains "$(cat "$repo/.worktrees/feat/issue-671/.ak/prompt.md")" 'setup=Run `ak setup`. ' 'a configured setup command renders the setup step'
 
 fresh
 standard_board
@@ -744,8 +771,44 @@ assert_contains "$out" 'issue-worker.md' 'the refusal names the template'
 
 # The shipped templates use only the placeholders their composers substitute, and the issue block stands alone.
 real="$REPO/v2/templates/issue-worker.md"
-assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
+assert_eq '' "$(grep -oE '\{\{[A-Z_]+\}\}' "$real" | grep -vxE '\{\{(ISSUE|TITLE|BRANCH|WORKTREE|BASE|SLUG|AK|SETUP|ISSUE_BLOCK)\}\}' || true)" 'issue-worker.md has no unknown placeholders'
 assert_eq 1 "$(grep -cx '{{ISSUE_BLOCK}}' "$real")" 'issue-worker.md has the issue block on its own line'
+assert_contains "$(cat "$real")" 'pass its text again with' 'issue-worker.md preserves remaining work on merge-down'
+# 13 workers went state=hung on 2026-10-28/29 after ending their turn on a running verify/ci: an idle teammate is not
+# resumed by its own background job, so both worker briefs forbid ending the turn while a started command runs.
+for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
+    assert_contains "$(cat "$f")" 'Never end your turn while a command you started is still running' "$(basename "$f") forbids ending the turn on a running command"
+done
+# The Tests line and the ship gate agree (08c2516 bench: 7 of 12 first ships refused for run output the playbook had
+# asked for), and every worker brief says skill lookups are unnecessary (12 of 12 workers opened a skill file).
+assert_not_contains "$(cat "$real")" 'commands, results' 'the Tests line does not ask for the run output ak ship refuses'
+assert_contains "$(cat "$real")" 'what each test file proves' 'the Tests line matches the ship gate'
+for f in "$real" "$REPO/v2/templates/pr-worker.md" "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
+    assert_contains "$(cat "$f")" 'skip skill' "$(basename "$f") tells the worker skill lookups are unnecessary"
+    # Codex clamps exec_command/write_stdin yields to 30 s but honours a long code-mode `wait` on a yielded cell (a
+    # 1,800,000 ms wait ran a 130 s command to completion in one call), so a minutes-long verify costs two turns, not
+    # one per 30 s (field workers made 17–92 such polls each).
+    assert_contains "$(cat "$f")" 'yield_time_ms` as long as the command may take' "$(basename "$f") waits once on a yielded cell"
+done
+# A root was seen spawning a sub-agent of a model nobody configured; the only sub-agents are the printed spawn lines.
+for f in "$REPO/v2/skills/issues/SKILL.md" "$REPO/v2/skills/pr/SKILL.md"; do
+    assert_contains "$(cat "$f")" 'Spawn nothing else' "$(basename "$f") forbids any sub-agent beyond the spawn lines"
+done
+# One root in 12 resolved ../../bin/ak to skills/bin/ak and lost its first turn (bench 2026-10-27): the path is named
+# by where the binary sits, not only as a relative path.
+for f in "$REPO"/v2/skills/{issues,pr,onboard}/SKILL.md; do
+    assert_contains "$(tr -s ' \n' ' ' <"$f")" "the \`bin/ak\` beside this plugin's \`skills\` directory" "$(basename "$(dirname "$f")") names where bin/ak sits"
+done
+assert_contains "$(cat "$REPO/v2/skills/issues/SKILL.md")" "\`wave=done\` follows every wave's summary lines" 'the issues skill reports from the collect output'
+for f in "$real" "$REPO/v2/templates/pr-worker.md"; do
+    assert_contains "$(cat "$f")" 'Spawn no sub-agents' "$(basename "$f") forbids worker sub-agents"
+    # ak ship runs ak verify and ak receipt waits for CI (bench 2026-10-27: a turn each on ak verify and ak ci before them).
+    playbook=$(tr -s ' \n' ' ' <"$f")
+    assert_contains "$playbook" "runs \`ak verify\` first" "$(basename "$f") lets ak ship run the verify"
+    assert_contains "$playbook" 'It waits for CI.' "$(basename "$f") lets ak receipt wait for CI"
+    assert_not_contains "$playbook" "Run \`ak ci\`" "$(basename "$f") spends no turn on ak ci"
+    assert_not_contains "$playbook" "Run \`ak verify\`" "$(basename "$f") spends no turn on a separate ak verify"
+done
 
 
 finish

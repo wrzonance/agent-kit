@@ -14,6 +14,8 @@ mkdir -p .ak
 route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
 route "api repos/acme/widget/commits/$head/check-runs?per_page=100 --paginate" '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}'
 route 'api -X POST repos/acme/widget/issues/9/comments *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-1"}'
+route 'api -X GET repos/acme/widget/pulls -f head=acme:feat/issue-7 -f state=open' '[{"number":9}]'
+route 'api repos/acme/widget/pulls/9' '{"mergeable_state":"clean","base":{"ref":"main"}}'
 
 printf 'P1|bad thing\n' >"$WORK/bad"
 out=$("$AK" receipt --findings "$WORK/bad" 2>&1); rc=$?
@@ -21,7 +23,8 @@ assert_eq 1 "$rc" 'a finding without a disposition is refused'
 assert_contains "$out" 'P1|bad thing' 'the refusal quotes the line'
 
 out=$("$AK" receipt 2>&1); rc=$?
-assert_eq 2 "$rc" 'receipt without --findings is a usage error'
+assert_eq 1 "$rc" 'a bare receipt before any review is refused'
+assert_contains "$out" 'fix: ak review' 'the refusal names the review command, not a findings flag'
 
 printf 'model=gpt-5.6-sol reviewer=codex\n\nfindings\n' >.ak/review.md
 printf 'P1|null deref in parser|fixed abc1234\n\nP2|rename helper|declined: churn outside the issue\n' >"$WORK/findings"
@@ -83,6 +86,8 @@ printf '%s' "$red" >"$WORK/red-head.json"
 printf '{"check_runs":[{"name":"t","status":"completed","conclusion":"failure"}]}' >"$WORK/red-main.json"
 printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
     "$head" "$WORK/red-head.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+# The third red round records the result (two earlier heads were red).
+printf '0000001\n0000002\n' >.ak/red-heads
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 assert_contains "$(cat .ak/result)" 'ci=red' 'a red head is recorded as red'
 assert_contains "$(cat .ak/result)" '; base-red: t (also red on main)' 'the result note names the check the base branch fails too'
@@ -104,7 +109,59 @@ git add -f .ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
 assert_not_contains "$(cat .ak/result)" 'ci-only' 'a tracked record is ignored'
 git rm -q --cached .ak/ci-only
+rm -f .ak/ci-only .ak/red-heads
+
+# ak receipt waits for CI itself, so a worker spends no turn on `ak ci` before it (bench 2026-10-27: every worker ran
+# ak ci, then ak receipt). Pending runs are polled until they conclude, and the concluded state is what is posted.
+printf '{"check_runs":[{"name":"t","status":"in_progress","conclusion":null}]}' >"$WORK/runs.json"
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' "$head" "$WORK/runs.json" "$routes" >"$FAKE_GH_ROUTES"
+(sleep 1 && printf '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}' >"$WORK/runs.new" &&
+    mv -f "$WORK/runs.new" "$WORK/runs.json") &
+: >"$FAKE_GH_LOG"
+out=$(AK_CI_INTERVAL=1 "$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+wait
+assert_eq 0 "$rc" 'a receipt on pending CI waits and then succeeds'
+assert_contains "$out" "ci pending on ${head:0:12}" 'the receipt says it is waiting on CI'
+assert_contains "$(cat .ak/result)" 'ci=green' 'the concluded state is recorded, not pending'
+assert_eq yes "$( (($(grep -c "commits/$head/check-runs" "$FAKE_GH_LOG") >= 2)) && echo yes || echo no)" 'the check runs were read again until they concluded'
+# A red of the branch's own prints what ak ci printed and exits 1: the worker fixes, ships and runs the receipt again.
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
+    "$head" "$WORK/red-head.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a red of its own exits 1'
+assert_contains "$out" 'ci=red checks=2 failing=t,own' 'the receipt prints the CI line'
+assert_contains "$out" 'inherited=t from=main' 'and the checks the base branch fails too'
+assert_contains "$out" 'ci-only=own' 'and the checks only this branch fails'
+assert_contains "$out" '--- own: no Actions job log' "and each failing job's errors"
+assert_contains "$out" 'receipt=https://github.com/acme/widget/pull/9' 'the red state is still posted'
+# Below the third round no result is written: ak wait would read the worker as reported while it fixes (#1029 wrote it).
+assert_contains "$(cat .ak/result)" 'ci=green' 'a red round below the third leaves the earlier result alone'
+assert_contains "$out" 'red round 1 of 3: fix what the diagnostics name, ak ship, then ak receipt again' 'the receipt names the round and the next step'
+assert_not_contains "$out" 'pr=https://github.com/acme/widget/pull/9 ci=red' 'and prints no result line'
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_contains "$out" 'red round 1 of 3' 'the same head red again is the same round'
+printf '0000001\n0000002\n%s\n' "$head" >.ak/red-heads
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'the third red round ends the worker'
+assert_contains "$(cat .ak/result)" 'ci=red' 'and records the red result'
+assert_contains "$out" 'red round 3 of 3: recorded as red' 'and says so'
+rm -f .ak/ci-only .ak/red-heads
+# A red the base branch causes alone is not the worker's to fix: the receipt records it and exits 0.
+printf 'api repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\napi repos/acme/widget/commits/%s/check-runs?per_page=100 --paginate\t%s\t0\n%s\n' \
+    "$head" "$WORK/red-main.json" "$main" "$WORK/red-main.json" "$routes" >"$FAKE_GH_ROUTES"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 0 "$rc" 'a red the base branch causes alone exits 0'
+assert_contains "$(cat .ak/result)" 'base-red: t (also red on main)' 'the result names the base-red check'
 rm -f .ak/ci-only
+# A PR that conflicts with its base gets no PR checks; its head's checks are never read as its CI.
+printf '{"mergeable_state":"dirty","base":{"ref":"main"}}' >"$WORK/dirty.json"
+printf 'api repos/acme/widget/pulls/9\t%s\t0\n%s\n' "$WORK/dirty.json" "$routes" >"$FAKE_GH_ROUTES"
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a conflicted PR gets no receipt'
+assert_contains "$out" 'ci=blocked note=PR #9 conflicts with main' 'the refusal names the conflict'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/issues/9/comments' 'nothing is posted for a conflicted PR'
+printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 rm .ak/review.md
 touch .ak/review.unavailable
@@ -149,8 +206,13 @@ out=$("$AK" receipt --findings "$WORK/none2" --remaining 'y' 2>&1); rc=$?
 assert_eq 1 "$rc" 'an issue number that is not digits is refused, never put in a pattern'
 printf '7\n' >.ak/issue
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
-out=$("$AK" receipt --remaining x 2>&1); rc=$?
-assert_eq 2 "$rc" '--remaining without --findings is a usage error'
+# Findings are arguments, and none are needed when the review found nothing (08c2516 bench: 8 of 12 workers spent a
+# turn writing .ak/findings before the receipt).
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'an unavailable review needs no findings argument'
+assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'the receipt states none'
+assert_eq none "$(cat .ak/findings)" 'the decided findings are kept for a later receipt'
 
 # Every finding the review printed needs a disposition (PR bench 2026-10-01: a P1 was answered with "none").
 printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
@@ -162,6 +224,54 @@ assert_contains "$out" 'P1: undo drops the count' 'the refusal names the undecid
 printf 'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope\n' >"$WORK/decided"
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 0 "$rc" 'a receipt that decides every finding is accepted'
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt with undecided review findings is refused'
+assert_contains "$out" 'the review has 2 findings and no dispositions were given' 'the refusal counts the findings'
+assert_contains "$out" "fix: ak receipt --finding 'P1|title|fixed <sha>' --finding 'P2|title|declined: reason'" 'the fix line shows the flag'
+printf 'reviewer=claude model=m head=h\n- P1: undo drops the count — src/store.js:33 — x\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses a bulleted review finding'
+assert_contains "$out" 'the review has 1 findings and no dispositions were given' 'the refusal counts the finding syntax review accepts'
+out=$("$AK" receipt --findings "$WORK/undecided" 2>&1); rc=$?
+assert_eq 1 "$rc" 'a receipt cannot leave a bulleted review finding undecided'
+assert_contains "$out" 'the review has 1 findings but the findings file decides 0' 'disposition validation counts bulleted findings too'
+printf 'reviewer=claude model=m head=h\nthis review did not follow the requested format\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses an unparsed review'
+assert_contains "$out" 'the review findings could not be parsed' 'the refusal does not call an unparsed review clean'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+out=$("$AK" receipt --finding 'P1|undo drops the count|fixed abc1234' --finding 'P2|rename|declined: out of scope' 2>&1); rc=$?
+assert_eq 0 "$rc" 'findings given as arguments are accepted'
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'argument findings reach the result'
+assert_eq $'P1|undo drops the count|fixed abc1234\nP2|rename|declined: out of scope' "$(cat .ak/findings)" 'the decided lines are written to .ak/findings'
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a bare receipt reuses the earlier findings (a merge-down)'
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1' 'the reused findings reach the result'
+printf 'reviewer=claude model=m head=h\nP1: a different finding — src/store.js:33 — x\nP2: a renamed finding — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a bare receipt refuses dispositions from a changed review with the same finding count'
+assert_contains "$out" 'saved findings do not match the current review' 'saved dispositions are tied to their review content'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a bare receipt reuses dispositions when the review findings still match'
+out=$("$AK" receipt --finding 'P1|bad' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a malformed --finding is refused'
+assert_contains "$out" 'malformed finding: P1|bad' 'the refusal quotes the argument'
+out=$("$AK" receipt --finding '' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty --finding is refused'
+assert_contains "$out" 'findings input is empty' 'empty argument findings do not reuse saved dispositions'
+: >"$WORK/empty-findings"
+out=$("$AK" receipt --findings "$WORK/empty-findings" 2>&1); rc=$?
+assert_eq 1 "$rc" 'an explicitly empty findings file is refused'
+assert_contains "$out" 'findings input is empty' 'an empty findings file does not reuse saved dispositions'
+printf 'reviewer=claude model=m head=h\nNO FINDINGS\n' >.ak/review.md
+rm -f .ak/findings
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a clean review needs no findings argument'
+assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'a clean review posts none'
+printf 'reviewer=claude model=m head=h\nP1: undo drops the count — src/store.js:33 — x\nP2: rename — a — b\n' >.ak/review.md
+cp "$WORK/decided" .ak/findings
 
 
 # Comments on the PR from review bots and people are findings too (a field root went to merge a PR carrying two
@@ -171,6 +281,8 @@ mv "$FAKE_GH_ROUTES" "$WORK/routes.old" && { tail -n 1 "$WORK/routes.old"; head 
 out=$("$AK" receipt --findings "$WORK/decided" 2>&1); rc=$?
 assert_eq 1 "$rc" 'a receipt with open review threads is refused'
 assert_contains "$out" 'PR #9 has 2 unresolved review threads (github-code-quality: 2)' 'the refusal counts the open threads by author'
-assert_contains "$out" 'fix: ak threads' 'the refusal points at ak threads'
+assert_contains "$out" 'thread=T1 github-code-quality src/a.cs:294: Generic catch clause more' 'the refusal lists each open thread with its ID'
+assert_not_contains "$out" 'thread=T3' 'a resolved thread is not listed'
+assert_contains "$out" 'fix: fix or decline each thread, resolve it with ak threads --resolve ID --note' 'the refusal names the resolve command, not another listing'
 
 finish

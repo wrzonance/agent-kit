@@ -1,7 +1,12 @@
 # shellcheck shell=bash
-# ak ci: wait for the check runs on the pushed head; on red, print each failing job's error lines.
+# ak ci: wait for the check runs on the pushed head; on red, print each failing job's error lines; on green or no CI,
+# list the PR's open review threads.
+# shellcheck source=threads.sh
+source "$AK_HOME/lib/threads.sh"
 
 CI_MAX_LINES=20
+# The branch's open PR number, once ci_blocked has looked it up; empty when there is none.
+CI_PR=''
 # The plain name characters a check name keeps, 60 at most (jq filter shared by ci_runs and merge_checks).
 CI_NAME_FILTER='gsub("[^A-Za-z0-9 _.()/-]"; "") | .[0:60]'
 
@@ -69,6 +74,7 @@ ci_blocked() {
         { printf "ci=pending note=could not list the branch's PR; run ak ci again\n"; exit 3; }
     n=$(jq -r '.[0].number // empty' <<<"$list" 2>/dev/null) || n=''
     [[ $n =~ ^[0-9]+$ ]] || return 0
+    CI_PR=$n
     while :; do
         json=$(gh api "repos/$slug/pulls/$n" 2>/dev/null) ||
             { printf 'ci=pending note=could not read PR #%s state; run ak ci again\n' "$n"; exit 3; }
@@ -185,6 +191,19 @@ ci_only() {
         "$(paste -sd, - <<<"$names")"
 }
 
+# ci_threads: the PR's open review threads, as ak threads prints them, after a green or no-CI verdict. A worker then
+# runs ak threads only to resolve one (08c2516 bench: 12 of 12 workers spent a turn on `ak threads` printing
+# threads=0 right after green). A failed read is named, never read as no threads; the receipt refuses on open ones.
+ci_threads() {
+    local list
+    [[ -n $CI_PR ]] || return 0
+    if ! list=$(threads_open "$(slug)" "$CI_PR"); then
+        printf 'threads=? note=could not read the review threads; run ak threads\n'
+        return 0
+    fi
+    threads_print "$list"
+}
+
 ci_print_failures() {
     local runs=$1 name url used=1 out
     while IFS=$'\t' read -r name url; do
@@ -214,11 +233,12 @@ cmd_main() {
     line=$(ci_summary "$runs")
     if [[ $runs == '[]' && $once == 0 && -z $(ci_missing '') ]]; then
         printf 'ci=none checks=0 note=no check runs registered; local verify is the oracle\n'
+        ci_threads
         return 0
     fi
     printf '%s\n' "$line"
     case $line in
-        ci=green*) return 0 ;;
+        ci=green*) ci_threads; return 0 ;;
         ci=red*)
             inherited=$(ci_inherited "$runs")
             [[ -z $inherited ]] || printf '%s\n' "$inherited"

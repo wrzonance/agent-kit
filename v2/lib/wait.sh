@@ -11,6 +11,7 @@ WAIT_NAMED=()   # "kind:N" per item named for a correction round
 ROUND_AT=0      # when the item's correction round was called (set per item in item_state); 0 outside a round
 SEEN_RES=''     # the identity of the item's result, and of its transcript, at its last settle: a round counts only what differs
 SEEN_TR=''
+WAIT_CHECK=0    # --check: answer at once, with a short grace for a worker already in its receipt
 RUN_ID=''       # the run this ak wait captured at start; its marker and summary belong to it
 SUMMARY=''      # the settled wave's lines, built by settle_line
 
@@ -66,18 +67,6 @@ marker_mine() {
 }
 
 marker_drop() { [[ $(marker_get pid) != "$$" ]] || rm -f -- "$MARKER"; }
-
-# worktree_idle_s WORKTREE: seconds since the newest sign of life in a worktree (its .ak files, index and HEAD).
-worktree_idle_s() {
-    local newest=0 file m gitdir
-    gitdir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=''
-    for file in "$1/.ak" "$1"/.ak/* "$1"/.ak/logs/* "$gitdir/index" "$gitdir/HEAD"; do
-        [[ -e $file ]] || continue
-        m=$(file_mtime "$file")
-        ((m <= newest)) || newest=$m
-    done
-    printf '%d\n' $(($(date +%s) - newest))
-}
 
 # spawn_since WORKTREE SPAWNED_AT: when the item's current worker was spawned: the later of the run file's spawned_at and
 # the worktree's prompt or resolve file (rewritten at every spawn, re-spawn and merge-down).
@@ -142,8 +131,23 @@ item_meta() {
 # item_state KIND N WORKTREE SPAWNED_AT: reported, ended-without-result, hung, unwatched or running, with a note when it helps.
 # A correction round resumes the same worker: its result counts when it differs from the one the last settle saw, and an
 # end record likewise; a hang is judged from the call at the earliest.
+# final_grace WORKTREE SINCE: in --check, a worker whose ak receipt started after its spawn gets AK_WAIT_FINAL_S
+# (default 30) to report. One reported 130 ms after a --check said running and ended before the root's wait_agent
+# began, which then slept its full hour (bench 2026-10-29). A receipt still waiting on CI outlasts the grace.
+final_grace() {
+    local marker=$1/.ak/receipt-started deadline
+    ((WAIT_CHECK)) && [[ -f $marker && ! -L $marker ]] || return 1
+    (($(file_mtime "$marker") >= $2)) || return 1
+    deadline=$((SECONDS + ${AK_WAIT_FINAL_S:-30}))
+    while ((SECONDS < deadline)); do
+        [[ -f $1/.ak/result ]] && fresh "$(ident_result "$1")" "$SEEN_RES" && return 0
+        sleep 1
+    done
+    return 1
+}
+
 item_state() {
-    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state
+    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state taken='' since
     item_meta "$kind" "$n"
     if [[ -z $wt ]]; then
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
@@ -155,7 +159,15 @@ item_state() {
         return 0
     fi
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
-    transcript=$(transcript_find "$wt" "${kind}_$n" "$(spawn_since "$wt" "${4:-0}")")
+    since=$(spawn_since "$wt" "${4:-0}")
+    transcript=$(transcript_find "$wt" "${kind}_$n" "$since")
+    if [[ -z $transcript && $(harness) == codex ]] && (($(date +%s) - since >= 4 * ${AK_WAIT_POLL_S:-15})); then
+        # No worker of this spawn after four polls: Codex keeps a finished worker's name, so the spawn under it failed
+        # and the root's message reached the old worker, which answers from its context and ends. Its end is this
+        # item's end, so the root replans now instead of waiting on a worker nobody started.
+        transcript=$(transcript_find "$wt" "${kind}_$n" 0)
+        [[ -z $transcript ]] || taken=" note=the earlier worker ${kind}_$n answered this spawn and ended"
+    fi
     if [[ -n $transcript ]]; then
         terminal_state=$(transcript_state "$transcript")
         case $terminal_state in
@@ -170,11 +182,12 @@ item_state() {
                         terminal_state=$(transcript_state "$transcript")
                         [[ $terminal_state =~ ^(ended|errored)$ && $(ident_transcript "$transcript") == "$terminal_id" ]] || { echo running; return 0; }
                     fi
-                    echo ended-without-result
+                    echo "ended-without-result$taken"
                     return 0
                 fi ;;
         esac
-        if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; else echo running; fi
+        if (($(quiet_s "$(transcript_age "$transcript")") >= hang)); then echo hung; return 0; fi
+        if final_grace "$wt" "$since"; then echo reported; else echo running; fi
         return 0
     fi
     if (($(quiet_s "$(worktree_idle_s "$wt")") >= hang)); then
@@ -282,7 +295,8 @@ settle() {
         total=$((total + 1))
         settle_line "$line"
     done <<<"$1"
-    SUMMARY+="wave=$w settled=$total/$total summary=$file"
+    # No path on the closing count: roots read the file it named, a turn for lines they already had (bench 2026-10-28).
+    SUMMARY+="wave=$w settled=$total/$total"
     printf '%s\n' "$SUMMARY" >"$file"
     printf '%s\n' "$SUMMARY"
 }
@@ -302,9 +316,17 @@ wait_loop() {
     settle "$states"
 }
 
-# attach: a watcher is live; wait for its marker to clear. The caller then takes over if workers are still out.
+# attach: a watcher is live; wait for its marker to clear. A readiness caller rechecks the wave while attached so it
+# can return pending if a worker resumes after the initial probe. Plain waits retain their blocking behavior.
 attach() {
-    while marker_live; do sleep "${AK_WAIT_POLL_S:-15}"; done
+    local check=${1:-0} states
+    while marker_live; do
+        if ((check)); then
+            states=$(wave_state)
+            if grep -q 'state=running' <<<"$states"; then report "$states" || true; return 3; fi
+        fi
+        sleep "${AK_WAIT_POLL_S:-15}"
+    done
 }
 
 # open_corrections: a correction round adds each named item to the open wave (so the hook marker and collect --wave see
@@ -345,7 +367,7 @@ cmd_main() {
     local check=0 collect=0 states usage='usage: ak wait [--issue N | --pr N]... [--check [--settle]]'
     while (($#)); do
         case $1 in
-            --check) check=1; shift ;;
+            --check) check=1; WAIT_CHECK=1; shift ;;
             --settle) collect=1; shift ;;
             --issue | --pr) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"; WAIT_NAMED+=("${1#--}:$2"); shift 2 ;;
             *) usage_die "$usage" ;;
@@ -374,8 +396,10 @@ cmd_main() {
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
         marker_mine || break
-        if ((check)); then printf 'wave=%s state=settling\n' "$(wave_number)"; return 3; fi
-        attach
+        # With no worker running (checked above) the holder is settling, so a --check --settle call attaches until it
+        # drops the marker and returns the summary. An exit 3 here left a Codex root, whose stray `ak wait` was the
+        # holder, with nothing to wake it: the run sat at its cap with wave 2 never spawned (bench 2026-10-27).
+        attach "$check" || return $?
     done
     trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT

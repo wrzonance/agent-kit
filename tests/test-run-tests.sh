@@ -92,6 +92,11 @@ printf 'gamma-end\n' >> "$trace"
 printf 'gamma summary\n'
 EOF
     chmod +x "$dir/tests/test-gamma.sh"
+    cat >"$dir/tests/test-delta.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'delta-jobs=%s\n' "${AGENT_TEST_JOBS:-unset}" >> "${TRACE:?}"
+EOF
+    chmod +x "$dir/tests/test-delta.sh"
 cat >"$dir/tests/test-fail.sh" <<'EOF'
 #!/usr/bin/env bash
 trace=${TRACE:?}
@@ -191,6 +196,10 @@ assert_eq '0' "$rc" 'serial focused run succeeds'
 serial_trace=$(<"$trace")
 assert_eq $'alpha-start\nalpha-end\nbeta-start\nbeta-end' "$serial_trace" \
     'AGENT_TEST_JOBS=1 preserves serial suite execution'
+
+rc=$(run_fixture 3 delta)
+assert_eq '0' "$rc" 'a suite that reads the job count runs'
+assert_eq 'delta-jobs=3' "$(<"$trace")" 'the runner hands every suite the number of suites sharing the CPU'
 
 run_parallel_fixture
 first_event=$(read -t 30 -r event <&9; printf '%s' "$event")
