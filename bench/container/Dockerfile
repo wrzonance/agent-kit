@@ -24,7 +24,7 @@
 #                   third-party" and "meta-risk" guidance.)
 #
 # debian:13 (trixie), pinned by digest -- see above for how this was resolved.
-FROM debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+FROM debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
 
 # Every apt package pinned to the exact version string trixie served when
 # this file was authored (see the resolution commands above). apt refuses
