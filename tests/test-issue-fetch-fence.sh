@@ -94,14 +94,12 @@ early_exit="$tmp_dir/early-exit.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$early_exit"
 chmod +x "$early_exit"
 large_input=$(printf '%*s' 1048576 '' | tr ' ' x)
-large_input_file="$tmp_dir/large-input"
-printf '%s' "$large_input" >"$large_input_file"
 direct_err="$tmp_dir/direct.err"
 set +e
-# shellcheck disable=SC2002
-# Keep cat as the actual pipe writer: input redirection would remove the EPIPE
-# boundary this regression probe is required to exercise.
-{ cat "$large_input_file" | "$early_exit" > /dev/null; } 2>"$direct_err"
+# The writer is a bash subshell, not cat: Ubuntu 26.04 ships uutils cat, which
+# exits 0 silently on EPIPE, while bash takes SIGPIPE on every platform. The
+# subshell keeps the EPIPE boundary that input redirection would remove.
+{ ( printf '%s' "$large_input" ) | "$early_exit" > /dev/null; } 2>"$direct_err"
 direct_rc=$?
 set -e
 if [[ $direct_rc == 141 || $(grep -c 'Broken pipe' "$direct_err" || true) -gt 0 ]]; then
