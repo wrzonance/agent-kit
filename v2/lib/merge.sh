@@ -49,8 +49,12 @@ merge_reviewed() {
     [[ -n $last ]] || die "PR #$n has no ak receipt, so no adversarial review of it is recorded" "$fix"
     head=${last%%$'\t'*}
     review=${last#*$'\t'}
-    review=${review//[^A-Za-z0-9: _.-]/}
-    [[ $review == "done" ]] || die "the receipt on PR #$n records review=${review:0:60}, not a completed review" "$fix"
+    # The recorded value is compared as written and reduced to plain characters only to be printed: reduced first,
+    # `d!one` read as done.
+    if [[ $review != "done" ]]; then
+        review=${review//[^A-Za-z0-9: _.-]/}
+        die "the receipt on PR #$n records review=${review:0:60}, not a completed review" "$fix"
+    fi
     [[ $head != "$sha" ]] || return 0
     [[ $head =~ ^[0-9a-f]{40,64}$ ]] || die "the receipt on PR #$n names no commit" "$fix"
     git fetch -q origin "$sha" "+refs/heads/$base:refs/remotes/origin/$base" 2>/dev/null ||
