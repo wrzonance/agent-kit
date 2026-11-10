@@ -513,5 +513,18 @@ route "api -X DELETE $api/git/refs/heads/*" ''
 out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
 assert_eq 0 "$rc" 'a head whose cancelled run was superseded by a successful one merges'
 assert_contains "$out" 'merged pr=80' 'the superseded run does not block the merge'
+# Only a cancelled run is ever set aside, and only for a later run of the same check from the same app: a failure, or
+# another app's check of the same name, still counts.
+for case in 'failure:1' 'cancelled:2'; do
+    routes=$(grep -v 'sha80/check-runs' "$FAKE_GH_ROUTES")
+    : >"$FAKE_GH_ROUTES"
+    kept=$(jq -c --arg c "${case%%:*}" --argjson app "${case##*:}" '.check_runs[0].conclusion = $c | .check_runs[0].app = {id: $app} | .check_runs[1].app = {id: 1}' <<<"$superseded")
+    route "api --paginate $api/commits/sha80/check-runs*" "$kept"
+    route "api $api/commits/sha80/check-runs?per_page=100 --paginate" "$kept"
+    printf '%s\n' "$routes" >>"$FAKE_GH_ROUTES"
+    out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
+    assert_eq 1 "$rc" "an earlier ${case%%:*} run (app ${case##*:}) still refuses the merge"
+    assert_contains "$out" "gates=${case%%:*}" "the refusal names the ${case%%:*} run"
+done
 
 finish
