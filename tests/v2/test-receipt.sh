@@ -298,4 +298,28 @@ assert_contains "$out" 'thread=T1 github-code-quality src/a.cs:294: Generic catc
 assert_not_contains "$out" 'thread=T3' 'a resolved thread is not listed'
 assert_contains "$out" 'fix: fix or decline each thread, resolve it with ak threads --resolve ID --note' 'the refusal names the resolve command, not another listing'
 
+# A merge resolved by hand since the review is work the reviewer never saw; the receipt would have put the old
+# review's name on it. A merge git made on its own keeps the review.
+: >"$FAKE_GH_ROUTES"
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-7&state=open' '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
+route 'api repos/acme/widget/commits/*/check-runs?per_page=100 --paginate' '{"check_runs":[{"name":"t","status":"completed","conclusion":"success"}]}'
+route 'api -X POST repos/acme/widget/issues/9/comments *' '{"html_url":"https://github.com/acme/widget/pull/9#issuecomment-1"}'
+route 'api -X GET repos/acme/widget/pulls -f head=acme:feat/issue-7 -f state=open' '[{"number":9}]'
+route 'api repos/acme/widget/pulls/9' '{"mergeable_state":"clean","base":{"ref":"main"}}'
+rm -f .ak/findings .ak/findings-review .ak/review.unavailable .ak/issue
+printf 'reviewer=claude model=m head=%s base=main patch=\nNO FINDINGS\n' "$(git rev-parse HEAD)" >.ak/review.md
+(cd "$repo" && printf 'c\n' >src/c.txt && git add src/c.txt && git commit -q -m 'feat: main adds c' && git push -q origin main 2>/dev/null)
+git fetch -q origin && git merge -q --no-edit origin/main && git push -q origin HEAD 2>/dev/null
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 0 "$rc" 'a merge-down git made on its own keeps the review'
+(cd "$repo" && printf 'd\n' >src/d.txt && git add src/d.txt && git commit -q -m 'feat: main adds d' && git push -q origin main 2>/dev/null)
+git fetch -q origin && git merge -q --no-commit origin/main >/dev/null 2>&1
+printf 'changed while merging\n' >>src/b.txt
+git commit -q -am 'merge: main into feat/issue-7' && git push -q origin HEAD 2>/dev/null
+: >"$FAKE_GH_LOG"
+out=$("$AK" receipt 2>&1); rc=$?
+assert_eq 1 "$rc" 'a merge resolved by hand since the review gets no receipt'
+assert_contains "$out" 'fix: ak review' 'the refusal sends the worker to the review'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST' 'nothing is posted'
+
 finish
