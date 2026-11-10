@@ -15,11 +15,11 @@ export FAKE_GH_LOG="$WORK/gh.log" FAKE_GH_ROUTES="$WORK/routes"
 unset AGENT_CMD_SETUP CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_HOME CODEX_SANDBOX_NETWORK_DISABLED CODEX_PERMISSION_PROFILE CODEX_THREAD_ID
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 
-# route PATTERN [BODY] [EXIT]: answer gh calls whose joined args match PATTERN.
+# route PATTERN [BODY] [EXIT] [once]: answer gh calls whose joined args match PATTERN; a `once` route answers one call.
 route() {
     local file="$WORK/response.$RANDOM$RANDOM"
     printf '%s' "${2:-}" >"$file"
-    printf '%s\t%s\t%s\n' "$1" "$file" "${3:-0}" >>"$FAKE_GH_ROUTES"
+    printf '%s\t%s\t%s\t%s\n' "$1" "$file" "${3:-0}" "${4:-}" >>"$FAKE_GH_ROUTES"
 }
 
 # board_route NUMBER ITEMS [OPTIONS]: answer the board query for project NUMBER. ITEMS is

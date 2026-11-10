@@ -333,24 +333,31 @@ assert_eq yes "$([[ -n $patch && -n $merge && $patch -lt $merge ]] && echo yes |
 # record. A review the reviewer could not run posted a receipt too, the collect line said ci=green, and the PR merged.
 : >"$FAKE_GH_ROUTES"
 route 'api user --jq .login' 'bot'
-for n in 50 51 52 53 54 55 56; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main)"; done
+for n in 50 51 52 53 54 55 56 57 58; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main)"; done
 route "api --paginate $api/commits/sha5*/check-runs*" "$green"
 route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
 route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
 route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
 route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
 route "api -X DELETE $api/git/refs/heads/*" ''
-commit() { printf '{"sha":"%s","parents":[%s]}' "$1" "$(printf '{"sha":"%s"},' "${@:2}" | sed 's/,$//')"; }
+# commit SHA PARENT...: a commit made in a clone; github_merge SHA PARENT PARENT: one GitHub itself made (update-branch,
+# the merges API), which carries GitHub's committer.
+commit() { printf '{"sha":"%s","committer":{"login":"%s"},"parents":[%s]}' "$1" "${COMMITTER:-dev}" "$(printf '{"sha":"%s"},' "${@:2}" | sed 's/,$//')"; }
+github_merge() { COMMITTER=web-flow commit "$@"; }
 route "api --paginate $api/issues/50/comments?per_page=100" '[{"body":"looks good","user":{"login":"bot"}}]'
 route "api --paginate $api/issues/51/comments?per_page=100" "[$(receipt_comment sha51 'unavailable: timeout')]"
 route "api --paginate $api/issues/52/comments?per_page=100" "[$(receipt_comment sha52 "done" mallory)]"
 route "api --paginate $api/issues/53/comments?per_page=100" "[$(receipt_comment old53 "done")]"
-route "api --paginate $api/pulls/53/commits?per_page=100" "[$(commit first53 root),$(commit old53 first53),$(commit sha53 old53 main1)]"
+route "api --paginate $api/pulls/53/commits?per_page=100" "[$(commit first53 root),$(commit old53 first53),$(github_merge sha53 old53 main1)]"
 route "api --paginate $api/issues/54/comments?per_page=100" "[$(receipt_comment old54 "done")]"
-route "api --paginate $api/pulls/54/commits?per_page=100" "[$(commit old54 root),$(commit extra54 old54),$(commit sha54 extra54 main1)]"
+route "api --paginate $api/pulls/54/commits?per_page=100" "[$(commit old54 root),$(commit extra54 old54),$(github_merge sha54 extra54 main1)]"
 route "api --paginate $api/issues/55/comments?per_page=100" "[$(receipt_comment sha55 "done"),$(receipt_comment new55 unavailable)]"
 route "api --paginate $api/issues/56/comments?per_page=100" "[$(receipt_comment gone56 "done")]"
 route "api --paginate $api/pulls/56/commits?per_page=100" "[$(commit sha56 root)]"
+route "api --paginate $api/issues/57/comments?per_page=100" "[$(receipt_comment old57 "done")]"
+route "api --paginate $api/pulls/57/commits?per_page=100" "[$(commit old57 root),$(commit sha57 old57 other1)]"
+route "api --paginate $api/issues/58/comments?per_page=100" "[$(receipt_comment old58 "done")]"
+route "api --paginate $api/pulls/58/commits?per_page=100" "$(jq -cn --argjson old "$(commit old58 root)" --argjson top "$(github_merge sha58 old58 main1)" '[$old] + [range(248) | {sha: "pad\(.)", committer: {login: "web-flow"}, parents: [{sha: "a"}, {sha: "b"}]}] + [$top]')"
 refused() { # N WHY
     : >"$FAKE_GH_LOG"
     out=$("$AK" merge --pr "$1" 2>&1); rc=$?
@@ -368,8 +375,35 @@ refused 54 'a head with an unreviewed commit since the receipt'
 assert_contains "$out" 'the receipt on PR #54 reviews old54; not covered: extra54' 'the refusal names the commit the review never saw'
 refused 55 'a newer receipt without a review'
 refused 56 'a receipt for a commit the PR no longer holds'
+# A merge commit made in a clone can carry any change (a conflict resolution, an edit); only GitHub's own are exempt.
+refused 57 'a head that left the reviewed commit through a merge commit made in a clone'
+assert_contains "$out" 'not covered: sha57' 'the refusal names the hand-made merge'
+refused 58 'a PR whose commit list GitHub cuts off at 250'
 out=$("$AK" merge --pr 53 2>&1); rc=$?
-assert_eq 0 "$rc" 'a head that left the reviewed commit only through merge commits merges'
+assert_eq 0 "$rc" 'a head that left the reviewed commit only through merge commits GitHub made merges'
 assert_contains "$out" 'merged pr=53' 'the base-updated PR is merged'
+
+# The head that is merged is the head that was checked: a push landing while ak merge waits for CI used to be merged
+# unreviewed and with no check read on it.
+route "api $api/pulls/59" "$(pr_json 59 feat/r59 main)" 0 once
+route "api $api/pulls/59" "$(pr_json 59 feat/r59 main | jq -c '.head.sha = "moved59"')"
+route "api --paginate $api/issues/59/comments?per_page=100" "[$(receipt_comment sha59 "done")]"
+route "api --paginate $api/pulls/59/commits?per_page=100" "[$(commit sha59 root),$(commit moved59 sha59)]"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 59 2>&1); rc=$?
+assert_eq 1 "$rc" 'a head that moved to an unreviewed commit during the merge is refused'
+assert_contains "$out" 'not covered: moved59' 'the refusal names the commit pushed meanwhile'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the moved head is not merged'
+route "api $api/pulls/60" "$(pr_json 60 feat/r60 main)" 0 once
+route "api $api/pulls/60" "$(pr_json 60 feat/r60 main | jq -c '.head.sha = "shamoved60"')"
+route "api --paginate $api/issues/60/comments?per_page=100" "[$(receipt_comment sha60 "done")]"
+route "api --paginate $api/pulls/60/commits?per_page=100" "[$(commit sha60 root),$(github_merge shamoved60 sha60 main1)]"
+route "api --paginate $api/commits/sha60/check-runs*" "$green"
+route "api --paginate $api/commits/shamoved60/check-runs*" "$(runs 'completed:"failure"')"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 60 2>&1); rc=$?
+assert_eq 1 "$rc" 'a head GitHub moved during the merge has its own checks read'
+assert_contains "$out" 'checks are not green on shamoved60' 'the refusal names the moved head'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the red moved head is not merged'
 
 finish
