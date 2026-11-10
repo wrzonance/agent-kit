@@ -90,6 +90,13 @@ receipt_review() {
     fi
 }
 
+# receipt_unavailable DIR: why the review could not run, as ak review recorded it: the first line of a regular
+# review.unavailable, reduced to the plain characters ak review writes. The worker can write that file too.
+receipt_unavailable() {
+    [[ -f $1/review.unavailable && ! -L $1/review.unavailable ]] || return 0
+    head -n 1 -- "$1/review.unavailable" | LC_ALL=C tr -cd 'a-z0-9-' | cut -c1-40
+}
+
 # The reviewer model from review.md's first line: its model=X token, or the line itself.
 receipt_reviewer() {
     local line
@@ -157,6 +164,18 @@ receipt_post() {
     gh api -X POST "repos/$(slug)/issues/$pr/comments" -F "body=@$file"
 }
 
+# receipt_latest SLUG N: "HEAD<TAB>REVIEW" from the newest receipt comment this account posted on PR N, or nothing.
+# REVIEW is the text after `review=`: `done`, or `unavailable: <reason>`. Returns 1 when the comments or the account
+# cannot be read. A look-alike another account posted is never read as a receipt (see receipt_post).
+receipt_latest() {
+    local list me
+    list=$(gh api --paginate "repos/$1/issues/$2/comments?per_page=100") || return 1
+    me=$(gh api user --jq .login) && [[ -n $me ]] || return 1
+    jq -rs --arg me "$me" --arg mark "$BANNER"$'\n\n''**ak receipt** for head `' '
+        [.[][] | select((.user.login // "") == $me) | (.body // "") | select(startswith($mark))] | last // empty
+        | [(ltrimstr($mark) | split("`")[0]), ((capture("\\(review=(?<r>[^)\n]*)\\)")? | .r) // "")] | @tsv' <<<"$list"
+}
+
 # receipt_red_round DIR HEAD: how many distinct heads this worktree's receipts have seen red of their own, HEAD counted.
 receipt_red_round() {
     local file=$1/red-heads
@@ -166,7 +185,7 @@ receipt_red_round() {
 }
 
 cmd_main() {
-    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity own diag round
+    local file="" lines="" remaining="" findings_given=0 dir head pr runs ci summary review findings note body url fixed declined count open inherited base identity own diag round why
     local usage='usage: ak receipt [--finding LINE]... [--findings F] [--remaining TEXT]'
     while (($#)); do
         case $1 in
@@ -223,7 +242,10 @@ cmd_main() {
         own=$(ci_only "$runs" "$inherited")
         diag=$(printf '%s\n' "$summary" "$inherited" "$own" | grep -v '^$'; ci_print_failures "$runs" || true)
     fi
-    receipt_body "$head" "$(receipt_reviewer "$dir")" "$review" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
+    # An unavailable review says why in the comment and on the collect line (the reason used to stay in a worktree file).
+    why=''
+    [[ $review != unavailable ]] || why=$(receipt_unavailable "$dir")
+    receipt_body "$head" "$(receipt_reviewer "$dir")" "$review${why:+: $why}" "CI: $ci (${summary#* })" "$findings" "$remaining" >"$dir/receipt.md"
     body=$(receipt_post "${pr%% *}" "$dir/receipt.md" "$head") ||
         die "could not post the receipt comment" "gh auth status"
     url=$(jq -r '.html_url' <<<"$body")
@@ -232,6 +254,7 @@ cmd_main() {
     declined=$(grep -c ' | declined: ' <<<"$findings" || true)
     note="findings=$count fixed=$fixed declined=$declined"
     [[ -z $remaining ]] || note+="; remaining: ${remaining//$'\n'/ }"
+    [[ -z $why ]] || note+="; review unavailable: $why (log .ak/logs/review.log)"
     # Red checks the base branch fails too: the collect line then shows the operator that the base is red, not this PR.
     # The base name is on its way to a line the root reads, so it is reduced to ref-name characters, never dropped.
     if [[ $inherited =~ ^inherited=(.+)\ from=([^ ]+)\ note= ]]; then

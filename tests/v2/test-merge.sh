@@ -21,6 +21,20 @@ runs() { # STATUS:CONCLUSION...
     done
     printf '{"total_count":%d,"check_runs":[%s]}' "$#" "${items%,}"
 }
+# receipt_comment HEAD REVIEW [LOGIN]: one issue comment shaped like the receipt ak posts.
+receipt_comment() {
+    jq -cn --arg b "This was written agentically; verify its assertions:"$'\n\n'"**ak receipt** for head \`$1\`"$'\n\n'"- Reviewer: m (review=$2)"$'\n'"- CI: green" \
+        --arg u "${3:-bot}" '{body: $b, user: {login: $u}}'
+}
+# reviewed N...: PR N carries this account's receipt for its head shaN with a completed review.
+reviewed() {
+    local n
+    route 'api user --jq .login' 'bot'
+    for n in "$@"; do
+        route "api --paginate $api/issues/$n/comments?per_page=100" "[$(receipt_comment "sha$n" "done")]"
+    done
+}
+reviewed 14 15 17 18 19 21 22 23 24 25 26 27 29 30
 green=$(runs 'completed:"success"' 'completed:"skipped"' 'completed:"neutral"')
 route "api $api/commits/*/check-runs?per_page=100 --paginate" '{"check_runs":[]}'
 
@@ -271,6 +285,7 @@ assert_eq no "$([[ -d $repo/.ak/locks/merge-24 ]] && echo yes || echo no)" 'a fi
 
 # A green PR with open review threads is not merged (a field root went to merge a PR carrying two code-quality threads).
 : >"$FAKE_GH_ROUTES"
+reviewed 40
 route "api $api/pulls/40" "$(pr_json 40 feat/t main)"
 route "api --paginate $api/commits/sha40/check-runs*" "$green"
 route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
@@ -287,6 +302,7 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing is merged'
 # A base branch with no PR is never merged into (a field merge squashed a docs PR into a parked issue's branch): an
 # empty base retargets to the default branch first, and a base carrying unmerged work refuses.
 : >"$FAKE_GH_ROUTES"
+reviewed 43 44
 route "api $api/pulls/43" "$(pr_json 43 feat/docs feat/parked)"
 route "api $api/pulls/44" "$(pr_json 44 feat/docs2 feat/empty)"
 route "api --paginate $api/commits/sha4*/check-runs*" "$green"
@@ -312,5 +328,82 @@ assert_contains "$log" "api -X PATCH $api/pulls/44 -f base=main" 'it is retarget
 patch=$(grep -n "PATCH $api/pulls/44" <<<"$log" | head -1 | cut -d: -f1)
 merge=$(grep -n 'merge_method=squash' <<<"$log" | head -1 | cut -d: -f1)
 assert_eq yes "$([[ -n $patch && -n $merge && $patch -lt $merge ]] && echo yes || echo no)" 'the retarget happens before the merge'
+
+# A PR merges only under a completed adversarial review of its head: the receipt comment this account posted is the
+# record. A review the reviewer could not run posted a receipt too, the collect line said ci=green, and the PR merged.
+: >"$FAKE_GH_ROUTES"
+route 'api user --jq .login' 'bot'
+for n in 50 51 52 53 54 55 56 57 58; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main)"; done
+route "api --paginate $api/commits/sha5*/check-runs*" "$green"
+route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+# commit SHA PARENT...: a commit made in a clone; github_merge SHA PARENT PARENT: one GitHub itself made (update-branch,
+# the merges API), which carries GitHub's committer.
+commit() { printf '{"sha":"%s","committer":{"login":"%s"},"parents":[%s]}' "$1" "${COMMITTER:-dev}" "$(printf '{"sha":"%s"},' "${@:2}" | sed 's/,$//')"; }
+github_merge() { COMMITTER=web-flow commit "$@"; }
+route "api --paginate $api/issues/50/comments?per_page=100" '[{"body":"looks good","user":{"login":"bot"}}]'
+route "api --paginate $api/issues/51/comments?per_page=100" "[$(receipt_comment sha51 'unavailable: timeout')]"
+route "api --paginate $api/issues/52/comments?per_page=100" "[$(receipt_comment sha52 "done" mallory)]"
+route "api --paginate $api/issues/53/comments?per_page=100" "[$(receipt_comment old53 "done")]"
+route "api --paginate $api/pulls/53/commits?per_page=100" "[$(commit first53 root),$(commit old53 first53),$(github_merge sha53 old53 main1)]"
+route "api --paginate $api/issues/54/comments?per_page=100" "[$(receipt_comment old54 "done")]"
+route "api --paginate $api/pulls/54/commits?per_page=100" "[$(commit old54 root),$(commit extra54 old54),$(github_merge sha54 extra54 main1)]"
+route "api --paginate $api/issues/55/comments?per_page=100" "[$(receipt_comment sha55 "done"),$(receipt_comment new55 unavailable)]"
+route "api --paginate $api/issues/56/comments?per_page=100" "[$(receipt_comment gone56 "done")]"
+route "api --paginate $api/pulls/56/commits?per_page=100" "[$(commit sha56 root)]"
+route "api --paginate $api/issues/57/comments?per_page=100" "[$(receipt_comment old57 "done")]"
+route "api --paginate $api/pulls/57/commits?per_page=100" "[$(commit old57 root),$(commit sha57 old57 other1)]"
+route "api --paginate $api/issues/58/comments?per_page=100" "[$(receipt_comment old58 "done")]"
+route "api --paginate $api/pulls/58/commits?per_page=100" "$(jq -cn --argjson old "$(commit old58 root)" --argjson top "$(github_merge sha58 old58 main1)" '[$old] + [range(248) | {sha: "pad\(.)", committer: {login: "web-flow"}, parents: [{sha: "a"}, {sha: "b"}]}] + [$top]')"
+refused() { # N WHY
+    : >"$FAKE_GH_LOG"
+    out=$("$AK" merge --pr "$1" 2>&1); rc=$?
+    assert_eq 1 "$rc" "$2 is refused"
+    assert_contains "$out" "fix: ak pr-plan --pr $1" "$2 sends the PR back to a worker"
+    assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' "$2 merges nothing"
+    assert_not_contains "$(cat "$FAKE_GH_LOG")" 'check-runs' "$2 is refused before any CI wait"
+}
+refused 50 'a PR with no receipt'
+assert_contains "$out" 'PR #50 has no ak receipt, so no adversarial review of it is recorded' 'the refusal says no review is recorded'
+refused 51 'a receipt whose review could not run'
+assert_contains "$out" 'the receipt on PR #51 records review=unavailable: timeout' 'the refusal carries the recorded reason'
+refused 52 'a receipt another account posted'
+refused 54 'a head with an unreviewed commit since the receipt'
+assert_contains "$out" 'the receipt on PR #54 reviews old54; not covered: extra54' 'the refusal names the commit the review never saw'
+refused 55 'a newer receipt without a review'
+refused 56 'a receipt for a commit the PR no longer holds'
+# A merge commit made in a clone can carry any change (a conflict resolution, an edit); only GitHub's own are exempt.
+refused 57 'a head that left the reviewed commit through a merge commit made in a clone'
+assert_contains "$out" 'not covered: sha57' 'the refusal names the hand-made merge'
+refused 58 'a PR whose commit list GitHub cuts off at 250'
+out=$("$AK" merge --pr 53 2>&1); rc=$?
+assert_eq 0 "$rc" 'a head that left the reviewed commit only through merge commits GitHub made merges'
+assert_contains "$out" 'merged pr=53' 'the base-updated PR is merged'
+
+# The head that is merged is the head that was checked: a push landing while ak merge waits for CI used to be merged
+# unreviewed and with no check read on it.
+route "api $api/pulls/59" "$(pr_json 59 feat/r59 main)" 0 once
+route "api $api/pulls/59" "$(pr_json 59 feat/r59 main | jq -c '.head.sha = "moved59"')"
+route "api --paginate $api/issues/59/comments?per_page=100" "[$(receipt_comment sha59 "done")]"
+route "api --paginate $api/pulls/59/commits?per_page=100" "[$(commit sha59 root),$(commit moved59 sha59)]"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 59 2>&1); rc=$?
+assert_eq 1 "$rc" 'a head that moved to an unreviewed commit during the merge is refused'
+assert_contains "$out" 'not covered: moved59' 'the refusal names the commit pushed meanwhile'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the moved head is not merged'
+route "api $api/pulls/60" "$(pr_json 60 feat/r60 main)" 0 once
+route "api $api/pulls/60" "$(pr_json 60 feat/r60 main | jq -c '.head.sha = "shamoved60"')"
+route "api --paginate $api/issues/60/comments?per_page=100" "[$(receipt_comment sha60 "done")]"
+route "api --paginate $api/pulls/60/commits?per_page=100" "[$(commit sha60 root),$(github_merge shamoved60 sha60 main1)]"
+route "api --paginate $api/commits/sha60/check-runs*" "$green"
+route "api --paginate $api/commits/shamoved60/check-runs*" "$(runs 'completed:"failure"')"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 60 2>&1); rc=$?
+assert_eq 1 "$rc" 'a head GitHub moved during the merge has its own checks read'
+assert_contains "$out" 'checks are not green on shamoved60' 'the refusal names the moved head'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the red moved head is not merged'
 
 finish
