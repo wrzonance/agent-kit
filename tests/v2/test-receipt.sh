@@ -164,11 +164,17 @@ assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/issues/9/
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
 rm .ak/review.md
-touch .ak/review.unavailable
+# shellcheck disable=SC2016 # the literal $(x) is the point
+printf 'timeout\n$(x) `y`\n' >.ak/review.unavailable
 printf 'none\n' >"$WORK/none"
 out=$("$AK" receipt --findings "$WORK/none" 2>&1); rc=$?
 assert_eq 0 "$rc" 'a none findings file is accepted'
 assert_contains "$out" 'review=unavailable' 'an unavailable reviewer is reported'
+# The reason goes where the operator reads it: the PR comment and the collect line. Only its first line, as plain words.
+assert_contains "$(cat .ak/receipt.md)" 'Reviewer: none (review=unavailable: timeout)' 'the receipt comment says why no review ran'
+assert_contains "$(cat .ak/result)" 'review unavailable: timeout (log .ak/logs/review.log)' 'the result note says why and where the log is'
+# shellcheck disable=SC2016 # the literal $(x) is the point
+assert_not_contains "$(cat .ak/receipt.md .ak/result)" '$(x)' 'the reason file is never copied through as written'
 assert_contains "$(cat .ak/receipt.md)" 'Findings: none' 'no findings is stated'
 
 rm .ak/review.unavailable

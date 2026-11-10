@@ -160,6 +160,10 @@ cmd_main() {
     printf '%s\n\n----- BEGIN DIFF -----\n%s\n----- END DIFF -----\n' "$REVIEW_HEADER" "$diff" >"$scratch/prompt"
     if ! reason=$(review_run "$provider" "$model" "$effort" "$scratch/prompt" "$scratch/out"); then
         printf '%s\n' "$reason" >"$dir/review.unavailable"
+        # What the reviewer said stays for the operator; the scratch directory goes on return.
+        mkdir -p -- "$dir/logs"
+        rm -f -- "$dir/logs/review.log"
+        { printf 'reviewer=%s model=%s reason=%s\n' "$provider" "$model" "$reason"; tail -n 40 -- "$scratch/out.log" 2>/dev/null || true; } >"$dir/logs/review.log"
         printf 'review=unavailable reason=%s\n' "$reason"
         return 0
     fi

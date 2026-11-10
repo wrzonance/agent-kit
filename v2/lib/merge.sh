@@ -8,6 +8,8 @@
 source "$AK_HOME/lib/ci.sh"
 # shellcheck source=threads.sh
 source "$AK_HOME/lib/threads.sh"
+# shellcheck source=receipt.sh
+source "$AK_HOME/lib/receipt.sh"
 
 # merge_checks SLUG SHA: refuse unless every check run on SHA completed as success, neutral or skipped, and every
 # AGENT_REQUIRED_CHECKS name has a run that succeeded (a conflicted stacked PR had only CodeQL and a push lint on its head).
@@ -33,6 +35,30 @@ merge_threads() {
     list=$(threads_open "$1" "$2") || die "cannot read the review threads on PR #$2" "gh auth status"
     [[ -z $list ]] || die "PR #$2 has $(grep -c . <<<"$list") unresolved review threads ($(threads_summary "$list"))" \
         "ak pr-plan --pr $2"
+}
+
+# merge_reviewed SLUG N SHA: refuse unless the PR's newest receipt records a completed review of SHA, or of a commit
+# SHA left only through merge commits (a base update, a parent merged in). A review the reviewer could not run posted
+# a receipt too, its collect line said ci=green, and the PR merged with no review; a PR never planned merged the same
+# way. The PR's own commits are read only when the head moved past the receipt.
+merge_reviewed() {
+    local slug=$1 n=$2 sha=$3 last head review loose fix="ak pr-plan --pr $2"
+    last=$(receipt_latest "$slug" "$n") || die "cannot read the receipt on PR #$n" "gh auth status"
+    [[ -n $last ]] || die "PR #$n has no ak receipt, so no adversarial review of it is recorded" "$fix"
+    head=${last%%$'\t'*}
+    review=${last#*$'\t'}
+    review=${review//[^A-Za-z0-9: _.-]/}
+    [[ $review == "done" ]] || die "the receipt on PR #$n records review=${review:0:60}, not a completed review" "$fix"
+    [[ $head != "$sha" ]] || return 0
+    loose=$(gh api --paginate "repos/$slug/pulls/$n/commits?per_page=100" | jq -rs --arg head "$head" '
+        (map(.[]) | map({key: .sha, value: [.parents[].sha]}) | from_entries) as $m
+        | def reviewed: (. + [.[] | $m[.][]] | map(select($m[.] != null)) | unique) as $next
+            | if ($next | length) == length then . else $next | reviewed end;
+        if $m[$head] == null then "the reviewed commit is not in the PR"
+        else ([$head] | reviewed) as $r
+            | [$m | to_entries[] | select((.key | IN($r[]) | not) and (.value | length) < 2) | .key[0:12]] | join(" ") end') ||
+        die "cannot read the commits of PR #$n" "gh api repos/$slug/pulls/$n/commits"
+    [[ -z $loose ]] || die "the receipt on PR #$n reviews ${head:0:12}; not covered: ${loose:0:120}" "$fix"
 }
 
 # merge_q VALUE: VALUE shell-quoted, so a branch name in a printed fix hint cannot become executable text.
@@ -204,6 +230,7 @@ cmd_main() {
         return 0
     fi
     [[ $(jq -r .state <<<"$json") == open ]] || die "PR #$n is closed" "gh pr reopen $n --repo $slug"
+    merge_reviewed "$slug" "$n" "$(jq -r .head.sha <<<"$json")"
     # Checks still running on a green-collected PR are waited for, not refused (PR bench 2026-10-01: #150).
     ci_wait "$(jq -r .head.sha <<<"$json")" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
     merge_checks "$slug" "$(jq -r .head.sha <<<"$json")"

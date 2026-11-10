@@ -34,14 +34,16 @@ Each `ak` command prints what you need next; there is no need to read its script
    waits. A shell call that yields a cell is collected with one `wait`,
    `yield_time_ms` as long as the command may take (1800000), never 30 s polls.
 4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.
-5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says `ci=green`
-   and each PR `ak pr-plan` skipped as green and reviewed.
+5. Only when the invocation says `--merge`: run `ak merge --pr N` for each PR whose collect line says
+   `ci=green review=done` and each PR `ak pr-plan` skipped as green and reviewed. A `review=unavailable` line is
+   not merged: its worker already tried the review, so report the line; its note says why.
    A PR based on another PR's branch merges after that PR: when `ak merge` refuses with
-   `fix: ak merge --pr M`, merge M first (if its collect said `ci=green`), then retry. When `ak merge` exits 3 it
-   prints a `spawn` line: the PR conflicts with its base, so spawn that worker, wait, `ak collect --pr N`, and run
-   `ak merge --pr N` again. When it refuses with `fix: ak pr-plan --pr N`, the PR has open review threads: run
-   that, spawn the worker it prints, wait, `ak collect --pr N`, and merge again. Any other refusal: report its two
-   lines and move on.
+   `fix: ak merge --pr M`, merge M first (if its collect said `ci=green review=done`), then retry. When `ak merge`
+   exits 3 it prints a `spawn` line: the PR conflicts with its base, so spawn that worker, wait,
+   `ak collect --pr N`, and run `ak merge --pr N` again. When it refuses with `fix: ak pr-plan --pr N`, the PR has
+   open review threads or no completed review receipt at its head: run that, spawn the worker it prints, wait,
+   `ak collect --pr N`, and merge again, once per PR; the same refusal a second time is reported. Any other
+   refusal: report its two lines and move on.
 6. When no workers remain, report the `drop`, collect and merge lines, and end the turn.
 
 Never mark a PR ready or merge it any other way than `ak merge`, and only under `--merge`.

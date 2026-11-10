@@ -92,13 +92,16 @@ out=$("$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" 'an unparsed review exits 0'
 assert_contains "$out" 'findings=unparsed' 'an unparsed review is never clean'
 
-export FAKE_REVIEW_OUT='NO FINDINGS' FAKE_REVIEW_RC=3
+# What the reviewer said when it failed is kept: the log sat in a temp directory deleted on return, so "exit-3" was
+# all an operator had.
+export FAKE_REVIEW_OUT='NO FINDINGS' FAKE_REVIEW_RC=3 FAKE_REVIEW_ERR='boom: not logged in'
 out=$("$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" 'a failing reviewer exits 0'
 assert_eq 'review=unavailable reason=exit-3' "$out" 'non-zero exit is unavailable'
 assert_eq 'exit-3' "$(cat .ak/review.unavailable)" 'unavailable file names the reason'
 assert_eq no "$([[ -e .ak/review.md ]] && echo yes || echo no)" 'a stale review.md is removed'
-unset FAKE_REVIEW_RC
+assert_contains "$(cat .ak/logs/review.log 2>/dev/null)" 'boom: not logged in' 'the failed reviewer output is kept in .ak/logs/review.log'
+unset FAKE_REVIEW_RC FAKE_REVIEW_ERR
 
 export FAKE_REVIEW_SLEEP=5 AK_REVIEW_TIMEOUT=1
 out=$("$AK" review 2>&1); rc=$?
