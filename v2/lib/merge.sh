@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# ak merge --pr N: bring the PR up to date with its base, merge it once its head checks are green (pinned to that
+# ak merge --pr N [--pr N]...: for each PR, parent before child: bring the PR up to date with its base, merge it once its head checks are green (pinned to that
 # head; a merge commit while a child PR is stacked on it, a squash otherwise), then delete its branch unless another
 # open PR is based on it. Exit 3 with a spawn line when the update conflicts: the PR's worker resolves it, then ak merge
 # runs again.
@@ -243,10 +243,50 @@ merge_lock() {
     trap "rmdir -- '$dir' 2>/dev/null" EXIT
 }
 
+# merge_order SLUG N...: the PR numbers with every PR after the one whose branch it is based on. The root used to learn
+# a stack's order from refusals, one `fix: ak merge --pr M` and one turn per link.
+merge_order() {
+    local slug=$1 n rows=''
+    shift
+    for n in "$@"; do
+        rows+=$(gh api "repos/$slug/pulls/$n" | jq -c '{n: .number, head: .head.ref, base: .base.ref}')$'\n' ||
+            die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"
+    done
+    jq -rs 'def order: if length == 0 then empty else
+            [.[].head] as $heads | map(select(.base as $b | $heads | index($b) | not)) as $free
+            | if ($free | length) == 0 then .[].n
+              else $free[].n, (map(select(.base as $b | $heads | index($b))) | order) end end;
+        order' <<<"$rows"
+}
+
 cmd_main() {
-    [[ $# -eq 2 && $1 == --pr && $2 =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N"
-    local n=$2 slug json sha method merged checked
+    local -a prs=()
+    while (($#)); do
+        [[ $1 == --pr && ${2:-} =~ ^[0-9]+$ ]] || usage_die "usage: ak merge --pr N [--pr N]..."
+        [[ " ${prs[*]} " == *" $2 "* ]] || prs+=("$2")
+        shift 2
+    done
+    ((${#prs[@]} > 0)) || usage_die "usage: ak merge --pr N [--pr N]..."
     merge_forced >/dev/null || exit $?
+    if ((${#prs[@]} == 1)); then
+        merge_one "${prs[0]}"
+        return
+    fi
+    # Each PR merges or refuses on its own lines; a refused parent's children then refuse naming it. Exit 3 when any
+    # PR printed a spawn line, else 1 when any was refused.
+    local n rc=0 one order
+    order=$(merge_order "$(slug)" "${prs[@]}") || exit 1
+    for n in $order; do
+        one=0
+        (merge_one "$n") || one=$?
+        ((one != 3)) || rc=3
+        ((one == 0 || rc == 3)) || rc=1
+    done
+    return "$rc"
+}
+
+merge_one() {
+    local n=$1 slug json sha method merged checked
     merge_lock "$n"
     slug=$(slug)
     json=$(gh api "repos/$slug/pulls/$n") || die "cannot read PR #$n" "gh api repos/$slug/pulls/$n"

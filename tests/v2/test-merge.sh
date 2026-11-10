@@ -454,4 +454,33 @@ assert_eq 1 "$rc" 'threads posted on a head that moved during the merge refuse i
 assert_contains "$out" 'PR #64 has 1 unresolved review threads' 'the refusal counts them'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the moved head with open threads is not merged'
 
+# One call takes the whole stack and merges it parent first. The root used to learn the order from refusals, one
+# `fix: ak merge --pr M` and one turn per link.
+: >"$FAKE_GH_ROUTES"
+route "api $api/pulls/70" "$(pr_json 70 feat/s70 main)"
+route "api $api/pulls/71" "$(pr_json 71 feat/s71 feat/s70)"
+route "api $api/pulls/72" "$(pr_json 72 feat/s72 feat/s71)"
+route "api $api/pulls/73" "$(pr_json 73 feat/s73 main)"
+reviewed 70 71 72
+route "api --paginate $api/issues/73/comments?per_page=100" '[]'
+route "api --paginate $api/commits/sha7*/check-runs*" "$green"
+route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
+route "api -X GET $api/pulls -f state=open -f head=acme:* -F per_page=100" '[]'
+route "api -X GET $api/pulls -f state=closed -f head=acme:* -F per_page=100" '[{"number":1,"merged_at":"2026-09-30T00:00:00Z","base":{"ref":"main"}}]'
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
+route "api $api/merges *" '{"sha":"down"}'
+route "api -X PATCH $api/pulls/* -f base=main" '{}'
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
+route "api -X PUT $api/pulls/* -f merge_method=* -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 72 --pr 73 --pr 71 --pr 70 2>&1); rc=$?
+assert_eq '70 71 72' "$(grep -o 'pulls/[0-9]*/merge ' "$FAKE_GH_LOG" | grep -o '[0-9]*' | paste -sd' ' -)" 'a stack named in any order merges parent first'
+assert_eq 3 "$(grep -c '^merged pr=' <<<"$out")" 'each merged PR prints its line'
+assert_contains "$out" 'PR #73 has no ak receipt' 'a refused PR prints its refusal'
+assert_contains "$out" 'fix: ak pr-plan --pr 73' 'with its fix line'
+assert_eq 1 "$rc" 'a refusal among the PRs exits 1 after the others merged'
+out=$("$AK" merge --pr 70 --pr x 2>&1); rc=$?
+assert_eq 2 "$rc" 'a PR number that is not digits is a usage error'
+
 finish
