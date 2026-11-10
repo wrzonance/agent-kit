@@ -351,7 +351,7 @@ git push -q origin t53 t54 t57 t59 t60 t64 2>/dev/null
 pr_at() { pr_json "$1" "t$1" main | jq -c --arg sha "$2" '.head.sha = $sha'; }
 : >"$FAKE_GH_ROUTES"
 route 'api user --jq .login' 'bot'
-for n in 50 51 52 55; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main)"; done
+for n in 49 50 51 52 55; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main)"; done
 route "api $api/pulls/53" "$(pr_at 53 "$h53")"
 route "api $api/pulls/54" "$(pr_at 54 "$h54")"
 route "api $api/pulls/56" "$(pr_at 56 "$h54")"
@@ -379,6 +379,8 @@ refused() { # N WHY
     assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' "$2 merges nothing"
     assert_not_contains "$(cat "$FAKE_GH_LOG")" 'check-runs' "$2 is refused before any CI wait"
 }
+route "api --paginate $api/issues/49/comments?per_page=100" "[$(receipt_comment sha49 'd!one')]"
+refused 49 'a review value that only reads as done once its odd characters are dropped'
 refused 50 'a PR with no receipt'
 assert_contains "$out" 'PR #50 has no ak receipt, so no adversarial review of it is recorded' 'the refusal says no review is recorded'
 refused 51 'a receipt whose review could not run'
