@@ -21,8 +21,8 @@ dumping whole trees or logs.
    `git fetch origin && git merge "$(cat .ak/resolve)"`, resolve conflicts preserving
    both sides' intent, commit the merge, then
    `ak ship --message "merge: $(cat .ak/base) into {{BRANCH}}"`.
-   Go to step 5 (skip review; the receipt reuses the earlier findings).
-2. Run `ak review` once (an existing review is reused). It prints the findings.
+2. Run `ak review` once. It prints the findings; an existing review is reused, except
+   after a merge you resolved by hand, which is reviewed like new work.
    For `review=unavailable`, go to step 5. For `findings=unparsed`, read
    `.ak/review.md` and account for every defect.
 3. Check findings against code: the reviewer saw only the diff. Fix real defects

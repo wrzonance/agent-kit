@@ -171,6 +171,21 @@ out=$("$AK" review 2>&1)
 assert_contains "$out" "findings=0 reused head=${reviewed:0:7}" 'a merge-down of new base work reuses the review'
 assert_eq '' "$(cat "$FAKE_REVIEW_LOG")" 'the merge-down does not run the reviewer'
 
+# A merge-down resolved by hand is work the reviewer never saw: the resolution can drop either side's change (a
+# bench child resolved against its parent's squash and brought back the bug the parent had fixed). A merge git makes
+# on its own is still reused.
+(cd "$repo" && git pull -q origin main 2>/dev/null && printf 'ONE\n' >src/a.txt && git commit -q -am 'feat: main rewrites a' && git push -q origin main 2>/dev/null)
+git fetch -q origin
+git merge -q --no-edit origin/main >/dev/null 2>&1
+printf 'ONE\ntwo\nresolved by hand\n' >src/a.txt
+git commit -q -am 'merge: main into fix/thing'
+git push -q origin fix/thing 2>/dev/null
+: >"$FAKE_REVIEW_LOG"
+out=$("$AK" review 2>&1)
+assert_eq 'review=done findings=0' "$out" 'a merge-down resolved by hand gets a fresh review'
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '+resolved by hand' 'the fresh review sees the resolution'
+assert_eq "reviewer=claude model=claude-opus-5-5 head=$(git rev-parse HEAD)" "$(first3)" 'the fresh review names the resolved head'
+
 sed -i "1s/head=.*/head=$(git rev-parse origin/main)/" .ak/review.md
 out=$("$AK" review 2>&1)
 assert_eq 'review=done findings=0' "$out" 'a review of a base commit is not reused'

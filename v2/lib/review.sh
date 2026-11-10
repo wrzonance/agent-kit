@@ -107,8 +107,29 @@ review_patch() {
     { git diff "$1...$2" 2>/dev/null | git patch-id --stable | cut -d' ' -f1; } || true
 }
 
+# review_merge_clean COMMIT: COMMIT is a two-parent merge whose tree is the one git makes from its parents alone. A
+# merge resolved by hand differs (or its parents conflict) and can drop either side's change. A git without
+# `merge-tree --write-tree` cannot tell, and reads as clean, as every merge did before.
+review_merge_clean() {
+    local out rc=0
+    git rev-parse -q --verify "$1^3" >/dev/null 2>&1 && return 1
+    out=$(git merge-tree --write-tree "$1^1" "$1^2" 2>/dev/null) || rc=$?
+    ((rc <= 1)) || return 0
+    ((rc == 0)) && [[ $(head -n 1 <<<"$out") == "$(git rev-parse "$1^{tree}")" ]]
+}
+
+# review_merges_clean OLD BASE: every merge commit of this branch since OLD is one git made on its own.
+review_merges_clean() {
+    local merge
+    while IFS= read -r merge; do
+        review_merge_clean "$merge" || return 1
+    done < <(git rev-list --merges "$1..HEAD" "^origin/$2")
+}
+
 # review_reusable FILE BASE: FILE reviews a commit of this branch beyond origin/BASE, and HEAD has since moved only
-# by review fixes (`fix:` subjects) and merge-downs; prints that head. Anything else is work the reviewer never saw.
+# by review fixes (`fix:` subjects) and merge-downs git made without a hand (review_merge_clean); prints that head.
+# Anything else is work the reviewer never saw: a bench child resolved a conflict against its parent's squash and
+# brought back the bug the parent had fixed, under a review that never saw the resolution.
 # FILE also records the base and patch-id it reviewed: a retargeted PR reuses it only when the reviewed head's diff
 # against the new base is the same patch; a review without that record is never reused across a base change.
 # (Field run 10: 10 PRs cost 23 reviewer runs because heads that had only moved by a fix or a base update were
@@ -128,6 +149,7 @@ review_reusable() {
     while IFS= read -r subject; do
         [[ $subject =~ $after ]] || return 1
     done < <(git log --no-merges --format=%s "$old..HEAD" "^origin/$base")
+    review_merges_clean "$old" "$base" || return 1
     printf '%s\n' "$old"
 }
 

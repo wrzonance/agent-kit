@@ -7,6 +7,8 @@ source "$AK_HOME/lib/ship.sh"
 source "$AK_HOME/lib/ci.sh"
 # shellcheck source=threads.sh
 source "$AK_HOME/lib/threads.sh"
+# shellcheck source=review.sh
+source "$AK_HOME/lib/review.sh"
 
 FINDING_RE='^ *(P[0-3]) *\| *([^|]*[^| ]) *\| *(fixed [0-9a-f]{7,40}|declined: .+)$'
 REVIEW_FINDING_RE='^[[:space:]*-]*P[12]:'
@@ -77,6 +79,19 @@ receipt_all_decided() {
         cut -c1-80 | head -n 3 | paste -sd';' -)
     die "the review has $want findings but the findings file decides $got: $titles" \
         "write one line per finding: P1|title|fixed <sha> or P2|title|declined: reason"
+}
+
+# receipt_merges_reviewed DIR: refuse when a merge since the reviewed head was resolved by hand. The playbooks send a
+# merge-down straight to the receipt, which put the earlier review's name on a resolution it never saw. A review
+# whose first line names no commit of this branch is left to ak review.
+receipt_merges_reviewed() {
+    local line old
+    [[ -f $1/review.md ]] && IFS= read -r line <"$1/review.md" || return 0
+    [[ $line =~ head=([0-9a-f]{40}) ]] || return 0
+    old=${BASH_REMATCH[1]}
+    git merge-base --is-ancestor "$old" HEAD 2>/dev/null || return 0
+    review_merges_clean "$old" "$(work_base)" ||
+        die "a merge since the review of ${old:0:12} was resolved by hand, and the review never saw the resolution" "ak review"
 }
 
 receipt_review() {
@@ -223,6 +238,7 @@ cmd_main() {
     # then ran ak review and found the bug too late).
     [[ $review != skipped ]] || die "no review of this branch yet" "ak review"
     receipt_all_decided "$dir" "$findings"
+    receipt_merges_reviewed "$dir"
     # Comments on the PR from review bots and people are findings too; each is resolved or declined before the receipt.
     open=$(threads_open "$(slug)" "${pr%% *}") || die "cannot read the review threads on PR #${pr%% *}" "gh auth status"
     if [[ -n $open ]]; then
