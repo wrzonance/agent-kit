@@ -108,22 +108,24 @@ review_patch() {
 }
 
 # review_merge_clean COMMIT: COMMIT is a two-parent merge whose tree is the one git makes from its parents alone. A
-# merge resolved by hand differs (or its parents conflict) and can drop either side's change. A git without
-# `merge-tree --write-tree` cannot tell, and reads as clean, as every merge did before.
+# merge resolved by hand differs (or its parents conflict) and can drop either side's change. Not being able to tell
+# (a commit that is no merge, a git without `merge-tree --write-tree`, a missing object) is not clean.
 review_merge_clean() {
-    local out rc=0
-    git rev-parse -q --verify "$1^3" >/dev/null 2>&1 && return 1
-    out=$(git merge-tree --write-tree "$1^1" "$1^2" 2>/dev/null) || rc=$?
-    ((rc <= 1)) || return 0
-    ((rc == 0)) && [[ $(head -n 1 <<<"$out") == "$(git rev-parse "$1^{tree}")" ]]
+    local out
+    git rev-parse -q --verify "$1^2" >/dev/null 2>&1 || return 1
+    ! git rev-parse -q --verify "$1^3" >/dev/null 2>&1 || return 1
+    out=$(git merge-tree --write-tree "$1^1" "$1^2" 2>/dev/null) || return 1
+    [[ $(head -n 1 <<<"$out") == "$(git rev-parse "$1^{tree}")" ]]
 }
 
-# review_merges_clean OLD BASE: every merge commit of this branch since OLD is one git made on its own.
+# review_merges_clean OLD BASE: every merge commit of this branch since OLD is one git made on its own; a list git
+# cannot produce is not clean.
 review_merges_clean() {
-    local merge
+    local merge list
+    list=$(git rev-list --merges "$1..HEAD" "^origin/$2" 2>/dev/null) || return 1
     while IFS= read -r merge; do
-        review_merge_clean "$merge" || return 1
-    done < <(git rev-list --merges "$1..HEAD" "^origin/$2")
+        [[ -z $merge ]] || review_merge_clean "$merge" || return 1
+    done <<<"$list"
 }
 
 # review_reusable FILE BASE: FILE reviews a commit of this branch beyond origin/BASE, and HEAD has since moved only
