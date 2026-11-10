@@ -406,4 +406,52 @@ assert_eq 1 "$rc" 'a head GitHub moved during the merge has its own checks read'
 assert_contains "$out" 'checks are not green on shamoved60' 'the refusal names the moved head'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the red moved head is not merged'
 
+# A review bot that starts when a draft is marked ready was cut off by the merge that followed at once: on 29 of 75
+# sampled PRs its check ended cancelled a minute after the PR closed. AGENT_READY_CHECKS names checks that must
+# succeed on the head once the PR is ready; the threads they leave are read before the merge.
+thread='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T9","isResolved":false,"path":"a","line":1,"comments":{"nodes":[{"author":{"login":"reviewbot"},"body":"bug"}]}}]}}}}}'
+for n in 61 62 63; do route "api $api/pulls/$n" "$(pr_json "$n" "feat/r$n" main true)"; done
+reviewed 61 62 63
+route "pr ready *" ''
+bot_done=$(runs 'completed:"success"' | jq -c '.check_runs += [{"name":"Review Bot","status":"completed","conclusion":"success"}]')
+route "api --paginate $api/commits/sha61/check-runs*" "$(runs 'completed:"success"' | jq -c '.check_runs += [{"name":"Review Bot","status":"completed","conclusion":"skipped"}]')"
+route "api $api/commits/sha61/check-runs?per_page=100 --paginate" "$(runs 'completed:"success"')"
+route "api --paginate $api/commits/sha6[23]/check-runs*" "$bot_done"
+route "api $api/commits/sha6[23]/check-runs?per_page=100 --paginate" "$bot_done"
+route 'api graphql -F owner=acme -F name=widget -F n=62 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' 0 once
+route 'api graphql -F owner=acme -F name=widget -F n=62 *' "$thread"
+export AGENT_READY_CHECKS='Review Bot'
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 61 2>&1); rc=$?
+assert_eq 1 "$rc" 'a ready check that has not succeeded on the head refuses the merge'
+assert_contains "$out" 'missing=Review Bot' 'the refusal names the check'
+assert_contains "$(cat "$FAKE_GH_LOG")" 'pr ready 61' 'the PR was marked ready so the check could start'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing merges without the ready check'
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 62 2>&1); rc=$?
+assert_eq 1 "$rc" 'threads the ready check left refuse the merge'
+assert_contains "$out" 'PR #62 has 1 unresolved review threads (reviewbot: 1)' 'the refusal counts the new threads'
+assert_contains "$out" 'fix: ak pr-plan --pr 62' 'and sends the PR back to a worker'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'nothing merges over the new threads'
+out=$("$AK" merge --pr 63 2>&1); rc=$?
+assert_eq 0 "$rc" 'a PR whose ready check succeeded and left no threads merges'
+unset AGENT_READY_CHECKS
+out=$("$AK" merge --pr 61 2>&1); rc=$?
+assert_eq 0 "$rc" 'with no ready checks named, a draft merges as before'
+
+# Threads posted on a head that moved during the merge (a bot reviewing the base update) are read too.
+route "api $api/pulls/64" "$(pr_json 64 feat/r64 main)" 0 once
+route "api $api/pulls/64" "$(pr_json 64 feat/r64 main | jq -c '.head.sha = "shamoved64"')"
+route "api --paginate $api/issues/64/comments?per_page=100" "[$(receipt_comment sha64 "done")]"
+route "api --paginate $api/pulls/64/commits?per_page=100" "[$(commit sha64 root),$(github_merge shamoved64 sha64 main1)]"
+route "api --paginate $api/commits/sha64/check-runs*" "$green"
+route "api --paginate $api/commits/shamoved64/check-runs*" "$green"
+route 'api graphql -F owner=acme -F name=widget -F n=64 *' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' 0 once
+route 'api graphql -F owner=acme -F name=widget -F n=64 *' "$thread"
+: >"$FAKE_GH_LOG"
+out=$("$AK" merge --pr 64 2>&1); rc=$?
+assert_eq 1 "$rc" 'threads posted on a head that moved during the merge refuse it'
+assert_contains "$out" 'PR #64 has 1 unresolved review threads' 'the refusal counts them'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the moved head with open threads is not merged'
+
 finish
