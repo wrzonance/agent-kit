@@ -3,6 +3,7 @@
 # stdin under $FAKE_REVIEW_LOG, sleeps $FAKE_REVIEW_SLEEP, prints $FAKE_REVIEW_OUT (to the codex -o file
 # when given, else stdout) and exits $FAKE_REVIEW_RC. $FAKE_REVIEW_NO_NEWLINE leaves the output without a final
 # newline, the way the real codex -o file ends. $FAKE_REVIEW_ERR goes to stderr.
+# $FAKE_REVIEW_FAIL_BIN limits $FAKE_REVIEW_RC to the CLI of that name; the other one succeeds.
 set -uo pipefail
 log=${FAKE_REVIEW_LOG:-/dev/null}
 out=''
@@ -26,4 +27,5 @@ if [[ -n $out ]]; then
 else
     printf '%s%s' "${FAKE_REVIEW_OUT:-NO FINDINGS}" "$end"
 fi
+[[ -z ${FAKE_REVIEW_FAIL_BIN:-} || $(basename -- "$0") == "$FAKE_REVIEW_FAIL_BIN" ]] || exit 0
 exit "${FAKE_REVIEW_RC:-0}"
