@@ -419,7 +419,7 @@ spawn_issue() {
         rm -f -- "$dir/previous-result" "$dir/previous-receipt"
         mv -f -- "$dir/result" "$dir/previous-result"
         [[ ! -f $dir/receipt.md ]] || mv -f -- "$dir/receipt.md" "$dir/previous-receipt"
-        rm -f -- "$dir/review.md" "$dir/review.unavailable" "$dir/findings" "$dir/findings-review"
+        rm -f -- "$dir/review.md" "$dir/review.unavailable" "$dir/review.fallback" "$dir/findings" "$dir/findings-review"
     fi
     rm -f -- "$dir/result" "$dir/ci-only" "$dir/parked"
     SPAWNED+=("$n")

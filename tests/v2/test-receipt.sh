@@ -163,6 +163,13 @@ assert_contains "$out" 'ci=blocked note=PR #9 conflicts with main' 'the refusal 
 assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X POST repos/acme/widget/issues/9/comments' 'nothing is posted for a conflicted PR'
 printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 
+# A same-provider fallback review is named as one where the operator reads it.
+printf 'timeout\n' >.ak/review.fallback
+out=$("$AK" receipt --findings "$WORK/findings" 2>&1)
+assert_contains "$(cat .ak/receipt.md)" 'same-provider fallback: timeout) (review=done)' 'the receipt comment names a fallback review'
+assert_contains "$(cat .ak/result)" 'review by same-provider fallback: timeout' 'the result note names a fallback review'
+rm .ak/review.fallback
+
 rm .ak/review.md
 # shellcheck disable=SC2016 # the literal $(x) is the point
 printf 'timeout\n$(x) `y`\n' >.ak/review.unavailable

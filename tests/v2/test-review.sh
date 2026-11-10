@@ -34,12 +34,15 @@ assert_contains "$out" $'P1: off by one \xe2\x80\x94 src/a.txt:2 \xe2\x80\x94 lo
 log=$(cat "$FAKE_REVIEW_LOG")
 assert_contains "$log" 'bin=claude' 'under codex the reviewer is claude'
 assert_contains "$log" '--tools  --permission-mode dontAsk' 'claude runs with no tools'
-assert_contains "$log" '--model claude-opus-5' 'claude default model'
+assert_contains "$log" '--model claude-opus-5-5' 'claude default model'
+# The reviewer sees the diff and nothing of the operator's: one machine's user configuration put 600+ MCP tools and
+# its personal rule files in the reviewer's context and took 29 s to answer a one-line prompt (3 s without).
+assert_contains "$log" '--setting-sources project --strict-mcp-config --disable-slash-commands' 'claude runs without user settings, MCP servers or skills'
 assert_contains "$log" '+two' 'the prompt carries the diff'
 assert_contains "$log" 'NO FINDINGS' 'the prompt carries the header'
 assert_not_contains "$log" 'SECRET ISSUE TEXT' 'the prompt carries no issue text'
 assert_not_contains "$log" "cwd=$WORK/wt" 'the reviewer does not run in the worktree'
-assert_eq "reviewer=claude model=claude-opus-5 head=$head" "$(first3)" 'review.md first line'
+assert_eq "reviewer=claude model=claude-opus-5-5 head=$head" "$(first3)" 'review.md first line'
 assert_contains "$(cat .ak/review.md)" 'P1: off by one' 'review.md keeps the findings'
 assert_contains "$(head -n 1 .ak/review.md)" ' base=main patch=' 'review.md records the base and patch-id'
 unset CODEX_HOME
@@ -97,7 +100,7 @@ assert_contains "$out" 'findings=unparsed' 'an unparsed review is never clean'
 export FAKE_REVIEW_OUT='NO FINDINGS' FAKE_REVIEW_RC=3 FAKE_REVIEW_ERR='boom: not logged in'
 out=$("$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" 'a failing reviewer exits 0'
-assert_eq 'review=unavailable reason=exit-3' "$out" 'non-zero exit is unavailable'
+assert_eq 'review=unavailable reason=exit-3 fallback=exit-3' "$out" 'both reviewers failing is unavailable'
 assert_eq 'exit-3' "$(cat .ak/review.unavailable)" 'unavailable file names the reason'
 assert_eq no "$([[ -e .ak/review.md ]] && echo yes || echo no)" 'a stale review.md is removed'
 assert_contains "$(cat .ak/logs/review.log 2>/dev/null)" 'boom: not logged in' 'the failed reviewer output is kept in .ak/logs/review.log'
@@ -106,7 +109,7 @@ unset FAKE_REVIEW_RC FAKE_REVIEW_ERR
 export FAKE_REVIEW_SLEEP=5 AK_REVIEW_TIMEOUT=1
 out=$("$AK" review 2>&1); rc=$?
 assert_eq 0 "$rc" 'a timed-out reviewer exits 0'
-assert_eq 'review=unavailable reason=timeout' "$out" 'timeout is unavailable'
+assert_eq 'review=unavailable reason=timeout fallback=timeout' "$out" 'timeout is unavailable'
 unset FAKE_REVIEW_SLEEP AK_REVIEW_TIMEOUT
 
 export FAKE_REVIEW_OUT=$'P1: off by one \xe2\x80\x94 src/a.txt:2 \xe2\x80\x94 loops past end'
@@ -131,7 +134,7 @@ out=$("$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" '--again exits 0'
 assert_eq 'review=done findings=0' "$out" '--again reviews the current diff'
 assert_contains "$(cat "$FAKE_REVIEW_LOG")" '+three' '--again sends the current diff to the reviewer'
-assert_eq "reviewer=claude model=claude-opus-5 head=$(git rev-parse HEAD)" "$(first3)" '--again rewrites the reviewed head'
+assert_eq "reviewer=claude model=claude-opus-5-5 head=$(git rev-parse HEAD)" "$(first3)" '--again rewrites the reviewed head'
 
 foreign=$(git commit-tree -p HEAD -m elsewhere "$(git rev-parse 'HEAD^{tree}')")
 sed -i "1s/head=.*/head=$foreign/" .ak/review.md
@@ -139,7 +142,7 @@ sed -i "1s/head=.*/head=$foreign/" .ak/review.md
 out=$("$AK" review 2>&1)
 assert_eq 'review=done findings=0' "$out" 'a review of a head outside this branch is replaced'
 assert_contains "$(cat "$FAKE_REVIEW_LOG")" 'bin=' 'replacing a foreign review runs the reviewer'
-assert_eq "reviewer=claude model=claude-opus-5 head=$(git rev-parse HEAD)" "$(first3)" 'the replacement names the current head'
+assert_eq "reviewer=claude model=claude-opus-5-5 head=$(git rev-parse HEAD)" "$(first3)" 'the replacement names the current head'
 
 # Only review fixes and merge-downs may follow a reused review; other commits are work the reviewer never saw.
 printf 'four\n' >>src/a.txt
@@ -149,7 +152,7 @@ git push -q origin fix/thing 2>/dev/null
 out=$("$AK" review 2>&1)
 assert_eq 'review=done findings=0' "$out" 'a feat: commit after the review gets a fresh review'
 assert_contains "$(cat "$FAKE_REVIEW_LOG")" '+four' 'the fresh review sees the new work'
-assert_eq "reviewer=claude model=claude-opus-5 head=$(git rev-parse HEAD)" "$(first3)" 'the fresh review names the new head'
+assert_eq "reviewer=claude model=claude-opus-5-5 head=$(git rev-parse HEAD)" "$(first3)" 'the fresh review names the new head'
 reviewed=$(git rev-parse HEAD)
 
 printf 'five\n' >>src/a.txt
@@ -208,11 +211,28 @@ ln -s "$V2_TESTS/stub/gh" "$nobin/gh"
 path="$nobin"
 IFS=: read -ra dirs <<<"$PATH"
 for d in "${dirs[@]}"; do
-    [[ $d == "$V2_TESTS/stub" || -x $d/claude ]] || path+=":$d"
+    [[ $d == "$V2_TESTS/stub" || -x $d/claude || -x $d/codex ]] || path+=":$d"
 done
 out=$(CODEX_HOME=/x PATH=$path "$AK" review --again 2>&1); rc=$?
 assert_eq 0 "$rc" 'a missing reviewer CLI exits 0'
-assert_eq 'review=unavailable reason=missing-claude' "$out" 'missing CLI is unavailable'
+assert_eq 'review=unavailable reason=missing-claude fallback=missing-codex' "$out" 'missing CLIs are unavailable'
+
+# When the other provider cannot run, the worker's own provider runs the same blind review: one absent or broken CLI
+# used to mean no review at all.
+: >"$FAKE_REVIEW_LOG"
+export CODEX_HOME=/x FAKE_REVIEW_RC=7 FAKE_REVIEW_FAIL_BIN=claude FAKE_REVIEW_OUT='P1: real — a:1 — x'
+out=$("$AK" review --again 2>&1); rc=$?
+assert_eq $'review=done findings=1 fallback=codex reason=exit-7\nP1: real \xe2\x80\x94 a:1 \xe2\x80\x94 x' "$out" 'the fallback review reports its findings and says it is one'
+log=$(cat "$FAKE_REVIEW_LOG")
+assert_contains "$log" 'bin=claude' 'the other provider is tried first'
+assert_contains "$log" '-s read-only -m gpt-5.6-sol' 'the fallback is the same read-only codex review with its own default model'
+assert_eq "reviewer=codex model=gpt-5.6-sol head=$(git rev-parse HEAD)" "$(first3)" 'review.md names the provider that reviewed'
+assert_eq 'exit-7' "$(cat .ak/review.fallback)" 'the reason for the fallback is recorded'
+assert_eq no "$([[ -e .ak/review.unavailable ]] && echo yes || echo no)" 'a fallback review is not unavailable'
+unset FAKE_REVIEW_RC FAKE_REVIEW_FAIL_BIN
+"$AK" review --again >/dev/null 2>&1
+assert_eq no "$([[ -e .ak/review.fallback ]] && echo yes || echo no)" 'a later cross-provider review clears the fallback record'
+unset CODEX_HOME
 
 git checkout -q -b empty origin/main
 git push -q -u origin empty 2>/dev/null

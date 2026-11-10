@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-# ak review: one blind review of the pushed head by the other provider. Writes .ak/review.md, or
-# .ak/review.unavailable when the reviewer cannot run. A review of an ancestor of HEAD is reused
+# ak review: one blind review of the pushed head by the other provider, or by the worker's own when that one cannot
+# run (.ak/review.fallback says why). Writes .ak/review.md, or .ak/review.unavailable when neither can run. A review of an ancestor of HEAD is reused
 # unless --again is given: one review per PR, fixes follow it. The invocation is the consent.
 
 REVIEW_HEADER='You are an adversarial code reviewer. Below is a unified diff and nothing else; judge only what
@@ -28,7 +28,7 @@ review_model() {
     if [[ $provider == codex ]]; then
         [[ $model =~ ^(gpt-|o[0-9]) ]] || model=gpt-5.6-sol
     else
-        [[ -n $model && ! $model =~ ^(gpt-|o[0-9]) ]] || model=claude-opus-5
+        [[ -n $model && ! $model =~ ^(gpt-|o[0-9]) ]] || model=claude-opus-5-5
     fi
     printf '%s\n' "$model"
 }
@@ -50,6 +50,8 @@ review_diff() {
 }
 
 # review_run PROVIDER MODEL EFFORT PROMPT OUT: run the reviewer from an empty directory; print a reason on failure.
+# Neither CLI loads the operator's configuration: a user setup put 600+ MCP tools and personal rule files in the Claude
+# reviewer's context and took 29 s to answer a one-line prompt (3 s without). The project source is the empty directory.
 review_run() {
     local provider=$1 model=$2 effort=$3 prompt=$4 out=$5 seconds rc=0 empty
     seconds=$(cfg AK_REVIEW_TIMEOUT 1200)
@@ -62,6 +64,7 @@ review_run() {
             <"$prompt" >"$out.log" 2>&1) || rc=$?
     else
         (cd -- "$empty" && timeout -k 10 "$seconds" claude --print --model "$model" --effort "$effort" \
+            --setting-sources project --strict-mcp-config --disable-slash-commands \
             --tools "" --permission-mode dontAsk --no-session-persistence <"$prompt" >"$out" 2>"$out.log") || rc=$?
     fi
     if ((rc == 124 || rc == 137)); then
@@ -73,6 +76,18 @@ review_run() {
     else
         return 0
     fi
+    return 1
+}
+
+# review_attempt PROVIDER SCRATCH LOG: one review_run of SCRATCH/prompt into SCRATCH/out with PROVIDER's model and
+# effort. On failure prints the reason and appends what the reviewer said to LOG, which outlives the scratch directory.
+review_attempt() {
+    local provider=$1 scratch=$2 log=$3 model reason
+    model=$(review_model "$provider")
+    rm -f -- "$scratch/out" "$scratch/out.log"
+    reason=$(review_run "$provider" "$model" "$(review_effort "$provider")" "$scratch/prompt" "$scratch/out") && return 0
+    { printf 'reviewer=%s model=%s reason=%s\n' "$provider" "$model" "$reason"; tail -n 40 -- "$scratch/out.log" 2>/dev/null || true; } >>"$log"
+    printf '%s\n' "$reason"
     return 1
 }
 
@@ -135,7 +150,7 @@ review_report() {
 }
 
 cmd_main() {
-    local again=0 dir base diff provider model effort scratch reason head old
+    local again=0 dir base diff provider model scratch reason head old second note=''
     while (($#)); do
         case $1 in
             --again) again=1; shift ;;
@@ -151,23 +166,26 @@ cmd_main() {
         review_report "$dir/review.md" "reused head=${old:0:7} read=$dir/review.md"
         return 0
     fi
-    rm -f -- "$dir/review.md" "$dir/review.unavailable"
+    rm -f -- "$dir/review.md" "$dir/review.unavailable" "$dir/review.fallback"
     provider=$(review_provider)
-    model=$(review_model "$provider")
-    effort=$(review_effort "$provider")
     scratch=$(mktemp -d)
     trap 'rm -rf -- "$scratch"' RETURN
     printf '%s\n\n----- BEGIN DIFF -----\n%s\n----- END DIFF -----\n' "$REVIEW_HEADER" "$diff" >"$scratch/prompt"
-    if ! reason=$(review_run "$provider" "$model" "$effort" "$scratch/prompt" "$scratch/out"); then
-        printf '%s\n' "$reason" >"$dir/review.unavailable"
-        # What the reviewer said stays for the operator; the scratch directory goes on return.
-        mkdir -p -- "$dir/logs"
-        rm -f -- "$dir/logs/review.log"
-        { printf 'reviewer=%s model=%s reason=%s\n' "$provider" "$model" "$reason"; tail -n 40 -- "$scratch/out.log" 2>/dev/null || true; } >"$dir/logs/review.log"
-        printf 'review=unavailable reason=%s\n' "$reason"
-        return 0
+    mkdir -p -- "$dir/logs"
+    rm -f -- "$dir/logs/review.log"
+    if ! reason=$(review_attempt "$provider" "$scratch" "$dir/logs/review.log"); then
+        # The same blind review by the worker's own provider beats none: one absent or broken CLI meant no review.
+        [[ $provider == codex ]] && provider=claude || provider=codex
+        if ! second=$(review_attempt "$provider" "$scratch" "$dir/logs/review.log"); then
+            printf '%s\n' "$reason" >"$dir/review.unavailable"
+            printf 'review=unavailable reason=%s fallback=%s\n' "$reason" "$second"
+            return 0
+        fi
+        printf '%s\n' "$reason" >"$dir/review.fallback"
+        note="fallback=$provider reason=$reason"
     fi
+    model=$(review_model "$provider")
     { printf 'reviewer=%s model=%s head=%s base=%s patch=%s\n' "$provider" "$model" "$head" "$base" \
         "$(review_patch "origin/$base" "$head")"; cat -- "$scratch/out"; } >"$dir/review.md"
-    review_report "$dir/review.md"
+    review_report "$dir/review.md" "${note:-}"
 }
