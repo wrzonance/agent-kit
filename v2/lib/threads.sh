@@ -4,12 +4,13 @@
 # reached the kit: a field root went to merge a PR carrying two unresolved code-quality bot threads.
 
 # threads_open SLUG N: `id<TAB>author<TAB>path:line<TAB>first 120 chars` per unresolved thread; returns 1 on API error.
+# Every page is read: the first hundred threads, resolved ones included, used to be all the receipt and the merge saw.
 threads_open() {
     local json
-    json=$(gh api graphql -F owner="${1%%/*}" -F name="${1#*/}" -F n="$2" -f query='
-        query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) {
-          pullRequest(number: $n) { reviewThreads(first: 100) { nodes { id isResolved path line
-            comments(first: 1) { nodes { author { login } body } } } } } } }') || return 1
+    json=$(gh api graphql -F owner="${1%%/*}" -F name="${1#*/}" -F n="$2" --paginate -f query='
+        query($owner: String!, $name: String!, $n: Int!, $endCursor: String) { repository(owner: $owner, name: $name) {
+          pullRequest(number: $n) { reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor }
+            nodes { id isResolved path line comments(first: 1) { nodes { author { login } body } } } } } } }') || return 1
     jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not) |
         [.id, (.comments.nodes[0].author.login // "unknown"), "\(.path):\(.line // "?")",
          ((.comments.nodes[0].body // "") | gsub("[\\r\\n\\t]+"; " ") | .[0:120])] | @tsv' <<<"$json"

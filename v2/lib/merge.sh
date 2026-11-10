@@ -68,6 +68,24 @@ merge_reviewed() {
     [[ -z $loose ]] || die "the receipt on PR #$n reviews ${head:0:12}; not covered: ${loose:0:120}" "$fix"
 }
 
+# merge_ready_checks SLUG N SHA: once the PR is ready, wait for every AGENT_READY_CHECKS name (comma list, off when
+# empty) to succeed on SHA, then read the threads again. A review bot that starts on ready-for-review was cut off by
+# the merge that followed at once (29 of 75 sampled PRs: its check ended cancelled a minute after the PR closed), so
+# its findings never existed to answer. The names are required the way AGENT_REQUIRED_CHECKS names are, but only now:
+# on a draft such a check is skipped.
+merge_ready_checks() {
+    local ready
+    ready=$(cfg AGENT_READY_CHECKS)
+    [[ -n $ready ]] || return 0
+    (
+        AGENT_REQUIRED_CHECKS="$(cfg AGENT_REQUIRED_CHECKS),$ready"
+        export AGENT_REQUIRED_CHECKS
+        ci_wait "$3" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
+        merge_checks "$1" "$3"
+    ) || exit 1
+    merge_threads "$1" "$2"
+}
+
 # merge_q VALUE: VALUE shell-quoted, so a branch name in a printed fix hint cannot become executable text.
 merge_q() { printf '%q' "$1"; }
 
@@ -255,10 +273,12 @@ cmd_main() {
         merge_reviewed "$slug" "$n" "$sha"
         ci_wait "$sha" "${AK_MERGE_CI_TIMEOUT:-1800}" 0 >/dev/null
         merge_checks "$slug" "$sha"
+        merge_threads "$slug" "$n"
     fi
     if [[ $(jq -r .draft <<<"$json") == true ]]; then
         gh pr ready "$n" --repo "$slug" >/dev/null || die "cannot mark PR #$n ready" "gh pr ready $n --repo $slug"
     fi
+    merge_ready_checks "$slug" "$n" "$sha"
     method=$(merge_method "$slug" "$json" "$n") || exit $?
     merged=$(gh api -X PUT "repos/$slug/pulls/$n/merge" -f "merge_method=$method" -f "sha=$sha" | jq -r '.sha // empty') ||
         die "GitHub refused to merge PR #$n at $sha" "gh api repos/$slug/pulls/$n --jq .mergeable_state"
