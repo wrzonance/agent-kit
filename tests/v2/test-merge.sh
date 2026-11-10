@@ -498,4 +498,20 @@ assert_eq 1 "$rc" 'a refusal among the PRs exits 1 after the others merged'
 out=$("$AK" merge --pr 70 --pr x 2>&1); rc=$?
 assert_eq 2 "$rc" 'a PR number that is not digits is a usage error'
 
+# A run a newer run of the same check superseded does not count: a push followed at once by a retarget left six
+# cancelled runs beside six successful ones on one head, and the head read as not green.
+: >"$FAKE_GH_ROUTES"
+reviewed 80
+route "api $api/pulls/80" "$(pr_json 80 feat/r80 main)"
+superseded='{"check_runs":[{"name":"gates","status":"completed","conclusion":"cancelled","started_at":"2026-11-10T21:03:13Z"},{"name":"gates","status":"completed","conclusion":"success","started_at":"2026-11-10T21:03:16Z"}]}'
+route "api --paginate $api/commits/sha80/check-runs*" "$superseded"
+route "api $api/commits/sha80/check-runs?per_page=100 --paginate" "$superseded"
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
+assert_eq 0 "$rc" 'a head whose cancelled run was superseded by a successful one merges'
+assert_contains "$out" 'merged pr=80' 'the superseded run does not block the merge'
+
 finish
