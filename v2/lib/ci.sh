@@ -10,6 +10,14 @@ CI_PR=''
 # The plain name characters a check name keeps, 60 at most (jq filter shared by ci_runs and merge_checks).
 CI_NAME_FILTER='gsub("[^A-Za-z0-9 _.()/-]"; "") | .[0:60]'
 
+# The check runs that count, from the slurped pages of a check-runs read: all but a cancelled run that a later run of
+# the same check from the same app, created later (a higher id, whenever either started), replaced (jq filter shared by ci_runs and merge_checks). A push followed at once
+# by a retarget left six cancelled runs beside six successful ones on one head, and the head read as not green. A
+# failed run, a run still going and a same-named check of another app always count.
+# shellcheck disable=SC2016 # jq variables stay literal
+CI_LATEST='[.[].check_runs[]] | . as $all | map(select(.conclusion != "cancelled" or (. as $r
+    | any($all[]; .name == $r.name and .app.id == $r.app.id and (.id // 0) > ($r.id // 0)) | not)))'
+
 # The local head, refused unless origin's branch already points at it.
 ci_head() {
     local head branch remote
@@ -32,7 +40,7 @@ ci_runs() {
         die "could not read check runs for ${1:0:12}" "gh auth status"
     # A check name is text from the repository's workflows that ak prints for an agent to read: keep plain name
     # characters only, 60 at most.
-    jq -cs '[.[].check_runs[] | {name: (.name | '"$CI_NAME_FILTER"'), raw: .name, conclusion: .conclusion,
+    jq -cs "$CI_LATEST"' | [.[] | {name: (.name | '"$CI_NAME_FILTER"'), raw: .name, conclusion: .conclusion,
         done: (.conclusion != null or .status == "completed"),
         bad: ((.conclusion // "success") | IN("success", "neutral", "skipped") | not),
         url: (.details_url // .html_url // "")}]' <<<"$json"

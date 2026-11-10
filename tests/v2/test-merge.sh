@@ -500,4 +500,43 @@ assert_eq 1 "$rc" 'a refusal among the PRs exits 1 after the others merged'
 out=$("$AK" merge --pr 70 --pr x 2>&1); rc=$?
 assert_eq 2 "$rc" 'a PR number that is not digits is a usage error'
 
+# A run a newer run of the same check superseded does not count: a push followed at once by a retarget left six
+# cancelled runs beside six successful ones on one head, and the head read as not green.
+: >"$FAKE_GH_ROUTES"
+reviewed 80
+route "api $api/pulls/80" "$(pr_json 80 feat/r80 main)"
+superseded='{"check_runs":[{"id":11,"name":"gates","status":"completed","conclusion":"cancelled","started_at":"2026-11-10T21:03:13Z"},{"id":12,"name":"gates","status":"completed","conclusion":"success","started_at":"2026-11-10T21:03:16Z"}]}'
+route "api --paginate $api/commits/sha80/check-runs*" "$superseded"
+route "api $api/commits/sha80/check-runs?per_page=100 --paginate" "$superseded"
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
+route "api -X PUT $api/pulls/*/update-branch*" 'gh: There are no new commits on the base branch. (HTTP 422)' 1
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
+assert_eq 0 "$rc" 'a head whose cancelled run was superseded by a successful one merges'
+assert_contains "$out" 'merged pr=80' 'the superseded run does not block the merge'
+# Only a cancelled run is ever set aside, and only for a later run of the same check from the same app: a failure, or
+# another app's check of the same name, still counts.
+# Creation order decides, not start time: a run created earlier that started late does not replace a newer
+# cancelled one.
+routes=$(grep -v 'sha80/check-runs' "$FAKE_GH_ROUTES")
+: >"$FAKE_GH_ROUTES"
+late=$(jq -c '.check_runs[0].id = 13' <<<"$superseded")
+route "api --paginate $api/commits/sha80/check-runs*" "$late"
+route "api $api/commits/sha80/check-runs?per_page=100 --paginate" "$late"
+printf '%s\n' "$routes" >>"$FAKE_GH_ROUTES"
+out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
+assert_eq 1 "$rc" 'a cancelled run created after the successful one still refuses the merge'
+for case in 'failure:1' 'cancelled:2'; do
+    routes=$(grep -v 'sha80/check-runs' "$FAKE_GH_ROUTES")
+    : >"$FAKE_GH_ROUTES"
+    kept=$(jq -c --arg c "${case%%:*}" --argjson app "${case##*:}" '.check_runs[0].conclusion = $c | .check_runs[0].app = {id: $app} | .check_runs[1].app = {id: 1}' <<<"$superseded")
+    route "api --paginate $api/commits/sha80/check-runs*" "$kept"
+    route "api $api/commits/sha80/check-runs?per_page=100 --paginate" "$kept"
+    printf '%s\n' "$routes" >>"$FAKE_GH_ROUTES"
+    out=$(AGENT_REQUIRED_CHECKS=gates "$AK" merge --pr 80 2>&1); rc=$?
+    assert_eq 1 "$rc" "an earlier ${case%%:*} run (app ${case##*:}) still refuses the merge"
+    assert_contains "$out" "gates=${case%%:*}" "the refusal names the ${case%%:*} run"
+done
+
 finish
