@@ -17,6 +17,7 @@ merge_checks() {
     local slug=$1 sha=$2 runs bad missing
     runs=$(gh api --paginate "repos/$slug/commits/$sha/check-runs?per_page=100") ||
         die "cannot read the check runs on $sha" "ak ci --once"
+    runs=$(jq -cs "{check_runs: ($CI_LATEST)}" <<<"$runs")
     bad=$(jq -rs '[.[].check_runs[]
         | (if .conclusion != null or .status == "completed" then (.conclusion // "none") else .status end) as $s
         | select($s != "success" and $s != "neutral" and $s != "skipped")
