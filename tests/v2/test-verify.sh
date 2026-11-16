@@ -207,7 +207,7 @@ assert_eq src "$(cat "$WORK/src-suite.log")" \
     'the second matching suite invocation is logged'
 assert_eq no "$([[ -e $WORK/whole-suite.log ]] && echo yes || echo no)" \
     'matched suites suppress the whole check only after both suites run'
-unset AGENT_CMD_SRC
+unset AGENT_CMD_SRC AGENT_CMD_VERIFY
 rm -rf tests
 rm -f src/tab-other.txt
 
@@ -225,9 +225,11 @@ assert_contains "$out" 'PASS docs' 'a ./-prefixed rundir owns its paths'
 assert_contains "$out" 'PASS pkg' 'a quoted directory argument owns its paths'
 rm -rf docs pkg
 
+export AGENT_CMD_VERIFY='echo whole'
 out=$("$AK" verify --full 2>&1)
 assert_contains "$out" 'PASS verify' '--full runs the whole-repo check'
 assert_contains "$out" 'PASS src' '--full still runs the matched suites'
+unset AGENT_CMD_VERIFY
 out=$("$AK" verify --nope 2>&1); rc=$?
 assert_eq 2 "$rc" 'an unknown flag is a usage error'
 

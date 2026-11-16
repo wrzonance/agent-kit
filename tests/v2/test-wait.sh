@@ -279,6 +279,12 @@ assert_contains "$out" 'issue=7 state=unwatched note=no worktree recorded' 'past
 out=$("$AK" wait --issue 8 --check 2>&1)
 assert_contains "$out" 'issue=8 state=queued' 'naming a queued item without a worktree discloses it'
 
+# A named item already outside the active lifecycle and without a worktree has nothing to watch.
+printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":9,"worktree":"","wave":1,"state":"collected","needs":[]}]}' >"$repo/.ak/runs/r1.json"
+out=$("$AK" wait --issue 9 --check 2>&1); rc=$?
+assert_eq 0 "$rc" 'a named collected item without a worktree is already ready'
+assert_not_contains "$out" 'state=running' 'a named collected item without a worktree does not wait for the hang threshold'
+
 # Named waits resolve IDs to their owning run, including mixed owners, and never omit a queued item.
 mkdir -p "$WORK/wt/older/.ak"
 green_result >"$WORK/wt/older/.ak/result"

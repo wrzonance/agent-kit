@@ -241,7 +241,9 @@ watched() {
     named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R 'select(. != "")' | jq -sc .)
     jq -r --argjson named "$named" '(.open_wave // 1) as $w | .items[] |
         select((.state | IN("spawned", "pending", "merge-up")) as $out |
-               if ($named | length) > 0 then ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null
+               if ($named | length) > 0 then
+                   ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and
+                       ($out or .state == "queued" or (.worktree // "") != "")
                else (.wave // 1) <= $w and $out end) |
         [.kind, .n, .worktree // "", .spawned_at // 0] | map(tostring) | join("\u001f")' "$RUNFILE"
 }
