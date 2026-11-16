@@ -270,4 +270,52 @@ out=$("$AK" plan --new --issue 5 2>&1)
 assert_not_contains "$out" 'spawn issue=5 ' 'a mismatched branch at the expected path is never reused'
 assert_eq 'somebody else' "$(cat "$wt/src/a.txt")" 'a mismatched worktree is left intact'
 
+# A no-op refresh records its skip reasons without hiding the prior watchable run.
+fresh
+start
+current=$(cat "$repo/.ak/runs/current")
+before=$(cat "$repo/.ak/runs/$current.json")
+out=$("$AK" plan --new --issue 5 2>&1)
+attempted=${out#run=}
+attempted=${attempted%%$'\n'*}
+assert_contains "$out" 'skip issue=5 reason=running' 'the fresh plan explains why it chose no work'
+assert_eq "$current" "$(cat "$repo/.ak/runs/current")" 'an all-skipped plan preserves the valid current run pointer'
+assert_eq "$before" "$(cat "$repo/.ak/runs/$current.json")" 'preserving current leaves its run record intact'
+assert_eq '[]' "$(jq -c '.items' "$repo/.ak/runs/$attempted.json")" 'the attempted empty plan is still saved'
+assert_contains "$(jq -r '.others[].line' "$repo/.ak/runs/$attempted.json")" 'skip issue=5 reason=running' 'the saved empty plan retains its skip reason'
+
+# An empty first plan is actionable, and invalid pointers are replaced rather than retained.
+fresh
+issue_route 9 'Finish src/a.txt'
+route 'api --paginate --slurp repos/acme/widget/issues/9/timeline?per_page=100' '[[],[{"event":"cross-referenced","source":{"issue":{"number":1046,"state":"open","title":"Open PR","pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/1046"}}}}]]'
+default_routes
+out=$("$AK" plan --new --issue 9 2>&1)
+attempted=${out#run=}
+attempted=${attempted%%$'\n'*}
+assert_contains "$out" 'skip issue=9 reason=open-linked-pr:#1046' 'the first empty plan reports why work did not start'
+assert_eq "$attempted" "$(cat "$repo/.ak/runs/current")" 'the first empty plan becomes current when no valid prior run exists'
+
+printf 'missing-run\n' >"$repo/.ak/runs/current"
+out=$("$AK" plan --new --issue 9 2>&1)
+attempted=${out#run=}
+attempted=${attempted%%$'\n'*}
+assert_eq "$attempted" "$(cat "$repo/.ak/runs/current")" 'a pointer to a missing run is replaced by the new plan'
+
+printf 'malformed pointer\n' >"$repo/.ak/runs/current"
+out=$("$AK" plan --new --issue 9 2>&1)
+attempted=${out#run=}
+attempted=${attempted%%$'\n'*}
+assert_eq "$attempted" "$(cat "$repo/.ak/runs/current")" 'a pointer to a malformed run is replaced by the new plan'
+
+fresh
+board_route 5 '{"items":[]}'
+default_routes
+mkdir -p "$repo/.ak/runs"
+printf 'broken-run\n' >"$repo/.ak/runs/current"
+printf '{not-json\n' >"$repo/.ak/runs/broken-run.json"
+out=$("$AK" plan --new 2>&1)
+attempted=${out#run=}
+attempted=${attempted%%$'\n'*}
+assert_eq "$attempted" "$(cat "$repo/.ak/runs/current")" 'a pointer to an invalid run record is replaced by the new plan'
+
 finish

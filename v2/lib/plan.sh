@@ -587,9 +587,9 @@ pick() {
     ((${#blocked[@]} == 0)) || unblock "$serialize" "${blocked[@]}"
 }
 
-# write_run ID: the run file and the current pointer.
+# write_run ID: save every plan; point current at chosen work, or keep a valid prior run for an empty plan.
 write_run() {
-    local n items='[]' others='[]'
+    local n items='[]' others='[]' current file
     for n in "${CHOSEN[@]}"; do
         items=$(jq -c --argjson n "$n" --arg wt "${WORKTREE[$n]:-}" --arg needs "${NEEDS[$n]:-}" --arg stack "${STACKS[$n]:-}" --argjson wave "${WAVE[$n]:-1}" --argjson named "${NAMED:-0}" \
             '. + [{kind: "issue", n: $n, worktree: $wt, branch: "feat/issue-\($n)", wave: $wave,
@@ -603,6 +603,20 @@ write_run() {
     jq -n --arg run "$1" --arg porcelain "$(git -C "$MAIN" status --porcelain)" --argjson items "$items" --argjson others "$others" \
         --arg harness "$(harness)" --arg session "${CODEX_THREAD_ID:-${CLAUDE_CODE_SESSION_ID:-}}" \
         '{run: $run, harness: $harness, session: $session, open_wave: 1, porcelain: $porcelain, items: $items, others: ($others | sort_by(.n))}' >"$MAIN/.ak/runs/$1.json"
+    if ((${#CHOSEN[@]})); then
+        printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
+        return
+    fi
+    if [[ -f $MAIN/.ak/runs/current ]]; then
+        current=$(<"$MAIN/.ak/runs/current")
+        if [[ $current =~ ^[A-Za-z0-9._-]+$ ]]; then
+            file="$MAIN/.ak/runs/$current.json"
+            if [[ -f $file ]] && jq -e --arg run "$current" \
+                'type == "object" and .run == $run and (.items | type == "array")' "$file" >/dev/null 2>&1; then
+                return
+            fi
+        fi
+    fi
     printf '%s\n' "$1" >"$MAIN/.ak/runs/current"
 }
 
