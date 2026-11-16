@@ -32,9 +32,11 @@ verify_suite_names() {
 
 # verify_word_owns_top WORD TOP: does one shell word begin with the root path component TOP?
 verify_word_owns_top() {
-    local word=$1 top=$2
-    while [[ $word == ./* ]]; do word=${word#./}; done
-    [[ $word == "$top" || $word == "$top/"* ]]
+    local word=$1 top=$2 value
+    value=$word
+    [[ $word == --*=* ]] && value=${word#*=}
+    while [[ $value == ./* ]]; do value=${value#./}; done
+    [[ $value == "$top" || $value == "$top/"* ]]
 }
 
 # verify_command_owns_top COMMAND TOP: recognize shell word boundaries without evaluating command text.

@@ -157,6 +157,38 @@ assert_eq no "$([[ -e $WORK/serverquote.log || -e $WORK/spacedquote.log ]] && ec
     'neither quoted nested path is mistaken for a root tests suite'
 assert_eq whole "$(cat "$WORK/whole-quoted.log")" 'the fallback command ran'
 
+# Quotes around an option value still form a path argument, whether the equals sign is quoted too.
+cp "$repo/.agent/config.env" "$WORK/config.before-quoted-options"
+awk '!/^AGENT_CMD_/ && !/^AGENT_RUNDIR_/' "$WORK/config.before-quoted-options" >"$repo/.agent/config.minimal"
+mv "$repo/.agent/config.minimal" "$repo/.agent/config.env"
+mkdir -p tests src
+printf 'change\n' >tests/option-path.txt
+printf 'change\n' >src/option-path.txt
+for variant in full_option_value split_option_value; do
+    case $variant in
+        full_option_value) option_command='npm "--prefix=tests" test' ;;
+        split_option_value) option_command='npm --prefix="tests" test' ;;
+    esac
+    cat >"$repo/.agent/config.env" <<EOF
+AGENT_CMD_OPTIONTEST='echo optiontest >> $WORK/$variant.log; : $option_command'
+AGENT_CMD_SRC='echo src >> $WORK/$variant-src.log; : pytest src'
+AGENT_CMD_NESTED='echo nested >> $WORK/$variant-nested.log; : npm "--config=server tests/suite" test'
+AGENT_CMD_VERIFY='echo whole >> $WORK/$variant-whole.log'
+EOF
+    unset AGENT_CMD_OPTIONTEST AGENT_CMD_SRC AGENT_CMD_NESTED AGENT_CMD_VERIFY AGENT_CMD_TEST
+    out=$("$AK" verify 2>&1); rc=$?
+    assert_eq 0 "$rc" "$variant verifies both changed areas"
+    assert_contains "$out" 'PASS optiontest' "$variant owns root tests"
+    assert_contains "$out" 'PASS src' "$variant also runs the src suite"
+    assert_eq no "$( [[ -e $WORK/$variant-nested.log ]] && echo yes || echo no )" "$variant does not turn a nested quoted value into root ownership"
+    assert_eq no "$( [[ -e $WORK/$variant-whole.log ]] && echo yes || echo no )" "$variant does not fall back when both areas are covered"
+done
+mv "$WORK/config.before-quoted-options" "$repo/.agent/config.env"
+rm -f tests/option-path.txt src/option-path.txt
+rmdir tests 2>/dev/null || true
+rm -f "$WORK/full_option_value.log" "$WORK/full_option_value-src.log" "$WORK/full_option_value-nested.log" "$WORK/full_option_value-whole.log"
+rm -f "$WORK/split_option_value.log" "$WORK/split_option_value-src.log" "$WORK/split_option_value-nested.log" "$WORK/split_option_value-whole.log"
+
 # A literal tab separates shell words too. With a second changed area owned, omitting this suite
 # would otherwise skip the whole-repository check and record a partial pass.
 printf 'AGENT_CMD_TABTEST="echo tab >> %s/tab-suite.log; : pytest\ttests"\n' "$WORK" \
