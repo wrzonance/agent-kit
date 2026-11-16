@@ -104,6 +104,15 @@ copy="$WORK/v2copy"
 cp -r "$REPO/v2" "$copy"
 gate() { V2_ROOT=$copy bash "$lint"; }
 assert_rc 0 'gate passes the shipped hook' -- gate
+assert_eq '{"hooks":{}}' "$(jq -c '.hooks // null' "$copy/.codex-plugin/plugin.json")" \
+    'Codex manifest explicitly disables hook discovery with an empty inline hook object'
+jq 'del(.hooks)' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
+assert_rc 1 'gate rejects a missing Codex hook opt-out' -- gate
+jq '. + {hooks: []}' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
+assert_rc 1 'gate rejects an array Codex hook configuration' -- gate
+jq '. + {hooks: {hooks: {PreToolUse: []}}}' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
+assert_rc 1 'gate rejects nonempty Codex hook configuration' -- gate
+jq 'del(.hooks)' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
 jq '.hooks.Stop = [{"hooks":[{"type":"command","command":"x/wave-barrier.sh"}]}]' "$copy/hooks/hooks.json" >"$WORK/h" && cp "$WORK/h" "$copy/hooks/hooks.json"
 assert_rc 1 'gate fails a second event' -- gate
 cp "$REPO/v2/hooks/hooks.json" "$copy/hooks/hooks.json"
