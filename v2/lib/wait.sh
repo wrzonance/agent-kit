@@ -12,8 +12,11 @@ ROUND_AT=0      # when the item's correction round was called (set per item in i
 SEEN_RES=''     # the identity of the item's result, and of its transcript, at its last settle: a round counts only what differs
 SEEN_TR=''
 WAIT_CHECK=0    # --check: answer at once, with a short grace for a worker already in its receipt
+WAIT_SETTLE=0   # --check --settle: collect ready named owners in this call
 RUN_ID=''       # the run this ak wait captured at start; its marker and summary belong to it
 SUMMARY=''      # the settled wave's lines, built by settle_line
+OWNER_HARNESS='' # provider recorded by the run currently being watched
+OWNER_SESSION='' # root session recorded by the run currently being watched
 
 # proc_start PID: an id of the process's start time, so a reused pid does not look like the watcher.
 proc_start() {
@@ -55,7 +58,20 @@ marker_take() {
 
 # my_session: the harness session id this ak wait runs under.
 my_session() {
-    if [[ $(harness) == codex ]]; then printf '%s\n' "${CODEX_THREAD_ID:-}"; else printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}"; fi
+    if [[ $OWNER_HARNESS == codex || $OWNER_HARNESS == claude ]]; then printf '%s\n' "$OWNER_SESSION"
+    elif [[ $(harness) == codex ]]; then printf '%s\n' "${CODEX_THREAD_ID:-}"
+    else printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}"; fi
+}
+
+# owner_context: use the harness and root session saved with the run, not whichever harness invokes wait today.
+owner_context() {
+    OWNER_HARNESS=$(jq -r '.harness // empty' "$RUNFILE")
+    OWNER_SESSION=$(jq -r '.session // empty' "$RUNFILE")
+    [[ -n $OWNER_HARNESS ]] || OWNER_HARNESS=$(harness)
+    if [[ -z $OWNER_SESSION ]]; then
+        if [[ $OWNER_HARNESS == codex ]]; then OWNER_SESSION=${CODEX_THREAD_ID:-}
+        elif [[ $OWNER_HARNESS == claude ]]; then OWNER_SESSION=${CLAUDE_CODE_SESSION_ID:-}; fi
+    fi
 }
 
 # marker_mine: the live marker was written by a watcher of this run and session (or, with no session, this cwd).
@@ -97,7 +113,7 @@ ident_transcript() {
 item_idents() {
     local transcript='' tr_id=''
     if [[ -n $3 ]]; then
-        transcript=$(transcript_find "$3" "${1}_$2" "$(spawn_since "$3" "${4:-0}")")
+        transcript=$(transcript_find "$3" "${1}_$2" "$(spawn_since "$3" "${4:-0}")" "$OWNER_HARNESS" "$OWNER_SESSION")
         [[ -z $transcript ]] || tr_id=$(ident_transcript "$transcript")
         printf '%s\037%s\n' "$(ident_result "$3")" "$tr_id"
     else
@@ -147,9 +163,11 @@ final_grace() {
 }
 
 item_state() {
-    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state taken='' since
+    local kind=$1 n=$2 wt=$3 hang=${AK_WAIT_HANG_S:-1200} transcript terminal_id terminal_state taken='' since item_status
     item_meta "$kind" "$n"
     if [[ -z $wt ]]; then
+        item_status=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][0].state // ""' "$RUNFILE")
+        if [[ $item_status == queued ]]; then echo 'queued note=item is queued without a worktree'; return 0; fi
         # Nothing to look at: running until the run file itself has been quiet for the threshold.
         if (($(quiet_s $(($(date +%s) - $(file_mtime "$RUNFILE")))) >= hang)); then
             echo 'unwatched note=no worktree recorded for this item'
@@ -160,13 +178,17 @@ item_state() {
     fi
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
     since=$(spawn_since "$wt" "${4:-0}")
-    transcript=$(transcript_find "$wt" "${kind}_$n" "$since")
-    if [[ -z $transcript && $(harness) == codex ]] && (($(date +%s) - since >= 4 * ${AK_WAIT_POLL_S:-15})); then
+    transcript=$(transcript_find "$wt" "${kind}_$n" "$since" "$OWNER_HARNESS" "$OWNER_SESSION")
+    if [[ -z $transcript && $OWNER_HARNESS == codex ]] && (($(date +%s) - since >= 4 * ${AK_WAIT_POLL_S:-15})); then
         # No worker of this spawn after four polls: Codex keeps a finished worker's name, so the spawn under it failed
         # and the root's message reached the old worker, which answers from its context and ends. Its end is this
         # item's end, so the root replans now instead of waiting on a worker nobody started.
-        transcript=$(transcript_find "$wt" "${kind}_$n" 0)
-        [[ -z $transcript ]] || taken=" note=the earlier worker ${kind}_$n answered this spawn and ended"
+        transcript=$(transcript_find "$wt" "${kind}_$n" 0 "$OWNER_HARNESS" "$OWNER_SESSION")
+        if [[ -n $transcript && $(file_mtime "$transcript") -ge $since ]]; then
+            taken=" note=the earlier worker ${kind}_$n answered this spawn and ended"
+        else
+            transcript=''
+        fi
     fi
     if [[ -n $transcript ]]; then
         terminal_state=$(transcript_state "$transcript")
@@ -204,7 +226,7 @@ watched() {
     named=$(printf '%s\n' "${WAIT_NAMED[@]}" | jq -R 'select(. != "")' | jq -sc .)
     jq -r --argjson named "$named" '(.open_wave // 1) as $w | .items[] |
         select((.state | IN("spawned", "pending", "merge-up")) as $out |
-               if ($named | length) > 0 then ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null and ($out or (.worktree // "") != "")
+               if ($named | length) > 0 then ((.kind + ":" + (.n | tostring)) as $id | $named | index($id)) != null
                else (.wave // 1) <= $w and $out end) |
         [.kind, .n, .worktree // "", .spawned_at // 0] | map(tostring) | join("\u001f")' "$RUNFILE"
 }
@@ -232,6 +254,31 @@ report() {
 
 # wave_number: the open wave.
 wave_number() { jq -r '.open_wave // 1' "$RUNFILE"; }
+
+# find_owner KIND N: newest run with this item still owning work, falling back to its newest historical record.
+find_owner() {
+    local kind=$1 n=$2 file row fallback=''
+    while IFS= read -r file; do
+        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1] // empty |
+            [.state, (.worktree // "")] | @tsv' "$file" 2>/dev/null) || continue
+        [[ -n $row ]] || continue
+        [[ -n $fallback ]] || fallback=$(basename -- "$file" .json)
+        if [[ $row == $'spawned\t'* || $row == $'pending\t'* || $row == $'merge-up\t'* ]]; then
+            basename -- "$file" .json
+            return 0
+        fi
+    done < <(ls -t -- "$MAIN"/.ak/runs/*.json 2>/dev/null)
+    [[ -n $fallback ]] || return 1
+    printf '%s\n' "$fallback"
+}
+
+# load_owner RUN: switch all run-scoped reads and writes to one named item's owner.
+load_owner() {
+    RUN_ID=$1
+    RUNFILE="$MAIN/.ak/runs/$RUN_ID.json"
+    jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
+    owner_context
+}
 
 # next_step KIND N STATE: the command that recovers a worker that did not report.
 next_step() {
@@ -363,45 +410,123 @@ next_wait() {
     printf '%s\n' "$out"
 }
 
-cmd_main() {
-    local check=0 collect=0 states usage='usage: ak wait [--issue N | --pr N]... [--check [--settle]]'
-    while (($#)); do
-        case $1 in
-            --check) check=1; WAIT_CHECK=1; shift ;;
-            --settle) collect=1; shift ;;
-            --issue | --pr) [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"; WAIT_NAMED+=("${1#--}:$2"); shift 2 ;;
-            *) usage_die "$usage" ;;
-        esac
-    done
-    ((collect == 0 || check == 1)) || usage_die "$usage"
-    MAIN=$(main_root)
-    MARKER="$MAIN/.ak/wave.open"
-    [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
-    RUN_ID=$(<"$MAIN/.ak/runs/current")
-    RUNFILE="$MAIN/.ak/runs/$RUN_ID.json"
-    jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
+# wait_owner: wait and settle the currently loaded run using only its owned items.
+wait_owner() {
+    local check=$1 collect=$2 states file
+    plan_context wait
     if ((check)); then
         open_corrections
         states=$(wave_state)
         if ((collect == 0)); then
-            report "$states" || exit 3
+            report "$states" || return 3
             next_wait
             return 0
         fi
         if grep -q 'state=running' <<<"$states"; then report "$states" || true; return 3; fi
+    else
+        open_corrections
     fi
-    plan_context wait
-    ((check)) || open_corrections
-    # Attach only to a watcher of this very run and session; another's marker is left alone and this wait runs unmarked.
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
         marker_mine || break
-        # With no worker running (checked above) the holder is settling, so a --check --settle call attaches until it
-        # drops the marker and returns the summary. An exit 3 here left a Codex root, whose stray `ak wait` was the
-        # holder, with nothing to wake it: the run sat at its cap with wave 2 never spawned (bench 2026-10-27).
         attach "$check" || return $?
     done
     trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT
     wait_loop "$check"
+}
+
+# named_wait: resolve each requested ID to its owning run, then keep every read, stamp, and summary in that run.
+named_wait() {
+    local id kind n owner states pending=0 errors=0
+    local -a owners=() missing=() all_named=("${WAIT_NAMED[@]}")
+    local -A groups=() state_by_owner=()
+    for id in "${WAIT_NAMED[@]}"; do
+        kind=${id%%:*} n=${id#*:}
+        owner=$(find_owner "$kind" "$n") || owner=''
+        if [[ -z $owner ]]; then
+            missing+=("$kind=$n state=missing note=item is absent from saved runs next=$([[ $kind == issue ]] && echo 'ak plan --issue' || echo 'ak pr-plan --pr') $n")
+            errors=1
+            continue
+        fi
+        if [[ -z ${groups[$owner]:-} ]]; then owners+=("$owner"); fi
+        groups[$owner]+="${groups[$owner]:+ }$id"
+    done
+    for owner in "${owners[@]}"; do
+        load_owner "$owner"
+        read -ra WAIT_NAMED <<<"${groups[$owner]}"
+        plan_context wait
+        ((WAIT_CHECK)) && open_corrections
+        states=$(wave_state)
+        state_by_owner[$owner]=$states
+        [[ $states != *'state=running'* ]] || pending=1
+        [[ $states != *'state=queued'* ]] || errors=1
+    done
+    if ((WAIT_CHECK)); then
+        for owner in "${owners[@]}"; do
+            load_owner "$owner"
+            if ((${#owners[@]} == 1)); then report "${state_by_owner[$owner]}" || true
+            else
+                printf '%s\n' "${state_by_owner[$owner]}"
+                printf 'wave=%s settled=%s/%s\n' "$(wave_number)" \
+                    "$(grep -vc 'state=running' <<<"${state_by_owner[$owner]}" || true)" \
+                    "$(grep -c . <<<"${state_by_owner[$owner]}" || true)"
+            fi
+        done
+        ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
+        ((pending)) && return 3
+        WAIT_NAMED=("${all_named[@]}")
+        next_wait
+        ((errors)) && return 1
+        if ((!WAIT_SETTLE)); then return 0; fi
+    else
+        for owner in "${owners[@]}"; do
+            load_owner "$owner"
+            read -ra WAIT_NAMED <<<"${groups[$owner]}"
+            wait_owner 0 0 || return $?
+        done
+        ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
+        ((errors)) && return 1
+        return 0
+    fi
+    # Every owned item is ready; settle each run under its own marker and summary path.
+    for owner in "${owners[@]}"; do
+        load_owner "$owner"
+        read -ra WAIT_NAMED <<<"${groups[$owner]}"
+        wait_owner 1 1 || return $?
+    done
+    ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
+    ((errors)) && return 1
+    return 0
+}
+
+cmd_main() {
+    local check=0 collect=0 states id usage='usage: ak wait [--issue N | --pr N]... [--check [--settle]]'
+    while (($#)); do
+        case $1 in
+            --check) check=1; WAIT_CHECK=1; shift ;;
+            --settle) collect=1; shift ;;
+            --issue | --pr)
+                [[ ${2:-} =~ ^[0-9]+$ ]] || usage_die "$usage"
+                id="${1#--}:$2"
+                [[ " ${WAIT_NAMED[*]} " == *" $id "* ]] || WAIT_NAMED+=("$id")
+                shift 2 ;;
+            *) usage_die "$usage" ;;
+        esac
+    done
+    ((collect == 0 || check == 1)) || usage_die "$usage"
+    WAIT_SETTLE=$collect
+    MAIN=$(main_root)
+    MARKER="$MAIN/.ak/wave.open"
+    if [[ -f $MAIN/.ak/runs/current ]]; then
+        RUN_ID=$(<"$MAIN/.ak/runs/current")
+        RUNFILE="$MAIN/.ak/runs/$RUN_ID.json"
+        jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
+        owner_context
+    elif ((${#WAIT_NAMED[@]} == 0)); then
+        die 'no current run' 'ak plan'
+    fi
+    if ((${#WAIT_NAMED[@]})); then named_wait; return $?; fi
+    WAIT_NAMED=()
+    wait_owner "$check" "$collect"
 }

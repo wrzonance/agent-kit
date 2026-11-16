@@ -134,16 +134,17 @@ sed -i 's#/root/issue_55#/root/issue_5#g' "$sessions/rollout-a.jsonl"
 # A spawn with no transcript of its own while an older worker holds the name: Codex refuses the second spawn and the
 # root's message reaches the finished worker, which answers from its old context and ends. After four polls that
 # worker's end is reported, so the root replans at once instead of waiting an hour on a worker nobody started.
-sleep 1
-SPAWNED_AT=$(date +%s) set_run 5
+# An unchanged transcript from an earlier turn cannot prove that this spawn ran.
+sleep 5
+SPAWNED_AT=$(date -d '4 seconds ago' +%s) set_run 5
 touch "$WORK/wt/5/.ak"
 out=$("$AK" wait --check 2>&1)
-assert_contains "$out" 'issue=5 state=running' 'within the grace after a spawn the older transcript does not count'
-sleep 4
-touch "$WORK/wt/5/.ak"
+assert_contains "$out" 'issue=5 state=running' 'an unchanged older transcript never counts as a response to this spawn'
+# A genuine resumed response updates that same transcript after the spawn and can explain a failed re-spawn.
+touch "$sessions/rollout-a.jsonl"
 out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=5 state=ended-without-result note=the earlier worker issue_5 answered this spawn and ended' \
-    'after the grace the older worker that took the spawn reads as ended, busy worktree or not'
+    'a later response from the earlier worker reads as ended, busy worktree or not'
 SPAWNED_AT=0 set_run 5
 head -n 2 "$sessions/rollout-a.jsonl" >"$sessions/rollout-b.jsonl"
 sed -i 's#/root/issue_5#/root/issue_6#g' "$sessions/rollout-a.jsonl"
@@ -241,7 +242,52 @@ touch -d '10 seconds ago' "$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=7 state=unwatched note=no worktree recorded' 'past the threshold it is unwatched, naming why'
 out=$("$AK" wait --issue 8 --check 2>&1)
-assert_eq $'wave=1 settled=0/0\nnext=ak wait --issue 8' "$out" 'naming a queued item without a worktree watches nothing'
+assert_contains "$out" 'issue=8 state=queued' 'naming a queued item without a worktree discloses it'
+
+# Named waits resolve IDs to their owning run, including mixed owners, and never omit a queued item.
+mkdir -p "$WORK/wt/older/.ak"
+green_result >"$WORK/wt/older/.ak/result"
+jq -n --arg wt "$WORK/wt/older" '{run:"r0",open_wave:1,items:[{kind:"issue",n:21,worktree:$wt,wave:1,state:"spawned",needs:[]}]}' >"$repo/.ak/runs/r0.json"
+set_run 22
+green_result >"$WORK/wt/22/.ak/result"
+out=$("$AK" wait --issue 21 --issue 21 --issue 22 --check 2>&1)
+assert_contains "$out" 'issue=21 state=reported' 'a named issue in an older run is accounted for'
+assert_contains "$out" 'issue=22 state=reported' 'a named issue in the current run is accounted for too'
+assert_eq 1 "$(grep -c '^issue=21 ' <<<"$out")" 'a duplicate named ID is reported once'
+assert_eq 1 "$(grep -o -- '--issue 21' <<<"$out" | wc -l)" 'the next-wait command also deduplicates named IDs'
+route 'api repos/acme/widget/pulls/9' '{"number":9,"head":{"sha":"abc"}}'
+route 'api repos/acme/widget/commits/abc/check-runs*' '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'
+out=$("$AK" wait --issue 21 --issue 22 --check --settle 2>&1); rc=$?
+assert_eq 0 "$rc" 'mixed-owner named settlement succeeds'
+assert_eq yes "$([[ -f $repo/.ak/runs/r0.wave1.summary && -f $repo/.ak/runs/r1.wave1.summary ]] && echo yes || echo no)" \
+    'each owner writes its own summary'
+assert_contains "$(cat "$repo/.ak/runs/r0.wave1.summary")" 'issue=21 pr=' 'the older owner summary contains only its item'
+assert_contains "$(cat "$repo/.ak/runs/r1.wave1.summary")" 'issue=22 pr=' 'the current owner summary contains only its item'
+
+# Transcript discovery uses the owning run's provider and root session, even when wait runs in a different harness.
+mkdir -p "$WORK/wt/codex-owner/.ak" "$WORK/codex-owner/sessions/2026/10/24"
+jq -n --arg wt "$WORK/wt/codex-owner" '{run:"r2",open_wave:1,harness:"codex",session:"saved-root",items:[{kind:"issue",n:24,worktree:$wt,wave:1,state:"spawned",needs:[]}]}' >"$repo/.ak/runs/r2.json"
+sed -e 's/01a16bd5-d8ed-7b30-aacc-c6261877bc16/saved-root/g' -e 's#/root/normal#/root/issue_24#g' \
+    "$fx/child-normal.jsonl" >"$WORK/codex-owner/sessions/2026/10/24/rollout-owner.jsonl"
+export CODEX_HOME="$WORK/codex-owner"
+out=$("$AK" wait --issue 24 --check 2>&1); rc=$?
+assert_eq 0 "$rc" 'an owner transcript can be read from a saved Codex session under a Claude caller'
+assert_contains "$out" 'issue=24 state=ended-without-result' 'the owner session supplies the transcript evidence'
+rm -f "$repo/.ak/runs/current"
+out=$("$AK" wait --issue 24 --check 2>&1); rc=$?
+assert_eq 0 "$rc" 'a named wait can still find its owner when no current pointer exists'
+assert_contains "$out" 'issue=24 state=ended-without-result' 'historical owner lookup does not depend on current'
+printf 'r1\n' >"$repo/.ak/runs/current"
+unset CODEX_HOME
+
+printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":23,"worktree":"","wave":1,"state":"queued","needs":[]}]}' >"$repo/.ak/runs/r1.json"
+out=$("$AK" wait --issue 23 --check 2>&1); rc=$?
+assert_eq 1 "$rc" 'a named queued item without a worktree is an explicit non-success'
+assert_contains "$out" 'issue=23 state=queued' 'the named queued item is disclosed'
+
+out=$("$AK" wait --issue 999 --check 2>&1); rc=$?
+assert_eq 1 "$rc" 'a named item absent from all run records is an explicit non-success'
+assert_contains "$out" 'issue=999 state=missing' 'the absent item is disclosed'
 
 # A watcher that dies leaves the wait to the attached ak wait, which becomes the watcher.
 set_run 5
