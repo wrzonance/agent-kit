@@ -136,6 +136,28 @@ assert_eq no "$([[ -e $WORK/root-suite.log ]] && echo yes || echo no)" \
 
 rm -rf tests server
 
+# A literal tab separates shell words too. With a second changed area owned, omitting this suite
+# would otherwise skip the whole-repository check and record a partial pass.
+printf 'AGENT_CMD_TABTEST="echo tab >> %s/tab-suite.log; : pytest\ttests"\n' "$WORK" \
+    >>"$repo/.agent/config.env"
+export AGENT_CMD_VERIFY="echo whole >> $WORK/whole-suite.log"
+export AGENT_CMD_SRC="echo src >> $WORK/src-suite.log"
+mkdir -p tests src
+printf 'change\n' >tests/Foo.py
+printf 'change\n' >src/tab-other.txt
+out=$("$AK" verify 2>&1); rc=$?
+assert_eq 0 "$rc" 'tab-separated suite and another area verify successfully'
+assert_contains "$out" 'PASS tabtest' 'a literal-tab command owns the tests path'
+assert_contains "$out" 'PASS src' 'the second changed area is also verified'
+assert_eq tab "$(cat "$WORK/tab-suite.log")" 'the literal-tab suite invocation is logged'
+assert_eq src "$(cat "$WORK/src-suite.log")" \
+    'the second matching suite invocation is logged'
+assert_eq no "$([[ -e $WORK/whole-suite.log ]] && echo yes || echo no)" \
+    'matched suites suppress the whole check only after both suites run'
+unset AGENT_CMD_SRC
+rm -rf tests
+rm -f src/tab-other.txt
+
 printf 'x\n' >top-level.txt
 out=$("$AK" verify 2>&1)
 assert_contains "$out" 'uncovered=top-level.txt' 'paths no suite owns are named'

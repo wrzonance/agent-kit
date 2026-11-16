@@ -43,6 +43,7 @@ verify_covers() {
     top=${path%%/*}
     repo_root=$(worktree_root) || return 1
     command=${command//"$repo_root"/.}
+    command=${command//$'\t'/ }
     command=${command//\"/ }
     command=${command//\'/ }
     command=${command//=/ }
