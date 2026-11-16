@@ -267,25 +267,20 @@ report() {
 # wave_number: the open wave.
 wave_number() { jq -r '.open_wave // 1' "$RUNFILE"; }
 
-# find_owner KIND N: newest timestamp-ordered non-queued attempt, falling back to the newest queued record.
-# Run IDs are saved in timestamp order; settlement can refresh a JSON file's mtime without changing its attempt order.
+# find_owner KIND N: first valid matching row in timestamp-ordered run IDs, regardless of lifecycle state.
+# Settlement can refresh a JSON file's mtime without changing its attempt order; malformed run files are skipped.
 find_owner() {
-    local kind=$1 n=$2 file row state fallback=''
+    local kind=$1 n=$2 file
     local -a files=()
     mapfile -t files < <(find "$MAIN/.ak/runs" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort -r)
     for file in "${files[@]}"; do
-        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1].state // empty' \
-            "$file" 2>/dev/null) || continue
-        [[ -n $row ]] || continue
-        [[ -n $fallback ]] || fallback=$(basename -- "$file" .json)
-        state=$row
-        if [[ $state != queued ]]; then
+        if jq -e --arg k "$kind" --argjson n "$n" 'any(.items[]?; .kind == $k and .n == $n)' \
+            "$file" >/dev/null 2>&1; then
             basename -- "$file" .json
             return 0
         fi
     done
-    [[ -n $fallback ]] || return 1
-    printf '%s\n' "$fallback"
+    return 1
 }
 
 # load_owner RUN: switch all run-scoped reads and writes to one named item's owner.

@@ -339,6 +339,21 @@ assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/20261116-11
 assert_eq yes "$(jq -r '.items[0].round_at // empty' "$repo/.ak/runs/20261116-110002.json" | grep -Eq '^[0-9]+$' && echo yes || echo no)" \
     'the newest collected owner receives the correction stamp'
 
+# A newer queued row is authoritative; it must not reopen an older collected attempt.
+mkdir -p "$WORK/wt/queued-history/.ak"
+green_result >"$WORK/wt/queued-history/.ak/result"
+jq -n --arg wt "$WORK/wt/queued-history" '{run:"20261116-110010",open_wave:1,items:[{kind:"issue",n:28,worktree:$wt,wave:1,state:"collected",needs:[]}]}' >"$repo/.ak/runs/20261116-110010.json"
+jq -n '{run:"20261116-110011",open_wave:1,items:[{kind:"issue",n:28,worktree:"",wave:2,state:"queued",needs:[27]}]}' >"$repo/.ak/runs/20261116-110011.json"
+touch "$repo/.ak/runs/20261116-110010.json"
+rm -f "$repo/.ak/runs/20261116-110010.wave1.summary"
+out=$("$AK" wait --issue 28 --check 2>&1); rc=$?
+assert_eq 1 "$rc" 'the newest queued item is an explicit non-success'
+assert_contains "$out" 'issue=28 state=queued' 'a newer queue is not hidden by older collected work'
+assert_eq collected "$(jq -r '.items[0].state' "$repo/.ak/runs/20261116-110010.json")" 'the older collected row is not correction-stamped'
+assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/20261116-110010.json")" 'the older row has no correction stamp'
+assert_eq queued "$(jq -r '.items[0].state' "$repo/.ak/runs/20261116-110011.json")" 'the current queued row remains queued'
+assert_eq no "$([[ -f $repo/.ak/runs/20261116-110010.wave1.summary ]] && echo yes || echo no)" 'queued work writes no older-owner summary'
+
 # Transcript discovery uses the owning run's provider and root session, even when wait runs in a different harness.
 mkdir -p "$WORK/wt/codex-owner/.ak" "$WORK/codex-owner/sessions/2026/10/24"
 jq -n --arg wt "$WORK/wt/codex-owner" '{run:"r2",open_wave:1,harness:"codex",session:"saved-root",items:[{kind:"issue",n:24,worktree:$wt,wave:1,state:"spawned",needs:[]}]}' >"$repo/.ak/runs/r2.json"
