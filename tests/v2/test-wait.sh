@@ -312,15 +312,32 @@ rm -rf "$WORK/marker-bin"
 # A newer collected attempt outranks an old terminal row whose settlement refreshed the file timestamp.
 mkdir -p "$WORK/wt/attempt-old/.ak" "$WORK/wt/attempt-new/.ak"
 green_result >"$WORK/wt/attempt-new/.ak/result"
-jq -n --arg wt "$WORK/wt/attempt-old" '{run:"attempt-old",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"spawned",ended:"ended-without-result",needs:[]}]}' >"$repo/.ak/runs/attempt-old.json"
-jq -n --arg wt "$WORK/wt/attempt-new" '{run:"attempt-new",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"collected",needs:[]}]}' >"$repo/.ak/runs/attempt-new.json"
-touch "$repo/.ak/runs/attempt-old.json"
+jq -n --arg wt "$WORK/wt/attempt-old" '{run:"attempt-01-old",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"spawned",ended:"ended-without-result",needs:[]}]}' >"$repo/.ak/runs/attempt-01-old.json"
+jq -n --arg wt "$WORK/wt/attempt-new" '{run:"attempt-02-new",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"collected",needs:[]}]}' >"$repo/.ak/runs/attempt-02-new.json"
+touch "$repo/.ak/runs/attempt-01-old.json"
 out=$("$AK" wait --issue 25 --check 2>&1); rc=$?
 assert_eq 3 "$rc" 'the newest successful attempt owns the named item and opens its correction round'
 assert_contains "$out" 'issue=25 state=running' 'the newer correction round waits for a new result'
-assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/attempt-old.json")" 'an older ended attempt is not correction-stamped'
-assert_eq yes "$(jq -r '.items[0].round_at // empty' "$repo/.ak/runs/attempt-new.json" | grep -Eq '^[0-9]+$' && echo yes || echo no)" \
+assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/attempt-01-old.json")" 'an older ended attempt is not correction-stamped'
+assert_eq yes "$(jq -r '.items[0].round_at // empty' "$repo/.ak/runs/attempt-02-new.json" | grep -Eq '^[0-9]+$' && echo yes || echo no)" \
     'the latest owner receives the correction stamp'
+
+# A newer collected run is authoritative even if an older spawned row has no .ended marker.
+mkdir -p "$WORK/wt/attempt-live-old/.ak" "$WORK/wt/attempt-collected-new/.ak"
+green_result >"$WORK/wt/attempt-collected-new/.ak/result"
+jq -n --arg wt "$WORK/wt/attempt-live-old" '{run:"20261116-110001",harness:"claude",session:"old-session",open_wave:1,items:[{kind:"issue",n:27,worktree:$wt,wave:1,state:"spawned",needs:[]}]}' >"$repo/.ak/runs/20261116-110001.json"
+jq -n --arg wt "$WORK/wt/attempt-collected-new" '{run:"20261116-110002",harness:"claude",session:"new-session",open_wave:1,items:[{kind:"issue",n:27,worktree:$wt,wave:1,state:"collected",needs:[]}]}' >"$repo/.ak/runs/20261116-110002.json"
+old_owner_subdir="$HOME/.claude/projects/$slug/old-session/subagents"
+mkdir -p "$old_owner_subdir"
+printf '{"type":"user","message":{"content":"worktree %s"}}\n' "$WORK/wt/attempt-live-old" >"$old_owner_subdir/agent-old.jsonl"
+printf '{"finished":true}\n' >"$old_owner_subdir/agent-old.meta.json"
+touch "$repo/.ak/runs/20261116-110001.json"
+out=$("$AK" wait --issue 27 --check 2>&1); rc=$?
+assert_eq 3 "$rc" 'the latest non-queued attempt is authoritative'
+assert_contains "$out" 'issue=27 state=running' 'the newer collected attempt opens its correction round'
+assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/20261116-110001.json")" 'the older spawned row without .ended is not stamped'
+assert_eq yes "$(jq -r '.items[0].round_at // empty' "$repo/.ak/runs/20261116-110002.json" | grep -Eq '^[0-9]+$' && echo yes || echo no)" \
+    'the newest collected owner receives the correction stamp'
 
 # Transcript discovery uses the owning run's provider and root session, even when wait runs in a different harness.
 mkdir -p "$WORK/wt/codex-owner/.ak" "$WORK/codex-owner/sessions/2026/10/24"

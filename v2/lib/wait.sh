@@ -267,30 +267,19 @@ report() {
 # wave_number: the open wave.
 wave_number() { jq -r '.open_wave // 1' "$RUNFILE"; }
 
-# find_owner KIND N: newest run with this item still owning work, falling back to its newest historical record.
+# find_owner KIND N: newest timestamp-ordered non-queued attempt, falling back to the newest queued record.
+# Run IDs are saved in timestamp order; settlement can refresh a JSON file's mtime without changing its attempt order.
 find_owner() {
-    local kind=$1 n=$2 file row state wt ended fallback=''
+    local kind=$1 n=$2 file row state fallback=''
     local -a files=()
     mapfile -t files < <(find "$MAIN/.ak/runs" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort -r)
     for file in "${files[@]}"; do
-        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1] // empty |
-            [.state, (.worktree // ""), (.ended // "")] | @tsv' "$file" 2>/dev/null) || continue
+        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1].state // empty' \
+            "$file" 2>/dev/null) || continue
         [[ -n $row ]] || continue
         [[ -n $fallback ]] || fallback=$(basename -- "$file" .json)
-        IFS=$'\t' read -r state wt ended <<<"$row"
-        if [[ $state =~ ^(spawned|pending|merge-up)$ && -n $wt && -z $ended ]]; then
-            basename -- "$file" .json
-            return 0
-        fi
-    done
-    # A terminal attempt is not outstanding ownership. Pick the newest saved non-queued attempt deterministically,
-    # so an old settlement's refreshed mtime cannot hide a later collected run.
-    for file in "${files[@]}"; do
-        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1] // empty |
-            [.state, (.ended // "")] | @tsv' "$file" 2>/dev/null) || continue
-        [[ -n $row ]] || continue
-        IFS=$'\t' read -r state ended <<<"$row"
-        if [[ $state != queued && ! ($state =~ ^(spawned|pending|merge-up)$ && -n $ended) ]]; then
+        state=$row
+        if [[ $state != queued ]]; then
             basename -- "$file" .json
             return 0
         fi
