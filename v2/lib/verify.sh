@@ -32,7 +32,7 @@ verify_suite_names() {
 
 # verify_covers DIR COMMAND PATH: does this suite own PATH?
 verify_covers() {
-    local dir=$1 command=$2 path=$3 top
+    local dir=$1 command=$2 path=$3 top repo_root
     while [[ $dir == ./* ]]; do dir=${dir#./}; done
     dir=${dir%/}
     if [[ -n $dir && $dir != . ]]; then
@@ -41,7 +41,13 @@ verify_covers() {
     fi
     [[ $path == */* ]] || return 1
     top=${path%%/*}
-    [[ " $command " =~ [[:space:]/=\"\']"$top"(/|[[:space:]]|\"|\') ]]
+    repo_root=$(worktree_root) || return 1
+    command=${command//"$repo_root"/.}
+    command=${command//\"/ }
+    command=${command//\'/ }
+    command=${command//=/ }
+    [[ " $command " == *" $top/"* || " $command " == *" $top "* ||
+        " $command " == *" ./$top/"* || " $command " == *" ./$top "* ]]
 }
 
 # verify_areas PATHS: the top-level directories (or root files) the changed paths sit in, one per line.

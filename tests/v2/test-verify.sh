@@ -99,6 +99,43 @@ out=$("$AK" verify 2>&1)
 assert_contains "$out" 'PASS libtest' "a suite whose command names the path's top directory runs"
 rm lib/tests/t.txt
 
+# Without rundirs, suite ownership starts at a repository-root path component. A nested command
+# argument must not claim a root-level change just because its final component has the same name.
+printf 'AGENT_CMD_SERVERTEST="echo server >> %s/server-suite.log; : pytest server/tests"\n' "$WORK" \
+    >>"$repo/.agent/config.env"
+printf 'AGENT_CMD_ROOTTEST="echo root >> %s/root-suite.log; : pytest tests"\n' "$WORK" \
+    >>"$repo/.agent/config.env"
+repo_root=$(pwd)
+cat >>"$repo/.agent/config.env" <<EOF
+AGENT_CMD_DOTTEST='echo dot >> $WORK/dot-suite.log; : pytest ./tests'
+AGENT_CMD_QUOTEDTEST='echo quoted >> $WORK/quoted-suite.log; : pytest "tests/Core"'
+AGENT_CMD_ABSTEST='echo absolute >> $WORK/absolute-suite.log; : pytest "$repo_root/tests/Core"'
+AGENT_CMD_ABSSERVER='echo absserver >> $WORK/absserver-suite.log; : pytest "$repo_root/server/tests"'
+EOF
+mkdir -p tests server/tests
+printf 'change\n' >tests/root-change.txt
+out=$("$AK" verify 2>&1); rc=$?
+assert_eq 0 "$rc" 'a root tests change verifies successfully'
+assert_eq root "$(cat "$WORK/root-suite.log")" 'the suite naming root tests runs for a root tests change'
+assert_eq no "$([[ -e $WORK/server-suite.log ]] && echo yes || echo no)" \
+    'a suite naming nested server/tests does not claim a root tests change'
+assert_eq dot "$(cat "$WORK/dot-suite.log")" 'a ./-prefixed root path owns a root tests change'
+assert_eq quoted "$(cat "$WORK/quoted-suite.log")" 'a quoted root path owns a root tests change'
+assert_eq absolute "$(cat "$WORK/absolute-suite.log")" 'an absolute path inside this worktree owns a root tests change'
+assert_eq no "$([[ -e $WORK/absserver-suite.log ]] && echo yes || echo no)" \
+    'an absolute nested path does not claim a root tests change'
+
+rm -f tests/root-change.txt "$WORK/root-suite.log" "$WORK/server-suite.log" \
+    "$WORK/dot-suite.log" "$WORK/quoted-suite.log" "$WORK/absolute-suite.log" "$WORK/absserver-suite.log"
+printf 'change\n' >server/tests/server-change.txt
+out=$("$AK" verify 2>&1); rc=$?
+assert_eq 0 "$rc" 'a server tests change verifies successfully'
+assert_eq server "$(cat "$WORK/server-suite.log")" 'the suite naming server/tests runs for a server change'
+assert_eq no "$([[ -e $WORK/root-suite.log ]] && echo yes || echo no)" \
+    'a root tests suite does not claim a nested server/tests change'
+
+rm -rf tests server
+
 printf 'x\n' >top-level.txt
 out=$("$AK" verify 2>&1)
 assert_contains "$out" 'uncovered=top-level.txt' 'paths no suite owns are named'
