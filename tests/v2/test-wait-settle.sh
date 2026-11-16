@@ -179,7 +179,7 @@ failed_named_settle() {
     out=$("$AK" wait "$@" 2>&1); rc=$?
     rmdir "$runfile.tmp"
     assert_eq 1 "$([[ $rc -ne 0 ]] && echo 1 || echo 0)" "$label returns nonzero"
-    assert_not_contains "$out" 'wave=1 settled=2/2' "$label prints no successful summary"
+    assert_not_contains "$out" 'issue=1 pr=' "$label prints no collected-result summary"
     assert_eq 'spawned spawned queued' "$(jq -r '[.items[].state]|join(" ")' "$runfile")" "$label preserves the run state"
     assert_eq no "$([[ -e $marker || -e $repo/.ak/locks/run || -e $summary ]] && echo yes || echo no)" "$label cleans up marker, lock, and summary"
 }

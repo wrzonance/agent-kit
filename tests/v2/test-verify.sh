@@ -143,18 +143,24 @@ mv "$repo/.agent/config.minimal" "$repo/.agent/config.env"
 cat >>"$repo/.agent/config.env" <<EOF
 AGENT_CMD_SERVERQUOTE='echo serverquote >> $WORK/serverquote.log; : pytest server/"tests"'
 AGENT_CMD_SPACEDQUOTE='echo spacedquote >> $WORK/spacedquote.log; : pytest "server tests/suite"'
+AGENT_CMD_PARENT='echo parent >> $WORK/parent.log; : pytest tests/../server'
+AGENT_CMD_EQUALS='echo equals >> $WORK/equals.log; : pytest server/fixture=tests/suite'
+AGENT_CMD_SIBLING='echo sibling >> $WORK/sibling.log; : pytest "${repo_root}config/tests"'
 AGENT_CMD_VERIFY='echo whole >> $WORK/whole-quoted.log'
 EOF
-mkdir -p tests
+mkdir -p tests .config
 printf 'change\n' >tests/quoted-fallback.txt
+printf 'change\n' >.config/sibling-fallback.txt
 unset AGENT_CMD_VERIFY AGENT_CMD_TEST
 out=$("$AK" verify 2>&1); rc=$?
 mv "$WORK/config.before-quoted-paths" "$repo/.agent/config.env"
-rm -rf tests
+rm -rf tests .config
 assert_eq 0 "$rc" 'quoted path concatenation retains whole-check fallback'
 assert_contains "$out" 'PASS verify' 'the whole check runs when quoted nested paths do not own root tests'
 assert_eq no "$([[ -e $WORK/serverquote.log || -e $WORK/spacedquote.log ]] && echo yes || echo no)" \
     'neither quoted nested path is mistaken for a root tests suite'
+assert_eq no "$([[ -e $WORK/parent.log || -e $WORK/equals.log || -e $WORK/sibling.log ]] && echo yes || echo no)" \
+    'normalized parent, equals, and sibling paths do not claim unrelated root areas'
 assert_eq whole "$(cat "$WORK/whole-quoted.log")" 'the fallback command ran'
 
 # Quotes around an option value still form a path argument, whether the equals sign is quoted too.
