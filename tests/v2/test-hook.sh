@@ -112,7 +112,8 @@ jq '. + {hooks: []}' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WOR
 assert_rc 1 'gate rejects an array Codex hook configuration' -- gate
 jq '. + {hooks: {hooks: {PreToolUse: []}}}' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
 assert_rc 1 'gate rejects nonempty Codex hook configuration' -- gate
-jq 'del(.hooks)' "$REPO/v2/.codex-plugin/plugin.json" >"$WORK/h" && cp "$WORK/h" "$copy/.codex-plugin/plugin.json"
+cp "$REPO/v2/.codex-plugin/plugin.json" "$copy/.codex-plugin/plugin.json"
+assert_rc 0 'gate accepts the valid baseline before hook-file regressions' -- gate
 jq '.hooks.Stop = [{"hooks":[{"type":"command","command":"x/wave-barrier.sh"}]}]' "$copy/hooks/hooks.json" >"$WORK/h" && cp "$WORK/h" "$copy/hooks/hooks.json"
 assert_rc 1 'gate fails a second event' -- gate
 cp "$REPO/v2/hooks/hooks.json" "$copy/hooks/hooks.json"
