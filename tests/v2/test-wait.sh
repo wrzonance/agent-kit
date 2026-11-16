@@ -145,6 +145,17 @@ touch "$sessions/rollout-a.jsonl"
 out=$("$AK" wait --check 2>&1)
 assert_contains "$out" 'issue=5 state=ended-without-result note=the earlier worker issue_5 answered this spawn and ended' \
     'a later response from the earlier worker reads as ended, busy worktree or not'
+
+# Same-second mtimes must still respect the prompt's actual ordering.
+SPAWNED_AT=$(date +%s) set_run 5
+touch "$sessions/rollout-a.jsonl"
+touch "$WORK/wt/5/.ak/prompt.md"
+out=$(AK_WAIT_POLL_S=0 "$AK" wait --check 2>&1); rc=$?
+assert_contains "$out" 'issue=5 state=running' 'an earlier transcript in the prompt second is not a response'
+touch "$sessions/rollout-a.jsonl"
+out=$(AK_WAIT_POLL_S=0 "$AK" wait --check 2>&1); rc=$?
+assert_contains "$out" 'note=the earlier worker issue_5 answered this spawn and ended' 'a transcript updated after the prompt counts even in the same second'
+rm -f "$WORK/wt/5/.ak/prompt.md"
 SPAWNED_AT=0 set_run 5
 head -n 2 "$sessions/rollout-a.jsonl" >"$sessions/rollout-b.jsonl"
 sed -i 's#/root/issue_5#/root/issue_6#g' "$sessions/rollout-a.jsonl"
@@ -257,12 +268,59 @@ assert_eq 1 "$(grep -c '^issue=21 ' <<<"$out")" 'a duplicate named ID is reporte
 assert_eq 1 "$(grep -o -- '--issue 21' <<<"$out" | wc -l)" 'the next-wait command also deduplicates named IDs'
 route 'api repos/acme/widget/pulls/9' '{"number":9,"head":{"sha":"abc"}}'
 route 'api repos/acme/widget/commits/abc/check-runs*' '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'
-out=$("$AK" wait --issue 21 --issue 22 --check --settle 2>&1); rc=$?
+real_ln=$(command -v ln)
+mkdir -p "$WORK/marker-bin"
+cat >"$WORK/marker-bin/ln" <<'SH'
+#!/usr/bin/env bash
+dest=${*: -1}
+if [[ $dest == */wave.open ]]; then
+    owner=$(sed -n 's/^run=//p' "$2")
+    "$REAL_LN" "$@"
+    rc=$?
+    printf '%s %s\n' "$owner" "$rc" >>"$MARKER_TRACE"
+    if [[ $owner == r1 && $rc == 0 && ! -e $CONCURRENT_STARTED ]]; then
+        : >"$CONCURRENT_STARTED"
+        (
+            "$AK" wait --issue 22 --check --settle >"$CONCURRENT_OUT" 2>&1
+            printf '%s\n' "$?" >"$CONCURRENT_RC"
+            : >"$CONCURRENT_DONE"
+        ) &
+    fi
+    exit "$rc"
+fi
+exec "$REAL_LN" "$@"
+SH
+chmod +x "$WORK/marker-bin/ln"
+export REAL_LN="$real_ln" MARKER_TRACE="$WORK/marker-trace"
+export CONCURRENT_STARTED="$WORK/concurrent-started" CONCURRENT_OUT="$WORK/concurrent.out"
+export CONCURRENT_RC="$WORK/concurrent.rc" CONCURRENT_DONE="$WORK/concurrent.done"
+out=$(PATH="$WORK/marker-bin:$PATH" FAKE_GH_DELAY=1 "$AK" wait --issue 21 --issue 22 --check --settle 2>&1); rc=$?
+assert_contains "$(cat "$MARKER_TRACE")" $'r0 0\nr1 0' 'each owner acquires the marker after the prior owner releases it'
+# shellcheck disable=SC2016 # $1 is the path passed to bash -c below.
+timeout 10 bash -c 'while [[ ! -e $1 ]]; do sleep 0.02; done' _ "$CONCURRENT_DONE"
+assert_contains "$(cat "$MARKER_TRACE")" 'r1 1' 'a concurrent waiter sees the second owner marker and attaches'
+assert_eq yes "$([[ -s $CONCURRENT_OUT && -s $CONCURRENT_RC ]] && echo yes || echo no)" 'the concurrent waiter finishes after the owner releases its marker'
 assert_eq 0 "$rc" 'mixed-owner named settlement succeeds'
+assert_not_contains "$out" 'next=ak wait' 'a successful settling check does not suggest another wait'
 assert_eq yes "$([[ -f $repo/.ak/runs/r0.wave1.summary && -f $repo/.ak/runs/r1.wave1.summary ]] && echo yes || echo no)" \
     'each owner writes its own summary'
 assert_contains "$(cat "$repo/.ak/runs/r0.wave1.summary")" 'issue=21 pr=' 'the older owner summary contains only its item'
 assert_contains "$(cat "$repo/.ak/runs/r1.wave1.summary")" 'issue=22 pr=' 'the current owner summary contains only its item'
+unset REAL_LN MARKER_TRACE CONCURRENT_STARTED CONCURRENT_OUT CONCURRENT_RC CONCURRENT_DONE
+rm -rf "$WORK/marker-bin"
+
+# A newer collected attempt outranks an old terminal row whose settlement refreshed the file timestamp.
+mkdir -p "$WORK/wt/attempt-old/.ak" "$WORK/wt/attempt-new/.ak"
+green_result >"$WORK/wt/attempt-new/.ak/result"
+jq -n --arg wt "$WORK/wt/attempt-old" '{run:"attempt-old",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"spawned",ended:"ended-without-result",needs:[]}]}' >"$repo/.ak/runs/attempt-old.json"
+jq -n --arg wt "$WORK/wt/attempt-new" '{run:"attempt-new",open_wave:1,items:[{kind:"issue",n:25,worktree:$wt,wave:1,state:"collected",needs:[]}]}' >"$repo/.ak/runs/attempt-new.json"
+touch "$repo/.ak/runs/attempt-old.json"
+out=$("$AK" wait --issue 25 --check 2>&1); rc=$?
+assert_eq 3 "$rc" 'the newest successful attempt owns the named item and opens its correction round'
+assert_contains "$out" 'issue=25 state=running' 'the newer correction round waits for a new result'
+assert_eq null "$(jq -r '.items[0].round_at // null' "$repo/.ak/runs/attempt-old.json")" 'an older ended attempt is not correction-stamped'
+assert_eq yes "$(jq -r '.items[0].round_at // empty' "$repo/.ak/runs/attempt-new.json" | grep -Eq '^[0-9]+$' && echo yes || echo no)" \
+    'the latest owner receives the correction stamp'
 
 # Transcript discovery uses the owning run's provider and root session, even when wait runs in a different harness.
 mkdir -p "$WORK/wt/codex-owner/.ak" "$WORK/codex-owner/sessions/2026/10/24"
@@ -278,6 +336,14 @@ out=$("$AK" wait --issue 24 --check 2>&1); rc=$?
 assert_eq 0 "$rc" 'a named wait can still find its owner when no current pointer exists'
 assert_contains "$out" 'issue=24 state=ended-without-result' 'historical owner lookup does not depend on current'
 printf 'r1\n' >"$repo/.ak/runs/current"
+
+# A malformed current run must not hide a valid historical owner from a named wait.
+printf 'broken current run\n' >"$repo/.ak/runs/broken.json"
+printf 'broken\n' >"$repo/.ak/runs/current"
+out=$("$AK" wait --issue 24 --check 2>&1); rc=$?
+assert_eq 0 "$rc" 'a corrupt current run does not block valid historical owner lookup'
+assert_contains "$out" 'issue=24 state=ended-without-result' 'the historical item remains visible'
+printf 'r1\n' >"$repo/.ak/runs/current"
 unset CODEX_HOME
 
 printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":23,"worktree":"","wave":1,"state":"queued","needs":[]}]}' >"$repo/.ak/runs/r1.json"
@@ -288,6 +354,15 @@ assert_contains "$out" 'issue=23 state=queued' 'the named queued item is disclos
 out=$("$AK" wait --issue 999 --check 2>&1); rc=$?
 assert_eq 1 "$rc" 'a named item absent from all run records is an explicit non-success'
 assert_contains "$out" 'issue=999 state=missing' 'the absent item is disclosed'
+
+# A plain named wait on queued work exits without falsely stamping it ended or writing a summary.
+printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":26,"worktree":"","wave":1,"state":"queued","needs":[]}]}' >"$repo/.ak/runs/r1.json"
+rm -f "$repo/.ak/runs/r1.wave1.summary"
+out=$("$AK" wait --issue 26 2>&1); rc=$?
+assert_eq 1 "$rc" 'a plain named wait on queued work is a non-success'
+assert_contains "$out" 'issue=26 state=queued' 'the queued state is explicit'
+assert_eq queued "$(jq -r '.items[0].state' "$repo/.ak/runs/r1.json")" 'the queued row remains unchanged'
+assert_eq no "$([[ -f $repo/.ak/runs/r1.wave1.summary ]] && echo yes || echo no)" 'the queued wait writes no settled summary'
 
 # A watcher that dies leaves the wait to the attached ak wait, which becomes the watcher.
 set_run 5

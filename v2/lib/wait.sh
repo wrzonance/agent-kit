@@ -121,6 +121,18 @@ item_idents() {
     fi
 }
 
+# transcript_responded_after WORKTREE PATH SINCE: prove the transcript moved past this spawn's prompt/resolve marker.
+# Without a marker, require a strictly newer whole-second mtime; equality is ambiguous and stays running.
+transcript_responded_after() {
+    local wt=$1 transcript=$2 since=$3 file boundary=''
+    for file in "$wt/.ak/prompt.md" "$wt/.ak/resolve"; do
+        [[ -e $file ]] || continue
+        if [[ -z $boundary || $file -nt $boundary ]]; then boundary=$file; fi
+    done
+    if [[ -n $boundary ]]; then [[ $transcript -nt $boundary ]]
+    else (( $(file_mtime "$transcript") > since )); fi
+}
+
 # fresh IDENT SEEN: true when a correction round may count what IDENT names: always outside a round, else only when it
 # differs from what the last settle saw. The comparison needs no clock, so a correction that finishes before the first
 # --check (a Codex root checks only after the child's notice) still counts.
@@ -184,7 +196,7 @@ item_state() {
         # and the root's message reached the old worker, which answers from its context and ends. Its end is this
         # item's end, so the root replans now instead of waiting on a worker nobody started.
         transcript=$(transcript_find "$wt" "${kind}_$n" 0 "$OWNER_HARNESS" "$OWNER_SESSION")
-        if [[ -n $transcript && $(file_mtime "$transcript") -ge $since ]]; then
+        if [[ -n $transcript ]] && transcript_responded_after "$wt" "$transcript" "$since"; then
             taken=" note=the earlier worker ${kind}_$n answered this spawn and ended"
         else
             transcript=''
@@ -257,17 +269,32 @@ wave_number() { jq -r '.open_wave // 1' "$RUNFILE"; }
 
 # find_owner KIND N: newest run with this item still owning work, falling back to its newest historical record.
 find_owner() {
-    local kind=$1 n=$2 file row fallback=''
-    while IFS= read -r file; do
+    local kind=$1 n=$2 file row state wt ended fallback=''
+    local -a files=()
+    mapfile -t files < <(find "$MAIN/.ak/runs" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort -r)
+    for file in "${files[@]}"; do
         row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1] // empty |
-            [.state, (.worktree // "")] | @tsv' "$file" 2>/dev/null) || continue
+            [.state, (.worktree // ""), (.ended // "")] | @tsv' "$file" 2>/dev/null) || continue
         [[ -n $row ]] || continue
         [[ -n $fallback ]] || fallback=$(basename -- "$file" .json)
-        if [[ $row == $'spawned\t'* || $row == $'pending\t'* || $row == $'merge-up\t'* ]]; then
+        IFS=$'\t' read -r state wt ended <<<"$row"
+        if [[ $state =~ ^(spawned|pending|merge-up)$ && -n $wt && -z $ended ]]; then
             basename -- "$file" .json
             return 0
         fi
-    done < <(ls -t -- "$MAIN"/.ak/runs/*.json 2>/dev/null)
+    done
+    # A terminal attempt is not outstanding ownership. Pick the newest saved non-queued attempt deterministically,
+    # so an old settlement's refreshed mtime cannot hide a later collected run.
+    for file in "${files[@]}"; do
+        row=$(jq -r --arg k "$kind" --argjson n "$n" '[.items[] | select(.kind == $k and .n == $n)][-1] // empty |
+            [.state, (.ended // "")] | @tsv' "$file" 2>/dev/null) || continue
+        [[ -n $row ]] || continue
+        IFS=$'\t' read -r state ended <<<"$row"
+        if [[ $state != queued && ! ($state =~ ^(spawned|pending|merge-up)$ && -n $ended) ]]; then
+            basename -- "$file" .json
+            return 0
+        fi
+    done
     [[ -n $fallback ]] || return 1
     printf '%s\n' "$fallback"
 }
@@ -412,7 +439,7 @@ next_wait() {
 
 # wait_owner: wait and settle the currently loaded run using only its owned items.
 wait_owner() {
-    local check=$1 collect=$2 states file
+    local check=$1 collect=$2 states rc
     plan_context wait
     if ((check)); then
         open_corrections
@@ -425,6 +452,11 @@ wait_owner() {
         if grep -q 'state=running' <<<"$states"; then report "$states" || true; return 3; fi
     else
         open_corrections
+        states=$(wave_state)
+        if grep -q 'state=queued' <<<"$states"; then
+            report "$states" || true
+            return 1
+        fi
     fi
     until marker_take; do
         if ! marker_live; then rm -f -- "$MARKER"; continue; fi
@@ -434,6 +466,9 @@ wait_owner() {
     trap 'marker_drop; run_unlock' EXIT
     trap 'exit 143' TERM INT
     wait_loop "$check"
+    rc=$?
+    marker_drop
+    return "$rc"
 }
 
 # named_wait: resolve each requested ID to its owning run, then keep every read, stamp, and summary in that run.
@@ -475,11 +510,18 @@ named_wait() {
         done
         ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
         ((pending)) && return 3
-        WAIT_NAMED=("${all_named[@]}")
-        next_wait
         ((errors)) && return 1
-        if ((!WAIT_SETTLE)); then return 0; fi
+        if ((!WAIT_SETTLE)); then
+            WAIT_NAMED=("${all_named[@]}")
+            next_wait
+            return 0
+        fi
     else
+        if ((errors)); then
+            for owner in "${owners[@]}"; do printf '%s\n' "${state_by_owner[$owner]}"; done
+            ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
+            return 1
+        fi
         for owner in "${owners[@]}"; do
             load_owner "$owner"
             read -ra WAIT_NAMED <<<"${groups[$owner]}"
@@ -521,8 +563,13 @@ cmd_main() {
     if [[ -f $MAIN/.ak/runs/current ]]; then
         RUN_ID=$(<"$MAIN/.ak/runs/current")
         RUNFILE="$MAIN/.ak/runs/$RUN_ID.json"
-        jq -e . "$RUNFILE" >/dev/null 2>&1 || die "run file unreadable: $RUNFILE" 'ak plan'
-        owner_context
+        if ! jq -e . "$RUNFILE" >/dev/null 2>&1; then
+            ((${#WAIT_NAMED[@]})) || die "run file unreadable: $RUNFILE" 'ak plan'
+            RUN_ID=''
+            RUNFILE=''
+        else
+            owner_context
+        fi
     elif ((${#WAIT_NAMED[@]} == 0)); then
         die 'no current run' 'ak plan'
     fi
