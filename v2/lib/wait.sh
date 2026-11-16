@@ -129,7 +129,7 @@ transcript_responded_after() {
         [[ -e $file ]] || continue
         if [[ -z $boundary || $file -nt $boundary ]]; then boundary=$file; fi
     done
-    if [[ -n $boundary ]]; then [[ $transcript -nt $boundary ]]
+    if [[ -n $boundary ]] && (($(file_mtime "$boundary") >= since)); then [[ $transcript -nt $boundary ]]
     else (( $(file_mtime "$transcript") > since )); fi
 }
 
@@ -191,6 +191,9 @@ item_state() {
     if [[ -f $wt/.ak/result ]] && fresh "$(ident_result "$wt")" "$SEEN_RES"; then echo reported; return 0; fi
     since=$(spawn_since "$wt" "${4:-0}")
     transcript=$(transcript_find "$wt" "${kind}_$n" "$since" "$OWNER_HARNESS" "$OWNER_SESSION")
+    if [[ -n $transcript ]] && ! transcript_responded_after "$wt" "$transcript" "$since"; then
+        transcript=''
+    fi
     if [[ -z $transcript && $OWNER_HARNESS == codex ]] && (($(date +%s) - since >= 4 * ${AK_WAIT_POLL_S:-15})); then
         # No worker of this spawn after four polls: Codex keeps a finished worker's name, so the spawn under it failed
         # and the root's message reached the old worker, which answers from its context and ends. Its end is this
@@ -509,7 +512,7 @@ named_wait() {
         for owner in "${owners[@]}"; do
             load_owner "$owner"
             read -ra WAIT_NAMED <<<"${groups[$owner]}"
-            wait_owner 0 0 || return $?
+            wait_owner 0 0
         done
         ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
         ((errors)) && return 1
@@ -519,7 +522,7 @@ named_wait() {
     for owner in "${owners[@]}"; do
         load_owner "$owner"
         read -ra WAIT_NAMED <<<"${groups[$owner]}"
-        wait_owner 1 1 || return $?
+        wait_owner 1 1
     done
     ((${#missing[@]} == 0)) || printf '%s\n' "${missing[@]}"
     ((errors)) && return 1

@@ -168,6 +168,24 @@ assert_eq 1 "$rc" 'failed collection is an error'
 assert_not_contains "$out" 'settled=2/2' 'a write failure prints no successful summary'
 assert_eq no "$([[ -e $marker || -e $repo/.ak/locks/run || -e $summary ]] && echo yes || echo no)" 'failure cleans up without publishing a summary'
 
+# Named check-settle and blocking waits must also propagate a failed run-file update.
+failed_named_settle() {
+    local label=$1 rc out
+    shift
+    reset_run
+    result 11 first >"$WORK/a/.ak/result"
+    result 12 second >"$WORK/b/.ak/result"
+    mkdir "$runfile.tmp"
+    out=$("$AK" wait "$@" 2>&1); rc=$?
+    rmdir "$runfile.tmp"
+    assert_eq 1 "$([[ $rc -ne 0 ]] && echo 1 || echo 0)" "$label returns nonzero"
+    assert_not_contains "$out" 'wave=1 settled=2/2' "$label prints no successful summary"
+    assert_eq 'spawned spawned queued' "$(jq -r '[.items[].state]|join(" ")' "$runfile")" "$label preserves the run state"
+    assert_eq no "$([[ -e $marker || -e $repo/.ak/locks/run || -e $summary ]] && echo yes || echo no)" "$label cleans up marker, lock, and summary"
+}
+failed_named_settle 'named check-settle' --issue 1 --check --settle
+failed_named_settle 'named blocking wait' --issue 1
+
 out=$("$AK" wait --settle 2>&1); rc=$?
 assert_eq 2 "$rc" '--settle requires --check'
 assert_contains "$("$AK" wait --help)" 'wait [--issue N | --pr N]... [--check [--settle]]' 'help exposes the combined readiness and settlement mode'

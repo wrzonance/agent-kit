@@ -156,6 +156,30 @@ touch "$sessions/rollout-a.jsonl"
 out=$(AK_WAIT_POLL_S=0 "$AK" wait --check 2>&1); rc=$?
 assert_contains "$out" 'note=the earlier worker issue_5 answered this spawn and ended' 'a transcript updated after the prompt counts even in the same second'
 rm -f "$WORK/wt/5/.ak/prompt.md"
+
+# A terminal transcript born in the spawn second but before its prompt must not pass the initial lookup.
+same_ok=0
+for ((attempt = 1; attempt <= 3; attempt++)); do
+    rm -f "$sessions/rollout-same.jsonl" "$WORK/wt/5/.ak/prompt.md"
+    codex_child child-normal.jsonl same
+    same_born=$(stat -c %W -- "$sessions/rollout-same.jsonl")
+    sleep 0.02
+    touch "$WORK/wt/5/.ak/prompt.md"
+    if [[ $same_born == "$(date +%s)" && "$WORK/wt/5/.ak/prompt.md" -nt "$sessions/rollout-same.jsonl" ]]; then
+        same_ok=1
+        break
+    fi
+done
+assert_eq 1 "$same_ok" 'fixture has birth equal to spawn second and prompt newer than transcript'
+SPAWNED_AT=$same_born set_run 5
+out=$("$AK" wait --issue 5 --check 2>&1); rc=$?
+assert_eq 3 "$rc" 'the initial lookup leaves a same-second earlier terminal transcript pending'
+assert_contains "$out" 'issue=5 state=running' 'the transcript has not advanced beyond the new prompt'
+touch "$sessions/rollout-same.jsonl"
+out=$("$AK" wait --issue 5 --check 2>&1); rc=$?
+assert_eq 0 "$rc" 'a genuine update after the prompt becomes eligible'
+assert_contains "$out" 'issue=5 state=ended-without-result' 'the later terminal transcript is recognized'
+rm -f "$sessions/rollout-same.jsonl" "$WORK/wt/5/.ak/prompt.md"
 SPAWNED_AT=0 set_run 5
 head -n 2 "$sessions/rollout-a.jsonl" >"$sessions/rollout-b.jsonl"
 sed -i 's#/root/issue_5#/root/issue_6#g' "$sessions/rollout-a.jsonl"

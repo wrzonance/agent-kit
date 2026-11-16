@@ -136,6 +136,27 @@ assert_eq no "$([[ -e $WORK/root-suite.log ]] && echo yes || echo no)" \
 
 rm -rf tests server
 
+# Quoted path fragments concatenate into one shell word; they must not manufacture a root `tests` argument.
+cp "$repo/.agent/config.env" "$WORK/config.before-quoted-paths"
+awk '!/^AGENT_CMD_/ && !/^AGENT_RUNDIR_/' "$WORK/config.before-quoted-paths" >"$repo/.agent/config.minimal"
+mv "$repo/.agent/config.minimal" "$repo/.agent/config.env"
+cat >>"$repo/.agent/config.env" <<EOF
+AGENT_CMD_SERVERQUOTE='echo serverquote >> $WORK/serverquote.log; : pytest server/"tests"'
+AGENT_CMD_SPACEDQUOTE='echo spacedquote >> $WORK/spacedquote.log; : pytest "server tests/suite"'
+AGENT_CMD_VERIFY='echo whole >> $WORK/whole-quoted.log'
+EOF
+mkdir -p tests
+printf 'change\n' >tests/quoted-fallback.txt
+unset AGENT_CMD_VERIFY AGENT_CMD_TEST
+out=$("$AK" verify 2>&1); rc=$?
+mv "$WORK/config.before-quoted-paths" "$repo/.agent/config.env"
+rm -rf tests
+assert_eq 0 "$rc" 'quoted path concatenation retains whole-check fallback'
+assert_contains "$out" 'PASS verify' 'the whole check runs when quoted nested paths do not own root tests'
+assert_eq no "$([[ -e $WORK/serverquote.log || -e $WORK/spacedquote.log ]] && echo yes || echo no)" \
+    'neither quoted nested path is mistaken for a root tests suite'
+assert_eq whole "$(cat "$WORK/whole-quoted.log")" 'the fallback command ran'
+
 # A literal tab separates shell words too. With a second changed area owned, omitting this suite
 # would otherwise skip the whole-repository check and record a partial pass.
 printf 'AGENT_CMD_TABTEST="echo tab >> %s/tab-suite.log; : pytest\ttests"\n' "$WORK" \
