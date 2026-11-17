@@ -137,14 +137,34 @@ merge_worktree() {
         awk -v ref="refs/heads/$1" '/^worktree /{wt = substr($0, 10)} $0 == "branch " ref {print wt; exit}'
 }
 
-# merge_update SLUG N JSON: bring the PR's head up to date with its base before merging, so a PR that went
-# stale when an earlier PR landed still merges (bench 2026-10-01: #112 hit "merge conflicts" after #111).
-# Prints the head sha to merge. A clean update goes through GitHub; a conflict hands the PR back to its worker.
+# merge_state SLUG N JSON: the PR's mergeable_state once GitHub has computed it (`mergeable` is null meanwhile), polled
+# for up to AK_MERGE_UPDATE_WAIT seconds; "unknown" if it never settles, which merges the checked head and leaves any
+# refusal to GitHub. A false `mergeable` is a conflict whatever the state says.
+merge_state() {
+    local slug=$1 n=$2 json=$3 i
+    for ((i = 0; ; i += 5)); do
+        [[ $(jq -r '.mergeable | tostring' <<<"$json") != null ]] && break
+        ((i < ${AK_MERGE_UPDATE_WAIT:-120})) || { printf 'unknown\n'; return 0; }
+        sleep 5
+        json=$(gh api "repos/$slug/pulls/$n") || { printf 'unknown\n'; return 0; }
+    done
+    if [[ $(jq -r .mergeable <<<"$json") == false ]]; then printf 'dirty\n'; else jq -r '.mergeable_state // "unknown"' <<<"$json"; fi
+}
+
+# merge_update SLUG N JSON: prints the head sha to merge, updating the head from its base only when that is needed.
+# A conflict (mergeable false, state dirty) goes back to the PR's worker (bench 2026-10-01: #112 hit "merge conflicts"
+# after #111). A head GitHub reports `behind` (strict "require branches to be up to date" protection) is updated and
+# the new head awaited. Any other state merges the head as checked: a needless update-branch gives a green, reviewed PR
+# a new head, which reruns CI (20-40 minutes in a field run) and voids the receipt, on nearly every merge of a stack.
 merge_update() {
-    local slug=$1 n=$2 json=$3 sha base out wt i
+    local slug=$1 n=$2 json=$3 sha base out wt i state
     sha=$(jq -r .head.sha <<<"$json")
     base=$(jq -r .base.ref <<<"$json")
-    if out=$(gh api -X PUT "repos/$slug/pulls/$n/update-branch" -f "expected_head_sha=$sha" 2>&1); then
+    state=$(merge_state "$slug" "$n" "$json")
+    [[ $state == dirty || $state == behind ]] || { printf '%s\n' "$sha"; return 0; }
+    if [[ $state == dirty ]]; then
+        out=conflict
+    elif out=$(gh api -X PUT "repos/$slug/pulls/$n/update-branch" -f "expected_head_sha=$sha" 2>&1); then
         for ((i = 0; i < ${AK_MERGE_UPDATE_WAIT:-120}; i += 5)); do
             json=$(gh api "repos/$slug/pulls/$n") || break
             [[ $(jq -r .head.sha <<<"$json") == "$sha" ]] || { jq -r .head.sha <<<"$json"; return 0; }

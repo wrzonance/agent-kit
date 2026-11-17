@@ -11,7 +11,7 @@ cd "$repo" || exit 1
 api=repos/acme/widget
 
 pr_json() { # N HEAD BASE [DRAFT] [HEAD_REPO] [STATE] [MERGED]
-    printf '{"number":%s,"state":"%s","draft":%s,"merged":%s,"merge_commit_sha":"m%s","head":{"ref":"%s","sha":"sha%s","repo":{"full_name":"%s"}},"base":{"ref":"%s"}}' \
+    printf '{"number":%s,"state":"%s","draft":%s,"merged":%s,"merge_commit_sha":"m%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"sha%s","repo":{"full_name":"%s"}},"base":{"ref":"%s"}}' \
         "$1" "${6:-open}" "${4:-false}" "${7:-false}" "$1" "$2" "$1" "${5:-acme/widget}" "$3"
 }
 runs() { # STATUS:CONCLUSION...
@@ -258,7 +258,7 @@ assert_eq 'merged pr=28 sha=m28 already' "$out" 'an already merged PR reports it
 assert_not_contains "$(cat "$FAKE_GH_LOG")" '-X PUT' 'no second merge'
 
 # A PR that conflicts with its base after an earlier merge goes back to its worker (bench 2026-10-01: #112).
-route "api $api/pulls/30" "$(pr_json 30 feat/q main)"
+route "api $api/pulls/30" "$(pr_json 30 feat/q main | jq -c '.mergeable = false | .mergeable_state = "dirty"')"
 route "api --paginate $api/commits/sha30/check-runs*" "$green"
 git worktree add -q -b feat/q "$WORK/wtq" origin/main
 mkdir -p "$WORK/wtq/.ak" && printf 'prompt\n' >"$WORK/wtq/.ak/prompt.md" && printf 'pr=x\n' >"$WORK/wtq/.ak/result"
@@ -272,6 +272,7 @@ assert_contains "$out" 'name=pr_30_2' 'the respawn carries a new native name: th
 assert_eq 'origin/main' "$(cat "$WORK/wtq/.ak/resolve")" 'the worktree records what to merge in'
 assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stale result is cleared so collect waits for the new one'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'a conflicting PR is not merged'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'update-branch' 'a conflict reported by GitHub is handed back without an update attempt'
 
 # Two merges of one PR never run at once: the second waits for the first (bench 2026-10-01: #136 twice).
 mkdir -p "$repo/.ak/locks/merge-24"
@@ -538,5 +539,39 @@ for case in 'failure:1' 'cancelled:2'; do
     assert_eq 1 "$rc" "an earlier ${case%%:*} run (app ${case##*:}) still refuses the merge"
     assert_contains "$out" "gates=${case%%:*}" "the refusal names the ${case%%:*} run"
 done
+
+
+# A head is updated from its base only when that is needed: an update-branch on a green, reviewed PR whose base merely
+# moved gave it a new head, a CI rerun of 20-40 minutes and a voided receipt on nearly every merge of a stack.
+: >"$FAKE_GH_ROUTES"
+reviewed 90 91 92 93
+route "api $api/pulls/90" "$(pr_json 90 feat/m90 main | jq -c '.mergeable_state = "clean"')"
+route "api $api/pulls/91" "$(pr_json 91 feat/m91 main | jq -c '.mergeable_state = "behind"')"
+route "api $api/pulls/92" "$(pr_json 92 feat/m92 main | jq -c '.mergeable = null | .mergeable_state = "unknown"')"
+route "api $api/pulls/93" "$(pr_json 93 feat/m93 main | jq -c '.mergeable_state = "unstable"')"
+route "api --paginate $api/commits/sha9*/check-runs*" "$green"
+route "api $api/commits/*/check-runs?per_page=100 --paginate" "$green"
+route "api -X GET $api/pulls -f state=open -f base=* -F per_page=*" '[]'
+route "api -X PUT $api/pulls/91/update-branch*" '{"message":"Updating pull request branch."}'
+route "api -X PUT $api/pulls/* -f merge_method=squash -f sha=sha*" '{"sha":"merged123","merged":true}'
+route "api -X DELETE $api/git/refs/heads/*" ''
+for n in 90 93; do
+    : >"$FAKE_GH_LOG"
+    out=$("$AK" merge --pr "$n" 2>&1); rc=$?
+    assert_eq 0 "$rc" "PR $n, whose base moved but which GitHub does not need updated, merges"
+    assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/$n/merge -f merge_method=squash -f sha=sha$n" "PR $n merges at the head that was checked"
+    assert_not_contains "$(cat "$FAKE_GH_LOG")" 'update-branch' "PR $n gets no update-branch call"
+done
+: >"$FAKE_GH_LOG"
+out=$(AK_MERGE_UPDATE_WAIT=0 "$AK" merge --pr 91 2>&1); rc=$?
+assert_eq 1 "$rc" 'a behind PR waits for its updated head, which has no checks yet'
+assert_contains "$(cat "$FAKE_GH_LOG")" "api -X PUT $api/pulls/91/update-branch -f expected_head_sha=sha91" 'branch protection that requires an up-to-date head still gets the update'
+assert_contains "$out" 'PR #91 is updating from main' 'the refusal says the new head is awaited'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'the stale head is not merged'
+# mergeable is null while GitHub computes it: the PR is read again, and a state that never settles merges the checked head.
+: >"$FAKE_GH_LOG"
+out=$(AK_MERGE_UPDATE_WAIT=0 "$AK" merge --pr 92 2>&1); rc=$?
+assert_eq 0 "$rc" 'a PR whose mergeability stays unknown merges the checked head'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'update-branch' 'an unknown state invents no update'
 
 finish
