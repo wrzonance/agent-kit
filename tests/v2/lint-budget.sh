@@ -21,9 +21,14 @@ code=0
 while IFS= read -r f; do code=$((code + $(wc -l <"$f"))); done < <(find "$root/bin" "$root/lib" -type f)
 ((code <= MAX_CODE_LINES)) || { printf 'FAIL code %d lines > %d\n' "$code" "$MAX_CODE_LINES"; rc=1; }
 
-for manifest in "$root/.codex-plugin/plugin.json" "$root/.claude-plugin/plugin.json"; do
-    jq -e 'has("hooks") | not' "$manifest" >/dev/null || { printf 'FAIL %s declares hooks\n' "$manifest"; rc=1; }
-done
+jq -e '.hooks == {"hooks": {}}' "$root/.codex-plugin/plugin.json" >/dev/null || {
+    printf 'FAIL .codex-plugin/plugin.json must explicitly disable Codex hook discovery\n'
+    rc=1
+}
+jq -e 'has("hooks") | not' "$root/.claude-plugin/plugin.json" >/dev/null || {
+    printf 'FAIL .claude-plugin/plugin.json declares hooks\n'
+    rc=1
+}
 # The single allowed hook: UserPromptSubmit -> hooks/wave-barrier.sh, and nothing else in v2/hooks.
 hooks_ok() {
     local dir=$1/hooks

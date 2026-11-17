@@ -30,9 +30,54 @@ verify_suite_names() {
     done
 }
 
+# verify_word_owns_top WORD TOP ROOT: does one normalized shell word begin with the root path component TOP?
+verify_word_owns_top() {
+    local word=$1 top=$2 repo_root=$3 value
+    value=$word
+    [[ $word == --*=* ]] && value=${word#*=}
+    [[ -n $value ]] || return 1
+    if [[ $value != /* ]]; then value="$repo_root/$value"; fi
+    value=$(realpath -m --relative-to="$repo_root" -- "$value") || return 1
+    [[ $value != .. && $value != ../* ]] || return 1
+    [[ $value == "$top" || $value == "$top/"* ]]
+}
+
+# verify_command_owns_top COMMAND TOP ROOT: recognize shell word boundaries without evaluating command text.
+verify_command_owns_top() {
+    local command=$1 top=$2 repo_root=$3 char quote='' word='' matched=0 escaped=0 i
+    for ((i = 0; i < ${#command}; i++)); do
+        char=${command:i:1}
+        if ((escaped)); then word+=$char; escaped=0; continue; fi
+        if [[ $quote == "'" ]]; then
+            if [[ $char == "'" ]]; then quote=''; else word+=$char; fi
+            continue
+        fi
+        if [[ $quote == '"' ]]; then
+            case $char in
+                '"') quote='' ;;
+                \\) escaped=1 ;;
+                *) word+=$char ;;
+            esac
+            continue
+        fi
+        case $char in
+            "'" | '"') quote=$char ;;
+            \\) escaped=1 ;;
+            ';' | '|' | '&' | '(' | ')' | '<' | '>' | $'\t' | $'\n' | ' ')
+                verify_word_owns_top "$word" "$top" "$repo_root" && matched=1
+                word=''
+                ;;
+            *) word+=$char ;;
+        esac
+    done
+    ((escaped == 0)) && [[ -z $quote ]] || return 1
+    verify_word_owns_top "$word" "$top" "$repo_root" && matched=1
+    ((matched))
+}
+
 # verify_covers DIR COMMAND PATH: does this suite own PATH?
 verify_covers() {
-    local dir=$1 command=$2 path=$3 top
+    local dir=$1 command=$2 path=$3 top repo_root
     while [[ $dir == ./* ]]; do dir=${dir#./}; done
     dir=${dir%/}
     if [[ -n $dir && $dir != . ]]; then
@@ -41,7 +86,8 @@ verify_covers() {
     fi
     [[ $path == */* ]] || return 1
     top=${path%%/*}
-    [[ " $command " =~ [[:space:]/=\"\']"$top"(/|[[:space:]]|\"|\') ]]
+    repo_root=$(worktree_root) || return 1
+    verify_command_owns_top "$command" "$top" "$repo_root"
 }
 
 # verify_areas PATHS: the top-level directories (or root files) the changed paths sit in, one per line.

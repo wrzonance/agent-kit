@@ -21,7 +21,7 @@ transcript_claude() {
         path_named "$1" <"$file" || continue
         (($(transcript_born "$file") >= ${2:-0})) || continue
         [[ -z $best || $file -nt $best ]] && best=$file
-    done < <(find "$base" -path "$base/*/${CLAUDE_CODE_SESSION_ID:-*}/subagents/agent-*.jsonl" 2>/dev/null)
+    done < <(find "$base" -path "$base/*/${3:-${CLAUDE_CODE_SESSION_ID:-*}}/subagents/agent-*.jsonl" 2>/dev/null)
     [[ -z $best ]] || printf '%s\n' "$best"
 }
 
@@ -29,13 +29,14 @@ transcript_claude() {
 # Spawn names use underscores; accept historical hyphenated paths too. Encrypted prompts cannot identify workers.
 transcript_codex() {
     local file best='' path
-    [[ -n ${CODEX_THREAD_ID:-} && -n $1 ]] || return 0
+    local root=${3:-${CODEX_THREAD_ID:-}}
+    [[ -n $root && -n $1 ]] || return 0
     # The name, a historical hyphenated form of it, or a re-spawn's numbered form (worker_name).
     path="^/root/${1//_/[_-]}([_-][0-9]+)?\$"
     while IFS= read -r file; do
         (($(transcript_born "$file") >= ${2:-0})) || continue
-        head -n 1 -- "$file" | grep -qF -- "$CODEX_THREAD_ID" || continue
-        head -n 1 -- "$file" | jq -e --arg root "$CODEX_THREAD_ID" --arg path "$path" \
+        head -n 1 -- "$file" | grep -qF -- "$root" || continue
+        head -n 1 -- "$file" | jq -e --arg root "$root" --arg path "$path" \
             '.payload | (.parent_thread_id // .source.subagent.thread_spawn.parent_thread_id) == $root and ((.agent_path // "") | test($path))' \
             >/dev/null 2>&1 || continue
         [[ -z $best || $file -nt $best ]] && best=$file
@@ -46,7 +47,9 @@ transcript_codex() {
 # transcript_find WORKTREE [NAME [SINCE]]: the transcript of the worker spawned at or after SINCE, or nothing. An older
 # transcript of the same worktree belongs to the worker this one replaced.
 transcript_find() {
-    if [[ $(harness) == codex ]]; then transcript_codex "${2:-}" "${3:-0}"; else transcript_claude "$1" "${3:-0}"; fi
+    local provider=${4:-$(harness)} session=${5:-}
+    if [[ $provider == codex ]]; then transcript_codex "${2:-}" "${3:-0}" "$session"
+    else transcript_claude "$1" "${3:-0}" "$session"; fi
 }
 
 # transcript_state PATH: running, ended or errored. Claude marks an ended agent in its .meta.json (a stopped one has no
