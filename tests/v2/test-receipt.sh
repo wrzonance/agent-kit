@@ -92,6 +92,10 @@ printf '0000001\n0000002\n' >.ak/red-heads
 assert_contains "$(cat .ak/result)" 'ci=red' 'a red head is recorded as red'
 assert_contains "$(cat .ak/result)" '; base-red: t (also red on main)' 'the result note names the check the base branch fails too'
 assert_not_contains "$(cat .ak/result)" 'base-red: t,own' 'a failure of its own is not called base-red'
+printf 'lint\n' >.ak/ci-only
+"$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
+assert_contains "$(cat .ak/result)" '; ci-only: lint' 'a red head names the checks only CI caught'
+rm -f .ak/ci-only
 # Any valid base name is reported: one with characters outside the plain set (release/c++) used to drop the note.
 git push -q origin "$main:refs/heads/release/c++" 2>/dev/null
 printf 'release/c++\n' >.ak/base
@@ -103,7 +107,9 @@ printf '%s\n' "$routes" >"$FAKE_GH_ROUTES"
 # Checks only CI caught reach the operator through the result note (a field repo paid a CI round per PR for a type check).
 printf 'lint\nmypy\n' >.ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1
-assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1; ci-only: lint,mypy' 'the result note names the checks only CI caught'
+assert_contains "$(cat .ak/result)" 'ci=green' 'the head is green'
+assert_contains "$(cat .ak/result)" 'note=findings=2 fixed=1 declined=1; ci-caught-earlier: lint,mypy' 'a green head names the checks CI caught on earlier heads'
+assert_not_contains "$(cat .ak/result)" 'ci-only:' 'a green result never shows a ci-only list'
 # A record the checkout brought along (tracked) is a branch author's text, not ak's: it never reaches the note.
 git add -f .ak/ci-only
 "$AK" receipt --findings "$WORK/findings" >/dev/null 2>&1

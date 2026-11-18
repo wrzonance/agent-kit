@@ -283,8 +283,9 @@ cmd_main() {
         note+="; base-red: ${BASH_REMATCH[1]} (also red on ${base:-the base branch})"
     fi
     # Checks that only CI caught on this PR: the operator reads them on the collect line and can add a local suite.
+    # Only a red head is still failing them; a green head shows them as history, never beside ci=green as ci-only.
     ! ci_only_trusted "$dir/ci-only" ||
-        note+="; ci-only: $(LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' <"$dir/ci-only" | cut -c1-60 | head -n 20 | paste -sd, -)"
+        note+="; $([[ $ci == red ]] && echo ci-only || echo ci-caught-earlier): $(LC_ALL=C tr -cd 'A-Za-z0-9 _.()/\n-' <"$dir/ci-only" | cut -c1-60 | head -n 20 | paste -sd, -)"
     printf 'receipt=%s\n' "$url"
     # A red of the branch's own below the third round writes no result: ak wait reads a result as the worker's end,
     # and this worker is about to fix and ship again. The third red head is recorded, and the worker ends.
