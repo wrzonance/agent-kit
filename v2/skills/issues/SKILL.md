@@ -35,7 +35,7 @@ PRs/receipts, pause causes and uncommitted work, then continue only what remains
    `ak collect` starts later. A `next=` line means nothing started; report it and stop.
 3. Wait once for the whole wave. Claude: run `ak wait` as ONE background shell task and end the turn with no words;
    a hook holds worker notices, so your next wake is that command's exit. Codex: call `wait_agent` with
-   `timeout_ms=3600000`; on each return run `ak wait --check --settle`; exit 3 means wait again with no words.
+   `timeout_ms=3600000`; on each return run `ak wait --check --settle`; exit 3 means wait again with no words; never end the turn while workers are live (`workers live=N: keep waiting`).
    Exit 0 already carries the collected summary: review it in step 4 without another `ak wait` call.
    Settlement includes the CI wait; collect its shell handle as in step 1 if the command yields.
    While a wave is open, spawn nothing else and send nothing: no progress replies, no relays, no polling.
