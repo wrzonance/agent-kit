@@ -293,19 +293,25 @@ worker_model() {
 # not processed, so a PR, comment or merge never duplicates. Non-api calls retry on a transient error only when idempotent.
 # A stdin body (--input -) is spent by the first attempt, so it never retries. AK_GH_RETRY_SLEEP overrides the 2/5/10 s backoff.
 gh() {
-    local arg method='' body=0 attempt=0 rc out err pattern delays pause
+    local arg prev='' method='' query='' body=0 attempt=0 rc out err pattern delays pause
     local transient='connection reset|EOF|i/o timeout|HTTP 50[234]|\b50[234] '
     local limited='secondary rate limit|HTTP 429|too many requests'
     for arg in "$@"; do
         case $arg in
             -X | --method) method=next ;;
             -f | -F | --input | --field | --raw-field) body=1 ;;
+            query=*) [[ $prev != @(-f|-F|--field|--raw-field) ]] || query=${arg#query=} ;;&
             *) [[ $method != next ]] || method=${arg^^} ;;
         esac
+        prev=$arg
     done
+    if [[ $query == @- ]]; then query=''; elif [[ $query == @* ]]; then query=$(cat -- "${query:1}" 2>/dev/null) || query=''; fi
     pattern=$transient
     if [[ ${1:-} == api ]]; then
-        [[ $method == GET || ($method == '' && $body == 0) ]] || pattern=$limited
+        # A GraphQL query is a read; a mutation, or a query ak cannot read, is a write.
+        if [[ ${2:-} == graphql && $query =~ ^[[:space:]]*(query|\{) ]]; then :
+        elif [[ $method == GET || ($method == '' && $body == 0) ]]; then :
+        else pattern=$limited; fi
     elif [[ "${1:-} ${2:-}" != @(pr ready|pr view|pr list|pr checks|issue view|issue list) ]]; then
         pattern=$limited
     fi

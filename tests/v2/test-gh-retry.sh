@@ -54,6 +54,19 @@ assert_eq '0 2' "$rc $calls" 'the idempotent pr ready is retried on a reset'
 attempt 1 'connection reset' pr merge 5
 assert_eq '1 1' "$rc $calls" 'pr merge is not retried on a reset'
 
+attempt 1 'connection reset' api graphql -f query='query { repository { id } }' -F number=5
+assert_eq '0 2' "$rc $calls" 'a GraphQL query is retried on a reset'
+
+printf '  {\n repository { id } }' >"$WORK/q.graphql"
+attempt 1 'connection reset' api graphql -F query=@"$WORK/q.graphql"
+assert_eq '0 2' "$rc $calls" 'a GraphQL query read from a file is retried on a reset'
+
+attempt 1 'connection reset' api graphql -f query='mutation { x }'
+assert_eq '1 1' "$rc $calls" 'a GraphQL mutation is not retried on a reset'
+
+attempt 1 'connection reset' api graphql -F query=@"$WORK/missing.graphql"
+assert_eq '1 1' "$rc $calls" 'a GraphQL query that cannot be read counts as a write'
+
 export AK_GH_RETRY_SLEEP='3 3'
 sleep() { echo "slept $1" >>"$WORK/sleeps"; }
 attempt 1 'HTTP 502' api repos/o/r
