@@ -286,3 +286,47 @@ worker_model() {
     done
     if [[ $family == claude ]]; then printf 'sonnet\n'; else printf 'gpt-5.6-luna\n'; fi
 }
+
+# gh ARGS...: the gh CLI, retried through transient GitHub errors (a field run lost merges to resets). stdout, stderr and the
+# exit code are the final attempt's, byte for byte. A read retries on a reset, EOF, i/o timeout, 502, 503 or 504. A write
+# (-X POST/PUT/PATCH/DELETE, or -f/-F/--input without -X GET) retries only on a 429 or secondary rate limit, which prove it was
+# not processed, so a PR, comment or merge never duplicates. Non-api calls retry on a transient error only when idempotent.
+# A stdin body (--input -) is spent by the first attempt, so it never retries. AK_GH_RETRY_SLEEP overrides the 2/5/10 s backoff.
+gh() {
+    local arg prev='' method='' query='' body=0 attempt=0 rc out err pattern delays pause
+    local transient='connection reset|EOF|i/o timeout|HTTP 50[234]|\b50[234] '
+    local limited='secondary rate limit|HTTP 429|too many requests'
+    for arg in "$@"; do
+        case $arg in
+            -X | --method) method=next ;;
+            -f | -F | --input | --field | --raw-field) body=1 ;;
+            query=*) [[ $prev != @(-f|-F|--field|--raw-field) ]] || query=${arg#query=} ;;&
+            *) [[ $method != next ]] || method=${arg^^} ;;
+        esac
+        prev=$arg
+    done
+    if [[ $query == @- ]]; then query=''; elif [[ $query == @* ]]; then query=$(cat -- "${query:1}" 2>/dev/null) || query=''; fi
+    pattern=$transient
+    if [[ ${1:-} == api ]]; then
+        # A GraphQL query is a read; a mutation, or a query ak cannot read, is a write.
+        if [[ ${2:-} == graphql && $query =~ ^[[:space:]]*(query|\{) ]]; then :
+        elif [[ $method == GET || ($method == '' && $body == 0) ]]; then :
+        else pattern=$limited; fi
+    elif [[ "${1:-} ${2:-}" != @(pr ready|pr view|pr list|pr checks|issue view|issue list) ]]; then
+        pattern=$limited
+    fi
+    [[ " $* " != *' --input - '* ]] || pattern='^\b$'
+    IFS=' ' read -ra delays <<<"${AK_GH_RETRY_SLEEP:-2 5 10}"
+    out=$(mktemp) err=$(mktemp)
+    while :; do
+        rc=0
+        command gh "$@" >"$out" 2>"$err" || rc=$?
+        if ((rc == 0 || ++attempt >= 3)) || ! grep -Eqi -- "$pattern" "$out" "$err"; then break; fi
+        pause=${delays[attempt - 1]:-${delays[-1]}}
+        [[ $pause == 0 ]] || sleep "$pause"
+    done
+    cat -- "$out"
+    cat -- "$err" >&2
+    rm -f -- "$out" "$err"
+    return "$rc"
+}
