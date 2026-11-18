@@ -16,27 +16,36 @@ pr_plan_worktree_dir() {
     printf '%s\n' "$dir"
 }
 
-# pr_plan_worktree ROOT DIR BRANCH: the existing worktree for BRANCH, or a new one tracking origin.
-pr_plan_worktree() {
-    local root=$1 dir=$2 branch=$3 path existing
-    existing=$(git -C "$root" worktree list --porcelain |
-        awk -v want="branch refs/heads/$branch" '/^worktree /{p=substr($0,10)} $0==want{print p; exit}')
-    git -C "$root" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" ||
-        die "cannot fetch $branch" "git fetch origin $branch"
-    if [[ -n $existing ]]; then
-        [[ $existing != "$root" ]] || die "$branch is checked out in the main checkout" "git -C $root switch $(base_branch)"
-        printf '%s\n' "$existing"
-        return 0
+# worktree_for_branch ROOT DIR BRANCH: BRANCH's worktree, ready to use. A registration whose directory is gone (a reboot
+# emptied /tmp) is pruned and rebuilt under DIR, never left for a later mkdir to turn into a bare directory. One behind
+# origin fast-forwards when clean; one dirty or diverged is refused with its work kept. Ahead of origin is fine: an
+# update-branch or a worker's unpushed commit moves the heads apart legitimately.
+worktree_for_branch() {
+    local root=$1 dir=$2 branch=$3 up=refs/remotes/origin/$3 wt gone
+    IFS=$'\t' read -r wt gone < <(git -C "$root" worktree list --porcelain | awk -v RS= -F'\n' -v want="branch refs/heads/$branch" '
+        {p = substr($1, 10); b = 0; g = 0; for (i = 2; i <= NF; i++) {if ($i == want) b = 1; if ($i ~ /^prunable/) g = 1}}
+        b {print p "\t" g; exit}') || true
+    [[ ${wt:-} != "$root" ]] || die "$branch is checked out in the main checkout" "git -C $root switch $(base_branch)"
+    if [[ -n ${wt:-} && ( ! -d $wt || ${gone:-} == 1 ) ]]; then
+        git -C "$root" worktree prune
+        wt=
     fi
-    path="$dir/$branch"
-    if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
-        git -C "$root" worktree add -q "$path" "$branch" >/dev/null 2>&1 || die "cannot add a worktree for $branch" "git worktree add $path $branch"
-        git -C "$path" branch -q --set-upstream-to "origin/$branch" >/dev/null 2>&1 || true
-    else
-        git -C "$root" worktree add -q --track -b "$branch" "$path" "origin/$branch" >/dev/null 2>&1 ||
-            die "cannot add a worktree for $branch" "git worktree add --track -b $branch $path origin/$branch"
+    if [[ -z ${wt:-} ]]; then
+        wt="$dir/$branch"
+        if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+            git -C "$root" worktree add -q "$wt" "$branch" >/dev/null 2>&1 || die "cannot add a worktree for $branch" "git worktree add $wt $branch"
+            git -C "$wt" branch -q --set-upstream-to "origin/$branch" >/dev/null 2>&1 || true
+        else
+            git -C "$root" worktree add -q --track -b "$branch" "$wt" "origin/$branch" >/dev/null 2>&1 ||
+                die "cannot add a worktree for $branch" "git worktree add --track -b $branch $wt origin/$branch"
+        fi
     fi
-    printf '%s\n' "$path"
+    if git -C "$wt" rev-parse --verify -q "$up" >/dev/null && ! git -C "$wt" merge-base --is-ancestor "$up" HEAD; then
+        git -C "$wt" merge-base --is-ancestor HEAD "$up" || die "$wt has diverged from origin/$branch" "git -C $wt merge origin/$branch"
+        [[ -z $(git -C "$wt" status --porcelain) ]] || die "$wt has uncommitted work and is behind origin/$branch" "commit it in $wt, then rerun"
+        git -C "$wt" merge -q --ff-only "$up" >/dev/null || die "cannot fast-forward $wt to origin/$branch" "git -C $wt merge --ff-only origin/$branch"
+    fi
+    printf '%s\n' "$wt"
 }
 
 # pr_plan_prompt PR_JSON WORKTREE SLUG: write .ak/pr, .ak/base and .ak/prompt.md; drop a stale result.
@@ -105,7 +114,7 @@ cmd_main() {
         [[ " ${prs[*]} " == *" $2 "* ]] || prs+=("$2")
         shift 2
     done
-    local root slug dir runs run model effort items='[]' n json reason wt spawns=''
+    local root slug dir runs run model effort items='[]' n json reason wt br spawns=''
     root=$(main_root)
     cd -- "$root" || die "cannot enter $root" "cd $root"
     ak_dir >/dev/null
@@ -122,7 +131,9 @@ cmd_main() {
             spawns+="drop pr=$n reason=$reason"$'\n'
             continue
         fi
-        wt=$(pr_plan_worktree "$root" "$dir" "$(jq -r .head.ref <<<"$json")")
+        br=$(jq -r .head.ref <<<"$json")
+        git -C "$root" fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" || die "cannot fetch $br" "git fetch origin $br"
+        wt=$(worktree_for_branch "$root" "$dir" "$br")
         if pr_plan_done "$wt" "$(jq -r .head.sha <<<"$json")" "$slug" "$n"; then
             items=$(jq -c --argjson n "$n" --arg wt "$wt" --arg br "$(jq -r .head.ref <<<"$json")" \
                 '. + [{kind: "pr", n: $n, worktree: $wt, branch: $br, state: "collected", needs: []}]' <<<"$items")
