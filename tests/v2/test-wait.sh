@@ -69,7 +69,7 @@ set_run 5
 claude_agent a5 5 false
 out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 3 "$rc" '--check exits 3 while a worker runs'
-assert_eq $'issue=5 state=running\nwave=1 settled=0/1' "$out" '--check prints the running state'
+assert_eq $'issue=5 state=running\nwave=1 settled=0/1\nworkers live=1: keep waiting' "$out" '--check prints the running state'
 green_result >"$WORK/wt/5/.ak/result"
 out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 0 "$rc" '--check exits 0 once the result is there'
@@ -236,7 +236,7 @@ rm -rf "$subdir"
 claude_agent a50 50 true
 claude_agent a5 5 false
 out=$("$AK" wait --check 2>&1)
-assert_eq $'issue=5 state=running\nissue=50 state=ended-without-result\nwave=1 settled=1/2' "$out" 'wt/5 does not match the transcript of wt/50'
+assert_eq $'issue=5 state=running\nissue=50 state=ended-without-result\nwave=1 settled=1/2\nworkers live=1: keep waiting' "$out" 'wt/5 does not match the transcript of wt/50'
 rm -rf "$subdir"
 claude_agent a50 50 true
 touch "$WORK/wt/5/.ak"
@@ -249,7 +249,7 @@ claude_agent old 5 true
 SPAWNED_AT=$(($(date +%s) + 60)) set_run 5
 touch "$WORK/wt/5/.ak"
 out=$("$AK" wait --check 2>&1)
-assert_eq $'issue=5 state=running\nwave=1 settled=0/1' "$out" 'an older finished transcript never reads as ended-without-result'
+assert_eq $'issue=5 state=running\nwave=1 settled=0/1\nworkers live=1: keep waiting' "$out" 'an older finished transcript never reads as ended-without-result'
 SPAWNED_AT=0 set_run 5
 printf 'x\n' >"$WORK/wt/5/.ak/prompt.md"
 touch -d '+60 seconds' "$WORK/wt/5/.ak/prompt.md"
@@ -271,7 +271,7 @@ rm -rf "$other_subdir"
 # An item with no worktree is not watchable.
 printf '{"run":"r1","open_wave":1,"items":[{"kind":"issue","n":7,"worktree":"","wave":1,"state":"pending","needs":[]},{"kind":"issue","n":8,"worktree":"","wave":1,"state":"queued","needs":[]}]}\n' >"$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check 2>&1); rc=$?
-assert_eq $'issue=7 state=running\nwave=1 settled=0/1' "$out" 'a pending item without a worktree reads running, a queued one is not watched'
+assert_eq $'issue=7 state=running\nwave=1 settled=0/1\nworkers live=1: keep waiting' "$out" 'a pending item without a worktree reads running, a queued one is not watched'
 assert_eq 3 "$rc" 'and keeps --check at 3'
 touch -d '10 seconds ago' "$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check 2>&1)
@@ -511,7 +511,7 @@ touch -d '1 minute ago' "$WORK/wt/13/.ak/result" "$subdir/agent-a13.jsonl" "$sub
 jq '.items[0].state = "collected"' "$repo/.ak/runs/r1.json" >"$WORK/r.tmp" && mv "$WORK/r.tmp" "$repo/.ak/runs/r1.json"
 out=$("$AK" wait --check --issue 13 2>&1); rc=$?
 assert_eq 3 "$rc" '--check --issue N keeps running past an old result and end record'
-assert_eq $'issue=13 state=running\nwave=1 settled=0/1' "$out" 'and prints the item running'
+assert_eq $'issue=13 state=running\nwave=1 settled=0/1\nworkers live=1: keep waiting' "$out" 'and prints the item running'
 "$AK" wait --check --issue 13 >/dev/null 2>&1; rc=$?
 assert_eq 3 "$rc" 'a second --check reuses the stamp and still runs'
 assert_eq true "$(jq -r '.items[0].round_at > 0' "$repo/.ak/runs/r1.json")" 'the round persists between calls'
@@ -557,7 +557,7 @@ resumed=$!
 out=$(AK_WAIT_POLL_S=2 "$AK" wait --check --issue 17 2>&1); rc=$?
 wait "$resumed"
 assert_eq 3 "$rc" 'a late terminal tail does not settle a correction that resumes during the quiescence check'
-assert_eq $'issue=17 state=running\nwave=1 settled=0/1' "$out" 'the resumed correction remains running instead of becoming replaceable'
+assert_eq $'issue=17 state=running\nwave=1 settled=0/1\nworkers live=1: keep waiting' "$out" 'the resumed correction remains running instead of becoming replaceable'
 green_result >"$WORK/wt/17/.ak/result"
 out=$("$AK" wait --check --issue 17 2>&1); rc=$?
 assert_eq 0 "$rc" 'the resumed correction still settles when it reports'
@@ -578,7 +578,7 @@ rm -f "$WORK/wt/5/.ak/result" "$WORK/wt/6/.ak/result"
 green_result >"$WORK/wt/6/.ak/result"
 touch "$WORK/wt/5/.ak"
 out=$("$AK" wait --check 2>&1); rc=$?
-assert_eq $'issue=5 state=running\nissue=6 state=reported\nwave=2 settled=1/2' "$out" 'a wave-1 worker still out is watched while wave 2 is open'
+assert_eq $'issue=5 state=running\nissue=6 state=reported\nwave=2 settled=1/2\nworkers live=1: keep waiting' "$out" 'a wave-1 worker still out is watched while wave 2 is open'
 assert_eq 3 "$rc" 'and keeps --check at 3'
 
 # The marker and the summary belong to the run and session that started the wait.

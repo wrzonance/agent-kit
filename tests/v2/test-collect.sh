@@ -605,6 +605,7 @@ printf 'pr-run\n' >"$repo/.ak/runs/current"
 out=$("$AK" collect --wave 2>&1); rc=$?
 assert_eq 1 "$rc" 'collect --wave refuses while a wave-1 worker is out'
 assert_contains "$out" 'wave 1 is still open: 693' 'and names the open issues'
+assert_contains "$out" 'workers live=' 'and says to keep waiting'
 assert_contains "$out" 'fix: ak wait' 'and the command that waits'
 "$AK" collect --issue 693 >/dev/null 2>&1
 out=$("$AK" collect --wave 2>&1); rc=$?

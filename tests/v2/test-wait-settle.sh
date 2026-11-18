@@ -25,7 +25,7 @@ reset_run
 result 11 first >"$WORK/a/.ak/result"
 out=$("$AK" wait --check --settle 2>&1); rc=$?
 assert_eq 3 "$rc" 'one active worker returns pending immediately'
-assert_eq $'issue=1 state=reported\nissue=2 state=running\nwave=1 settled=1/2' "$out" 'pending output identifies both workers'
+assert_eq $'issue=1 state=reported\nissue=2 state=running\nwave=1 settled=1/2\nworkers live=1: keep waiting' "$out" 'pending output identifies both workers'
 assert_eq 'spawned spawned queued' "$(jq -r '[.items[].state]|join(" ")' "$runfile")" 'a pending check collects nothing'
 assert_eq no "$([[ -e $marker || -e $summary ]] && echo yes || echo no)" 'pending leaves no marker or summary'
 result 12 second >"$WORK/b/.ak/result"

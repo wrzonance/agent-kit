@@ -454,10 +454,11 @@ wave_report() {
 }
 
 cmd_wave() {
-    local open
+    local open ids
     RUNFILE=$(wave_runfile)
     open=$(wave_open)
-    [[ -z $open ]] || die "wave $(jq -r '.open_wave // 1' "$RUNFILE") is still open: $open" 'ak wait'
+    IFS=, read -ra ids <<<"$open"
+    [[ -z $open ]] || die "wave $(jq -r '.open_wave // 1' "$RUNFILE") is still open: $open; workers live=${#ids[@]}: keep waiting" 'ak wait'
     release_wave loud
     [[ " ${LINES[*]} " != *' wave=done '* ]] || wave_report
     printf '%s\n' "${LINES[@]}"

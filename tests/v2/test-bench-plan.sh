@@ -41,7 +41,7 @@ while read -r name; do
 done < <(sed -n 's/^spawn .* name=//p' <<<"$out")
 out=$("$AK" wait --check 2>&1); rc=$?
 assert_eq 3 "$rc" 'the printed workers are still running'
-assert_eq $'issue=11 state=running\nissue=13 state=running\nwave=1 settled=0/2' "$out" 'wait matches both printed names to their native transcripts'
+assert_eq $'issue=11 state=running\nissue=13 state=running\nwave=1 settled=0/2\nworkers live=2: keep waiting' "$out" 'wait matches both printed names to their native transcripts'
 unset CODEX_THREAD_ID CODEX_HOME
 
 # Settle both first-wave workers through the real collect boundary, then release the second pair.

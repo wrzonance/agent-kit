@@ -266,6 +266,8 @@ report() {
     fi
     [[ -z $1 ]] || printf '%s\n' "$1"
     printf 'wave=%s settled=%s/%s\n' "$(jq -r '.open_wave // 1' "$RUNFILE")" "$settled" "$total"
+    # A separate line, kept out of the summary the wave report greps: a Codex root ended its turn on a pending wait.
+    ((settled == total)) || printf 'workers live=%s: keep waiting\n' "$((total - settled))"
     ((settled == total))
 }
 
