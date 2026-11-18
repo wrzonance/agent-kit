@@ -29,7 +29,8 @@ dumping whole trees or logs.
    with regression tests that fail before the fix and are not edited to pass.
    Decline others with a one-line reason.
 4. After code changes, run `ak ship --message "fix: <what the findings changed>"`; it
-   runs `ak verify` first and ships nothing on `verify=fail` (fix, run it again).
+   runs `ak verify` first and ships nothing on `verify=fail` (fix, run it again). `verify=env` is a full disk, not
+   your change: free space you own, else `ak park` naming it.
    Retain its SHA. Keep the original review's findings and dispositions.
 5. Run `ak receipt` with one `--finding "P1|<title>|fixed <sha>"` or
    `--finding "P2|<title>|declined: <reason>"` per review finding (either severity can

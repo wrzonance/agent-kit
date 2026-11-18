@@ -432,6 +432,15 @@ assert_contains "$out" 'verify=fail' 'the refusal shows the verify result'
 assert_contains "$out" "fix: fix what ak verify printed, then ak ship --message 'feat: eight'" 'the refusal names the next step'
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-8)" 'a failing verify pushes nothing'
 assert_eq "$(git rev-parse origin/main)" "$(git rev-parse HEAD)" 'a failing verify commits nothing'
+# A full disk is the environment, not the change: ship says so and names the fix.
+mkdir -p "$WORK/fakebin"
+printf '%s\n' '#!/bin/sh' 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' 'echo "/dev/full 100000 99900 100 100% /full"' >"$WORK/fakebin/df"
+chmod +x "$WORK/fakebin/df"
+out=$(PATH="$WORK/fakebin:$PATH" "$AK" ship --message 'feat: eight' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an environment failure refuses the ship'
+assert_contains "$out" 'the environment, not your change' 'the refusal blames the environment'
+assert_contains "$out" 'free space on /full' 'the refusal names the fix'
+assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-8)" 'an environment failure pushes nothing'
 rm -f "$WORK/verify-red"
 printf '90\n' >.ak/verify-seconds
 out=$("$AK" ship --message 'feat: eight' 2>&1); rc=$?

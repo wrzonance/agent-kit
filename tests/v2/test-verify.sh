@@ -66,7 +66,7 @@ export AGENT_CMD_VERIFY="echo other >>$WORK/count"
 "$AK" verify >/dev/null 2>&1
 assert_eq 4 "$(wc -l <"$WORK/count")" 'a different whole command re-runs'
 export AGENT_CMD_VERIFY="exit 1"
-"$AK" verify >/dev/null 2>&1
+"$AK" verify --full >/dev/null 2>&1
 assert_eq no "$([[ -e .ak/verify-whole ]] && echo yes || echo no)" 'a failing whole check clears the cache'
 rm -rf notes tools
 
@@ -258,5 +258,37 @@ git push -q origin HEAD:refs/heads/feat/other 2>/dev/null && git fetch -q origin
 printf 'feat/other\n' >.ak/base
 out=$("$AK" verify 2>&1)
 assert_not_contains "$out" 'PASS src' '.ak/base narrows the diff to the PR base'
+
+# A field run filled an 11 GB tmpfs /tmp with test temp dirs and every later verify failed for reasons that had
+# nothing to do with the change: each command gets its own short TMPDIR under .ak/tmp, removed afterwards.
+export AGENT_CMD_VERIFY="printf '%s' \"\$TMPDIR\" >$WORK/seen-tmp; touch \"\$TMPDIR/junk\""
+rm -f .ak/verify-whole
+out=$("$AK" verify --full 2>&1); rc=$?
+assert_eq 0 "$rc" 'a verify with its own TMPDIR passes'
+assert_eq "$PWD/.ak/tmp/v" "$(sed -E 's/[0-9]+$//' "$WORK/seen-tmp")" 'the command sees a TMPDIR under .ak/tmp'
+assert_eq no "$([[ -e $(cat "$WORK/seen-tmp") ]] && echo yes || echo no)" 'the TMPDIR is removed after a pass'
+export AGENT_CMD_VERIFY="printf '%s' \"\$TMPDIR\" >$WORK/seen-tmp; exit 1"
+"$AK" verify --full >/dev/null 2>&1
+assert_eq no "$([[ -e $(cat "$WORK/seen-tmp") ]] && echo yes || echo no)" 'the TMPDIR is removed after a failure'
+
+# A full filesystem is the environment, not the change: verify=env, a distinct exit code, and a verify.log that lets
+# the worker park with the cause.
+mkdir -p "$WORK/fakebin"
+printf '%s\n' '#!/bin/sh' 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' 'echo "/dev/full 100000 99900 100 100% /full"' >"$WORK/fakebin/df"
+chmod +x "$WORK/fakebin/df"
+rm -f .ak/logs/verify.log .ak/verified
+out=$(PATH="$WORK/fakebin:$PATH" "$AK" verify --full 2>&1); rc=$?
+assert_eq 3 "$rc" 'a full filesystem exits 3, distinct from fail'
+assert_contains "$out" 'verify=env' 'the preflight prints verify=env'
+assert_contains "$out" '/full has 0 MB free, 512 MB needed' 'the reason names the full filesystem'
+assert_contains "$(cat .ak/logs/verify.log)" '/full' 'verify.log carries the reason'
+out=$(PATH="$WORK/fakebin:$PATH" AGENT_VERIFY_MIN_FREE_MB=0 "$AK" verify --full 2>&1); rc=$?
+assert_eq 1 "$rc" 'AGENT_VERIFY_MIN_FREE_MB lowers the threshold (the command itself still fails here)'
+rm -f .ak/logs/verify.log
+PATH="$WORK/fakebin:$PATH" "$AK" verify --full >/dev/null 2>&1
+out=$("$AK" park --reason 'filesystem full' 2>&1); rc=$?
+assert_eq 0 "$rc" 'park accepts verify=env'
+rm -f .ak/result .ak/parked
+unset AGENT_CMD_VERIFY
 
 finish

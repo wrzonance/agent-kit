@@ -45,7 +45,8 @@ author's process; the operator's invocation authorizes this run's commit, push a
    Use plain sentences understandable without the issue or diff; explain project terms.
    Run `ak ship --message "<type>(<scope>): <summary>" --body-file .ak/why.md`. It runs
    `ak verify` first unless verify passed on this exact tree, and ships nothing on
-   `verify=fail`: fix and run it again. `oracle=ci` means local proof is incomplete.
+   `verify=fail`: fix and run it again. `verify=env` is a full disk, not your change: free
+   space you own, else `ak park` naming it. `oracle=ci` means local proof is incomplete.
 3. Run `ak review` once (an existing review is reused). Judge each finding against the
    code: fix real defects with red/green tests; decline others with a reason.
    `review=unavailable` has no findings to decide. For `findings=unparsed`, read

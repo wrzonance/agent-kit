@@ -138,6 +138,20 @@ verify_record() {
     printf '%s\n' "$tree" >"$file"
 }
 
+# verify_env_check: the filesystem under .ak (where each run's TMPDIR lives) needs room, or the run says so as
+# verify=env: a full tmpfs failed every verify in a field run for reasons that had nothing to do with the change.
+verify_env_check() {
+    local min free mount log
+    min=$(cfg AGENT_VERIFY_MIN_FREE_MB 512)
+    log="$(ak_dir)/logs/verify.log"
+    read -r free mount < <(df -Pk -- "$(ak_dir)" | awk 'NR == 2 { print $4, $6 }') || return 0
+    [[ $free =~ ^[0-9]+$ ]] && ((free / 1024 < min)) || return 0
+    mkdir -p -- "${log%/*}"
+    printf 'verify=env\nenvironment: %s has %d MB free, %d MB needed: free space on %s, then run ak verify again\n' \
+        "$mount" $((free / 1024)) "$min" "$mount" | tee -- "$log"
+    return 1
+}
+
 cmd_main() {
     local full=0 name command dir changed path out="" rc=0 skipped whole uncovered=() owned areas cached=0
     local start=$SECONDS
@@ -164,6 +178,13 @@ cmd_main() {
     done <<<"$changed"
     whole=$(verify_whole "$full")
     areas=$(verify_areas "$changed")
+    if [[ -n $whole || ${#suites[@]} -gt 0 ]]; then
+        verify_env_check || { verify_record 1; return 3; }
+        TMPDIR="$(ak_dir)/tmp/v$$"
+        mkdir -p -- "$TMPDIR"
+        trap 'rm -rf -- "$TMPDIR"' EXIT
+        export TMPDIR
+    fi
     if [[ -n $whole ]] && ((full || ${#suites[@]} == 0)); then
         if ((!full)) && verify_whole_cached "${whole#*$'\t'}" "$areas"; then
             # A re-verify after review fixes re-ran a 12-minute whole check for the same areas in a field run;
