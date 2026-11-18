@@ -102,4 +102,49 @@ git -C "$prwt" commit -q --allow-empty -m 'the operator answers the park'
 record=$(bash -c 'source "$1/lib/common.sh"; handed_file "$2"' _ "$REPO/v2" "$prwt")
 assert_eq "$parked $(git -C "$prwt" rev-parse HEAD)" "$(cat "$record" 2>/dev/null)" 'planning a parked PR again records what was committed since the park'
 
+# A worktree a worker's PR branch is checked out in must be current and real (a field run: a reboot emptied /tmp, the
+# registration outlived its directory, and mkdir recreated a bare non-git directory for the worker).
+wt_branch() { # NAME: branch feat/NAME on origin, checked out at $WORK/wt-NAME
+    git branch -q "feat/$1" main && git push -q origin "feat/$1" 2>/dev/null
+    git worktree add -q "$WORK/wt-$1" "feat/$1"
+}
+advance() { # NAME: a new commit on origin's feat/NAME that the local branch lacks
+    git push -q origin "$(git commit-tree "$(git rev-parse "feat/$1^{tree}")" -p "$(git rev-parse "origin/feat/$1")" -m advance):refs/heads/feat/$1" 2>/dev/null
+    git fetch -q origin
+}
+n=21
+for name in gone behind dirty diverged; do
+    wt_branch "$name"
+    route "api repos/acme/widget/pulls/$n" "$(pr_json "$n" "feat/$name" main open)"
+    n=$((n + 1))
+done
+rm -rf "$WORK/wt-gone"
+advance gone
+out=$("$AK" pr-plan --pr 21 2>&1); rc=$?
+assert_eq 0 "$rc" 'a registered but deleted worktree is planned'
+assert_contains "$out" "spawn pr=21 cwd=$repo/.worktrees/feat/gone " 'a deleted worktree is rebuilt under the worktree root'
+assert_eq "$(git rev-parse origin/feat/gone)" "$(git -C "$repo/.worktrees/feat/gone" rev-parse HEAD)" 'the rebuilt worktree is at the origin head'
+assert_eq "$repo/.worktrees/feat/gone" "$(git -C "$repo/.worktrees/feat/gone" rev-parse --show-toplevel)" 'the rebuilt worktree is a git worktree, not a bare directory'
+
+advance behind
+out=$("$AK" pr-plan --pr 22 2>&1); rc=$?
+assert_eq 0 "$rc" 'a clean worktree behind origin is planned'
+assert_contains "$out" "spawn pr=22 cwd=$WORK/wt-behind " 'a behind worktree is reused in place'
+assert_eq "$(git rev-parse origin/feat/behind)" "$(git -C "$WORK/wt-behind" rev-parse HEAD)" 'a clean behind worktree is fast-forwarded'
+
+printf 'mine\n' >"$WORK/wt-dirty/unfinished.txt"
+before=$(git -C "$WORK/wt-dirty" rev-parse HEAD)
+advance dirty
+out=$("$AK" pr-plan --pr 23 2>&1); rc=$?
+assert_eq 1 "$rc" 'a dirty worktree behind origin is refused'
+assert_contains "$out" 'uncommitted work' 'the refusal names the cause'
+assert_eq mine "$(cat "$WORK/wt-dirty/unfinished.txt")" 'the uncommitted work is preserved'
+assert_eq "$before" "$(git -C "$WORK/wt-dirty" rev-parse HEAD)" 'the dirty worktree is left where it was'
+
+git -C "$WORK/wt-diverged" commit -q --allow-empty -m 'local only'
+advance diverged
+out=$("$AK" pr-plan --pr 24 2>&1); rc=$?
+assert_eq 1 "$rc" 'a diverged worktree is refused'
+assert_contains "$out" 'diverged from origin/feat/diverged' 'the refusal names the divergence'
+
 finish

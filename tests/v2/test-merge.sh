@@ -274,6 +274,26 @@ assert_eq no "$([[ -e $WORK/wtq/.ak/result ]] && echo yes || echo no)" 'the stal
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'merge_method=' 'a conflicting PR is not merged'
 assert_not_contains "$(cat "$FAKE_GH_LOG")" 'update-branch' 'a conflict reported by GitHub is handed back without an update attempt'
 
+# The worktree the conflict goes back to is current with the PR head (an update-branch moved it) and real (a field run
+# found its directory gone after a reboot); one with unpushed-uncommitted work is refused, never overwritten.
+route "api $api/pulls/31" "$(pr_json 31 feat/r main | jq -c '.mergeable = false | .mergeable_state = "dirty"')"
+route "api --paginate $api/commits/sha31/check-runs*" "$green"
+reviewed 31
+git branch -q feat/r origin/main && git push -q origin feat/r 2>/dev/null
+git worktree add -q "$WORK/wtr" feat/r
+printf ".ak/\n" >>"$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "$WORK/wtr/.ak" && printf 'prompt\n' >"$WORK/wtr/.ak/prompt.md"
+git push -q origin "$(git commit-tree "$(git rev-parse "feat/r^{tree}")" -p "$(git rev-parse feat/r)" -m moved):refs/heads/feat/r" 2>/dev/null
+out=$("$AK" merge --pr 31 2>&1); rc=$?
+assert_eq 3 "$rc" 'a conflicting PR whose worktree is behind origin still goes back to its worker'
+assert_eq "$(git ls-remote origin refs/heads/feat/r | cut -f1)" "$(git -C "$WORK/wtr" rev-parse HEAD)" 'the worktree is fast-forwarded to the pushed head'
+git push -q origin "$(git commit-tree "$(git rev-parse "feat/r^{tree}")" -p "$(git ls-remote origin refs/heads/feat/r | cut -f1)" -m moved-again):refs/heads/feat/r" 2>/dev/null
+printf 'mine\n' >"$WORK/wtr/unfinished.txt"
+out=$("$AK" merge --pr 31 2>&1); rc=$?
+assert_eq 1 "$rc" 'a dirty worktree behind its PR head is refused'
+assert_contains "$out" 'uncommitted work' 'the refusal names the cause'
+assert_eq mine "$(cat "$WORK/wtr/unfinished.txt")" 'the uncommitted work is kept'
+
 # Two merges of one PR never run at once: the second waits for the first (bench 2026-10-01: #136 twice).
 mkdir -p "$repo/.ak/locks/merge-24"
 out=$(AK_MERGE_LOCK_WAIT=0 "$AK" merge --pr 24 2>&1); rc=$?

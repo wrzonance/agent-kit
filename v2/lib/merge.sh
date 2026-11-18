@@ -10,6 +10,8 @@ source "$AK_HOME/lib/ci.sh"
 source "$AK_HOME/lib/threads.sh"
 # shellcheck source=receipt.sh
 source "$AK_HOME/lib/receipt.sh"
+# shellcheck source=pr-plan.sh
+source "$AK_HOME/lib/pr-plan.sh"
 
 # merge_checks SLUG SHA: refuse unless every check run on SHA completed as success, neutral or skipped, and every
 # AGENT_REQUIRED_CHECKS name has a run that succeeded (a conflicted stacked PR had only CodeQL and a push lint on its head).
@@ -131,10 +133,13 @@ merge_orphan_base() {
         die "cannot retarget PR #$n to $default" "gh api -X PATCH repos/$slug/pulls/$n -f $(merge_q "base=$default")"
 }
 
-# merge_worktree REF: the main checkout's worktree that has REF checked out, or nothing.
+# merge_worktree REF: the main checkout's worktree for REF, made current with origin by worktree_for_branch, or nothing.
 merge_worktree() {
-    git -C "$(main_root)" worktree list --porcelain |
-        awk -v ref="refs/heads/$1" '/^worktree /{wt = substr($0, 10)} $0 == "branch " ref {print wt; exit}'
+    local root
+    root=$(main_root)
+    git -C "$root" worktree list --porcelain | grep -qxF "branch refs/heads/$1" || return 0
+    git -C "$root" fetch -q origin "+refs/heads/$1:refs/remotes/origin/$1" 2>/dev/null || true
+    worktree_for_branch "$root" "$(pr_plan_worktree_dir "$root")" "$1"
 }
 
 # merge_state SLUG N JSON: the PR's mergeable_state once GitHub has computed it (`mergeable` is null meanwhile), polled
