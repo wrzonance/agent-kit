@@ -290,6 +290,7 @@ ship_verified() {
     [[ $last =~ ^[0-9]+$ && ! -L $(ak_dir)/verify-seconds ]] && last="; the last verify here took ~${last}s" || last=''
     printf 'ak ship: running ak verify first%s. This one command verifies, commits, pushes and ends with a pr= line: wait on it, without polling or inspecting processes.\n' "$last"
     "$AK_HOME/bin/ak" verify || rc=$?
+    ((rc != 3)) || die "verify=env: the environment, not your change, failed; nothing was committed or pushed" "free space on the full filesystem verify named (clear what you own), then ak ship --message '$1'"
     ((rc == 0)) || die "verify failed; nothing was committed or pushed" "fix what ak verify printed, then ak ship --message '$1'"
 }
 
