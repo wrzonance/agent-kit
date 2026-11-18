@@ -33,7 +33,7 @@ Each `ak` command prints what you need next; there is no need to read its script
 3. Wait with the harness's native wait, using the longest window it allows. Do not poll or check state between
    waits. A shell call that yields a cell is collected with one `wait`,
    `yield_time_ms` as long as the command may take (1800000), never 30 s polls.
-4. As each worker finishes, run `ak collect --pr N`. It prints `pr=URL ci=green|red review=… note=…`.
+4. As workers finish, run one `ak collect` with a `--pr N` per finished PR. It prints `pr=URL ci=green|red review=… note=…`.
 5. Only when the invocation says `--merge`: run one `ak merge` with a `--pr N` for each PR whose collect line says
    `ci=green review=done` and each PR `ak pr-plan` skipped as green and reviewed. It merges them parent before
    child and prints a `merged` line or a two-line refusal per PR. A `review=unavailable` line is not merged: its

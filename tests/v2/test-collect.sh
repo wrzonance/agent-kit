@@ -224,6 +224,12 @@ assert_eq 1 "$rc" 'an issue outside the run refuses'
 assert_contains "$out" 'fix: ' 'the refusal names the fix'
 out=$("$AK" collect 2>&1); rc=$?
 assert_eq 2 "$rc" 'collect needs --issue or --pr'
+out=$("$AK" collect --pr 9 --pr 9 2>&1)
+assert_eq "$(printf '%s\n%s' "${out%%$'\n'*}" "${out%%$'\n'*}")" "$out" 'repeated --pr prints one line per PR'
+out=$("$AK" collect --pr 9 --pr 12345 2>&1); rc=$?
+assert_eq 1 "$rc" 'a PR outside the run refuses'
+assert_contains "$out" 'pr=9 ci=' 'the PRs collected before the refusal keep their lines'
+assert_contains "$out" 'pr 12345 is not in any run' 'the refusal names the missing PR'
 
 # A later plan makes another run current; collecting an item from the earlier run still finds it (field run
 # 2026-10-01: a second issue was planned while the first was still out).
