@@ -464,20 +464,29 @@ cmd_wave() {
 }
 
 cmd_main() {
-    local kind='' n=''
-    case ${1:-} in
-        --issue | --pr) kind=${1#--}; n=${2:-} ;;
-        --wave) [[ $# -eq 1 ]] && kind=wave ;;
-    esac
-    [[ $kind == wave || ($kind =~ ^(issue|pr)$ && $n =~ ^[0-9]+$ && $# -eq 2) ]] || usage_die 'usage: ak collect (--issue N | --pr N | --wave)'
+    local kinds=() ns=() i
+    if [[ ${1:-} == --wave && $# -eq 1 ]]; then
+        kinds=(wave)
+    else
+        while [[ $# -gt 0 ]]; do
+            [[ $1 =~ ^--(issue|pr)$ && ${2:-} =~ ^[0-9]+$ ]] || usage_die 'usage: ak collect (--issue N | --pr N)... | --wave'
+            kinds+=("${1#--}") ns+=("$2")
+            shift 2
+        done
+    fi
+    [[ ${#kinds[@]} -gt 0 ]] || usage_die 'usage: ak collect (--issue N | --pr N)... | --wave'
     plan_context collect
     run_lock collect
     trap 'run_unlock' EXIT
     [[ -f $MAIN/.ak/runs/current ]] || die 'no current run' 'ak plan'
     RUNFILE="$MAIN/.ak/runs/$(<"$MAIN/.ak/runs/current").json"
     [[ -f $RUNFILE ]] || die "run file missing: $RUNFILE" 'ak plan'
-    [[ $kind != wave ]] || { cmd_wave; return 0; }
-    collect_one "$kind" "$n"
-    [[ $kind != issue || $COLLECT_STATE != collected ]] || release_other_runs "$n" "$COLLECT_WORKTREE"
-    printf '%s\n' "${LINES[@]}"
+    [[ ${kinds[0]} != wave ]] || { cmd_wave; return 0; }
+    # Each item's lines print as it is collected, so one item no run holds (die) keeps the lines already gathered.
+    for i in "${!kinds[@]}"; do
+        LINES=()
+        collect_one "${kinds[i]}" "${ns[i]}"
+        [[ ${kinds[i]} != issue || $COLLECT_STATE != collected ]] || release_other_runs "${ns[i]}" "$COLLECT_WORKTREE"
+        printf '%s\n' "${LINES[@]}"
+    done
 }
