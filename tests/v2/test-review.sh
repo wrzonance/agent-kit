@@ -65,6 +65,28 @@ export AGENT_ADVERSARIAL_REVIEWER=codex AGENT_ADVERSARIAL_REVIEW_MODEL=gpt-9
 assert_contains "$(cat "$FAKE_REVIEW_LOG")" '-m gpt-9' 'unknown harness uses the configured reviewer and model'
 unset AGENT_ADVERSARIAL_REVIEWER AGENT_ADVERSARIAL_REVIEW_MODEL
 
+# A repository lists one model per provider, as AGENT_WORKER_MODELS does: each reviewer takes the first entry of its own
+# family. The whole string went to `codex exec -m`, which exited 1 and left review.unavailable=exit-1 on every review.
+export FAKE_REVIEW_OUT='NO FINDINGS'
+roster='gpt-6-astra,opus-fable-5-1'
+: >"$FAKE_REVIEW_LOG"
+CLAUDECODE=1 AGENT_ADVERSARIAL_REVIEW_MODEL=$roster "$AK" review --again >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '-m gpt-6-astra ' 'a model roster gives codex its own entry'
+assert_not_contains "$(cat "$FAKE_REVIEW_LOG")" 'opus-fable-5-1' 'codex never sees the claude entry'
+: >"$FAKE_REVIEW_LOG"
+CODEX_HOME=/x AGENT_ADVERSARIAL_REVIEW_MODEL=$roster "$AK" review --again >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '--model opus-fable-5-1 ' 'a model roster gives claude its own entry'
+assert_not_contains "$(cat "$FAKE_REVIEW_LOG")" 'gpt-6-astra' 'claude never sees the codex entry'
+: >"$FAKE_REVIEW_LOG"
+CLAUDECODE=1 AGENT_ADVERSARIAL_REVIEW_MODEL='opus-fable-5-1, sonnet' "$AK" review --again >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '-m gpt-5.6-sol ' 'a roster with no entry of the provider falls back to its default'
+: >"$FAKE_REVIEW_LOG"
+CODEX_HOME=/x AGENT_ADVERSARIAL_REVIEW_MODEL='gpt-6-astra o3' "$AK" review --again >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '--model claude-opus-5-5 ' 'a roster of only codex models leaves claude its default'
+: >"$FAKE_REVIEW_LOG"
+AGENT_ADVERSARIAL_REVIEWER='codex,claude' AGENT_ADVERSARIAL_REVIEW_MODEL=$roster "$AK" review --again >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_REVIEW_LOG")" '-m gpt-6-astra ' 'a reviewer roster takes its first entry under an unknown harness'
+
 export FAKE_REVIEW_OUT=$'P1: a\nP1: b\nP1: c\nP1: d\nP1: e\nP1: f\nP1: g\nP1: h\nP1: i\nP1: j\nP1: k\nP1: l\nP1: m\nP1: n\nP1: o\nP1: p\nP1: q\nP1: r\nP1: s\nP1: t\nP1: u'
 out=$("$AK" review --again 2>&1)
 assert_contains "$out" 'review=done findings=21' 'all findings are counted'
