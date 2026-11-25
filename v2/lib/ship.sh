@@ -20,6 +20,20 @@ ship_pr_find() {
     jq -r 'if length > 0 then "\(.[0].number) \(.[0].html_url)" else empty end' <<<"$json"
 }
 
+# ship_refuse_empty BASE: refuse a branch whose merge-base diff is empty. The cause is not always work that already
+# landed (a reverted change and empty commits look the same), and an open PR from the branch keeps its old remote head,
+# so the refusal names that PR and says to close it. The PR lookup is read-only: nothing is pushed, created or edited.
+ship_refuse_empty() {
+    local base=$1 pr
+    pr=$(ship_pr_find)
+    if [[ -n $pr ]]; then
+        die "nothing to ship: the branch changes nothing against origin/$base (its merge-base diff is empty), and open PR #${pr%% *} (${pr#* }) is still mergeable" \
+            "gh pr close ${pr%% *} (its remote head still has the withdrawn change), then ak park --reason '…' if the work is already on $base"
+    fi
+    die "nothing to ship: the branch changes nothing against origin/$base (its merge-base diff is empty)" \
+        "if the work is already on $base: ak park --reason '…'; otherwise commit the change first"
+}
+
 # ship_merged_pr BRANCH: the URL of an already merged PR from BRANCH, or nothing.
 ship_merged_pr() {
     local repo
@@ -323,9 +337,7 @@ cmd_main() {
     # was "ahead" and ship opened PRs with 0 changed files (wrz-muze-server #1223, #1224). The merge-base diff is the
     # one GitHub shows for the PR: a two-dot diff turns non-empty as soon as the base moves on. This runs before the
     # push and before any PR lookup, so an open PR for the branch is not updated either.
-    if git diff --quiet "origin/$base...HEAD"; then
-        die "nothing to ship: HEAD's tree matches origin/$base (the work is already on $base)" "ak park --reason '…already on $base…'"
-    fi
+    ! git diff --quiet "origin/$base...HEAD" || ship_refuse_empty "$base"
     ship_push "$branch"
     pr=$(ship_pr_find)
     if [[ -z $pr ]] && merged=$(ship_merged_pr "$branch") && [[ -n $merged ]]; then

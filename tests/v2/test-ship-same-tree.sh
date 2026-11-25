@@ -27,11 +27,14 @@ route 'api -X POST repos/acme/widget/pulls *' '{"number":9,"html_url":"https://g
 head=$(git rev-parse HEAD)
 out=$("$AK" ship --message 'feat: old work' 2>&1); rc=$?
 assert_eq 1 "$rc" 'a tree equal to base is refused although commits are ahead'
-assert_contains "$out" "nothing to ship: HEAD's tree matches origin/main (the work is already on main)" 'the refusal says why'
-assert_contains "$out" "fix: ak park --reason '…already on main…'" 'the refusal says to park'
+assert_contains "$out" "nothing to ship: the branch changes nothing against origin/main (its merge-base diff is empty)" 'the refusal states only what was checked'
+assert_contains "$out" "fix: if the work is already on main: ak park --reason '…'; otherwise commit the change first" 'the hint covers both causes'
+assert_not_contains "$out" 'tree matches' 'the refusal does not claim the trees match'
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'a refused ship pushes nothing'
 assert_eq "$head" "$(git rev-parse HEAD)" 'a refused ship commits nothing'
-assert_eq '' "$(cat "$FAKE_GH_LOG")" 'a refused ship makes no PR lookup or creation'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'POST' 'a refused ship creates no PR'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'PATCH' 'a refused ship edits no PR'
+assert_not_contains "$out" 'open PR' 'no open PR: the refusal does not mention one'
 
 # Other PRs merge after the resolve: origin/main moves on, so a plain two-dot diff against it is no longer empty (it
 # shows main's new commits reversed), but the PR GitHub shows is the merge-base diff and still has 0 changed files.
@@ -42,15 +45,34 @@ git diff --quiet origin/main HEAD
 assert_eq 1 "$?" 'the base has moved: HEAD and origin/main now differ'
 out=$("$AK" ship --message 'feat: old work' 2>&1); rc=$?
 assert_eq 1 "$rc" 'an advanced base does not hide a branch with nothing of its own'
-assert_contains "$out" "nothing to ship: HEAD's tree matches origin/main" 'the refusal is the same'
+assert_contains "$out" "nothing to ship: the branch changes nothing against origin/main" 'the refusal is the same'
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an advanced base: nothing is pushed'
 
-# An open PR for the branch is not updated either: the tree now matches base.
+# An open PR for the branch is not updated either: the branch now changes nothing against base. The first matching
+# route wins, so the empty lookup is dropped before the one that finds the PR is added.
+: >"$FAKE_GH_ROUTES"
 route "$lookup" '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
 out=$("$AK" ship --message 'feat: old work' 2>&1); rc=$?
 assert_eq 1 "$rc" 'an existing PR does not exempt a tree equal to base'
 assert_contains "$out" 'nothing to ship' 'the refusal is the same'
+assert_contains "$out" 'open PR #9 (https://github.com/acme/widget/pull/9)' 'the refusal names the open PR'
+assert_contains "$out" 'fix: gh pr close 9' 'the hint says to close the PR'
+assert_contains "$out" 'its remote head still has the withdrawn change' 'the hint says why'
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'nothing is pushed to the existing PR branch'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'POST' 'an existing PR is not created again'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'PATCH' 'an existing PR is not edited'
+assert_not_contains "$(cat "$FAKE_GH_LOG")" 'pr edit' 'an existing PR is not edited through gh pr'
+
+# A branch that made a change and then reverted it has the same empty merge-base diff.
+git -C "$repo" worktree add -q -b feat/issue-8 "$WORK/wt2" origin/main
+(cd "$WORK/wt2" && mkdir -p .ak && printf 'title: Revert me\n\n~~~untrusted\nbody\n~~~\n' >.ak/issue.md \
+    && printf 'five\n' >src/e.txt && git add src && git commit -q -m 'feat: change' \
+    && git revert --no-edit HEAD >/dev/null)
+route 'api repos/acme/widget/pulls?head=acme:feat/issue-8&state=open' '[]'
+out=$(cd "$WORK/wt2" && "$AK" ship --message 'feat: revert' 2>&1); rc=$?
+assert_eq 1 "$rc" 'a branch that reverted its own change is refused'
+assert_contains "$out" 'nothing to ship: the branch changes nothing against origin/main (its merge-base diff is empty)' 'the revert refusal states only what was checked'
+assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-8)" 'a reverted branch pushes nothing'
 
 # A real change behind the advanced base still ships.
 printf 'three\n' >src/c.txt
