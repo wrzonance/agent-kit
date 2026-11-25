@@ -33,6 +33,18 @@ assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'a refused ship 
 assert_eq "$head" "$(git rev-parse HEAD)" 'a refused ship commits nothing'
 assert_eq '' "$(cat "$FAKE_GH_LOG")" 'a refused ship makes no PR lookup or creation'
 
+# Other PRs merge after the resolve: origin/main moves on, so a plain two-dot diff against it is no longer empty (it
+# shows main's new commits reversed), but the PR GitHub shows is the merge-base diff and still has 0 changed files.
+printf 'four\n' >"$repo/src/d.txt"
+git -C "$repo" add src && git -C "$repo" commit -q -m 'feat: another PR' && git -C "$repo" push -q origin main
+git -C "$repo" fetch -q origin
+git diff --quiet origin/main HEAD
+assert_eq 1 "$?" 'the base has moved: HEAD and origin/main now differ'
+out=$("$AK" ship --message 'feat: old work' 2>&1); rc=$?
+assert_eq 1 "$rc" 'an advanced base does not hide a branch with nothing of its own'
+assert_contains "$out" "nothing to ship: HEAD's tree matches origin/main" 'the refusal is the same'
+assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'an advanced base: nothing is pushed'
+
 # An open PR for the branch is not updated either: the tree now matches base.
 route "$lookup" '[{"number":9,"html_url":"https://github.com/acme/widget/pull/9"}]'
 out=$("$AK" ship --message 'feat: old work' 2>&1); rc=$?
@@ -40,7 +52,7 @@ assert_eq 1 "$rc" 'an existing PR does not exempt a tree equal to base'
 assert_contains "$out" 'nothing to ship' 'the refusal is the same'
 assert_eq '' "$(git ls-remote "$WORK/origin.git" feat/issue-7)" 'nothing is pushed to the existing PR branch'
 
-# A real change on top of the same tree ships.
+# A real change behind the advanced base still ships.
 printf 'three\n' >src/c.txt
 out=$("$AK" ship --message 'feat: more' 2>&1); rc=$?
 assert_eq 0 "$rc" 'a branch that differs from base ships'
