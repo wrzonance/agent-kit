@@ -319,6 +319,12 @@ cmd_main() {
     ship_resolved
     [[ -n $(git rev-list "origin/$base..HEAD" 2>/dev/null) ]] ||
         die "nothing to ship: HEAD has no commits ahead of origin/$base" "commit your change, then ak ship --message '$message'"
+    # Commits ahead are not changes: a reused worktree merged the base and resolved to its side, so the merge commit
+    # was "ahead" and ship opened PRs with 0 changed files (wrz-muze-server #1223, #1224). This runs before the push
+    # and before any PR lookup, so an open PR for the branch is not updated either.
+    if git diff --quiet "origin/$base" HEAD; then
+        die "nothing to ship: HEAD's tree matches origin/$base (the work is already on $base)" "ak park --reason '…already on $base…'"
+    fi
     ship_push "$branch"
     pr=$(ship_pr_find)
     if [[ -z $pr ]] && merged=$(ship_merged_pr "$branch") && [[ -n $merged ]]; then
