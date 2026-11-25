@@ -17,20 +17,17 @@ review_provider() {
     case $(harness) in
         codex) printf 'claude\n' ;;
         claude) printf 'codex\n' ;;
-        *) cfg AGENT_ADVERSARIAL_REVIEWER claude ;;
+        *) roster_pick any "$(cfg AGENT_ADVERSARIAL_REVIEWER claude)" ;;
     esac
 }
 
-# review_model PROVIDER: the configured model when it belongs to PROVIDER's family, else the default.
+# review_model PROVIDER: the first configured model (a roster, one per provider) in PROVIDER's family, else its default.
 review_model() {
-    local provider=$1 model
-    model=$(cfg AGENT_ADVERSARIAL_REVIEW_MODEL)
-    if [[ $provider == codex ]]; then
-        [[ $model =~ ^(gpt-|o[0-9]) ]] || model=gpt-5.6-sol
-    else
-        [[ -n $model && ! $model =~ ^(gpt-|o[0-9]) ]] || model=claude-opus-5-5
-    fi
-    printf '%s\n' "$model"
+    local model
+    model=$(roster_pick "$1" "$(cfg AGENT_ADVERSARIAL_REVIEW_MODEL)")
+    if [[ -n $model ]]; then printf '%s\n' "$model"
+    elif [[ $1 == codex ]]; then printf 'gpt-5.6-sol\n'
+    else printf 'claude-opus-5-5\n'; fi
 }
 
 review_effort() {

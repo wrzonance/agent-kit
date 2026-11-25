@@ -271,11 +271,11 @@ work_base() {
     fi
 }
 
-# The worker model: the first roster entry of the running harness's family, else its default.
-worker_model() {
-    local roster entry family
-    family=$(harness)
-    IFS=', ' read -ra roster <<<"$(cfg AGENT_WORKER_MODELS)"
+# roster_pick FAMILY ROSTER: the first entry of ROSTER (comma or space separated) that belongs to FAMILY. codex models
+# start with gpt- or o<digit>; claude is everything else; any other FAMILY takes the first entry. Empty when none does.
+roster_pick() {
+    local family=$1 entry roster
+    IFS=', ' read -ra roster <<<"$2"
     for entry in "${roster[@]}"; do
         [[ -n $entry ]] || continue
         case $family in
@@ -284,5 +284,13 @@ worker_model() {
             *) printf '%s\n' "$entry"; return 0 ;;
         esac
     done
+}
+
+# The worker model: the first roster entry of the running harness's family, else its default.
+worker_model() {
+    local family entry
+    family=$(harness)
+    entry=$(roster_pick "$family" "$(cfg AGENT_WORKER_MODELS)")
+    [[ -z $entry ]] || { printf '%s\n' "$entry"; return 0; }
     if [[ $family == claude ]]; then printf 'sonnet\n'; else printf 'gpt-5.6-luna\n'; fi
 }
