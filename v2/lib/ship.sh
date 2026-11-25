@@ -336,7 +336,7 @@ cmd_main() {
     # Commits ahead are not changes: a reused worktree merged the base and resolved to its side, so the merge commit
     # was "ahead" and ship opened PRs with 0 changed files (wrz-muze-server #1223, #1224). The merge-base diff is the
     # one GitHub shows for the PR: a two-dot diff turns non-empty as soon as the base moves on. This runs before the
-    # push and before any PR lookup, so an open PR for the branch is not updated either.
+    # push; the refusal only looks a PR up (read-only), so an open PR for the branch is never updated.
     ! git diff --quiet "origin/$base...HEAD" || ship_refuse_empty "$base"
     ship_push "$branch"
     pr=$(ship_pr_find)
