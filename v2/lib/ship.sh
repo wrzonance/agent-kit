@@ -337,7 +337,9 @@ cmd_main() {
     # was "ahead" and ship opened PRs with 0 changed files (wrz-muze-server #1223, #1224). The merge-base diff is the
     # one GitHub shows for the PR: a two-dot diff turns non-empty as soon as the base moves on. This runs before the
     # push; the refusal only looks a PR up (read-only), so an open PR for the branch is never updated.
-    ! git diff --quiet "origin/$base...HEAD" || ship_refuse_empty "$base"
+    # --ignore-submodules=none: diff.ignoreSubmodules=all or ignore=all in .gitmodules would hide a committed
+    # submodule pointer update, and a valid change would be refused as empty.
+    ! git diff --quiet --ignore-submodules=none "origin/$base...HEAD" || ship_refuse_empty "$base"
     ship_push "$branch"
     pr=$(ship_pr_find)
     if [[ -z $pr ]] && merged=$(ship_merged_pr "$branch") && [[ -n $merged ]]; then
